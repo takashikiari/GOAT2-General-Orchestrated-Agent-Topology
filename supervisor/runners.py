@@ -5,19 +5,29 @@ task.source before returning so the workflow can propagate source provenance.
 """
 from __future__ import annotations
 import logging
+import re
 from config.settings import settings
 from supervisor.types import AgentTask, AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
 from supervisor.tool_runner import _call_with_tools
-from supervisor.classifier import _is_search_intent
 
 log = logging.getLogger("goat2.runners")
 __all__ = ["_run_researcher", "_run_coder", "_run_critic", "_run_summarizer", "_run_tool_caller", "needs_internet"]
 
+# Simple regex-based search intent detection for tool forcing.
+# This is used only for tool selection, not for routing decisions.
+_SEARCH_RE = re.compile(
+    r"\b(search|look up|google|browse|internet|online|find out|query)\b",
+    re.IGNORECASE,
+)
+
 
 def needs_internet(task: AgentTask) -> bool:
-    """True when the task prompt contains web-search keywords."""
-    return _is_search_intent(task.prompt)
+    """True when the task prompt contains web-search keywords.
+
+    Used only for tool selection in _run_tool_caller, not for routing.
+    """
+    return bool(_SEARCH_RE.search(task.prompt))
 
 
 async def _run_researcher(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
