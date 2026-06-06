@@ -33,7 +33,21 @@ class ConversationHistory:
         return list(self._msgs)
 
     def as_context(self) -> str:
-        """Return recent turns as plain text for DAG planner injection (last 6 non-system)."""
+        """Return recent USER turns only as plain text for DAG planner injection.
+
+        Assistant turns contain DAG execution results (web search, file reads, etc.)
+        which should NOT influence planning — only user intent matters for task decomposition.
+        Returns last 6 user turns, excluding system and assistant messages.
+        """
+        turns = [m for m in self._msgs if m["role"] == "user"]
+        return "\n".join(f"User: {m['content']}" for m in turns[-6:])
+
+    def as_full_context(self) -> str:
+        """Return all turns (user + assistant) for display/memory purposes only.
+
+        Includes assistant responses with DAG results. Do NOT use this for planning —
+        use as_context() instead which filters to user turns only.
+        """
         turns = [m for m in self._msgs if m["role"] != "system"]
         return "\n".join(f"{m['role'].title()}: {m['content']}" for m in turns[-6:])
 

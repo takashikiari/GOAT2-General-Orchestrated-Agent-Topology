@@ -3,6 +3,32 @@
 
 ---
 
+## What was done this session (patch 56)
+
+### Planner re-triggering tasks from assistant DAG results
+
+**Root cause:** `as_context()` in `supervisor/history.py` returned both user AND assistant
+turns. Assistant turns contain DAG execution results (web search outputs, file reads, memory
+queries). The planner saw these as new intent and spawned duplicate tasks.
+
+**Fix applied:**
+
+**`supervisor/history.py`**:
+- `as_context()` now filters to user turns only (`m["role"] == "user"`).
+- Added new method `as_full_context()` that returns all turns for display/memory only.
+- `as_plan_context()` uses `as_context()` (user-only) for planning context.
+- Docstrings clarify that assistant results must NOT influence task decomposition.
+
+**`supervisor/planner.py`**:
+- `PLANNER_SYSTEM` updated with explicit rules:
+  - "Decompose ONLY the current user intent. Ignore previous assistant responses."
+  - "Do NOT use prior DAG results (web search, file reads) as input for new tasks."
+- These rules prevent duplicate task spawning when planner sees assistant tool outputs.
+
+All 37 tests pass. Both files ≤200 lines with docstrings.
+
+---
+
 ## What was done this session (patch 55)
 
 ### Telegram token resolution — env var takes precedence over goat.toml

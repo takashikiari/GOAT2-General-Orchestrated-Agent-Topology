@@ -1,3 +1,4 @@
+"""Task decomposition engine for GOAT 2.0 — breaks intent into minimal subtasks."""
 from __future__ import annotations
 
 import logging
@@ -22,7 +23,9 @@ PLANNER_SYSTEM: Final[str] = (
     "  - Use depends_on to model data flow (downstream tasks receive upstream outputs)\n"
     "  - Always include a final summarizer task that depends on all other tasks\n"
     "  - Keep tasks atomic and role-appropriate\n"
-    "  - 2–8 tasks total"
+    "  - 2–8 tasks total\n"
+    "  - Decompose ONLY the current user intent. Ignore previous assistant responses.\n"
+    "  - Do NOT use prior DAG results (web search, file reads) as input for new tasks."
 )
 
 

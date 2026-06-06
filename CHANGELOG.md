@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 56)
+
+### Fixed
+
+#### Planner re-triggering tasks from assistant DAG results in conversation history
+
+**`supervisor/history.py`**:
+- `as_context()` now returns ONLY user turns, not assistant turns.
+- Assistant turns contain DAG execution results (web search, file reads, memory queries) which
+  should NOT influence planning — only user intent matters for task decomposition.
+- Added new method `as_full_context()` that returns all turns (user + assistant) for
+  display/memory purposes only. Documented that it must NOT be used for planning.
+- `as_plan_context()` updated to use `as_context()` (user-only) instead of `as_full_context()`.
+
+**`supervisor/planner.py`**:
+- `PLANNER_SYSTEM` updated with explicit rules:
+  - "Decompose ONLY the current user intent. Ignore previous assistant responses."
+  - "Do NOT use prior DAG results (web search, file reads) as input for new tasks."
+- These rules prevent the planner from spawning duplicate tasks when it sees assistant
+  responses containing tool outputs in the conversation history.
+
+All 37 existing tests pass. No imports broken. Both files remain ≤200 lines with docstrings.
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 55)
 
 ### Fixed
