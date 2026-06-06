@@ -1,4 +1,8 @@
-"""Layer affinity table + adaptive reordering by historical hit rate — pure, PyO3 candidate."""
+"""Layer affinity table + adaptive reordering by historical hit rate.
+
+Pure functions — PyO3 candidates. Blends static affinity scores with
+observed hit rates for intelligent layer preference ordering.
+"""
 from __future__ import annotations
 
 from typing import Final
@@ -12,14 +16,14 @@ __all__ = ["preferred_layers"]
 # Rust equivalent: static AFFINITY: &[(QueryType, [(LayerName, f64); 3])]
 _AFFINITY: Final[dict[QueryType, dict[LayerName, float]]] = {
     "temporal": {"episodic": 0.90, "long_term": 0.70, "working": 0.30},
-    "recency":  {"working":  0.90, "episodic":  0.70, "long_term": 0.40},
-    "semantic": {"episodic": 0.90, "long_term":  0.70, "working": 0.30},
-    "generic":  {"working":  0.60, "episodic":   0.60, "long_term": 0.60},
-    "unknown":  {"working":  0.50, "episodic":   0.50, "long_term": 0.50},
+    "recency": {"working": 0.90, "episodic": 0.70, "long_term": 0.40},
+    "semantic": {"episodic": 0.90, "long_term": 0.70, "working": 0.30},
+    "generic": {"working": 0.60, "episodic": 0.60, "long_term": 0.60},
+    "unknown": {"working": 0.50, "episodic": 0.50, "long_term": 0.50},
 }
 
-_W_AFFINITY: Final[float] = 0.70   # weight given to static affinity score
-_W_HISTORY:  Final[float] = 0.30   # weight given to observed hit rate
+_W_AFFINITY: Final[float] = 0.70  # weight for static affinity score
+_W_HISTORY: Final[float] = 0.30  # weight for observed hit rate
 
 
 def preferred_layers(
@@ -27,9 +31,13 @@ def preferred_layers(
     stats: dict[LayerName, LayerStats],
 ) -> tuple[LayerName, ...]:
     """
-    Return all three layers sorted best-first, blending static affinity with observed hit rates.
-    Layers with no call history keep their static affinity rank.
-    Pure — given the same inputs always returns the same output. PyO3 candidate.
+    Return all three layers sorted best-first.
+
+    Blends static affinity with observed hit rates. Layers with no call
+    history keep their static affinity rank.
+
+    Pure function — given the same inputs always returns the same output.
+    PyO3 candidate.
     """
     affinity = _AFFINITY.get(query_type, _AFFINITY["unknown"])
 

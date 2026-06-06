@@ -1,3 +1,8 @@
+"""MemorySearchMixin — Single-tier and fan-out search for MemoryManager.
+
+Provides concurrent search across all three memory tiers with deduplication
+and temporal filtering support.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,39 +16,78 @@ log = logging.getLogger("goat2.memory.manager")
 
 
 class MemorySearchMixin:
-    """Single-tier and fan-out search for MemoryManager."""
+    """
+    Single-tier and fan-out search for MemoryManager.
+
+    When memory_type is specified, searches only that tier.
+    When memory_type is None, searches all three tiers concurrently
+    and merges results with deduplication (WORKING copy wins on duplicates).
+    """
 
     _layers: dict[MemoryType, MemoryLayer]
 
     async def search(
-        self, agent_role: str, query: str,
-        *, memory_type: MemoryType | str | None = None,
-        limit: int = 5, tags: list[str] | None = None,
-        start_datetime: str | None = None, end_datetime: str | None = None,
+        self,
+        agent_role: str,
+        query: str,
+        *,
+        memory_type: MemoryType | str | None = None,
+        limit: int = 5,
+        tags: list[str] | None = None,
+        start_datetime: str | None = None,
+        end_datetime: str | None = None,
     ) -> list[MemoryEntry]:
         """
-        Search one tier (when memory_type is set) or all three concurrently (memory_type=None).
-        Fan-out deduplicates by (role, key); WORKING copy wins on duplicate keys.
-        start_datetime / end_datetime accept ISO 8601 or natural language (see time_parser).
+        Search one tier or all three concurrently.
+
+        Args:
+            agent_role: The agent role identifier
+            query: Search query string
+            memory_type: Specific tier to search, or None for all
+            limit: Maximum results to return
+            tags: Optional tag filters
+            start_datetime: ISO 8601 or natural language start bound
+            end_datetime: ISO 8601 or natural language end bound
+
+        Returns:
+            List of MemoryEntry objects, filtered and limited
         """
         start_ts, end_ts = resolve_range(start_datetime, end_datetime)
         has_filter = start_ts is not None or end_ts is not None
+
         if memory_type is not None:
             fetch = limit * 4 if has_filter else limit
             raw = await self._layers[MemoryType(memory_type)].search(
                 agent_role, query, limit=fetch, tags=tags
             )
             return filter_by_time(raw, start_ts, end_ts)[:limit]
+
         return await self._fan_out_search(
-            agent_role, query, limit=limit, tags=tags,
-            start_ts=start_ts, end_ts=end_ts,
+            agent_role,
+            query,
+            limit=limit,
+            tags=tags,
+            start_ts=start_ts,
+            end_ts=end_ts,
         )
 
     async def _fan_out_search(
-        self, agent_role: str, query: str,
-        *, limit: int, tags: list[str] | None,
-        start_ts: float | None = None, end_ts: float | None = None,
+        self,
+        agent_role: str,
+        query: str,
+        *,
+        limit: int,
+        tags: list[str] | None,
+        start_ts: float | None = None,
+        end_ts: float | None = None,
     ) -> list[MemoryEntry]:
+        """
+        Search all three tiers concurrently and merge results.
+
+        Fetches extra results when temporal filters are active to compensate
+        for post-filter reduction. Deduplicates by (role, key) with WORKING
+        tier taking precedence on duplicates.
+        """
         fetch = limit * 4 if (start_ts is not None or end_ts is not None) else limit
         order = MemoryType.priority_order()
         tasks = [
@@ -53,7 +97,7 @@ class MemorySearchMixin:
         raw = await asyncio.gather(*tasks, return_exceptions=True)
 
         merged: list[MemoryEntry] = []
-        seen:   set[str]          = set()
+        seen: set[str] = set()
 
         for mt, result in zip(order, raw):
             if isinstance(result, Exception):
@@ -72,10 +116,19 @@ class MemorySearchMixin:
         return merged[:limit]
 
     async def recall(
-        self, agent_role: str, query: str,
-        *, limit: int = 10, tags: list[str] | None = None,
+        self,
+        agent_role: str,
+        query: str,
+        *,
+        limit: int = 10,
+        tags: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        """Named alias for search(memory_type=None) — searches all three tiers concurrently."""
+        """
+        Named alias for search(memory_type=None).
+
+        Searches all three tiers concurrently. Provided for API clarity
+        when the intent is full recall rather than targeted search.
+        """
         return await self.search(
             agent_role, query, memory_type=None, limit=limit, tags=tags
         )

@@ -1,3 +1,8 @@
+"""MemoryCrudMixin — Core CRUD routing for MemoryManager.
+
+Delegates to the correct layer based on memory_type. Provides
+store, retrieve, locate, delete, list, and clear operations.
+"""
 from __future__ import annotations
 
 import logging
@@ -9,23 +14,37 @@ log = logging.getLogger("goat2.memory.manager")
 
 
 class MemoryCrudMixin:
-    """Core CRUD routing for MemoryManager — delegates to the correct layer via _layer()."""
+    """
+    Core CRUD routing for MemoryManager.
+
+    Delegates to the correct layer via _layer(). All operations
+    are async for consistency with I/O backends.
+    """
 
     _layers: dict[MemoryType, MemoryLayer]
 
     def _layer(self, memory_type: MemoryType | str) -> MemoryLayer:
+        """Get layer instance from MemoryType or string name."""
         return self._layers[MemoryType(memory_type)]
 
     async def store(
-        self, agent_role: str, key: str, content: str,
-        *, memory_type: MemoryType | str = MemoryType.WORKING,
-        metadata: MemoryEntryMetadata | None = None, ttl: int | None = None,
+        self,
+        agent_role: str,
+        key: str,
+        content: str,
+        *,
+        memory_type: MemoryType | str = MemoryType.WORKING,
+        metadata: MemoryEntryMetadata | None = None,
+        ttl: int | None = None,
     ) -> MemoryEntry:
         """
-        Persist content in the given tier. `ttl` is forwarded only to WORKING;
-        EPISODIC and LONG_TERM use their own persistence semantics and ignore it.
+        Persist content in the given tier.
+
+        ttl is forwarded only to WORKING layer; EPISODIC and LONG_TERM
+        use their own persistence semantics and ignore ttl.
         """
         from memory.working_memory import WorkingMemoryLayer
+
         layer = self._layer(memory_type)
         if isinstance(layer, WorkingMemoryLayer):
             return await layer.store(
@@ -36,18 +55,27 @@ class MemoryCrudMixin:
         return entry
 
     async def retrieve(
-        self, agent_role: str, key: str,
-        *, memory_type: MemoryType | str = MemoryType.WORKING,
+        self,
+        agent_role: str,
+        key: str,
+        *,
+        memory_type: MemoryType | str = MemoryType.WORKING,
     ) -> MemoryEntry | None:
+        """Retrieve entry by exact key from specified tier."""
         return await self._layer(memory_type).retrieve(agent_role, key)
 
     async def locate(
-        self, agent_role: str, key: str,
-        *, memory_type: MemoryType | str | None = None,
+        self,
+        agent_role: str,
+        key: str,
+        *,
+        memory_type: MemoryType | str | None = None,
     ) -> MemoryEntry | None:
         """
-        Find an entry by exact key. If memory_type is None, probes all three tiers in
-        priority order (WORKING → EPISODIC → LONG_TERM) and returns the first hit.
+        Find entry by exact key across tiers.
+
+        If memory_type is None, probes all three tiers in priority order
+        (WORKING → EPISODIC → LONG_TERM) and returns first hit.
         """
         if memory_type is not None:
             return await self.retrieve(agent_role, key, memory_type=memory_type)
@@ -58,20 +86,29 @@ class MemoryCrudMixin:
         return None
 
     async def delete(
-        self, agent_role: str, key: str,
-        *, memory_type: MemoryType | str,
+        self,
+        agent_role: str,
+        key: str,
+        *,
+        memory_type: MemoryType | str,
     ) -> bool:
+        """Delete entry from specified tier; True if existed."""
         return await self._layer(memory_type).delete(agent_role, key)
 
     async def list(
-        self, agent_role: str,
-        *, memory_type: MemoryType | str, limit: int = 20,
+        self,
+        agent_role: str,
+        *,
+        memory_type: MemoryType | str,
+        limit: int = 20,
     ) -> list[MemoryEntry]:
+        """List entries from specified tier; limited."""
         return await self._layer(memory_type).list(agent_role, limit=limit)
 
     async def clear(
-        self, agent_role: str, *, memory_type: MemoryType | str,
+        self, agent_role: str, *, memory_type: MemoryType | str
     ) -> int:
+        """Clear all entries from specified tier; returns count."""
         count = await self._layer(memory_type).clear(agent_role)
         log.info("clear(%s, %s): removed %d", agent_role, memory_type, count)
         return count
