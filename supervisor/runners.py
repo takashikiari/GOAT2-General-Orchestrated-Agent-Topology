@@ -7,6 +7,7 @@ tools based on task intent, not regex keyword matching.
 """
 from __future__ import annotations
 import logging
+from typing import Final
 from config.settings import settings
 from supervisor.types import AgentTask, AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
@@ -14,6 +15,17 @@ from supervisor.tool_runner import _call_with_tools
 
 log = logging.getLogger("goat2.runners")
 __all__ = ["_run_researcher", "_run_coder", "_run_critic", "_run_summarizer", "_run_tool_caller"]
+
+
+def _dedupe_tools(tools: list) -> list:
+    """Remove duplicate tools by name, keeping first occurrence. Pure helper."""
+    seen: set[str] = set()
+    result: list = []
+    for t in tools:
+        if t.name not in seen:
+            seen.add(t.name)
+            result.append(t)
+    return result
 
 
 async def _run_researcher(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
@@ -119,6 +131,7 @@ async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult])
 
     All tools available: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
     tool_choice='auto' allows the model to select tools based on true intent.
+    Tools are deduplicated by name before sending to API to prevent HTTP 400 errors.
     """
     from tools import FILE_TOOLS, WEB_SEARCH, MEMORY_TOOLS
     spec = settings.agents.get("tool_caller")
@@ -136,8 +149,9 @@ async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult])
             "Evaluate task semantics to decide which tools are needed — do not wait for explicit commands.")},
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
-    _tools = FILE_TOOLS + MEMORY_TOOLS + [WEB_SEARCH]
-    log.debug("tool_caller: tools=%s (semantic selection)", [t.name for t in _tools])
+    # Deduplicate tools by name to prevent HTTP 400 "Tool names must be unique" errors
+    _tools = _dedupe_tools(FILE_TOOLS + MEMORY_TOOLS + [WEB_SEARCH])
+    log.debug("tool_caller: tools=%s (semantic selection, deduped)", [t.name for t in _tools])
     r = await _call_with_tools(spec, msgs, _tools, tool_choice="auto")
     task.source = r.source
     return r.content
