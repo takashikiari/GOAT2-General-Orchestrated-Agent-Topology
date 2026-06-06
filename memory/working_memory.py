@@ -41,4 +41,5 @@ class WorkingMemoryLayer(
         self._sweep_task = None
 
 
-working_memory = WorkingMemoryLayer()
+from memory.redis_backend import RedisBackend
+working_memory = WorkingMemoryLayer(backend=RedisBackend())

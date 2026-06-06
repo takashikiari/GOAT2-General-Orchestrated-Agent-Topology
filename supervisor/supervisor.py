@@ -146,6 +146,9 @@ class GoatSupervisor:
                              critique=critique, summary=summary, total_duration_s=total,
                              sources=sources, metadata_summary=metadata)
         self._history.add_assistant(r.summary)
+        if self.memory_manager:
+            from supervisor.session import store_turn
+            await store_turn(self.memory_manager, len(self._history.messages), intent, r.summary)
         return r
 
     async def finalize_session(self) -> None:

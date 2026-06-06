@@ -23,9 +23,16 @@ PLANNER_SYSTEM: Final[str] = (
     "  - Use depends_on to model data flow (downstream tasks receive upstream outputs)\n"
     "  - Always include a final summarizer task that depends on all other tasks\n"
     "  - Keep tasks atomic and role-appropriate\n"
-    "  - 2–8 tasks total\n"
+    "  - 2-8 tasks total\n"
     "  - Decompose ONLY the current user intent. Ignore previous assistant responses.\n"
-    "  - Do NOT use prior DAG results (web search, file reads) as input for new tasks."
+    "  - Do NOT use prior DAG results (web search, file reads) as input for new tasks.\n"
+    "  - Memory tier mapping (ALWAYS use role=tool_caller with memory tools, NEVER file search):\n"
+    "    * redis / working memory: memory_recent(tier=working)\n"
+    "    * chromadb / episodic memory: memory_recent(tier=episodic)\n"
+    "    * letta / long term memory: memory_recent(tier=long_term)\n"
+    "    * memory check: use memory_recent, memory_search, memory_get tools\n"
+    "  - researcher role is ONLY for external web search, never for internal memory or files\n"
+    "  - tool_caller role handles file operations AND memory queries\n"
 )
 
 
@@ -72,3 +79,4 @@ async def _run_planner(task: AgentTask, dep_results: dict[str, AgentResult]) -> 
         ],
         json_mode=True,
     )
+
