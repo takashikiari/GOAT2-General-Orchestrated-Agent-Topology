@@ -20,7 +20,7 @@ from memory.working_memory import WorkingMemoryLayer, working_memory as _default
 
 if TYPE_CHECKING:
     from memory.router import MemoryRouter
-    from memory.types import AgentRole, MemoryEntry
+    from memory.types import AgentRole, MemoryEntry, MemoryLayer
 
 log = logging.getLogger("goat2.memory.manager")
 
