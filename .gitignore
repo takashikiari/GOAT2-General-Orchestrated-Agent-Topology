@@ -1,2 +1,74 @@
-.aider*
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.tox/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.pytype/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables (NEVER commit secrets)
 .env
+.env.local
+.env.*.local
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# GOAT 2.0 specific
+chroma_db/
+storage/
+*.log
+goat2.tool_calls.structured.log
+
+# Aider chat history
+.aider*
+
+# OS files
+.DS_Store
+Thumbs.db
