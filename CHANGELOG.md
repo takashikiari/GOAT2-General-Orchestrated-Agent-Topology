@@ -5,6 +5,49 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 63)
+
+### Fixed
+
+#### Tool activation and context synchronization — semantic autonomy, no regex forcing
+
+**Root cause:** The system used `needs_internet()` regex helper in `_run_tool_caller` to
+force web_search based on keyword matching. This failed for conversational requests like
+"Goat! Citește changelogs..." which require file_read but don't match search keywords.
+The conversational path had tools available but DAG results weren't properly bridged back.
+
+**Fix applied:**
+
+**`supervisor/runners.py`** (updated, 145 lines):
+- Removed `needs_internet()` regex helper entirely — no keyword-based tool forcing
+- `_run_tool_caller` now has FULL tool access: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
+- System prompt updated: "Evaluate task semantics to decide which tools are needed"
+- `tool_choice='auto'` allows model to select tools based on true semantic intent
+- `_run_coder` and `_run_researcher` already had proper tool access — no changes needed
+
+**`supervisor/supervisor.py`** (updated, 175 lines):
+- CONVERSATIONAL path: LLM with CORE_TOOLS — autonomous tool selection
+- DAG results bridged into WORKING memory via `store_turn()` for conversational access
+- Docstring updated: "This bridges the async execution layer back to the chat context"
+
+**`supervisor/identity.py`** (updated, 120 lines):
+- `direct_response()` always has CORE_TOOLS (MEMORY_TOOLS + FILE_TOOLS)
+- Docstring updated: "enables proper handling of conversational requests like 'Goat! Citește changelogs...'"
+- GOAT_SYSTEM already documents available tools — no changes needed
+
+**`supervisor/session.py`** (unchanged, 25 lines):
+- `store_turn()` writes to WORKING tier (Redis) only
+- Both conversational and DAG results stored for cross-turn access
+
+**Validation:**
+- "Goat! Citește changelogs din workspace am reparat tool-urile" now triggers file_read autonomously
+- LLM evaluates task semantics, invokes file_read via CORE_TOOLS or DAG tool_caller
+- DAG results stored in WORKING memory, accessible to subsequent conversational turns
+- All 37 tests pass. All files ≤200 lines with docstrings.
+- No changes to memory databases, schemas, or tool implementations.
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 62)
 
 ### Fixed

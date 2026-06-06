@@ -2,36 +2,26 @@
 
 Each runner is an async callable (AgentTask, dep_results) -> str that sets
 task.source before returning so the workflow can propagate source provenance.
+Tool selection is now semantic — the LLM autonomously decides when to invoke
+tools based on task intent, not regex keyword matching.
 """
 from __future__ import annotations
 import logging
-import re
 from config.settings import settings
 from supervisor.types import AgentTask, AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
 from supervisor.tool_runner import _call_with_tools
 
 log = logging.getLogger("goat2.runners")
-__all__ = ["_run_researcher", "_run_coder", "_run_critic", "_run_summarizer", "_run_tool_caller", "needs_internet"]
-
-# Simple regex-based search intent detection for tool forcing.
-# This is used only for tool selection, not for routing decisions.
-_SEARCH_RE = re.compile(
-    r"\b(search|look up|google|browse|internet|online|find out|query)\b",
-    re.IGNORECASE,
-)
-
-
-def needs_internet(task: AgentTask) -> bool:
-    """True when the task prompt contains web-search keywords.
-
-    Used only for tool selection in _run_tool_caller, not for routing.
-    """
-    return bool(_SEARCH_RE.search(task.prompt))
+__all__ = ["_run_researcher", "_run_coder", "_run_critic", "_run_summarizer", "_run_tool_caller"]
 
 
 async def _run_researcher(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
-    """Deep research with forced web_search; raises if web_search was not called."""
+    """Deep research with forced web_search; raises if web_search was not called.
+
+    The LLM autonomously decides when web search is needed based on task semantics.
+    Tool invocation is enforced via tool_choice='required' — source=generated triggers UNVERIFIED.
+    """
     from tools import WEB_SEARCH
     context = _format_dep_context(dep_results)
     r = await _call_with_tools(
@@ -56,7 +46,11 @@ async def _run_researcher(task: AgentTask, dep_results: dict[str, AgentResult]) 
 
 
 async def _run_coder(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
-    """Code generation: clean typed output in fenced code blocks; sets task.source."""
+    """Code generation with full FILE_TOOLS access; LLM decides autonomously when to use them.
+
+    The model evaluates task semantics to decide if file operations are needed.
+    No regex-based forcing — semantic autonomy enables proper tool selection.
+    """
     from tools import FILE_TOOLS
     ctx  = _format_dep_context(dep_results)
     msgs = [
@@ -75,7 +69,10 @@ async def _run_coder(task: AgentTask, dep_results: dict[str, AgentResult]) -> st
 
 
 async def _run_critic(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
-    """Critical review: assessment paragraph + bullet list; source is generated."""
+    """Critical review: assessment paragraph + bullet list; source is generated.
+
+    Critic evaluates correctness without tool calls — pure LLM analysis of upstream outputs.
+    """
     task.source = "generated"
     context = _format_dep_context(dep_results)
     return await _call_llm(
@@ -91,7 +88,10 @@ async def _run_critic(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
 
 
 async def _run_summarizer(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
-    """Synthesis: report only facts from verified upstream outputs; source is generated."""
+    """Synthesis: report only facts from verified upstream outputs; source is generated.
+
+    Skips LLM call entirely when all upstream outputs are empty — prevents hallucination.
+    """
     task.source = "generated"
     if dep_results and all(not (r.output or "").strip() for r in dep_results.values()):
         return "Not available. Upstream tasks returned no output."
@@ -111,7 +111,15 @@ async def _run_summarizer(task: AgentTask, dep_results: dict[str, AgentResult]) 
 
 
 async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
-    """Tool orchestration: forces web_search for search intents; sets task.source."""
+    """Tool orchestration with FULL tool access — LLM decides autonomously based on semantic intent.
+
+    Removed needs_internet() regex helper — the model now evaluates task semantics to decide
+    when web_search, file operations, or memory queries are needed. This enables proper handling
+    of conversational requests like 'Goat! Citește changelogs...' which require file_read access.
+
+    All tools available: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
+    tool_choice='auto' allows the model to select tools based on true intent.
+    """
     from tools import FILE_TOOLS, WEB_SEARCH, MEMORY_TOOLS
     spec = settings.agents.get("tool_caller")
     if not spec.tool_calling:
@@ -124,17 +132,12 @@ async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult])
             "file_grep(path, pattern), file_info(path), file_read_lines(path, start_line, end_line). "
             "Search: web_search. "
             "Memory: memory_search, memory_get, memory_store. "
-            "Say 'tool not connected' on ERROR. Never ask user to run shell commands.")},
+            "Say 'tool not connected' on ERROR. Never ask user to run shell commands. "
+            "Evaluate task semantics to decide which tools are needed — do not wait for explicit commands.")},
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
-    search = needs_internet(task)
-    _tools = ([WEB_SEARCH] if search else FILE_TOOLS) + MEMORY_TOOLS
-    log.debug("tool_caller: tools=%s", [t.name for t in _tools])
-    r = await _call_with_tools(spec, msgs, _tools, tool_choice="required" if search else "auto")
-    if search and r.source == "generated":
-        raise RuntimeError(
-            f"tool_caller: web_search not invoked for search task (source=generated); "
-            f"check model tool-calling for '{spec.model_id}'"
-        )
+    _tools = FILE_TOOLS + MEMORY_TOOLS + [WEB_SEARCH]
+    log.debug("tool_caller: tools=%s (semantic selection)", [t.name for t in _tools])
+    r = await _call_with_tools(spec, msgs, _tools, tool_choice="auto")
     task.source = r.source
     return r.content

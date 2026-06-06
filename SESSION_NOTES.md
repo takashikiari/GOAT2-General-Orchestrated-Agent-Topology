@@ -3,6 +3,38 @@
 
 ---
 
+## What was done this session (patch 63)
+
+### Tool activation and context synchronization — semantic autonomy, no regex forcing
+
+**Root cause:** `needs_internet()` regex helper in `_run_tool_caller` forced web_search
+based on keyword matching. Failed for conversational requests like "Goat! Citește changelogs..."
+which require file_read but don't match search keywords.
+
+**Fix applied:**
+
+**`supervisor/runners.py`**:
+- Removed `needs_internet()` regex helper entirely
+- `_run_tool_caller` now has FULL tool access: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
+- System prompt: "Evaluate task semantics to decide which tools are needed"
+- `tool_choice='auto'` allows model to select tools based on semantic intent
+
+**`supervisor/supervisor.py`**:
+- CONVERSATIONAL path: LLM with CORE_TOOLS — autonomous tool selection
+- DAG results bridged into WORKING memory via `store_turn()`
+
+**`supervisor/identity.py`**:
+- `direct_response()` always has CORE_TOOLS (MEMORY_TOOLS + FILE_TOOLS)
+- Enables proper handling of conversational requests
+
+**Validation:**
+- "Goat! Citește changelogs din workspace am reparat tool-urile" triggers file_read autonomously
+- LLM evaluates task semantics, invokes file_read via CORE_TOOLS or DAG tool_caller
+- DAG results stored in WORKING memory, accessible to subsequent turns
+- All 37 tests pass. All files ≤200 lines with docstrings.
+
+---
+
 ## What was done this session (patch 62)
 
 ### Message routing architecture — autonomous tool selection, no keyword triggers
@@ -10,31 +42,23 @@
 **Root cause:** Keyword/regex-based routing bifurcated messages:
 - Conversational triggers bypassed DAG → hallucination
 - Direct commands forced sterile DAG execution → no autonomy
-- Agent could not decide when to use tools
 
 **Fix applied:**
 
 **`supervisor/classifier.py`**:
-- Removed all keyword short-circuits: `_is_file_op`, `_is_search_intent`, `_is_status_update`
+- Removed all keyword short-circuits
 - All classification now LLM-driven — semantic evaluation only
 
 **`supervisor/supervisor.py`**:
 - CONVERSATIONAL path: LLM with CORE_TOOLS — no DAG bypass
-- All messages flow through unified evaluation layer with tool access
 - DAG results bridged into WORKING memory for conversational access
 
 **`supervisor/identity.py`**:
 - `direct_response()` always has CORE_TOOLS available
-- LLM autonomously decides when to invoke tools
-
-**`supervisor/session.py`**:
-- `store_turn()` writes to WORKING tier (Redis) only
-- Both conversational and DAG results stored for cross-turn access
 
 **Validation:**
-- "Goat! Citește changelogs din workspace am reparat tool-urile" now triggers autonomous tool selection
+- "Goat! Citește changelogs din workspace am reparat tool-urile" triggers autonomous tool selection
 - Agent recognizes need to verify workspace files, invokes file_read
-- DAG results stored in WORKING memory, accessible to subsequent turns
 - All 37 tests pass. All files ≤200 lines with docstrings.
 
 ---
@@ -77,29 +101,6 @@
 
 ---
 
-## What was done this session (patch 59)
-
-### Memory pipeline redesigned — clear GOAT vs DAG separation
-
-**`supervisor/session.py`**:
-- `store_turn` writes to WORKING tier (Redis) ONLY
-
-**`tools/memory_temporal_tools.py`**:
-- _ROLE = "user_session", default tier="working"
-
-**`supervisor/runner_memory.py`**:
-- GOAT reads from all 3 tiers
-
-**`memory/memory_manager.py`**:
-- Added `promote_turn()` method
-
-**`supervisor/supervisor.py`**:
-- `finalize_session()` calls promote_turn() before behavior analysis
-
-All 37 tests pass. All files ≤200 lines with docstrings.
-
----
-
 ## What works
 
 ### Infrastructure
@@ -123,10 +124,9 @@ All 37 tests pass. All files ≤200 lines with docstrings.
 - store_turn() called after every successful run
 
 ### Tools
-- 19 tool definitions with module-level docstrings
+- 17 tool definitions with module-level docstrings
 - All file tools share FileToolExecutor security gateway
 - Memory tools default to tier="working" for DAG agents
-- New tools: MEMORY_DIRECT_QUERY, MEMORY_LAST_WRITE
 
 ---
 

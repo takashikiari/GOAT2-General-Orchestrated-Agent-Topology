@@ -1,7 +1,8 @@
 """GOAT 2.0 personality, user profile loading, and conversational response handler.
 
-All conversational responses now have CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) available.
-The LLM autonomously decides when to invoke tools based on semantic intent.
+All conversational responses have CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) available.
+The LLM autonomously decides when to invoke tools based on semantic intent —
+no keyword-based routing, all messages have equal tool access.
 """
 from __future__ import annotations
 
@@ -79,7 +80,9 @@ async def direct_response(
     """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
     The LLM autonomously decides when to invoke tools based on semantic intent.
-    No keyword-based routing — all messages have equal tool access.
+    No keyword-based routing — all messages have equal tool access regardless of formatting.
+    This enables proper handling of conversational requests like 'Goat! Citește changelogs...'
+    which require file_read access even without explicit command syntax.
     """
     from tools import MEMORY_TOOLS, FILE_TOOLS
     sys_msg  = {"role": "system", "content": _system_with_profile(profile, summary, style)}

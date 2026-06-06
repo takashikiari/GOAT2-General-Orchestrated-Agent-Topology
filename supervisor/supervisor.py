@@ -1,6 +1,6 @@
 """GOAT 2.0 top-level orchestrator — unified message handling with autonomous tool selection.
 
-All user messages now flow through the same evaluation layer. The LLM autonomously
+All user messages flow through the same evaluation layer. The LLM autonomously
 decides when to invoke DAG/tools based on semantic intent, not keyword triggers.
 DAG results are bridged into WORKING memory for conversational path access.
 """
@@ -44,7 +44,11 @@ _REASON_LABELS: dict[str, str] = {
 
 
 def _unverified_summary(results: dict, val_statuses: list) -> str:
-    """Return a factual failure message when synthesis is skipped."""
+    """Return a factual failure message when synthesis is skipped.
+
+    Describes only what was attempted and which tasks failed — no content is
+    generated or inferred. Every word is derived from AgentResult metadata.
+    """
     parts = []
     for s in val_statuses:
         if not s.safe:
@@ -86,11 +90,12 @@ class GoatSupervisor:
     async def run(self, intent: str) -> SupervisorResult:
         """Unified message handling — all intents evaluated semantically with tool access.
 
-        CONVERSATIONAL: LLM with CORE_TOOLS (file/memory access) — no DAG bypass.
+        CONVERSATIONAL: LLM with CORE_TOOLS (file/memory access) — autonomous tool selection.
         ANALYTICAL: Lightweight DAG (≤2 tasks) with tool execution.
         COMPLEX: Full DAG with planner, researcher, critic, synthesizer.
 
         DAG results are stored in WORKING memory for subsequent conversational access.
+        This bridges the async execution layer back to the chat context.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -161,6 +166,7 @@ class GoatSupervisor:
         self._history.add_assistant(r.summary)
 
         # Bridge DAG results into WORKING memory for conversational path access
+        # This ensures disk contents fetched by DAG are available to subsequent turns
         if self.memory_manager:
             from supervisor.session import store_turn
             await store_turn(self.memory_manager, len(self._history.messages), intent, r.summary)
