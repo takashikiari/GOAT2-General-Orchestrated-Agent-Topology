@@ -13,7 +13,7 @@ from agents.base_agent import ToolDefinition
 
 __all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_DEBUG_TRACE"]
 
-_ROLE = "goat"
+_ROLE = "user_session"
 _ANY_TIERS = ("any", "working", "episodic", "long_term")
 
 
