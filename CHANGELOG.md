@@ -5,6 +5,91 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 59)
+
+### Changed
+
+#### Memory pipeline redesigned — clear GOAT vs DAG separation
+
+**Root cause:** Confusion between namespaces and roles — DAG and GOAT used different
+_ROLE values, memory_recent searched wrong namespace, store_turn wrote to one namespace
+but tools read another.
+
+**New design:**
+- **GOAT (supervisor)**: Direct memory_manager access to all 3 tiers (WORKING/EPISODIC/LONG_TERM)
+  - Uses role="goat" for its own context and state
+  - Uses role="user_session" for session turns
+  - Reads recent turns, session context, user profile directly — no tool calls needed
+- **DAG (agents)**: Memory tools with tier="working" (Redis) only
+  - Writes execution results to role="user_session" WORKING tier only
+  - Reads ONLY from Redis (working memory) for current session context
+  - Does NOT read from ChromaDB or Letta directly — GOAT handles long-term recall
+
+**Fixes applied:**
+
+**`supervisor/session.py`**:
+- `store_turn` now writes to WORKING tier (Redis) ONLY with role="user_session"
+- Removed EPISODIC and LONG_TERM writes — GOAT supervisor handles promotion via promote_turn()
+- Docstring updated to clarify DAG agents should not write to ChromaDB/Letta
+
+**`tools/memory_temporal_tools.py`**:
+- _ROLE = "user_session" (consistent with store_turn)
+- memory_recent default tier="working" (Redis only for DAG agents)
+- memory_timeline default tier="working" (Redis only for DAG agents)
+- Docstrings clarify DAG vs GOAT usage patterns
+
+**`supervisor/runner_memory.py`**:
+- GOAT reads from all 3 tiers using role="goat" and role="user_session"
+- Tier 1: WORKING (Redis) — current session turns
+- Tier 2: EPISODIC (ChromaDB) — recent history
+- Tier 3: LONG_TERM (Letta) — persistent rules with role="goat"
+- Returns error with source="generated" if no memory found (triggers UNVERIFIED)
+
+**`memory/memory_manager.py`**:
+- Added `promote_turn(turn_key, content)` method
+- Moves important turns from Redis (WORKING) to ChromaDB (EPISODIC) at session end
+- Called by finalize_session() in supervisor
+
+**`supervisor/supervisor.py`**:
+- `finalize_session()` now calls promote_turn() before behavior analysis
+- Promotes all session turns from Redis to ChromaDB for cross-session recall
+- Docstring updated to document the 2-step process (promote + analyze)
+
+All 37 tests pass. All files remain ≤200 lines with docstrings.
+
+---
+
+## [Unreleased] — 2026-06-06 (patch 58)
+
+### Fixed
+
+#### Planner memory tier mapping — redis/working memory queries use memory tools not file search
+
+**Root cause:** When users asked about "redis", "working memory", "chromadb", or "letta",
+the planner didn't know these refer to memory tiers and would spawn file search tasks
+instead of memory tool calls.
+
+**Fix applied:**
+
+**`supervisor/planner.py`**:
+- `PLANNER_SYSTEM` updated with explicit memory tier mappings:
+  - "redis" or "working memory" → tool_caller with memory_recent(tier=working)
+  - "chromadb" or "episodic memory" → tool_caller with memory_recent(tier=episodic)
+  - "letta" or "long term memory" → tool_caller with memory_recent(tier=long_term)
+- Added explicit rule: "Memory checks use memory tools (memory_recent, memory_search, memory_get)"
+- Added explicit rule: "File search (file_search, file_read) is ONLY for workspace files, not memory"
+- These rules prevent the planner from confusing memory tier queries with file operations.
+
+**Key prefix verification:**
+- Verified `memory/redis_conn.py` uses `goat2:working:` prefix in `_rkey()`
+- Verified `memory/working_crud.py` passes `agent_role` namespace consistently to backend
+- Verified `supervisor/session.py` stores turns to WORKING tier (in addition to EPISODIC/LONG_TERM)
+- No prefix mismatch found — keys are consistent across write and read paths.
+
+All 37 tests pass. File remains ≤200 lines with docstrings.
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 57)
 
 ### Fixed

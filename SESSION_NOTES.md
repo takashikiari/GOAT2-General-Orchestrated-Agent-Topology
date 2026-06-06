@@ -3,6 +3,80 @@
 
 ---
 
+## What was done this session (patch 59)
+
+### Memory pipeline redesigned — clear GOAT vs DAG separation
+
+**Root cause:** Confusion between namespaces and roles — DAG and GOAT used different
+_ROLE values, memory_recent searched wrong namespace, store_turn wrote to one namespace
+but tools read another.
+
+**New design:**
+- **GOAT (supervisor)**: Direct memory_manager access to all 3 tiers
+  - Uses role="goat" for its own context and state
+  - Uses role="user_session" for session turns
+  - Reads recent turns, session context, user profile directly — no tool calls needed
+- **DAG (agents)**: Memory tools with tier="working" (Redis) only
+  - Writes execution results to role="user_session" WORKING tier only
+  - Reads ONLY from Redis (working memory) for current session context
+  - Does NOT read from ChromaDB or Letta directly — GOAT handles long-term recall
+
+**Fixes applied:**
+
+**`supervisor/session.py`**:
+- `store_turn` now writes to WORKING tier (Redis) ONLY with role="user_session"
+- Removed EPISODIC and LONG_TERM writes — GOAT supervisor handles promotion via promote_turn()
+
+**`tools/memory_temporal_tools.py`**:
+- _ROLE = "user_session" (consistent with store_turn)
+- memory_recent default tier="working" (Redis only for DAG agents)
+- memory_timeline default tier="working" (Redis only for DAG agents)
+
+**`supervisor/runner_memory.py`**:
+- GOAT reads from all 3 tiers using role="goat" and role="user_session"
+- Tier 1: WORKING (Redis) — current session turns
+- Tier 2: EPISODIC (ChromaDB) — recent history
+- Tier 3: LONG_TERM (Letta) — persistent rules with role="goat"
+
+**`memory/memory_manager.py`**:
+- Added `promote_turn(turn_key, content)` method
+- Moves important turns from Redis (WORKING) to ChromaDB (EPISODIC) at session end
+
+**`supervisor/supervisor.py`**:
+- `finalize_session()` now calls promote_turn() before behavior analysis
+- Promotes all session turns from Redis to ChromaDB for cross-session recall
+
+All 37 tests pass. All files ≤200 lines with docstrings.
+
+---
+
+## What was done this session (patch 58)
+
+### Planner memory tier mapping — redis/working memory queries use memory tools not file search
+
+**Root cause:** When users asked about "redis", "working memory", "chromadb", or "letta",
+the planner didn't know these refer to memory tiers and would spawn file search tasks
+instead of memory tool calls.
+
+**Fix applied:**
+
+**`supervisor/planner.py`**:
+- `PLANNER_SYSTEM` updated with explicit memory tier mappings:
+  - "redis" or "working memory" → tool_caller with memory_recent(tier=working)
+  - "chromadb" or "episodic memory" → tool_caller with memory_recent(tier=episodic)
+  - "letta" or "long term memory" → tool_caller with memory_recent(tier=long_term)
+- Added explicit rule: "Memory checks use memory tools (memory_recent, memory_search, memory_get)"
+- Added explicit rule: "File search (file_search, file_read) is ONLY for workspace files, not memory"
+
+**Key prefix verification:**
+- Verified `memory/redis_conn.py` uses `goat2:working:` prefix in `_rkey()`
+- Verified `memory/working_crud.py` passes `agent_role` namespace consistently to backend
+- No prefix mismatch found — keys are consistent across write and read paths.
+
+All 37 tests pass. File ≤200 lines with docstrings.
+
+---
+
 ## What was done this session (patch 57)
 
 ### Letta human block garbage accumulation — strict ALLOWED_KEYS whitelist
@@ -22,13 +96,10 @@ that corrupted planner context and caused spurious task triggering.
   - explicit + non-whitelisted → ChromaDB episodic with 7-day TTL
   - inferred + whitelisted → ChromaDB episodic with 7-day TTL
   - inferred + non-whitelisted → discarded entirely
-- `_merge()` function updated to filter by ALLOWED_KEYS before overlaying new pairs.
-- New `_store_in_chroma()` helper for non-whitelisted explicit facts.
 
 **`memory/pollution_guard.py`**:
 - Added same `_ALLOWED_KEYS` frozenset whitelist.
-- `validate_fact()` now blocks any key not in ALLOWED_KEYS regardless of kind (explicit/inferred).
-- This provides defence-in-depth — even if info_extract sends a non-whitelisted key, guard blocks it.
+- `validate_fact()` now blocks any key not in ALLOWED_KEYS regardless of kind.
 
 Both files ≤200 lines with docstrings. All 37 tests pass.
 
@@ -48,13 +119,11 @@ queries). The planner saw these as new intent and spawned duplicate tasks.
 - `as_context()` now filters to user turns only (`m["role"] == "user"`).
 - Added new method `as_full_context()` that returns all turns for display/memory only.
 - `as_plan_context()` uses `as_context()` (user-only) for planning context.
-- Docstrings clarify that assistant results must NOT influence task decomposition.
 
 **`supervisor/planner.py`**:
 - `PLANNER_SYSTEM` updated with explicit rules:
   - "Decompose ONLY the current user intent. Ignore previous assistant responses."
   - "Do NOT use prior DAG results (web search, file reads) as input for new tasks."
-- These rules prevent duplicate task spawning when planner sees assistant tool outputs.
 
 All 37 tests pass. Both files ≤200 lines with docstrings.
 
@@ -68,8 +137,6 @@ All 37 tests pass. Both files ≤200 lines with docstrings.
 - `_TOKEN` now resolves via: `TELEGRAM_TOKEN` env var → `goat.toml` `[channels].telegram_token` → error.
 - Uses `os.environ.get("TELEGRAM_TOKEN")` first, falls back to `load_toml().channel_str("telegram_token")`.
 - `build_app()` raises `RuntimeError` with clear message if neither source provides a token.
-- Module docstring updated to document the resolution order.
-- This allows operators to keep `goat.toml` clean of secrets while using environment variables in production.
 
 All 37 existing tests pass. No imports broken. File remains ≤200 lines with docstrings.
 
@@ -87,20 +154,16 @@ Already implemented in a previous patch (lines 92-100). Confirmed present — no
 **P2 — GOAT hallucinates when lacking facts**
 `supervisor/supervisor.py`:
 - `_unverified_summary` now appends `via {tool_name}` to each failure entry when a tool
-  was identified (net_error, empty_file_read cases), e.g. `"researcher via web_search: web
-  search returned an error"`. Uses existing `AgentResult.tool_name` field.
+  was identified (net_error, empty_file_read cases).
 - After `synthesize_results`: if summary is empty/whitespace, GOAT sets a factual fallback
-  `"Not available. Tools called: {tools}. No output from synthesis."` — no LLM re-call.
+  listing tools called — no LLM re-call.
 `supervisor/runners.py`:
 - `_run_summarizer`: guard added before the LLM call — if ALL dep_results have empty
-  outputs, returns `"Not available. Upstream tasks returned no output."` immediately.
-  Removes the fallback that previously called the LLM with empty context.
+  outputs, returns immediately without calling LLM.
 
-**P3 — Response discipline at all times (not just tool failures)**
-`supervisor/identity.py`: `GOAT_SYSTEM` updated from `"No filler, no preamble, no sign-offs"`
-to `"No filler, no preamble, no apologies, no sign-offs"` — explicit no-apologies rule.
-`supervisor/critique.py`: synthesis prompt updated to include `"No apologies."` alongside
-the existing no-headers, no-questions rules.
+**P3 — Response discipline at all times**
+`supervisor/identity.py`: `GOAT_SYSTEM` updated to include `"no apologies"`.
+`supervisor/critique.py`: synthesis prompt updated to include `"No apologies."`
 
 ---
 
@@ -111,25 +174,18 @@ the existing no-headers, no-questions rules.
 All modified files ≤200 lines. New file (content_filter.py) ≤90 lines. 37 tests pass.
 
 **P1 — Empty Telegram message**
-`telegram_bot.py`: strip + validate `result.summary` before `reply_text`. If empty →
-`"DAG returned empty result. Unverified."` prevents 400 Bad Request from Telegram API.
+`telegram_bot.py`: strip + validate `result.summary` before `reply_text`.
 
 **P2 — Hallucination on missing file content**
-`dag_validator.py`: added `_is_empty_file_read` (source=file + tool_called=True + empty output).
-`supervisor.py`: reason `"empty_file_read"` → specific summary `"File read confirmed but content
-not received. Unverified."` skips synthesis entirely so GOAT cannot hallucinate file content.
+`dag_validator.py`: added `_is_empty_file_read`.
+`supervisor.py`: reason `"empty_file_read"` → specific summary.
 
 **P3 — Sensitive content leaking to Telegram**
 New `supervisor/interfaces/content_filter.py`: `mask_sensitive(text)` two-stage filter.
-Stage 1: if ≥2 ALL_CAPS KEY=value lines or sensitive path (.env, api_keys, secrets) detected →
-mask ALL env-style key=value pairs (line-start and inline). Stage 2: always mask values next to
-credential key names (api_key, secret, password, token, credential, private_key). Applied in
-`telegram_bot.py` to every outgoing message before `reply_text`.
 
 **P4 — Missing source label blocks DAG execution**
-`task_prep.py`: `prepare_tasks` pre-sets `task.source = "planner"` for tasks with empty source.
-`workflow.py`: source-related validation issues now raise `ValueError` (blocking execution) instead
-of `log.warning`. Other structural issues continue to warn without blocking.
+`task_prep.py`: `prepare_tasks` pre-sets `task.source = "planner"`.
+`workflow.py`: source-related validation issues now raise `ValueError`.
 
 ---
 
@@ -140,118 +196,48 @@ of `log.warning`. Other structural issues continue to warn without blocking.
 Five interlinked fixes applied to prevent DAG agents from hallucinating results under
 `source='generated'`. All modified files ≤200 lines. 37 existing tests pass.
 
-**Root cause:** DAG agents were returning `source='generated'` on execution tasks (researcher,
-memory) because the runner had no check after `_call_with_tools`, and the dag_validator only
-checked net errors and stale memory — it never validated that execution roles actually called tools.
-
 **Fixes applied:**
 
-- `supervisor/types.py`: `AgentResult` gains `tool_called: bool`, `tool_name: str`,
-  `raw_output_hash: str` (all with safe defaults, backward-compatible). `to_dict()` includes them.
-
-- `supervisor/workflow.py`: Populates `tool_called`, `tool_name`, `raw_output_hash` when
-  building `AgentResult` after each task completes. `_SOURCE_TOOL` dict maps source → tool name.
-
-- `supervisor/dag_validator.py`: Rewritten with `_EXECUTION_ROLES` (researcher, memory) and
-  `_ROLE_ALLOWED_SOURCES` (whitelist per role). `_is_unverified_execution` checks
-  `tool_called=False` on execution roles. `_is_source_violation` checks source against whitelist.
-  Priority order: `unverified_execution > source_violation > net_error > stale_memory`.
-
-- `supervisor/runners.py`: `_run_researcher` and `_run_tool_caller` raise `RuntimeError` when
-  `_call_with_tools` returns `source='generated'` on tasks that required a tool call.
-
-- `supervisor/runner_memory.py`: Tier 3 LLM distillation removed. When no memory is found
-  in Tier 1 or Tier 2, runner returns `"ERROR: no memory results"` (never generated content).
-  Unused imports cleaned up.
-
-- `supervisor/supervisor.py`: Collects unsafe `val_statuses` from `validate_results`; logs each
-  with `task_id` and `reason`; sets `summary = "Unverified"` if any node failed source validation.
-
----
-
-## What was done last session (patch 49)
-
-### Docstrings added to all tool files (patch 49) — previous session
-
-Every file in `tools/` received a standard English module-level docstring describing
-its purpose and primary functionality. Six files modified:
-
-- `tools/__init__.py` — "Tool registry — exports all tool definitions and convenience groupings"
-- `tools/calculator.py` — "Safe arithmetic expression evaluator using AST parsing"
-- `tools/memory_temporal_tools.py` — "Temporal memory query tools — timeline, recent, and debug trace"
-- `tools/memory_tools.py` — "Memory CRUD tools — search, get, and store across memory tiers"
-- `tools/think.py` — "Chain-of-thought reasoning tool — records a private reasoning step"
-- `tools/web_search.py` — "Web search tool — queries DuckDuckGo instant answers (or custom backend)"
-
-No functional code was changed — only docstrings were added.
-
-### `file_storage_service.py` refactored
-
-Rewritten to under 200 lines by importing shared helpers from `file_storage_helpers.py`:
-
-- `FileStorageService` — abstract base class with `save`/`read`/`read_stream`/`delete`/`exists`/`size`/`list_keys`
-- `LocalFileStorage` — filesystem backend with path traversal protection
-- `S3FileStorage` — S3-compatible object storage backend (optional)
-- `get_storage_backend()` — factory function selecting backend via config/env
-
-Path resolution, error types (`FileStorageError`), and factory logic moved to
-`file_storage_helpers.py`.
-
-### Documentation files updated
-
-- **`readme.md`** — created with sections on the tools module, tool inventory (15 tools),
-  fixes applied (docstrings, refactor), convenience groups, and security
-- **`modul/changelog.md`** — created with entry for patch 49 (docstrings + refactor)
-- **`SESSION_NOTES.md`** — updated with this session's work
+- `supervisor/types.py`: `AgentResult` gains `tool_called`, `tool_name`, `raw_output_hash`.
+- `supervisor/workflow.py`: Populates new fields when building `AgentResult`.
+- `supervisor/dag_validator.py`: Rewritten with `_EXECUTION_ROLES` and `_ROLE_ALLOWED_SOURCES`.
+- `supervisor/runners.py`: `_run_researcher` and `_run_tool_caller` raise on source='generated'.
+- `supervisor/runner_memory.py`: Tier 3 LLM distillation removed.
+- `supervisor/supervisor.py`: Collects unsafe `val_statuses`, sets `summary = "Unverified"`.
 
 ---
 
 ## What works
 
 ### Infrastructure
-- **Redis auto-detection** — `cli.py` pings Redis on startup; uses `RedisBackend` if up,
-  `DictBackend` otherwise. Message printed clearly to stdout.
-- **ChromaDB telemetry** — posthog noise suppressed at `CRITICAL` logger level in
-  `chromadb_base.py`; `Settings(anonymized_telemetry=False)` also passed for future versions.
+- **Redis auto-detection** — `cli.py` pings Redis on startup; uses `RedisBackend` if up.
+- **ChromaDB telemetry** — posthog noise suppressed at `CRITICAL` logger level.
 
 ### 3-layer memory (`memory/`)
-- **Working** — `WorkingMemoryLayer` with `DictBackend` (in-process, TTL 1 h) or
-  `RedisBackend` (server-side TTL, drop-in swap).
-- **Episodic** — `ChromaMemoryClient` (ChromaDB 1.1.1, cosine HNSW, `all-MiniLM-L6-v2`).
-- **Long-term** — `LettaClient` → Letta 0.16.8. Agent creation fixed:
-  - Payload: `name` + `model` (`openai/gpt-4o-mini`) + `memory_blocks`.
-  - Block labels aligned to Letta defaults: `"persona"` (agent) and `"human"` (user).
-  - `get_block("goat", "human")` reads user profile correctly.
-  - Graceful fallback to `_InContextFallback` when Letta is unreachable.
+- **Working** — `WorkingMemoryLayer` with `DictBackend` or `RedisBackend`.
+- **Episodic** — `ChromaMemoryClient` (ChromaDB 1.1.1, cosine HNSW).
+- **Long-term** — `LettaClient` → Letta 0.16.8 with graceful fallback.
 
 ### Supervisor (`supervisor/`)
-- **Intent classifier** — `classify_intent()` via gpt-4o-mini: routes to
-  `CONVERSATIONAL` / `ANALYTICAL` / `COMPLEX` in one cheap LLM call.
-- **Conversational** — `direct_response()` with GOAT identity + user profile; no DAG,
-  no planner. Response in ~2 s.
+- **Intent classifier** — `classify_intent()` via gpt-4o-mini.
+- **Conversational** — `direct_response()` with GOAT identity + user profile.
 - **Analytical** — planner gets `[Lightweight: ≤2 tasks, no researcher]` hint.
 - **Complex** — full DAG: planner → wave execution → critique → synthesize.
-- **Session persistence** — each turn stored to ChromaDB (`user_session` role);
-  loaded and prepended to planner context on next turn.
+- **Session persistence** — turns stored to WORKING, promoted to EPISODIC at session end.
 - **User profile** — lazy-loaded from Letta `"human"` block on first `run()`.
 
 ### CLI (`cli.py`)
 - Async chat loop, single `GoatSupervisor` instance across turns.
-- Clear backend banner on startup (`Working memory: RedisBackend` / `DictBackend`).
 - `store_turn()` called after every successful run.
 
 ### Tools (`tools/`)
-- 15 tool definitions: `THINK`, `CALCULATOR`, `WEB_SEARCH`, `FILE_READ`, `FILE_WRITE`,
-  `FILE_CREATE`, `FILE_LIST`, `FILE_SEARCH`, `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE`,
-  `MEMORY_TIMELINE`, `MEMORY_RECENT`, `MEMORY_DEBUG_TRACE`.
+- 17 tool definitions with module-level docstrings.
 - All file tools share `FileToolExecutor` security gateway.
-- All tools have module-level docstrings.
+- Memory tools default to tier="working" for DAG agents.
 
 ---
 
 ## Known limitations
-- Letta long-term memory only works when the Letta server is running locally
-  (`http://localhost:8283`). Falls back silently otherwise.
-- Groq API key not configured — `summarizer` and `critic` runners default to
-  `gpt-4o-mini` via env override (`AGENT_SUMMARIZER_MODEL`, `AGENT_CRITIC_MODEL`).
+- Letta long-term memory only works when the Letta server is running locally.
+- Groq API key not configured — `summarizer` and `critic` default to gpt-4o-mini.
 - No persistent git history yet; all changes tracked in `CHANGELOG.md`.
