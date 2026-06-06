@@ -1,3 +1,8 @@
+"""Letta archival-memory retrieve and search operations.
+
+Both functions use the agent-scoped path /v1/agents/{agent_id}/archival-memory.
+Global archival-memory endpoints are never used — they 404 without an agent ID.
+"""
 from __future__ import annotations
 
 import logging
@@ -15,6 +20,12 @@ async def do_retrieve(
     probe: LettaHealthProbe, registry: LettaAgentRegistry,
     fallback: _InContextFallback, agent_role: AgentRole, key: MemoryKey,
 ) -> MemoryEntry | None:
+    """Retrieve a single passage by exact key from archival-memory.
+
+    Searches GET /v1/agents/{agent_id}/archival-memory?search=[KEY:{key}]
+    and returns the first passage whose parsed key matches exactly.
+    Falls back to _InContextFallback on any error.
+    """
     try:
         agent_id = await registry.get_agent_id(agent_role)
         http     = await probe.get_http()
@@ -38,9 +49,12 @@ async def do_search(
     fallback: _InContextFallback, agent_role: AgentRole,
     query: str, limit: int, tags: list[str] | None,
 ) -> list[MemoryEntry]:
-    """Keyword search via GET /archival-memory?search={word}. Semantic search is not used
-    because Letta agents have no embedding configured — adding one breaks archival-memory
-    POST with a 500 when the Letta server cannot reach the embedding API."""
+    """Keyword search via GET /v1/agents/{agent_id}/archival-memory?search={kw}.
+
+    Semantic search is not used because Letta agents have no embedding configured —
+    adding one breaks archival-memory POST with 500 when the embedding API is unreachable.
+    Debug logging at DEBUG level shows agent_id, keyword, HTTP status, and raw body.
+    """
     try:
         agent_id = await registry.get_agent_id(agent_role)
         http     = await probe.get_http()
@@ -48,10 +62,12 @@ async def do_search(
             (w.strip("?.,!;:'\"") for w in query.split() if len(w) > 3),
             key=len, default=query[:30],
         )
+        log.debug("do_search: agent=%s kw=%r limit=%d", agent_id, kw, limit)
         resp = await http.get(
             f"/v1/agents/{agent_id}/archival-memory",
             params={"search": kw, "limit": limit},
         )
+        log.debug("do_search: status=%d body=%.300s", resp.status_code, resp.text[:300])
         resp.raise_for_status()
         return [_passage_to_entry(p, agent_role, query) for p in _extract_passages(resp.json())]
     except Exception as exc:

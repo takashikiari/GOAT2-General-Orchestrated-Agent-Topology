@@ -5,6 +5,52 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 55)
+
+### Fixed
+
+#### Memory recall returning empty results — three-layer fix
+
+**Root causes:**
+1. `supervisor/runner_memory.py` Tier 2 used the wrong Letta endpoint
+   (`/v1/archival-memory/search`, global, 404) instead of the agent-scoped path.
+   It also used the wrong query param (`query`) and parsed a non-existent response key
+   (`memories`).
+2. `memory/letta_registry.py` `_find_or_create` accepted `agents[0]` without verifying
+   the name — when Letta ignores the `name` filter param and returns all agents, the first
+   result could be a different agent (e.g., `goat2-user_session`), causing all memory
+   queries to hit an empty unrelated agent.
+3. `memory/letta_ops_retrieve.py` had no debug logging, making it impossible to see what
+   keyword was sent and what Letta returned.
+
+**`supervisor/runner_memory.py`**:
+- Added module docstring.
+- Tier 2 completely rewritten:
+  - `AsyncClient` now uses `base_url=letta.base_url` so relative paths work.
+  - Resolves `goat2-memory` agent ID dynamically: `GET /v1/agents/?name=goat2-memory&limit=5`,
+    then `next((a for a in agents if a.get("name") == "goat2-memory"), None)` for exact match.
+  - Uses correct path `GET /v1/agents/{agent_id}/archival-memory` with `search=kw` param.
+  - Same keyword extraction logic as `do_search` (longest word > 3 chars).
+  - Parses `results` / `passages` response keys (matching `_extract_passages` logic).
+  - `log.debug` lines show agent_id, keyword, HTTP status, and truncated response body.
+
+**`memory/letta_registry.py`**:
+- Added module docstring; added missing docstrings to `__init__`, `_get_lock`, `get_agent_id`,
+  `_find_or_create`.
+- `_find_or_create`: changed `limit=1` → `limit=5`; replaced `agents[0]` acceptance with
+  `next((a for a in agents if a.get("name") == name), None)` — exact name match required.
+  If no match, logs debug and falls through to `_create`.
+
+**`memory/letta_ops_retrieve.py`**:
+- Added module docstring; added docstring to `do_retrieve`.
+- `do_search`: added `log.debug` before the HTTP call (agent_id, kw, limit) and after
+  (HTTP status, first 300 chars of response body). Enables diagnosis when Letta returns
+  empty or unexpected responses.
+
+All 37 existing tests pass. All modified files ≤200 lines with docstrings on every function.
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 54)
 
 ### Fixed

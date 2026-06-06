@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Final
 
 from telegram import Update
@@ -14,7 +15,7 @@ from supervisor.interfaces.content_filter import mask_sensitive
 
 log = logging.getLogger("goat2.telegram")
 
-_TOKEN: Final[str] = load_toml().channel_str("telegram_token")
+_TOKEN: Final[str] = os.environ.get("TELEGRAM_TOKEN") or load_toml().channel_str("telegram_token")
 
 # Per-chat supervisor — each chat keeps its own conversation history.
 _sessions: dict[int, GoatSupervisor] = {}

@@ -3,6 +3,45 @@
 
 ---
 
+## What was done this session (patch 55)
+
+### Memory recall returns empty results — three-file fix
+
+All modified files ≤200 lines. 37 tests pass. No imports broken.
+
+**Root causes diagnosed:**
+1. `runner_memory.py` Tier 2 called `GET /v1/archival-memory/search` (global path → 404).
+   Correct path is `GET /v1/agents/{agent_id}/archival-memory`.
+2. `letta_registry._find_or_create` accepted `agents[0]` without name-checking — Letta
+   may return all agents regardless of the `name` query param; using the first result
+   would bind the "memory" role to the wrong agent (e.g., `goat2-user_session`).
+3. `letta_ops_retrieve.do_search` had no debug logging, making empty results invisible.
+
+**Fixes applied:**
+
+`supervisor/runner_memory.py`:
+- Tier 2 rewritten: resolves agent ID dynamically via `GET /v1/agents/?name=goat2-memory&limit=5`
+  with exact-name filter (`next(a for a in agents if a["name"] == "goat2-memory", None)`).
+- Uses correct path `GET /v1/agents/{agent_id}/archival-memory` with `search=kw` param
+  and keyword extraction identical to `do_search`.
+- Parses `results`/`passages` response keys; added `log.debug` for agent_id, kw, status,
+  and raw response body.
+
+`memory/letta_registry.py`:
+- `_find_or_create`: changed `limit=1` → `limit=5`; replaced `agents[0]` with
+  `next((a for a in agents if a.get("name") == name), None)` — exact name match required.
+- Added module docstring and missing function docstrings.
+
+`memory/letta_ops_retrieve.py`:
+- `do_search`: added `log.debug` before and after the HTTP call (agent, kw, status, body).
+- Added module docstring and `do_retrieve` docstring.
+
+**To diagnose remaining empty-recall issues**, run with `LOG_LEVEL=DEBUG` and check
+`goat2.memory.letta` logger output — it will now show the exact keyword sent to Letta
+and the full raw response (up to 300 chars).
+
+---
+
 ## What was done this session (patch 54)
 
 ### Three hallucination-prevention fixes + response discipline
