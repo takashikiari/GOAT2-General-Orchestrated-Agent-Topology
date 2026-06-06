@@ -104,7 +104,7 @@ class GoatSupervisor:
         plan_ctx = f"[require_source: true]\n{plan_ctx}"
         if depth == IntentDepth.ANALYTICAL:
             hint = ", must include tool_caller for web search" if _is_search_intent(intent) else ""
-            plan_ctx = f"[Lightweight: <=2 tasks, no researcher{hint}]\n{plan_ctx}"
+            plan_ctx = f"[Lightweight: ≤2 tasks, no researcher{hint}]\n{plan_ctx}"
         plan = await decompose_plan(plan_ctx)
         lang  = await prepare_tasks(plan.tasks, self.memory_manager, intent)
         results = await WorkflowGraph(plan.tasks).execute(

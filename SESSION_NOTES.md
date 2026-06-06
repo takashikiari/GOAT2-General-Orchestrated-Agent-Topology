@@ -5,40 +5,16 @@
 
 ## What was done this session (patch 55)
 
-### Memory recall returns empty results — three-file fix
+### Telegram token resolution — env var takes precedence over goat.toml
 
-All modified files ≤200 lines. 37 tests pass. No imports broken.
+**`supervisor/interfaces/telegram_bot.py`**:
+- `_TOKEN` now resolves via: `TELEGRAM_TOKEN` env var → `goat.toml` `[channels].telegram_token` → error.
+- Uses `os.environ.get("TELEGRAM_TOKEN")` first, falls back to `load_toml().channel_str("telegram_token")`.
+- `build_app()` raises `RuntimeError` with clear message if neither source provides a token.
+- Module docstring updated to document the resolution order.
+- This allows operators to keep `goat.toml` clean of secrets while using environment variables in production.
 
-**Root causes diagnosed:**
-1. `runner_memory.py` Tier 2 called `GET /v1/archival-memory/search` (global path → 404).
-   Correct path is `GET /v1/agents/{agent_id}/archival-memory`.
-2. `letta_registry._find_or_create` accepted `agents[0]` without name-checking — Letta
-   may return all agents regardless of the `name` query param; using the first result
-   would bind the "memory" role to the wrong agent (e.g., `goat2-user_session`).
-3. `letta_ops_retrieve.do_search` had no debug logging, making empty results invisible.
-
-**Fixes applied:**
-
-`supervisor/runner_memory.py`:
-- Tier 2 rewritten: resolves agent ID dynamically via `GET /v1/agents/?name=goat2-memory&limit=5`
-  with exact-name filter (`next(a for a in agents if a["name"] == "goat2-memory", None)`).
-- Uses correct path `GET /v1/agents/{agent_id}/archival-memory` with `search=kw` param
-  and keyword extraction identical to `do_search`.
-- Parses `results`/`passages` response keys; added `log.debug` for agent_id, kw, status,
-  and raw response body.
-
-`memory/letta_registry.py`:
-- `_find_or_create`: changed `limit=1` → `limit=5`; replaced `agents[0]` with
-  `next((a for a in agents if a.get("name") == name), None)` — exact name match required.
-- Added module docstring and missing function docstrings.
-
-`memory/letta_ops_retrieve.py`:
-- `do_search`: added `log.debug` before and after the HTTP call (agent, kw, status, body).
-- Added module docstring and `do_retrieve` docstring.
-
-**To diagnose remaining empty-recall issues**, run with `LOG_LEVEL=DEBUG` and check
-`goat2.memory.letta` logger output — it will now show the exact keyword sent to Letta
-and the full raw response (up to 300 chars).
+All 37 existing tests pass. No imports broken. File remains ≤200 lines with docstrings.
 
 ---
 
@@ -133,50 +109,6 @@ checked net errors and stale memory — it never validated that execution roles 
 
 - `supervisor/supervisor.py`: Collects unsafe `val_statuses` from `validate_results`; logs each
   with `task_id` and `reason`; sets `summary = "Unverified"` if any node failed source validation.
-
----
-
-## What was done this session (patch 51)
-
-### Tool wiring audit — FILE_GREP, FILE_INFO, FILE_READ_LINES wired in
-
-Three fully-implemented tool files existed but were never registered:
-- `file_grep.py` → `FILE_GREP` (substring search within a file)
-- `file_info.py` → `FILE_INFO` (file/directory metadata)
-- `file_read_lines.py` → `FILE_READ_LINES` (read a specific line range)
-
-Fixes applied:
-- `tools/__init__.py`: imports + ALL_TOOLS (17) + FILE_TOOLS (9) updated
-- `supervisor/runners.py`: coder + tool_caller prompts list all 9 file tools
-- `supervisor/identity.py`: docstring updated
-- `tools/README.md`, `readme.md`: tool count and tables corrected
-
-All 17 tools verified: valid OpenAI schemas, functional handlers, security checks.
-
----
-
-## What was done this session (patch 50)
-
-### Source tagging, DAG validation, structured logging, auditor, require_source
-
-Five interlinked fixes applied to the supervisor layer. All new files <= 90 lines;
-all modified files <= 200 lines. No existing tests broken (18 memory tests pass).
-
-**New files created:**
-- `supervisor/source_types.py` — `SourceTag`, `TaggedResult`, `TOOL_SOURCE_MAP`, `infer_source`
-- `supervisor/structured_logger.py` — `log_tool_call` (JSON per tool call, separate logger)
-- `supervisor/dag_validator.py` — `validate_results` (net error + stale memory detection)
-- `supervisor/auditor.py` — `run_auditor` (Jaccard cross-tool consistency check)
-
-**Modified files:**
-- `supervisor/tool_runner.py` — `_call_with_tools` returns `TaggedResult`; structured logging added
-- `supervisor/runners.py` — all runners set `task.source`; unpack `TaggedResult`
-- `supervisor/runner_memory.py` — sets `task.source` per memory tier
-- `supervisor/planner.py` — `_run_planner` sets `task.source = "generated"`
-- `supervisor/registry.py` — `make_and_register` inner runner sets `task.source = "generated"`
-- `supervisor/types.py` — `SupervisorResult` gains `sources` and `metadata_summary` fields
-- `supervisor/identity.py` — `direct_response` returns `TaggedResult`; `conv_result` propagates source
-- `supervisor/supervisor.py` — wires all 5 fixes; adds `[require_source: true]` to plan context
 
 ---
 
