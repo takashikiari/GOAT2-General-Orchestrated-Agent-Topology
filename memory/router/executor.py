@@ -1,0 +1,76 @@
+"""Execute a RoutingDecision against memory layers — records per-layer timing."""
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from memory.router.types import (
+    CONF_HIGH, CONF_LOW, LayerName, LayerTiming, Millis, RoutingDecision,
+)
+from memory.types import AgentRole, MemoryEntry, MemoryLayer
+
+__all__ = ["execute_route"]
+
+
+async def _query_layer(
+    layer: MemoryLayer,
+    name: LayerName,
+    role: AgentRole,
+    query: str,
+    limit: int,
+    record: Callable[[LayerTiming], None],
+) -> list[MemoryEntry]:
+    """Call one layer's search, record timing and hit status, return results."""
+    t0 = time.monotonic()
+    try:
+        results: list[MemoryEntry] = await layer.search(role, query, limit=limit, tags=None)
+    except Exception:
+        results = []
+    ms = Millis((time.monotonic() - t0) * 1_000.0)
+    record(LayerTiming(layer=name, duration_ms=ms, hit=bool(results)))
+    return results
+
+
+async def execute_route(
+    decision: RoutingDecision,
+    role: AgentRole,
+    query: str,
+    *,
+    limit: int,
+    layers: dict[LayerName, MemoryLayer],
+    record: Callable[[LayerTiming], None],
+) -> list[MemoryEntry]:
+    """
+    High confidence (≥0.70): query first layer only.
+    Medium (0.40–0.69): query first layer; fall through to second if empty.
+    Low (<0.40): fan-out all layers in parallel, deduplicate, sort newest-first.
+    """
+    def _get(name: LayerName) -> MemoryLayer:
+        return layers[name]
+
+    if decision.confidence >= CONF_HIGH:
+        return await _query_layer(_get(decision.layers[0]), decision.layers[0], role, query, limit, record)
+
+    if decision.confidence >= CONF_LOW and len(decision.layers) >= 2:
+        res = await _query_layer(_get(decision.layers[0]), decision.layers[0], role, query, limit, record)
+        if res:
+            return res
+        return await _query_layer(_get(decision.layers[1]), decision.layers[1], role, query, limit, record)
+
+    # Full fan-out — parallel queries across all assigned layers
+    all_results: list[list[MemoryEntry]] = list(await asyncio.gather(*[
+        _query_layer(_get(name), name, role, query, limit, record)
+        for name in decision.layers
+    ]))
+    seen: set[tuple[str, str]] = set()
+    merged: list[MemoryEntry] = []
+    for batch in all_results:
+        for entry in batch:
+            key = (str(entry.agent_role), str(entry.key))
+            if key not in seen:
+                seen.add(key)
+                merged.append(entry)
+    merged.sort(key=lambda e: e.metadata.get("created_at_ts", 0.0), reverse=True)
+    return merged[:limit]
