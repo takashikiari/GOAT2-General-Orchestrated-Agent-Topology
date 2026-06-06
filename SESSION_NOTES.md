@@ -3,6 +3,37 @@
 
 ---
 
+## What was done this session (patch 57)
+
+### Letta human block garbage accumulation — strict ALLOWED_KEYS whitelist
+
+**Root cause:** `info_extract.maybe_store_info` extracted arbitrary key-value pairs from
+conversation messages and stored them all in the Letta `human` block. Over time this
+accumulated hundreds of irrelevant facts (agent_id, passage_id, search_key, timestamps, etc.)
+that corrupted planner context and caused spurious task triggering.
+
+**Fix applied:**
+
+**`supervisor/info_extract.py`**:
+- Added `_ALLOWED_KEYS` frozenset whitelist: `name, age, location, city, language, workspace,
+  gender, occupation, preferences, rules, canal, device, nationality`.
+- Routing logic updated:
+  - explicit + whitelisted → PollutionGuard → Letta human block
+  - explicit + non-whitelisted → ChromaDB episodic with 7-day TTL
+  - inferred + whitelisted → ChromaDB episodic with 7-day TTL
+  - inferred + non-whitelisted → discarded entirely
+- `_merge()` function updated to filter by ALLOWED_KEYS before overlaying new pairs.
+- New `_store_in_chroma()` helper for non-whitelisted explicit facts.
+
+**`memory/pollution_guard.py`**:
+- Added same `_ALLOWED_KEYS` frozenset whitelist.
+- `validate_fact()` now blocks any key not in ALLOWED_KEYS regardless of kind (explicit/inferred).
+- This provides defence-in-depth — even if info_extract sends a non-whitelisted key, guard blocks it.
+
+Both files ≤200 lines with docstrings. All 37 tests pass.
+
+---
+
 ## What was done this session (patch 56)
 
 ### Planner re-triggering tasks from assistant DAG results

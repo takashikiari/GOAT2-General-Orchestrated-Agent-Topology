@@ -1,4 +1,9 @@
-"""Detect key-value facts in user messages; route explicit→Letta, inferred→ChromaDB."""
+"""Detect key-value facts in user messages; route explicit→Letta, inferred→ChromaDB.
+
+Strict ALLOWED_KEYS whitelist prevents Letta human block from accumulating garbage.
+Non-whitelisted explicit facts go to ChromaDB with 7-day TTL; inferred non-whitelisted
+facts are discarded entirely.
+"""
 from __future__ import annotations
 
 import time
@@ -19,6 +24,15 @@ __all__ = ["maybe_store_info"]
 _ROLE: Final[str] = "goat"
 _KEY:  Final[str] = "human"
 _GUARD = PollutionGuard()
+
+# Strict whitelist for Letta core memory (human block). Only these keys are allowed.
+# All other keys are either stored in ChromaDB (explicit) or discarded (inferred).
+_ALLOWED_KEYS: Final[frozenset[str]] = frozenset({
+    "name", "age", "location", "city", "language", "workspace",
+    "gender", "occupation", "preferences", "rules", "canal",
+    "device", "nationality",
+})
+
 _BLOCKED: Final[frozenset[str]] = frozenset({
     "agent_id", "passage_id", "search_key", "limit", "offset",
     "score", "source", "memory_type", "ttl", "count",
@@ -39,13 +53,33 @@ def _merge(existing: str, new_pairs: dict[str, str]) -> str:
     for line in existing.splitlines():
         if ":" in line:
             k = line.partition(":")[0].strip().lower()
-            if k not in _BLOCKED and not k.endswith("_id"):
+            if k in _ALLOWED_KEYS and k not in _BLOCKED and not k.endswith("_id"):
                 index[k] = line
     for k, v in new_pairs.items():
         nk = k.strip().lower()
-        if nk not in _BLOCKED and not nk.endswith("_id"):
+        if nk in _ALLOWED_KEYS and nk not in _BLOCKED and not nk.endswith("_id"):
             index[nk] = f"{k.strip()}: {v.strip()}"
     return "\n".join(index.values())
+
+
+async def _store_in_chroma(mm: MemoryManager, facts: list[ScoredFact]) -> None:
+    """Persist non-whitelisted explicit facts to ChromaDB with 7-day TTL.
+
+    Inferred facts that are not whitelisted are discarded entirely.
+    """
+    exp = time.time() + INFERRED_TTL
+    for f in facts:
+        nk = f["key"].strip().lower()
+        # Skip if not in whitelist (inferred non-whitelisted → discard)
+        if nk not in _ALLOWED_KEYS:
+            continue
+        if nk in _BLOCKED or nk.endswith("_id"):
+            continue
+        meta = MemoryEntryMetadata(tags=["info_extract"], expires_at_ts=exp)
+        await mm.store(
+            _ROLE, f"info:{nk}", f"{nk}: {f['value'].strip()}",
+            memory_type=MemoryType.EPISODIC, metadata=meta,
+        )
 
 
 async def _store_inferred(mm: MemoryManager, facts: list[ScoredFact]) -> None:
@@ -63,7 +97,14 @@ async def _store_inferred(mm: MemoryManager, facts: list[ScoredFact]) -> None:
 
 
 async def maybe_store_info(mm: MemoryManager | None, message: str) -> None:
-    """Route extracted facts: explicit→PollutionGuard→Letta; inferred→ChromaDB 7-day TTL."""
+    """Route extracted facts: explicit→ALLOWED_KEYS→Letta or ChromaDB; inferred→ChromaDB or discard.
+
+    Facts are routed as follows:
+    - explicit + whitelisted → PollutionGuard → Letta human block
+    - explicit + non-whitelisted → ChromaDB episodic with 7-day TTL
+    - inferred + whitelisted → ChromaDB episodic with 7-day TTL
+    - inferred + non-whitelisted → discarded entirely
+    """
     if mm is None:
         return
     try:
@@ -78,12 +119,23 @@ async def maybe_store_info(mm: MemoryManager | None, message: str) -> None:
             return
         explicit = [f for f in facts if f.get("kind") == "explicit"]
         inferred = [f for f in facts if f.get("kind") == "inferred"]
-        if explicit:
+        
+        # Separate whitelisted vs non-whitelisted explicit facts
+        explicit_whitelisted = [f for f in explicit if f["key"].strip().lower() in _ALLOWED_KEYS]
+        explicit_other = [f for f in explicit if f["key"].strip().lower() not in _ALLOWED_KEYS]
+        
+        if explicit_whitelisted:
             current = await mm.get_block(_ROLE, _KEY) or ""
-            valid = {f["key"]: f["value"] for f in explicit
+            valid = {f["key"]: f["value"] for f in explicit_whitelisted
                      if _GUARD.validate(f["key"], f["value"], "explicit", current)["decision"] == "allowed"}
             if valid:
                 await mm.set_block(_ROLE, _KEY, _merge(current, valid))
+        
+        # Non-whitelisted explicit facts → ChromaDB with 7-day TTL
+        if explicit_other:
+            await _store_in_chroma(mm, explicit_other)
+        
+        # Inferred facts → ChromaDB with 7-day TTL (non-whitelisted inferred are discarded in _store_inferred)
         if inferred:
             await _store_inferred(mm, inferred)
     except Exception:

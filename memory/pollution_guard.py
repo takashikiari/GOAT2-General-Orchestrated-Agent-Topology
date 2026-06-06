@@ -1,4 +1,8 @@
-"""Validates facts before writing to Letta core — blocks inferred facts, detects contradictions."""
+"""Validates facts before writing to Letta core — blocks inferred facts, detects contradictions.
+
+Strict ALLOWED_KEYS whitelist ensures Letta human block contains only relevant user facts.
+Any key not in the whitelist is blocked regardless of kind (explicit or inferred).
+"""
 from __future__ import annotations
 
 import logging
@@ -9,6 +13,14 @@ __all__ = ["GuardDecision", "GuardResult", "PollutionGuard", "validate_fact"]
 log = logging.getLogger("goat2.memory.guard")
 
 GuardDecision = Literal["allowed", "blocked", "conflict"]
+
+# Strict whitelist for Letta core memory (human block). Only these keys are allowed.
+# All other keys are blocked from Letta core regardless of kind.
+_ALLOWED_KEYS: Final[frozenset[str]] = frozenset({
+    "name", "age", "location", "city", "language", "workspace",
+    "gender", "occupation", "preferences", "rules", "canal",
+    "device", "nationality",
+})
 
 
 class GuardResult(TypedDict):
@@ -27,10 +39,19 @@ _BLOCKED: Final[frozenset[str]] = frozenset({
 def validate_fact(key: str, value: str, kind: str, existing_block: str) -> GuardResult:
     """Check one fact for quality before writing to Letta core. Pure — PyO3 candidate.
 
-    Returns 'blocked' for inferred facts or technical keys, 'conflict' when the key
-    exists with a different value, and 'allowed' otherwise.
+    Returns 'blocked' for:
+    - inferred facts (never stored in Letta core)
+    - technical keys (agent_id, passage_id, etc.)
+    - keys not in ALLOWED_KEYS whitelist (prevents garbage accumulation)
+    Returns 'conflict' when the key exists with a different value.
+    Returns 'allowed' otherwise.
     """
     nk = key.strip().lower()
+    
+    # Whitelist check — block any key not in ALLOWED_KEYS regardless of kind
+    if nk not in _ALLOWED_KEYS:
+        return GuardResult(decision="blocked", reason=f"key not in ALLOWED_KEYS whitelist: {nk}")
+    
     if kind != "explicit":
         return GuardResult(decision="blocked", reason="only explicit facts stored in Letta core")
     if nk in _BLOCKED or nk.endswith("_id"):
