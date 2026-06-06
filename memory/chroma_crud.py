@@ -1,7 +1,14 @@
+"""ChromaCrudMixin — store, retrieve, delete for ChromaMemoryClient.
+
+Wraps ChromaDB CRUD operations with Redis sync for last-write tracking.
+Whenever an entry is stored, updates Redis key goat2:working:last_write:chromadb
+with the current ISO 8601 timestamp.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Final
 
 from memory.chroma_helpers import (
@@ -17,15 +24,23 @@ _SOURCE: Final[str] = "chroma"
 
 
 class ChromaCrudMixin(ChromaBase):
-    """store, retrieve, delete for ChromaMemoryClient."""
+    """Store, retrieve, delete for ChromaMemoryClient with Redis last-write sync."""
 
     async def store(
         self, agent_role: AgentRole, key: MemoryKey, content: str,
         *, metadata: MemoryEntryMetadata | None = None, ttl: int | None = None,
     ) -> MemoryEntry:
-        ts     = _now_ts()
-        iso    = _now_iso()
-        meta   = _build_chroma_metadata(agent_role, key, metadata, ts, iso)
+        """Persist content to ChromaDB; also updates Redis last-write timestamp.
+
+        TTL is ignored for ChromaDB (persistent storage). Metadata tags are
+        stored as comma-separated string for filtering.
+
+        Redis sync: updates goat2:working:last_write:chromadb with ISO timestamp.
+        Fails silently if Redis is unavailable (does not block main write).
+        """
+        ts = _now_ts()
+        iso = _now_iso()
+        meta = _build_chroma_metadata(agent_role, key, metadata, ts, iso)
         doc_id = _doc_id(agent_role, key)
 
         def _sync() -> None:
@@ -40,6 +55,9 @@ class ChromaCrudMixin(ChromaBase):
             log.error("store(%s, %s) failed: %s", agent_role, key, exc)
             raise
 
+        # Sync last-write timestamp to Redis (non-blocking, fail-silent)
+        await self._sync_last_write_to_redis()
+
         return MemoryEntry(
             id=doc_id, agent_role=agent_role, key=key, content=content,
             metadata=MemoryEntryMetadata(
@@ -48,9 +66,27 @@ class ChromaCrudMixin(ChromaBase):
             created_at=iso, source=_SOURCE,
         )
 
+    async def _sync_last_write_to_redis(self) -> None:
+        """Update Redis last-write timestamp for chromadb tier.
+
+        Synchronous write — fails if Redis is down but does not block
+        the main ChromaDB write. Silent failure on Redis errors.
+        """
+        try:
+            from memory.redis_backend import RedisBackend
+            redis = RedisBackend()
+            r = await redis._get_redis()
+            iso_now = datetime.now(timezone.utc).isoformat()
+            await r.set("goat2:working:last_write:chromadb", iso_now)  # type: ignore[union-attr]
+            await redis.close()
+            log.debug("Redis last_write:chromadb updated to %s", iso_now)
+        except Exception as exc:
+            log.debug("Redis last-write sync failed (non-blocking): %s", exc)
+
     async def retrieve(
         self, agent_role: AgentRole, key: MemoryKey,
     ) -> MemoryEntry | None:
+        """Retrieve by exact key; None if not found."""
         doc_id = _doc_id(agent_role, key)
 
         def _sync() -> ChromaGetResult:
@@ -68,6 +104,7 @@ class ChromaCrudMixin(ChromaBase):
         return entries[0] if entries else None
 
     async def delete(self, agent_role: AgentRole, key: MemoryKey) -> bool:
+        """Delete by key; True if existed."""
         doc_id = _doc_id(agent_role, key)
 
         def _check() -> bool:
