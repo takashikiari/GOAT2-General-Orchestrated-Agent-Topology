@@ -1,4 +1,9 @@
-"""GOAT 2.0 top-level orchestrator — classify, augment, route, execute, synthesize."""
+"""GOAT 2.0 top-level orchestrator — unified message handling with autonomous tool selection.
+
+All user messages now flow through the same evaluation layer. The LLM autonomously
+decides when to invoke DAG/tools based on semantic intent, not keyword triggers.
+DAG results are bridged into WORKING memory for conversational path access.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -13,8 +18,8 @@ from supervisor.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
 from supervisor.critique import critique_results, synthesize_results
 from supervisor.history import ConversationHistory
-from supervisor.identity import conv_result
-from supervisor.classifier import classify_intent, IntentDepth, _is_search_intent
+from supervisor.identity import conv_result, direct_response
+from supervisor.classifier import classify_intent, IntentDepth
 from supervisor.mem_inject import mem_turn
 from supervisor.session_init import init_session
 from supervisor.behavior_session import finalize_behavior
@@ -29,7 +34,6 @@ log = logging.getLogger("goat2.supervisor")
 
 __all__ = ["GoatSupervisor"]
 
-# Human-readable labels for each validation failure reason.
 _REASON_LABELS: dict[str, str] = {
     "empty_file_read":      "file tool returned no content",
     "unverified_execution": "required tool was not invoked",
@@ -40,11 +44,7 @@ _REASON_LABELS: dict[str, str] = {
 
 
 def _unverified_summary(results: dict, val_statuses: list) -> str:
-    """Return a factual failure message when synthesis is skipped.
-
-    Describes only what was attempted and which tasks failed — no content is
-    generated or inferred. Every word is derived from AgentResult metadata.
-    """
+    """Return a factual failure message when synthesis is skipped."""
     parts = []
     for s in val_statuses:
         if not s.safe:
@@ -56,7 +56,7 @@ def _unverified_summary(results: dict, val_statuses: list) -> str:
     return ("Not available. " + "; ".join(parts) + ".") if parts else "Not available."
 
 
-def _build_metadata_summary(statuses: list, audit) -> str:  # type: ignore[type-arg]
+def _build_metadata_summary(statuses: list, audit) -> str:
     """Build a compact metadata string from validation statuses and audit report."""
     parts = [f"task={s.task_id} safe={s.safe} reason={s.reason or 'ok'}" for s in statuses]
     parts.extend(audit.anomalies)
@@ -64,14 +64,17 @@ def _build_metadata_summary(statuses: list, audit) -> str:  # type: ignore[type-
 
 
 class GoatSupervisor:
-    """GOAT 2.0 orchestrator: classify -> augment -> route -> execute -> synthesize."""
+    """GOAT 2.0 orchestrator with unified message handling and autonomous tool selection.
+
+    All messages receive the same evaluation. The LLM decides autonomously when
+    to use DAG/tools based on semantic intent, not keyword triggers.
+    """
 
     def __init__(
         self,
         registry:       AgentRegistry | None = None,
         memory_manager: MemoryManager | None = None,
     ) -> None:
-        """Initialize with an optional agent registry and memory manager."""
         self.registry        = registry or _build_default_registry()
         self.memory_manager  = memory_manager
         self._semaphore      = asyncio.Semaphore(settings.supervisor.max_workers)
@@ -81,10 +84,13 @@ class GoatSupervisor:
         self._history: ConversationHistory | None = None
 
     async def run(self, intent: str) -> SupervisorResult:
-        """Classify intent, route to handler, execute DAG, and synthesize if verified.
+        """Unified message handling — all intents evaluated semantically with tool access.
 
-        Synthesis is skipped entirely when any DAG node fails validation — GOAT
-        never fills unverified gaps with generated content.
+        CONVERSATIONAL: LLM with CORE_TOOLS (file/memory access) — no DAG bypass.
+        ANALYTICAL: Lightweight DAG (≤2 tasks) with tool execution.
+        COMPLEX: Full DAG with planner, researcher, critic, synthesizer.
+
+        DAG results are stored in WORKING memory for subsequent conversational access.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -94,17 +100,26 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent)
         depth   = await classify_intent(intent)
+
+        # CONVERSATIONAL: LLM with CORE_TOOLS — autonomous tool selection, no DAG bypass
         if depth == IntentDepth.CONVERSATIONAL:
-            r = await conv_result(intent, self._history.messages, self._user_profile or "",
-                                  self._history.summary, mem_ctx, t0, self._behavior_style)
+            r = await conv_result(
+                intent, self._history.messages, self._user_profile or "",
+                self._history.summary, mem_ctx, t0, self._behavior_style,
+            )
             self._history.add_assistant(r.summary)
+            # Store result in WORKING memory for future conversational access
+            if self.memory_manager:
+                from supervisor.session import store_turn
+                await store_turn(self.memory_manager, len(self._history.messages), intent, r.summary)
             return r
 
+        # ANALYTICAL/COMPLEX: DAG execution with tool invocation
         plan_ctx = self._history.as_plan_context(intent, self._user_profile or "", mem_ctx)
         plan_ctx = f"[require_source: true]\n{plan_ctx}"
         if depth == IntentDepth.ANALYTICAL:
-            hint = ", must include tool_caller for web search" if _is_search_intent(intent) else ""
-            plan_ctx = f"[Lightweight: ≤2 tasks, no researcher{hint}]\n{plan_ctx}"
+            plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
+
         plan = await decompose_plan(plan_ctx)
         lang  = await prepare_tasks(plan.tasks, self.memory_manager, intent)
         results = await WorkflowGraph(plan.tasks).execute(
@@ -113,15 +128,11 @@ class GoatSupervisor:
 
         results, val_statuses = validate_results(results)
 
-        # Check BEFORE synthesis — skip LLM calls entirely when any node is unverified.
-        # GOAT must never hallucinate to fill gaps in unverified results.
         unsafe = [s for s in val_statuses if not s.safe]
         missing_src = not all(r.source for r in results.values())
         if unsafe or missing_src:
             for s in unsafe:
                 log.warning("Source validation failed: task=%s reason=%s", s.task_id, s.reason)
-            if missing_src and not unsafe:
-                log.warning("Missing source tags in DAG results — skipping synthesis")
             summary  = _unverified_summary(results, val_statuses)
             critique = ""
         else:
@@ -142,13 +153,18 @@ class GoatSupervisor:
         total    = time.monotonic() - t0
         log.info("Done in %.1fs — success=%s sources=%s", total,
                  all(r.ok for r in results.values()), list(sources.values()))
-        r = SupervisorResult(intent=intent, plan=plan, results=results,
-                             critique=critique, summary=summary, total_duration_s=total,
-                             sources=sources, metadata_summary=metadata)
+        r = SupervisorResult(
+            intent=intent, plan=plan, results=results,
+            critique=critique, summary=summary, total_duration_s=total,
+            sources=sources, metadata_summary=metadata,
+        )
         self._history.add_assistant(r.summary)
+
+        # Bridge DAG results into WORKING memory for conversational path access
         if self.memory_manager:
             from supervisor.session import store_turn
             await store_turn(self.memory_manager, len(self._history.messages), intent, r.summary)
+
         return r
 
     async def finalize_session(self) -> None:

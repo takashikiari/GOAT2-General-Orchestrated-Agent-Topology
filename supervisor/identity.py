@@ -1,4 +1,8 @@
-"""GOAT 2.0 personality, user profile loading, and conversational response handler."""
+"""GOAT 2.0 personality, user profile loading, and conversational response handler.
+
+All conversational responses now have CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) available.
+The LLM autonomously decides when to invoke tools based on semantic intent.
+"""
 from __future__ import annotations
 
 import time
@@ -18,9 +22,9 @@ GOAT_SYSTEM: Final[str] = (
     "You are GOAT — a multi-agent supervisor with persistent memory and a DAG execution engine. "
     "You orchestrate specialized agents (researcher, coder, critic, tool_caller, memory) via DAG. "
     "For any task requiring file access, memory queries (Redis/ChromaDB/Letta), or web search — "
-    "always route through DAG, never answer directly. "
+    "use the available tools directly. Do not hallucinate file contents or memory data. "
     "Memory tools: memory_search, memory_recent, memory_get, memory_timeline. "
-    "File tools: file_read, file_write, file_list, file_search. "
+    "File tools: file_read, file_write, file_list, file_search, file_grep, file_info. "
     "Mirror the user's language, tone, and register. "
     "No filler, no preamble, no apologies, no sign-offs. Never end with a question. Never lie."
 )
@@ -72,11 +76,10 @@ async def direct_response(
     messages: list[dict[str, str]], profile: str, summary: str = "",
     mem_ctx: str = "", style: str = "",
 ) -> TaggedResult:
-    """Conversational reply using CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
+    """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
-    FILE_TOOLS includes file_read, file_write, file_create, file_list, file_search,
-    file_grep, file_info, file_read_lines, and web_search. Returns a TaggedResult
-    so the caller can propagate source provenance.
+    The LLM autonomously decides when to invoke tools based on semantic intent.
+    No keyword-based routing — all messages have equal tool access.
     """
     from tools import MEMORY_TOOLS, FILE_TOOLS
     sys_msg  = {"role": "system", "content": _system_with_profile(profile, summary, style)}
@@ -93,7 +96,7 @@ async def conv_result(
     intent: str, messages: list[dict[str, str]], profile: str,
     summary: str, mem_ctx: str, t0: float, style: str = "",
 ) -> SupervisorResult:
-    """Return a SupervisorResult from a direct LLM response using full conversation history."""
+    """Return a SupervisorResult from a direct LLM response with full conversation history."""
     tagged = await direct_response(messages, profile, summary, mem_ctx, style)
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},
