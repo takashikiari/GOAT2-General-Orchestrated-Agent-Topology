@@ -1,8 +1,3 @@
-"""WorkflowGraph — executes AgentTask DAG in topological waves via Kahn's algorithm.
-
-Tasks in the same wave run concurrently, bounded by a shared semaphore.
-Populates AgentResult with source provenance tracking for validation.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -29,9 +24,7 @@ __all__ = ["WorkflowGraph"]
 class WorkflowGraph:
     """
     Executes an AgentTask DAG in topological waves via Kahn's algorithm.
-
     Tasks in the same wave run concurrently, bounded by a shared semaphore.
-    Each task's output becomes an AgentResult with source provenance tracking.
     """
 
     def __init__(self, tasks: list[AgentTask]) -> None:
@@ -55,55 +48,6 @@ class WorkflowGraph:
             for tid in ready:
                 for child in dependents[tid]:
                     in_degree[child] -= 1
-                    if in_degree[child] == 0:
-                        nxt.append(child)
-            ready = nxt
-        if len(waves) != len(self.tasks):
-            raise ValueError("Cycle detected in task DAG")
-        return waves
+                    GOAT 2.0 — intent: %.120s", intent)
 
-    async def execute(
-        self,
-        registry: AgentRegistry,
-        semaphore: asyncio.Semaphore,
-        verbose: bool = False,
-    ) -> dict[str, AgentResult]:
-        """Execute all tasks in topological order; returns dict of AgentResult by task ID."""
-        results: dict[str, AgentResult] = {}
-        waves = self.topological_waves()
-        for wave in waves:
-            async def _run(tid: str) -> None:
-                async with semaphore:
-                    task = self.tasks[tid]
-                    task.status = TaskStatus.RUNNING
-                    t0 = time.monotonic()
-                    dep_results = {d: results[d] for d in task.depends_on if d in results}
-                    try:
-                        runner = registry.get(task.role)
-                        output = await runner(task, dep_results)
-                        task.status = TaskStatus.DONE
-                        duration = time.monotonic() - t0
-                        source = task.source or "generated"
-                        tool_name = _SOURCE_TOOL.get(source, "")
-                        output_hash = hashlib.sha256(output.encode()).hexdigest()[:16]
-                        results[tid] = AgentResult(
-                            task_id=tid, role=task.role, output=output,
-                            model=_model_label(task.role), duration_s=duration,
-                            source=source, tool_called=source != "generated",
-                            tool_name=tool_name, raw_output_hash=output_hash,
-                        )
-                        if verbose:
-                            log.info("Task %s (%s) done in %.1fs — source=%s",
-                                     tid, task.role, duration, source)
-                    except Exception as exc:
-                        task.status = TaskStatus.FAILED
-                        duration = time.monotonic() - t0
-                        log.error("Task %s (%s) failed: %s", tid, task.role, exc)
-                        results[tid] = AgentResult(
-                            task_id=tid, role=task.role, output="",
-                            model=_model_label(task.role), duration_s=duration,
-                            error=str(exc), source="generated", tool_called=False,
-                            tool_name="", raw_output_hash="",
-                        )
-            await asyncio.gather(*[_run(tid) for tid in wave])
-        return results
+        if self._
