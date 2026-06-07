@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Final
 
+from config.limits import WORKING_MEMORY_TTL
 from memory.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey,
 )
@@ -32,7 +33,7 @@ class WorkingCrudMixin:
         """
         meta = dict(metadata) if metadata else {}
         if ttl is None:
-            ttl = int(meta.pop("ttl", self.default_ttl))
+            ttl = int(meta.pop("ttl", self.default_ttl or WORKING_MEMORY_TTL))
         else:
             meta.pop("ttl", None)
         now_ts   = time.time()

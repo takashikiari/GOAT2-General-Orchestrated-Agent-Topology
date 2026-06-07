@@ -3,6 +3,60 @@
 
 ---
 
+## What was done this session (patch 68)
+
+### Centralize magic strings and constants into config modules
+
+**Architecture:**
+- Created `config/tiers.py` with memory tier constants
+- Created `config/limits.py` with numeric limits and TTL values
+- Created `config/timeouts.py` with timeout constants
+- All hardcoded values centralized for easier maintenance
+
+**Implementation:**
+
+**`config/tiers.py`** (new):
+- `WORKING: Final[str] = "working"` — working memory tier
+- `EPISODIC: Final[str] = "episodic"` — ChromaDB semantic search tier
+- `LONG_TERM: Final[str] = "long_term"` — Letta core memory tier
+- `ANY: Final[str] = "any"` — search across all tiers
+- Comprehensive docstrings explaining each tier's purpose
+
+**`config/limits.py`** (new):
+- `MAX_LINES_PER_FILE: Final[int] = 200` — file read line limit
+- `MAX_RECALL_LIMIT: Final[int] = 50` — memory recall max entries
+- `MAX_TURNS_HISTORY: Final[int] = 20` — conversation turn limit
+- `DAG_RESULT_TTL: Final[int] = 3600` — DAG result TTL (1 hour)
+- `WORKING_MEMORY_TTL: Final[int] = 3600` — default working memory TTL
+- `INFERRED_MEMORY_TTL: Final[int] = 604800` — inferred facts TTL (7 days)
+
+**`config/timeouts.py`** (new):
+- `TURN_TIMEOUT: Final[int] = 120` — conversation turn timeout
+- `TOOL_TIMEOUT: Final[int] = 30` — tool execution timeout
+- `LETTA_TIMEOUT: Final[int] = 8` — Letta HTTP timeout
+- `REDIS_TIMEOUT: Final[int] = 5` — Redis connection timeout
+
+**Files refactored to import from config modules:**
+- `memory/working_crud.py` — TTL values → `WORKING_MEMORY_TTL`
+- `memory/letta_ops_retrieve.py` — limits → `MAX_RECALL_LIMIT`, timeouts → `LETTA_TIMEOUT`
+- `supervisor/session.py` — TTL → `DAG_RESULT_TTL`, tier → `WORKING`
+- `tools/memory_temporal_tools.py` — tier strings → `ANY` from config.tiers
+- `tools/memory_helpers.py` — tier constants → imports from config.tiers
+- `supervisor/runner_memory.py` — timeout → `LETTA_TIMEOUT`
+
+**Benefits:**
+- Single source of truth for all constants
+- Easier to tune system behavior
+- Prevents magic number inconsistencies
+- Simplifies configuration changes
+
+**Validation:**
+- All files ≤200 lines with docstrings
+- No logic changes — only centralization of constants
+- All imports verified working
+
+---
+
 ## What was done this session (patch 67)
 
 ### Central roles registry for memory access control
@@ -198,6 +252,9 @@ which require file_read but don't match search keywords.
 - **Tool validation** — GOAT validates parameters before marking tasks successful
 - **Automatic promotion** — Turn 2+ to EPISODIC, Turn 3+ to LONG_TERM
 - **Central roles registry** — GOAT_ROLE and SESSION_ROLE in config/roles.py
+- **Central tiers registry** — WORKING, EPISODIC, LONG_TERM, ANY in config/tiers.py
+- **Central limits registry** — TTL values and limits in config/limits.py
+- **Central timeouts registry** — timeout constants in config/timeouts.py
 
 ### CLI
 - Async chat loop, single GoatSupervisor instance across turns
@@ -209,6 +266,9 @@ which require file_read but don't match search keywords.
 - All file tools share FileToolExecutor security gateway
 - Memory tools: GOAT has full tier access, DAG restricted to working tier only
 - All role strings imported from config/roles.py
+- All tier strings imported from config/tiers.py
+- All limits imported from config/limits.py
+- All timeouts imported from config/timeouts.py
 
 ---
 

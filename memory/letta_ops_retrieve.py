@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 
+from config.limits import MAX_RECALL_LIMIT
+from config.timeouts import LETTA_TIMEOUT
 from memory.letta_fallback import _InContextFallback
 from memory.letta_health import LettaHealthProbe
 from memory.letta_helpers import _extract_passages, _parse_passage_text, _passage_to_entry
@@ -31,7 +33,8 @@ async def do_retrieve(
         http     = await probe.get_http()
         resp     = await http.get(
             f"/v1/agents/{agent_id}/archival-memory",
-            params={"search": f"[KEY:{key}]", "limit": 5},
+            params={"search": f"[KEY:{key}]", "limit": MAX_RECALL_LIMIT},
+            timeout=LETTA_TIMEOUT,
         )
         resp.raise_for_status()
         for p in _extract_passages(resp.json()):
@@ -66,6 +69,7 @@ async def do_search(
         resp = await http.get(
             f"/v1/agents/{agent_id}/archival-memory",
             params={"search": kw, "limit": limit},
+            timeout=LETTA_TIMEOUT,
         )
         log.debug("do_search: status=%d body=%.300s", resp.status_code, resp.text[:300])
         resp.raise_for_status()

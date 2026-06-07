@@ -24,6 +24,7 @@ import json
 
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
+from config.tiers import ANY
 from tools.memory_helpers import (
     ANY_TIERS,
     format_entries,
@@ -42,7 +43,7 @@ __all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_DEBUG_TRACE"]
 async def _timeline_handler(
     start_datetime: str,
     end_datetime: str,
-    tier: str = "any",
+    tier: str = ANY,
     limit: int = 100,
 ) -> str:
     """Return entries from a specific time window, newest first.
@@ -83,7 +84,7 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler(limit: int = 50, tier: str = "any") -> str:
+async def _recent_handler(limit: int = 50, tier: str = ANY) -> str:
     """Return the N most recent memory entries, newest first.
 
     MEMORY ACCESS:
@@ -174,7 +175,7 @@ MEMORY_TIMELINE = ToolDefinition(
             "tier": {
                 "type": "string",
                 "enum": list(ANY_TIERS),
-                "default": "any",
+                "default": ANY,
             },
             "limit": {
                 "type": "integer",
@@ -201,7 +202,7 @@ MEMORY_RECENT = ToolDefinition(
             "tier": {
                 "type": "string",
                 "enum": list(ANY_TIERS),
-                "default": "any",
+                "default": ANY,
             },
         },
     },

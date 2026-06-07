@@ -11,6 +11,7 @@ MEMORY ACCESS ARCHITECTURE:
 
 Provides:
 - Role imports from config.roles for memory access control
+- Tier imports from config.tiers for memory tier constants
 - Error formatting helpers
 - Entry formatting for consistent output
 - Validation helpers for memory operations
@@ -27,6 +28,7 @@ from __future__ import annotations
 from typing import Final
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
+from config.tiers import WORKING, EPISODIC, LONG_TERM, ANY
 
 __all__ = [
     "GOAT_ROLE",
@@ -43,7 +45,7 @@ __all__ = [
 # Tier constants — define valid memory tier identifiers
 # ---------------------------------------------------------------------------
 
-ALL_TIERS: Final[tuple[str, ...]] = ("working", "episodic", "long_term")
+ALL_TIERS: Final[tuple[str, ...]] = (WORKING, EPISODIC, LONG_TERM)
 """All three memory tiers for write operations.
 
 Tier descriptions:
@@ -52,7 +54,7 @@ Tier descriptions:
 - long_term: Letta core-memory blocks, most persistent
 """
 
-ANY_TIERS: Final[tuple[str, ...]] = ("any",) + ALL_TIERS
+ANY_TIERS: Final[tuple[str, ...]] = (ANY,) + ALL_TIERS
 """Valid tier values for search/read operations (includes 'any').
 
 The 'any' tier searches across all available tiers and merges results.
@@ -136,7 +138,7 @@ def validate_tier(tier: str, allowed: tuple[str, ...]) -> str | None:
         None if valid, or error message string if invalid.
 
     Example:
-        >>> validate_tier("working", ANY_TIERS)
+        >>> validate_tier(WORKING, ANY_TIERS)
         None
         >>> validate_tier("invalid", ANY_TIERS)
         "ERROR: invalid tier 'invalid'; valid: ('any', 'working', 'episodic', 'long_term')"

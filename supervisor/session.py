@@ -8,8 +8,9 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Final
 
+from config.limits import DAG_RESULT_TTL
 from config.roles import SESSION_ROLE
-from memory.memory_enums import MemoryType
+from config.tiers import WORKING
 from memory.working_record import RecordDict
 
 if TYPE_CHECKING:
@@ -26,14 +27,14 @@ async def store_turn(mm: MemoryManager, turn: int, intent: str, summary: str) ->
     GOAT supervisor handles promotion to EPISODIC/LONG_TERM at session end.
     """
     content = f"User: {intent}\nAssistant: {summary}"
-    await mm.store(SESSION_ROLE, f"turn_{turn:04d}", content, memory_type=MemoryType.WORKING)
+    await mm.store(SESSION_ROLE, f"turn_{turn:04d}", content, memory_type=WORKING)
 
 
 async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str) -> None:
-    """Persist full DAG execution result to WORKING tier (Redis) with 1-hour TTL.
+    """Persist full DAG execution result to WORKING tier (Redis) with configurable TTL.
 
     Key format: dag_result:<session_id>
-    TTL: 3600 seconds (1 hour)
+    TTL: DAG_RESULT_TTL from config.limits (default 3600 seconds / 1 hour)
     This enables supervisor to independently validate DAG output without trusting verbal reports.
     """
     key = f"dag_result:{session_id}"
@@ -46,7 +47,7 @@ async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str)
         "metadata": {"type": "dag_result", "session_id": session_id},
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "created_at_ts": now,
-        "expires_at": now + 3600,
+        "expires_at": now + DAG_RESULT_TTL,
     }
     # Direct backend write with TTL enforcement
     await mm.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])

@@ -9,6 +9,7 @@ import logging
 
 from config.roles import SESSION_ROLE
 from config.settings import settings
+from config.timeouts import LETTA_TIMEOUT
 from supervisor.types import AgentTask, AgentResult
 
 log = logging.getLogger("goat2.supervisor")
@@ -33,13 +34,13 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
     try:
         import httpx
         async with httpx.AsyncClient(
-            base_url=letta.base_url, headers=letta.headers, timeout=8
+            base_url=letta.base_url, headers=letta.headers, timeout=LETTA_TIMEOUT
         ) as http:
-            health = await http.get("/v1/health/")
+            health = await http.get("/v1/health/", timeout=LETTA_TIMEOUT)
             if health.status_code != 200:
                 raise RuntimeError(f"Letta health={health.status_code}")
             # Resolve memory agent ID dynamically — never hardcode
-            ar = await http.get("/v1/agents/", params={"name": "goat2-memory", "limit": 5})
+            ar = await http.get("/v1/agents/", params={"name": "goat2-memory", "limit": 5}, timeout=LETTA_TIMEOUT)
             ar.raise_for_status()
             raw = ar.json()
             all_agents = raw if isinstance(raw, list) else raw.get("agents", [])
@@ -56,6 +57,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
             sr = await http.get(
                 f"/v1/agents/{agent_id}/archival-memory",
                 params={"search": kw, "limit": 5},
+                timeout=LETTA_TIMEOUT,
             )
             log.debug("Letta Tier2: status=%d body=%.300s", sr.status_code, sr.text[:300])
             sr.raise_for_status()
