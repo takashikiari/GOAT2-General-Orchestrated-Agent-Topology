@@ -390,8 +390,8 @@ class LettaClient(MemoryLayer):
 
             if response.status_code == 404:
                 log.debug("Letta memory endpoint not available; using fallback")
-                # Check fallback store
-                fallback_entry = self._fallback.get(agent_role, label)
+                # Check fallback store - use retrieve() not get()
+                fallback_entry = self._fallback.retrieve(agent_role, label)
                 return fallback_entry.content if fallback_entry else None
 
             response.raise_for_status()
@@ -413,12 +413,12 @@ class LettaClient(MemoryLayer):
 
         except httpx.HTTPError as e:
             log.warning("Letta get_block HTTP error: %s", e)
-            # Check fallback store on error
-            fallback_entry = self._fallback.get(agent_role, label)
+            # Check fallback store on error - use retrieve() not get()
+            fallback_entry = self._fallback.retrieve(agent_role, label)
             return fallback_entry.content if fallback_entry else None
         except Exception as e:
             log.warning("Letta get_block failed: %s", e)
-            fallback_entry = self._fallback.get(agent_role, label)
+            fallback_entry = self._fallback.retrieve(agent_role, label)
             return fallback_entry.content if fallback_entry else None
 
     async def set_block(
