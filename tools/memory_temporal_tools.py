@@ -3,6 +3,18 @@
 Provides three ToolDefinition constants (MEMORY_TIMELINE, MEMORY_RECENT,
 MEMORY_DEBUG_TRACE) for time-based memory queries.
 
+MEMORY ACCESS ARCHITECTURE:
+===========================
+- GOAT (supervisor): Full tier access with role="goat"
+- DAG agents: Working tier only with role="user_session"
+- Validation: Tier restrictions enforced per caller role
+
+TOOL WIRING:
+============
+- MEMORY_TIMELINE: Supports both roles, enforces tier restrictions
+- MEMORY_RECENT: Supports both roles, enforces tier restrictions
+- MEMORY_DEBUG_TRACE: Supports both roles, shows per-tier match counts
+
 Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 """
 from __future__ import annotations
@@ -13,6 +25,7 @@ from agents.base_agent import ToolDefinition
 from tools.memory_helpers import (
     ANY_TIERS,
     DAG_AGENT_ROLE,
+    GOAT_ROLE,
     format_entries,
     format_memory_error,
     format_no_results,
@@ -31,17 +44,37 @@ async def _timeline_handler(
     end_datetime: str,
     tier: str = "any",
     limit: int = 100,
+    role: str = GOAT_ROLE,
 ) -> str:
-    """Return entries from a specific time window, newest first."""
+    """Return entries from a specific time window, newest first.
+
+    MEMORY ACCESS:
+    - GOAT supervisor: role="goat" for full tier access
+    - DAG agents: role="user_session" with tier="working" only
+
+    Args:
+        start_datetime: ISO 8601 or natural language (e.g. 'yesterday')
+        end_datetime: ISO 8601 or natural-language end bound
+        tier: Tier to query (default: 'any')
+        limit: Max results (default 100)
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        Formatted entries or error message
+    """
     from memory.memory_manager import memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
         return error
 
+    # Enforce tier restriction for DAG agents
+    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
+        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
+
     try:
         entries = await memory_manager.timeline(
-            DAG_AGENT_ROLE,
+            role,
             start_datetime,
             end_datetime,
             tier=tier,
@@ -56,17 +89,38 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler(limit: int = 50, tier: str = "any") -> str:
-    """Return the N most recent memory entries, newest first."""
+async def _recent_handler(
+    limit: int = 50,
+    tier: str = "any",
+    role: str = GOAT_ROLE,
+) -> str:
+    """Return the N most recent memory entries, newest first.
+
+    MEMORY ACCESS:
+    - GOAT supervisor: role="goat" for full tier access
+    - DAG agents: role="user_session" with tier="working" only
+
+    Args:
+        limit: Max results (default 50)
+        tier: Tier to query (default: 'any')
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        Formatted entries or error message
+    """
     from memory.memory_manager import memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
         return error
 
+    # Enforce tier restriction for DAG agents
+    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
+        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
+
     try:
         entries = await memory_manager.recent(
-            DAG_AGENT_ROLE,
+            role,
             limit=limit,
             tier=tier,
         )
@@ -83,13 +137,28 @@ async def _debug_trace_handler(
     query: str,
     start_datetime: str | None = None,
     end_datetime: str | None = None,
+    role: str = GOAT_ROLE,
 ) -> str:
-    """Search each tier separately; show match counts with optional time filter."""
+    """Search each tier separately; show match counts with optional time filter.
+
+    MEMORY ACCESS:
+    - GOAT supervisor: role="goat" for full tier access
+    - DAG agents: role="user_session" (working tier only for actual search)
+
+    Args:
+        query: Semantic search query
+        start_datetime: Optional ISO 8601 or natural-language start
+        end_datetime: Optional ISO 8601 or natural-language end
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        JSON-formatted debug trace results
+    """
     from memory.memory_manager import memory_manager
 
     try:
         result = await memory_manager.debug_trace(
-            DAG_AGENT_ROLE,
+            role,
             query,
             start_datetime,
             end_datetime,

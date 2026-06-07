@@ -4,8 +4,18 @@ Provides three ToolDefinition constants (MEMORY_SEARCH, MEMORY_GET,
 MEMORY_STORE) for semantic search, exact-key retrieval, and key-value
 storage across working, episodic, and long-term memory tiers.
 
-GOAT (supervisor) has full tier access with role="goat".
-DAG agents are restricted to working tier only with role="user_session".
+MEMORY ACCESS ARCHITECTURE:
+===========================
+- GOAT (supervisor): Full tier access with role="goat"
+- DAG agents: Working tier only with role="user_session"
+- Validation: All writes validated via memory.validation module
+- Sanitization: Content sanitized before storage
+
+TOOL WIRING:
+============
+- MEMORY_SEARCH: Supervisor uses role="goat", agents use role="user_session"
+- MEMORY_GET: Supervisor uses role="goat", agents use role="user_session"
+- MEMORY_STORE: Supervisor can write to all tiers, agents to working only
 
 Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 """
@@ -17,6 +27,7 @@ from tools.memory_helpers import (
     ANY_TIERS,
     ALL_TIERS,
     GOAT_ROLE,
+    DAG_AGENT_ROLE,
     format_entries,
     format_memory_error,
     format_no_results,
@@ -36,11 +47,24 @@ async def _search_handler(
     start_datetime: str | None = None,
     end_datetime: str | None = None,
     tier: str = "any",
+    role: str = GOAT_ROLE,
 ) -> str:
     """Semantic search across memory tiers with optional time window.
 
-    GOAT supervisor uses role="goat" for full tier access.
-    DAG agents should use tier="working" only (enforced by system prompt).
+    MEMORY ACCESS:
+    - GOAT supervisor: role="goat" for full tier access
+    - DAG agents: role="user_session" with tier="working" only
+
+    Args:
+        query: Semantic search query
+        limit: Max results (default 20)
+        start_datetime: ISO 8601 or natural-language start
+        end_datetime: ISO 8601 or natural-language end bound
+        tier: Tier to search (default: 'any')
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        Formatted search results or error message
     """
     from memory.memory_manager import memory_manager
 
@@ -48,10 +72,14 @@ async def _search_handler(
     if error:
         return error
 
+    # Enforce tier restriction for DAG agents
+    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
+        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
+
     try:
         kw = {} if tier == "any" else {"memory_type": tier}
         entries = await memory_manager.search(
-            GOAT_ROLE,
+            role,
             query,
             limit=limit,
             start_datetime=start_datetime,
@@ -68,11 +96,24 @@ async def _search_handler(
     return format_entries(entries, max_content_len=200)
 
 
-async def _get_handler(key: str, tier: str = "any") -> str:
+async def _get_handler(
+    key: str,
+    tier: str = "any",
+    role: str = GOAT_ROLE,
+) -> str:
     """Retrieve a memory entry by exact key.
 
-    GOAT supervisor uses role="goat" for full tier access.
-    DAG agents should use tier="working" only (enforced by system prompt).
+    MEMORY ACCESS:
+    - GOAT supervisor: role="goat" for full tier access
+    - DAG agents: role="user_session" with tier="working" only
+
+    Args:
+        key: Exact memory key
+        tier: Tier to probe (default: 'any')
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        Entry content or error message
     """
     from memory.memory_manager import memory_manager
 
@@ -80,27 +121,51 @@ async def _get_handler(key: str, tier: str = "any") -> str:
     if error:
         return error
 
+    # Enforce tier restriction for DAG agents
+    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
+        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
+
     try:
         kw = {} if tier == "any" else {"memory_type": tier}
-        entry = await memory_manager.locate(GOAT_ROLE, key, **kw)
+        entry = await memory_manager.locate(role, key, **kw)
     except Exception as exc:
         return format_memory_error("memory_get", exc)
 
     return entry.content if entry else f"No entry found for key: {key!r}"
 
 
-async def _store_handler(key: str, value: str, tier: str = "working") -> str:
+async def _store_handler(
+    key: str,
+    value: str,
+    tier: str = "working",
+    role: str = GOAT_ROLE,
+) -> str:
     """Store a key-value pair in a memory tier (default: working/Redis).
 
+    MEMORY ACCESS:
+    - GOAT supervisor: Can write to all tiers (working, episodic, long_term)
+    - DAG agents: Can only write to working tier
+
     Includes validation and sanitization to prevent garbage data.
-    GOAT supervisor uses role="goat" for full tier access.
-    DAG agents should use tier="working" only (enforced by system prompt).
+
+    Args:
+        key: Memory key
+        value: Content to store
+        tier: Target tier (default: 'working')
+        role: Caller role ('goat' or 'user_session')
+
+    Returns:
+        Success message or error string
     """
     from memory.memory_manager import memory_manager
 
     error = validate_tier(tier, ALL_TIERS)
     if error:
         return error
+
+    # Enforce tier restriction for DAG agents
+    if role == DAG_AGENT_ROLE and tier != "working":
+        return f"ERROR: DAG agents can only write to working tier, not {tier!r}"
 
     # Validate and sanitize before storing
     try:
@@ -110,7 +175,7 @@ async def _store_handler(key: str, value: str, tier: str = "working") -> str:
         return f"ERROR: validation failed: {exc}"
 
     try:
-        await memory_manager.store(GOAT_ROLE, key, value, memory_type=tier)
+        await memory_manager.store(role, key, value, memory_type=tier)
     except Exception as exc:
         return format_memory_error("memory_store", exc)
 

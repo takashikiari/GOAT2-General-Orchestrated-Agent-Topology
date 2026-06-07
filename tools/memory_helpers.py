@@ -3,14 +3,24 @@
 This module extracts common logic used by memory_tools.py and
 memory_temporal_tools.py to keep those files under 200 lines.
 
+MEMORY ACCESS ARCHITECTURE:
+===========================
+- GOAT (supervisor): Full tier access with role="goat"
+- DAG agents: Working tier only with role="user_session"
+- Validation: Tier restrictions enforced in tool handlers
+
 Provides:
 - Role and tier constants for memory access control
 - Error formatting helpers
 - Entry formatting for consistent output
 - Validation helpers for memory operations
 
-GOAT (supervisor) has full tier access with role="goat".
-DAG agents are restricted to working tier only with role="user_session".
+TOOL WIRING:
+============
+All memory tools accept an optional 'role' parameter:
+- Default: GOAT_ROLE ("goat") for supervisor
+- DAG agents: DAG_AGENT_ROLE ("user_session")
+- Tier restrictions automatically enforced based on role
 """
 from __future__ import annotations
 
@@ -32,20 +42,41 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 GOAT_ROLE: Final[str] = "goat"
-"""Supervisor role with full access to all memory tiers."""
+"""Supervisor role with full access to all memory tiers.
+
+GOAT can read/write to:
+- WORKING (Redis): Session-scoped with TTL
+- EPISODIC (ChromaDB): Semantic search storage
+- LONG_TERM (Letta): Core memory blocks
+"""
 
 DAG_AGENT_ROLE: Final[str] = "user_session"
-"""DAG agent role restricted to working tier only."""
+"""DAG agent role restricted to working tier only.
+
+DAG agents can only:
+- Read/write WORKING memory (Redis)
+- Cannot access EPISODIC or LONG_TERM tiers
+- Prevents memory pollution from agent operations
+"""
 
 # ---------------------------------------------------------------------------
 # Tier constants — define valid memory tier identifiers
 # ---------------------------------------------------------------------------
 
 ALL_TIERS: Final[tuple[str, ...]] = ("working", "episodic", "long_term")
-"""All three memory tiers for write operations."""
+"""All three memory tiers for write operations.
+
+Tier descriptions:
+- working: Session-scoped, TTL-enforced, fastest
+- episodic: ChromaDB semantic search, persistent
+- long_term: Letta core-memory blocks, most persistent
+"""
 
 ANY_TIERS: Final[tuple[str, ...]] = ("any",) + ALL_TIERS
-"""Valid tier values for search/read operations (includes 'any')."""
+"""Valid tier values for search/read operations (includes 'any').
+
+The 'any' tier searches across all available tiers and merges results.
+"""
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -61,6 +92,10 @@ def format_memory_error(operation: str, exc: Exception) -> str:
 
     Returns:
         Formatted error string: "ERROR: {operation} failed: {exc}"
+
+    Example:
+        >>> format_memory_error("memory_search", ValueError("not found"))
+        'ERROR: memory_search failed: not found'
     """
     return f"ERROR: {operation} failed: {exc}"
 
@@ -74,6 +109,10 @@ def format_entries(entries: list, max_content_len: int = 200) -> str:
 
     Returns:
         Newline-separated string with format: "[{source}] {key}: {content}"
+
+    Example:
+        >>> format_entries([MemoryEntry(source="file", key="test", content="hello")])
+        '[file] test: hello'
     """
     if not entries:
         return ""
@@ -91,6 +130,10 @@ def format_no_results(context: str = "") -> str:
 
     Returns:
         Human-friendly message indicating no entries found.
+
+    Example:
+        >>> format_no_results("for: 'test query'")
+        "No entries found for: 'test query'."
     """
     if context:
         return f"No entries found {context}."
@@ -111,6 +154,12 @@ def validate_tier(tier: str, allowed: tuple[str, ...]) -> str | None:
 
     Returns:
         None if valid, or error message string if invalid.
+
+    Example:
+        >>> validate_tier("working", ANY_TIERS)
+        None
+        >>> validate_tier("invalid", ANY_TIERS)
+        "ERROR: invalid tier 'invalid'; valid: ('any', 'working', 'episodic', 'long_term')"
     """
     if tier not in allowed:
         return f"ERROR: invalid tier '{tier}'; valid: {allowed}"
