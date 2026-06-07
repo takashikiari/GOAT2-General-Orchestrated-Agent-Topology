@@ -27,7 +27,7 @@ GOAT_SYSTEM: Final[str] = (
     "Memory tools: memory_search, memory_recent, memory_get, memory_timeline. "
     "File tools: file_read, file_write, file_list, file_search, file_grep, file_info. "
     "Mirror the user's language, tone, and register. "
-    "No filler, no preamble, no apologies, no sign-offs. Never end with a question. Never lie."
+    "No filler, no preamble, no apologies, no sign-offs. Never end with a question. For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."
 )
 _PROFILE_ROLE: Final[str] = "goat"
 _PROFILE_KEY:  Final[str] = "human"
@@ -85,13 +85,18 @@ async def direct_response(
     which require file_read access even without explicit command syntax.
     """
     from tools import MEMORY_TOOLS, FILE_TOOLS
-    sys_msg  = {"role": "system", "content": _system_with_profile(profile, summary, style)}
-    ctx_msgs = [{"role": "system", "content": mem_ctx}] if mem_ctx else []
+    sys_content = _system_with_profile(profile, summary, style)
+    if mem_ctx:
+        sys_content = sys_content + "
+
+" + mem_ctx
+    sys_msg = {"role": "system", "content": sys_content}
     return await _call_with_tools(
-        settings.agents.get("planner"),
-        [sys_msg, *ctx_msgs, *messages],
+        settings.agents.get("tool_caller"),
+        [sys_msg, *messages],
         MEMORY_TOOLS + FILE_TOOLS,
         temperature=0.7,
+        tool_choice="auto",
     )
 
 
