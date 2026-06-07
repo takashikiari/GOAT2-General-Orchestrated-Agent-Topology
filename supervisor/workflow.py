@@ -169,6 +169,7 @@ class WorkflowGraph:
         *,
         verbose: bool = False,
         memory_manager: MemoryManager | None = None,
+        session_id: str | None = None,
     ) -> dict[str, AgentResult]:
         """
         Execute all tasks in topological order with wave-level concurrency.
@@ -299,5 +300,16 @@ class WorkflowGraph:
 
         if verbose:
             log.info("WorkflowGraph: all %d waves complete", len(waves))
+
+        if session_id and memory_manager:
+            try:
+                import json as _json
+                import time as _time
+                from supervisor.session import store_dag_result
+                full_detail = _json.dumps({"session_id": session_id, "completed_at": _time.time(), "tasks": {tid: {"role": r.role, "output": r.output[:2000], "source": r.source, "tool_called": r.tool_called, "error": r.error} for tid, r in results.items()}}, indent=2)
+                await store_dag_result(memory_manager, session_id, full_detail)
+                log.info("dag_result:%s written to Redis", session_id)
+            except Exception as e:
+                log.warning("Failed to write dag_result: %s", e)
 
         return results

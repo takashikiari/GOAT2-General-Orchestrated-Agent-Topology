@@ -133,7 +133,7 @@ async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult])
     tool_choice='auto' allows the model to select tools based on true intent.
     Tools are deduplicated by name before sending to API to prevent HTTP 400 errors.
     """
-    from tools import FILE_TOOLS, WEB_SEARCH, MEMORY_TOOLS
+    from tools import FILE_TOOLS, WEB_SEARCH, DAG_MEMORY_TOOLS
     spec = settings.agents.get("tool_caller")
     if not spec.tool_calling:
         raise RuntimeError(f"tool_caller model '{spec.model_id}' has tool_calling=False; use deepseek-chat/gpt-4o-mini.")
@@ -150,7 +150,7 @@ async def _run_tool_caller(task: AgentTask, dep_results: dict[str, AgentResult])
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
     # Deduplicate tools by name to prevent HTTP 400 "Tool names must be unique" errors
-    _tools = _dedupe_tools(FILE_TOOLS + MEMORY_TOOLS + [WEB_SEARCH])
+    _tools = _dedupe_tools(FILE_TOOLS + DAG_MEMORY_TOOLS + [WEB_SEARCH])
     log.debug("tool_caller: tools=%s (semantic selection, deduped)", [t.name for t in _tools])
     r = await _call_with_tools(spec, msgs, _tools, tool_choice="auto")
     task.source = r.source

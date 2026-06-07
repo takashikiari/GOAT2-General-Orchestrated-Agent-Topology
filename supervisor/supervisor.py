@@ -87,6 +87,7 @@ ARCHITECTURE DIAGRAM:
     └─────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
+import uuid
 
 import asyncio
 import logging
@@ -370,12 +371,27 @@ class GoatSupervisor:
         # Execute DAG with memory_manager passed for Redis working memory access
         # NOTE: DAG agents can ONLY access working tier (Redis)
         # ChromaDB and Letta are supervisor-only
+        session_id = str(uuid.uuid4())
         results = await WorkflowGraph(plan.tasks).execute(
             self.registry,
             self._semaphore,
             verbose=self._verbose,
             memory_manager=self.memory_manager,
+            session_id=session_id,
         )
+
+        # Read dag_result from Redis for independent validation
+        dag_verified = False
+        try:
+            from supervisor.session import retrieve_dag_result
+            dag_detail = await retrieve_dag_result(self.memory_manager, session_id)
+            if dag_detail:
+                dag_verified = True
+                log.info("dag_result:%s retrieved — validated=True", session_id)
+            else:
+                log.warning("dag_result:%s missing from Redis — validated=False", session_id)
+        except Exception as e:
+            log.warning("retrieve_dag_result failed: %s", e)
 
         # Wait for memory pipeline to complete
         try:
