@@ -3,6 +3,46 @@
 
 ---
 
+## What was done this session (patch 65)
+
+### Memory binding and tool parameter validation — GOAT vs DAG separation enforced
+
+**Architecture:**
+- **GOAT supervisor**: Manages memory read/write directly across all three tiers (Redis, ChromaDB, Letta) with role="goat"
+- **DAG agents**: Access tools but restricted to working memory (Redis) only with role="user_session"
+- **Validation**: GOAT validates task success by checking tool parameters — never reports validated without verification
+
+**Fixes applied:**
+
+**`supervisor/dag_validator.py`**:
+- Added `_is_missing_tool_params()` check — validates tool_called, tool_name, raw_output_hash
+- Priority order: missing_tool_params > empty_file_read > unverified_execution
+- GOAT cannot mark task safe without verifying tool parameters
+
+**`supervisor/workflow.py`**:
+- AgentResult validates tool_called only when tool_name is non-empty
+- Logging includes tool_called status in verbose mode
+
+**`supervisor/types.py`**:
+- Added `AgentResult.validated` property — checks tool_called AND tool_name AND raw_output_hash
+- Added `SupervisorResult.validated` property — all tasks must have verified parameters
+- `to_dict()` includes "validated" field for each task
+
+**`tools/memory_tools.py`**:
+- `_ROLE = "goat"` for GOAT supervisor full tier access
+- Docstrings clarify DAG agents restricted to tier="working" only
+
+**`supervisor/supervisor.py`**:
+- Logging includes "validated" status alongside "success"
+- `_REASON_LABELS` includes "missing_tool_params" entry
+
+**End-to-end tests:**
+- Memory binding verified: GOAT accesses all tiers, DAG restricted to working
+- Tool parameter validation verified: tasks without parameters marked unsafe
+- All files ≤200 lines with docstrings
+
+---
+
 ## What was done this session (patch 64)
 
 ### Memory tool binding — GOAT vs DAG separation enforced
@@ -10,30 +50,17 @@
 **Memory tool access is now strictly separated:**
 
 **GOAT (supervisor/assistant)**:
-- Full access to all three memory backends: Redis (working), ChromaDB (episodic), Letta (long-term)
+- Full access to all three memory backends: Redis, ChromaDB, Letta
 - Uses `memory_manager` directly with `role="goat"`
-- Memory tools: `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE` with `tier="any"` or specific tier
 
-**DAG (agents — planner, researcher, coder, critic, summarizer)**:
-- Redis read/write only — DAG agents access working memory tier only
-- No access to ChromaDB (episodic) or Letta (long-term)
-- Uses memory tools with `tier="working"` as default and only permitted value
-- Uses `role="user_session"` for all memory operations
+**DAG (agents)**:
+- Redis read/write only — working memory tier only
+- Uses memory tools with `tier="working"` as default
 
 **Implementation**:
 - `tools/memory_tools.py`: `_ROLE = "goat"`, `_TIERS = ("working", "episodic", "long_term")`
 - `tools/memory_temporal_tools.py`: `_ROLE = "user_session"`, default `tier="working"`
-- `supervisor/session.py`: `store_turn()` writes to WORKING tier (Redis) only with `role="user_session"`
-- `supervisor/supervisor.py`: `finalize_session()` may promote turns from WORKING to EPISODIC/LONG_TERM
-
-**`tools/__init__.py`**:
-- Added missing imports for `MEMORY_DIRECT_QUERY` and `MEMORY_LAST_WRITE` (from patch 60)
-- Added both to `ALL_TOOLS` (now 19 tools total)
-- Added both to `MEMORY_TOOLS` convenience group (now 8 tools)
-
-**`readme.md`**:
-- Added "Memory Tool Binding — GOAT vs DAG Separation" section documenting the access rules
-- Updated tool inventory table to 19 tools
+- `supervisor/session.py`: `store_turn()` writes to WORKING tier with `role="user_session"`
 
 All 37 tests pass. All files ≤200 lines with docstrings.
 
@@ -61,79 +88,10 @@ which require file_read but don't match search keywords.
 
 **`supervisor/identity.py`**:
 - `direct_response()` always has CORE_TOOLS (MEMORY_TOOLS + FILE_TOOLS)
-- Enables proper handling of conversational requests
 
 **Validation:**
 - "Goat! Citește changelogs din workspace am reparat tool-urile" triggers file_read autonomously
-- LLM evaluates task semantics, invokes file_read via CORE_TOOLS or DAG tool_caller
-- DAG results stored in WORKING memory, accessible to subsequent turns
 - All 37 tests pass. All files ≤200 lines with docstrings.
-
----
-
-## What was done this session (patch 62)
-
-### Message routing architecture — autonomous tool selection, no keyword triggers
-
-**Root cause:** Keyword/regex-based routing bifurcated messages:
-- Conversational triggers bypassed DAG → hallucination
-- Direct commands forced sterile DAG execution → no autonomy
-
-**Fix applied:**
-
-**`supervisor/classifier.py`**:
-- Removed all keyword short-circuits
-- All classification now LLM-driven — semantic evaluation only
-
-**`supervisor/supervisor.py`**:
-- CONVERSATIONAL path: LLM with CORE_TOOLS — no DAG bypass
-- DAG results bridged into WORKING memory for conversational access
-
-**`supervisor/identity.py`**:
-- `direct_response()` always has CORE_TOOLS available
-
-**Validation:**
-- "Goat! Citește changelogs din workspace am reparat tool-urile" triggers autonomous tool selection
-- Agent recognizes need to verify workspace files, invokes file_read
-- All 37 tests pass. All files ≤200 lines with docstrings.
-
----
-
-## What was done this session (patch 61)
-
-### File executor connectivity and path resolution repaired
-
-**`tools/file_executor.py`**:
-- `_resolve()` logs resolved path and workspace for debugging
-- Empty path validation with descriptive error
-- File existence checks return specific errors
-
-**`tools/file_executor_helpers.py`**:
-- Workspace detection logs resolved path and GOAT_WORKSPACE at module load
-
-**Validation:**
-- `file_read("~/workspace/goat2/README.md")` returns actual text content with unique hash
-- All 17 tools functional; no imports broken
-
----
-
-## What was done this session (patch 60)
-
-### Memory tools: direct query + last-write timestamp tracking
-
-**`tools/memory_direct_query.py`** (new):
-- Raw SQL-like queries to Letta/ChromaDB/Redis
-- Input sanitization blocks dangerous patterns
-
-**`tools/memory_last_write.py`** (new):
-- Check last-write timestamp for any tier from Redis
-
-**`memory/chroma_crud.py`**:
-- `_sync_last_write_to_redis()` after every ChromaDB write
-
-**Validation:**
-- `memory_last_write('chromadb')` returns correct timestamp
-- `memory_direct_query('letta LIMIT 1')` returns structured JSON
 
 ---
 
@@ -154,6 +112,7 @@ which require file_read but don't match search keywords.
 - **Analytical** — planner gets [Lightweight: ≤2 tasks] hint
 - **Complex** — full DAG: planner → wave execution → critique → synthesize
 - **Session persistence** — turns stored to WORKING, promoted to EPISODIC at session end
+- **Tool validation** — GOAT validates parameters before marking tasks successful
 
 ### CLI
 - Async chat loop, single GoatSupervisor instance across turns

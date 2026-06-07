@@ -1,8 +1,8 @@
 """GOAT 2.0 top-level orchestrator — unified message handling with autonomous tool selection.
 
-All user messages flow through the same evaluation layer. The LLM autonomously
-decides when to invoke DAG/tools based on semantic intent, not keyword triggers.
-DAG results are bridged into WORKING memory for conversational path access.
+GOAT supervisor manages memory read/write directly across all three tiers (Redis, ChromaDB, Letta).
+DAG agents access tools but are restricted to working memory (Redis) with role="user_session".
+GOAT validates task success by checking tool parameters — never reports validated without verification.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ log = logging.getLogger("goat2.supervisor")
 __all__ = ["GoatSupervisor"]
 
 _REASON_LABELS: dict[str, str] = {
+    "missing_tool_params":  "tool called but parameters missing — cannot validate",
     "empty_file_read":      "file tool returned no content",
     "unverified_execution": "required tool was not invoked",
     "source_violation":     "tool returned disallowed source type",
@@ -48,6 +49,7 @@ def _unverified_summary(results: dict, val_statuses: list) -> str:
 
     Describes only what was attempted and which tasks failed — no content is
     generated or inferred. Every word is derived from AgentResult metadata.
+    GOAT cannot validate task success without verifying tool parameters.
     """
     parts = []
     for s in val_statuses:
@@ -70,8 +72,9 @@ def _build_metadata_summary(statuses: list, audit) -> str:
 class GoatSupervisor:
     """GOAT 2.0 orchestrator with unified message handling and autonomous tool selection.
 
-    All messages receive the same evaluation. The LLM decides autonomously when
-    to use DAG/tools based on semantic intent, not keyword triggers.
+    GOAT supervisor manages memory read/write directly across all three tiers.
+    DAG agents access tools but are restricted to working memory (Redis).
+    GOAT validates task success by checking tool parameters — never reports validated without verification.
     """
 
     def __init__(
@@ -94,8 +97,8 @@ class GoatSupervisor:
         ANALYTICAL: Lightweight DAG (≤2 tasks) with tool execution.
         COMPLEX: Full DAG with planner, researcher, critic, synthesizer.
 
-        DAG results are stored in WORKING memory for subsequent conversational access.
-        This bridges the async execution layer back to the chat context.
+        GOAT supervisor manages memory directly. DAG agents restricted to working tier (Redis).
+        GOAT validates tool parameters before marking tasks successful.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -156,8 +159,8 @@ class GoatSupervisor:
         sources  = {tid: r.source for tid, r in results.items()}
         metadata = _build_metadata_summary(val_statuses, audit)
         total    = time.monotonic() - t0
-        log.info("Done in %.1fs — success=%s sources=%s", total,
-                 all(r.ok for r in results.values()), list(sources.values()))
+        log.info("Done in %.1fs — success=%s validated=%s sources=%s", total,
+                 all(r.ok for r in results.values()), all(r.validated for r in results.values()), list(sources.values()))
         r = SupervisorResult(
             intent=intent, plan=plan, results=results,
             critique=critique, summary=summary, total_duration_s=total,

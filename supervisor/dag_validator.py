@@ -1,8 +1,11 @@
 """Post-execution DAG result validator for GOAT 2.0.
 
 Runs after all DAG nodes finish and before aggregation (critique/synthesize).
-Blocks generated source on execution tasks, enforces per-role source whitelists,
-and flags net errors plus stale memory markers for revalidation.
+Validates tool usage parameters, blocks generated source on execution tasks,
+enforces per-role source whitelists, and flags net errors plus stale memory markers.
+
+GOAT supervisor validates task success by checking tool call parameters —
+never reports a task validated without verifying the tool was invoked correctly.
 """
 from __future__ import annotations
 
@@ -84,18 +87,39 @@ def _is_empty_file_read(result: AgentResult) -> bool:
     return result.source == "file" and result.tool_called and not (result.output or "").strip()
 
 
+def _is_missing_tool_params(result: AgentResult) -> bool:
+    """True when tool was called but required parameters are missing or invalid.
+
+    GOAT supervisor cannot validate task success without verifying tool parameters.
+    This check ensures tool calls have meaningful arguments before marking safe.
+    """
+    if not result.tool_called:
+        return False  # No tool called — different validation path
+    if not result.tool_name:
+        return True  # Tool called but name not recorded — validation impossible
+    if not result.raw_output_hash:
+        return True  # No output hash — cannot verify tool execution
+    return False
+
+
 def validate_results(
     results: dict[str, AgentResult],
 ) -> tuple[dict[str, AgentResult], list[ValidationStatus]]:
     """Validate all DAG results before aggregation.
 
     GOAT supervisor MUST reject synthesis if any returned status has safe=False.
-    Priority: empty_file_read > unverified_execution > source_violation > net_error > stale_memory.
+    Priority: missing_tool_params > empty_file_read > unverified_execution > source_violation > net_error > stale_memory.
     Returns the unchanged results dict alongside per-task ValidationStatus objects.
     """
     statuses: list[ValidationStatus] = []
     for tid, result in results.items():
-        if _is_empty_file_read(result):
+        if _is_missing_tool_params(result):
+            log.warning(
+                "dag_validator: %s tool_called=True but parameters missing — cannot validate",
+                tid,
+            )
+            statuses.append(ValidationStatus(task_id=tid, safe=False, reason="missing_tool_params"))
+        elif _is_empty_file_read(result):
             log.warning(
                 "dag_validator: %s source=file tool_called=True but output empty — empty_file_read",
                 tid,

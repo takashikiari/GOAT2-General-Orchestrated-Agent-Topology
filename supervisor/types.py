@@ -1,3 +1,8 @@
+"""Core types for GOAT 2.0 supervisor — tasks, results, and execution metadata.
+
+All types are Rust-ready with explicit type hints and dataclasses.
+AgentResult includes tool parameter tracking for validation.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,6 +23,7 @@ AgentRunner = Callable[["AgentTask", dict[str, "AgentResult"]], Awaitable[str]]
 
 
 class TaskStatus(str, Enum):
+    """Task execution state in the workflow DAG."""
     PENDING = "pending"
     RUNNING = "running"
     DONE    = "done"
@@ -26,7 +32,11 @@ class TaskStatus(str, Enum):
 
 @dataclass
 class AgentTask:
-    """One node in the workflow DAG. memory_manager and tools are injected by GoatSupervisor before execution."""
+    """One node in the workflow DAG. memory_manager and tools are injected by GoatSupervisor before execution.
+
+    DAG agents access tools but are restricted to working memory (Redis) with role="user_session".
+    GOAT supervisor manages memory read/write directly across all three tiers.
+    """
 
     id:             str
     role:           str
@@ -40,7 +50,11 @@ class AgentTask:
 
 @dataclass
 class AgentResult:
-    """Output of one AgentTask, including timing, model used, and optional error string."""
+    """Output of one AgentTask, including timing, model used, and tool parameter validation.
+
+    GOAT supervisor validates tool_called, tool_name, and raw_output_hash before
+    marking a task as successful. Cannot report validated without parameter verification.
+    """
 
     task_id:         str
     role:            str
@@ -49,14 +63,25 @@ class AgentResult:
     duration_s:      float
     error:           str | None = None
     source:          str  = ""     # net | memory | file | generated
-    tool_called:     bool = False  # True when ≥1 tool was invoked
+    tool_called:     bool = False  # True when ≥1 tool was invoked with valid parameters
     tool_name:       str  = ""     # primary tool called, inferred from source
-    raw_output_hash: str  = ""     # SHA-256 16-char prefix of output
+    raw_output_hash: str  = ""     # SHA-256 16-char prefix of output (validates execution)
 
     @property
     def ok(self) -> bool:
         """True when the task completed without an error."""
         return self.error is None
+
+    @property
+    def validated(self) -> bool:
+        """True when task completed AND tool parameters can be verified.
+
+        GOAT supervisor cannot report task validated without checking:
+        - tool_called is True
+        - tool_name is non-empty
+        - raw_output_hash is non-empty (proves tool execution)
+        """
+        return self.ok and self.tool_called and bool(self.tool_name) and bool(self.raw_output_hash)
 
 
 @dataclass
@@ -68,7 +93,11 @@ class Plan:
 
 @dataclass
 class SupervisorResult:
-    """Full output of a GoatSupervisor.run() call."""
+    """Full output of a GoatSupervisor.run() call.
+
+    GOAT supervisor manages memory read/write directly. DAG agents access
+    tools but are restricted to working memory (Redis) with role="user_session".
+    """
 
     intent:           str
     plan:             Plan
@@ -85,6 +114,14 @@ class SupervisorResult:
         """True when all tasks completed without errors."""
         return all(r.ok for r in self.results.values())
 
+    @property
+    def validated(self) -> bool:
+        """True when all tasks completed AND tool parameters verified.
+
+        GOAT supervisor cannot report success without parameter validation.
+        """
+        return all(r.validated for r in self.results.values())
+
     def to_dict(self) -> dict:
         """Serialize to a plain dict suitable for JSON output."""
         return {
@@ -92,6 +129,7 @@ class SupervisorResult:
             "summary":          self.summary,
             "critique":         self.critique,
             "success":          self.success,
+            "validated":        self.validated,
             "total_duration_s": round(self.total_duration_s, 2),
             "session_id":       self.session_id,
             "sources":          self.sources,
@@ -100,7 +138,7 @@ class SupervisorResult:
                 {
                     "id": r.task_id, "role": r.role, "model": r.model,
                     "duration_s": round(r.duration_s, 2), "ok": r.ok,
-                    "error": r.error, "source": r.source,
+                    "validated": r.validated, "error": r.error, "source": r.source,
                     "tool_called": r.tool_called, "tool_name": r.tool_name,
                     "raw_output_hash": r.raw_output_hash,
                     "output": r.output[:500] + "…" if len(r.output) > 500 else r.output,

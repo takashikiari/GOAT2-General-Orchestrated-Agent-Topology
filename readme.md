@@ -6,6 +6,24 @@ memory queries, and code execution.
 
 ---
 
+## Architecture
+
+### GOAT Supervisor vs DAG Agents
+
+**GOAT Supervisor:**
+- Manages memory read/write directly across all three tiers (Redis, ChromaDB, Letta)
+- Uses `role="goat"` for memory operations
+- Validates task success by checking tool parameters — never reports validated without verification
+- Orchestrates DAG execution, critique, and synthesis
+
+**DAG Agents (planner, researcher, coder, critic, summarizer, tool_caller):**
+- Access tools but restricted to working memory (Redis) only
+- Use `role="user_session"` and `tier="working"` for all memory operations
+- No direct access to ChromaDB (episodic) or Letta (long-term)
+- Tool parameters validated by GOAT before marking tasks successful
+
+---
+
 ## Tools module — `tools/`
 
 The `tools/` package provides standalone `ToolDefinition` instances ready to inject into
@@ -67,6 +85,7 @@ Memory tool access is strictly separated between GOAT (supervisor) and DAG (agen
 - Uses `memory_manager` directly with `role="goat"`
 - Memory tools: `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE` with `tier="any"` or specific tier
 - Reads recent turns, session context, user profile directly — no tool calls needed
+- Validates task success by checking tool parameters
 
 ### DAG (agents — planner, researcher, coder, critic, summarizer)
 - **Redis read/write only** — DAG agents access **working** memory tier only
@@ -74,42 +93,31 @@ Memory tool access is strictly separated between GOAT (supervisor) and DAG (agen
 - Uses memory tools with `tier="working"` as default and only permitted value
 - Uses `role="user_session"` for all memory operations
 - System prompt explicitly states: "Memory checks use memory tools, NEVER file search"
+- Tool parameters validated by GOAT before marking tasks successful
 
 ### Implementation
 - `tools/memory_tools.py`: `_ROLE = "goat"`, `_TIERS = ("working", "episodic", "long_term")`
 - `tools/memory_temporal_tools.py`: `_ROLE = "user_session"`, default `tier="working"`
 - `supervisor/session.py`: `store_turn()` writes to WORKING tier (Redis) only with `role="user_session"`
 - `supervisor/supervisor.py`: `finalize_session()` may promote turns from WORKING to EPISODIC/LONG_TERM
+- `supervisor/dag_validator.py`: Validates tool_called, tool_name, raw_output_hash before marking safe
 
 ---
 
-## Architecture overview
-
-```
-User input → CLI / Telegram
-                ↓
-         GoatSupervisor.run()
-                ↓
-         Intent classifier
-           ├─ CONVERSATIONAL → direct_response (LLM + CORE_TOOLS)
-           ├─ ANALYTICAL     → planner → tool_caller → synthesize
-           └─ COMPLEX        → planner → wave execution → critique → synthesize
-                ↓
-         Memory: 3 tiers (working / episodic / long-term)
-         Tools:  file ops, web search, memory CRUD, calculator, think
-```
-
----
-
-## Source provenance and trust layer — `supervisor/source_types.py` et al.
+## Source provenance and trust layer
 
 Every tool call is tagged with a data source: **net** (web search), **memory** (recall),
 **file** (filesystem), or **generated** (pure LLM output). This tag flows from the tool
 call through the DAG to the final `SupervisorResult.sources` dict.
 
-### Source enforcement rules (patches 52–54)
+### Validation rules
 
-Execution tasks must call a real tool — `source='generated'` is blocked:
+GOAT supervisor validates task success by checking:
+- `tool_called` is True
+- `tool_name` is non-empty
+- `raw_output_hash` is non-empty (proves tool execution)
+
+If any parameter is missing, task is marked `validated=False` and synthesis is skipped.
 
 | Role | Allowed sources | Enforced by |
 |------|----------------|-------------|
@@ -120,27 +128,9 @@ Execution tasks must call a real tool — `source='generated'` is blocked:
 | `critic` / `summarizer` | `generated`, `file`, `memory` | dag_validator |
 | `planner` | `generated` | dag_validator |
 
-`AgentResult` now carries `tool_called: bool`, `tool_name: str`, `raw_output_hash: str`.
-If any DAG node fails source validation, GOAT responds with a factual failure message
-(e.g. `"Not available. researcher via web_search: web search returned an error."`) and
-logs task IDs + reasons before blocking synthesis.
-If synthesis succeeds but returns empty output, GOAT constructs a factual fallback listing
-which tools were called — no LLM re-call, no generated content.
-`_run_summarizer` skips the LLM entirely when all upstream task outputs are empty.
-`GOAT_SYSTEM` and the synthesis prompt both include `"No apologies."` so apologies are
-never used in place of factual unavailability statements.
-
-| Component | File | Role |
-|-----------|------|------|
-| `SourceTag` / `TaggedResult` | `source_types.py` | Type definitions + `infer_source` |
-| Structured log per call | `structured_logger.py` | JSON to `goat2.tool_calls.structured` |
-| Post-execution validator | `dag_validator.py` | Whitelist + UNVERIFIED + empty_file_read + net errors + stale memory |
-| Outbound content filter | `interfaces/content_filter.py` | Masks API keys / secrets before sending to Telegram |
-| Cross-tool auditor | `auditor.py` | Jaccard similarity anomaly detection |
-
 **`[require_source: true]`** is prepended to every DAG plan context. If any task returns
-without a source tag, the supervisor responds with `"Unverified"` instead of forwarding
-the synthesized answer.
+without a source tag or missing tool parameters, the supervisor responds with `"Unverified"`
+instead of forwarding the synthesized answer.
 
 ---
 
