@@ -94,7 +94,7 @@ import time
 from typing import TYPE_CHECKING
 
 from config.settings import settings
-from supervisor.types import AgentRunner, Plan, SupervisorResult
+from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry, _build_default_registry
 from supervisor.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
