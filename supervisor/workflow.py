@@ -106,12 +106,13 @@ class WorkflowGraph:
                             task_id=tid,
                             role=task.role,
                             output=output,
-                            success=True,
-                            tool_called=None,
-                            tool_name=None,
-                            raw_output_hash=None,
+                            model="",
                             duration_s=duration,
-                            model_key=None,
+                            error=None,
+                            source="",
+                            tool_called=False,
+                            tool_name="",
+                            raw_output_hash="",
                         )
                         if verbose:
                             log.debug("Completed task %s: %s", tid, output[:80] if output else "")
@@ -122,13 +123,13 @@ class WorkflowGraph:
                             task_id=tid,
                             role=task.role,
                             output="",
-                            success=False,
-                            error=str(e),
-                            tool_called=None,
-                            tool_name=None,
-                            raw_output_hash=None,
+                            model="",
                             duration_s=duration,
-                            model_key=None,
+                            error=str(e),
+                            source="",
+                            tool_called=False,
+                            tool_name="",
+                            raw_output_hash="",
                         )
 
             # Execute all tasks in this wave concurrently
