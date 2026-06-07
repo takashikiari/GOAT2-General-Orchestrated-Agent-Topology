@@ -41,7 +41,12 @@ class WorkflowGraph:
 
         # Add all tasks as nodes
         for task in tasks:
-            self._dag.add_node(DAGNode(node_id=task.id, role=task.role))
+            self._dag.add_node(DAGNode(
+                node_id=task.id,
+                role=task.role,
+                label=task.prompt[:50] if task.prompt else "",
+                source="planner",
+            ))
 
         # Add edges based on depends_on
         for task in tasks:
@@ -79,6 +84,7 @@ class WorkflowGraph:
 
             async def _run(tid: str) -> None:
                 """Execute a single task with semaphore control."""
+                import time
                 async with semaphore:
                     task = self._tasks[tid]
                     # Build context from completed dependencies
@@ -91,9 +97,11 @@ class WorkflowGraph:
                     if verbose:
                         log.debug("Starting task %s (role=%s)", tid, task.role)
 
+                    t_start = time.monotonic()
                     try:
                         runner = registry.get(task.role)
                         output = await runner(task, context)
+                        duration = time.monotonic() - t_start
                         results[tid] = AgentResult(
                             task_id=tid,
                             role=task.role,
@@ -102,12 +110,13 @@ class WorkflowGraph:
                             tool_called=None,
                             tool_name=None,
                             raw_output_hash=None,
-                            duration_s=0.0,
+                            duration_s=duration,
                             model_key=None,
                         )
                         if verbose:
                             log.debug("Completed task %s: %s", tid, output[:80] if output else "")
                     except Exception as e:
+                        duration = time.monotonic() - t_start
                         log.exception("Task %s failed", tid)
                         results[tid] = AgentResult(
                             task_id=tid,
@@ -118,7 +127,7 @@ class WorkflowGraph:
                             tool_called=None,
                             tool_name=None,
                             raw_output_hash=None,
-                            duration_s=0.0,
+                            duration_s=duration,
                             model_key=None,
                         )
 
