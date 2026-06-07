@@ -37,11 +37,21 @@ async def synthesize_results(
     style: str = "",
     lang: str = "",
     session_summary: str = "",
+    dag_detail: str = "",
 ) -> str:
-    """Synthesize agent outputs into a terse, persona-matched final answer."""
+    """Synthesize agent outputs into a terse, persona-matched final answer.
+
+    When dag_detail is provided, prepends [DAG Execution Result] to context
+    to ensure the LLM synthesizes from real DAG output instead of hallucinating.
+    """
     context  = _format_dep_context(results)
     sys_base = _system_with_profile(profile, session_summary, style)
     lang_sfx = f"\nRespond in {lang}." if lang and lang.lower() != "english" else ""
+    
+    # Prepend DAG execution result to context when available
+    if dag_detail:
+        context = f"[DAG Execution Result]\n{dag_detail}\n\n{context}"
+    
     return await _call_llm(
         settings.agents.get("planner"),
         [

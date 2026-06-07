@@ -58,6 +58,7 @@ VALIDATION REQUIREMENTS:
     - Confirms raw_output_hash proves execution
     - Validates source field matches allowed types
     - Cannot report validated=true without parameter verification
+    - dag_verified must be True — ensures LLM synthesizes from real DAG output
 
 ARCHITECTURE DIAGRAM:
     ┌─────────────────────────────────────────────────────────────┐
@@ -72,7 +73,6 @@ ARCHITECTURE DIAGRAM:
     │  │    ┌─────────┐  ┌─────────┐  ┌─────────┐              │  │
     │  │    │ Agent 1 │  │ Agent 2 │  │ Agent 3 │              │  │
     │  │    │ (Redis) │  │ (Redis) │  │ (Redis) │              │  │
-    │  │    └─────────┘  └─────────┘  └─────────┘              │  │
     │  └──────────────────────────────────────────────────────┘  │
     │                           │                                 │
     │         ┌─────────────────┼─────────────────┐              │
@@ -198,6 +198,7 @@ class GoatSupervisor:
     - tool_name must be non-empty
     - raw_output_hash must prove execution
     - source must match allowed types (file, memory, net, generated)
+    - dag_verified must be True — ensures LLM synthesizes from real DAG output
     """
 
     def __init__(
@@ -301,6 +302,7 @@ class GoatSupervisor:
         2. auditor runs anomaly detection on results
         3. Tool parameters verified before marking validated=true
         4. Source violations logged but don't fail execution
+        5. dag_verified ensures LLM synthesizes from real DAG output
 
         Args:
             intent: User message/intent to process
@@ -382,6 +384,7 @@ class GoatSupervisor:
 
         # Read dag_result from Redis for independent validation
         dag_verified = False
+        dag_detail = ""
         try:
             from supervisor.session import retrieve_dag_result
             dag_detail = await retrieve_dag_result(self.memory_manager, session_id)
@@ -414,6 +417,8 @@ class GoatSupervisor:
             critique = ""
         else:
             critique = await critique_results(plan_ctx, results, lang)
+            # Pass dag_detail to synthesize_results only when dag_verified=True
+            # This ensures the LLM synthesizes from real DAG output instead of hallucinating
             summary = await synthesize_results(
                 plan_ctx,
                 results,
@@ -422,6 +427,7 @@ class GoatSupervisor:
                 self._behavior_style,
                 lang,
                 self._history.summary,
+                dag_detail=dag_detail if dag_verified else "",
             )
             if not summary.strip():
                 tools_called = sorted(
@@ -441,10 +447,11 @@ class GoatSupervisor:
         metadata = _build_metadata_summary(val_statuses, audit)
         total = time.monotonic() - t0
         log.info(
-            "Done in %.1fs — success=%s validated=%s sources=%s",
+            "Done in %.1fs — success=%s validated=%s dag_verified=%s sources=%s",
             total,
             all(r.ok for r in results.values()),
             all(r.validated for r in results.values()),
+            dag_verified,
             list(sources.values()),
         )
         r = SupervisorResult(
@@ -454,8 +461,11 @@ class GoatSupervisor:
             critique=critique,
             summary=summary,
             total_duration_s=total,
+            session_id=session_id,
             sources=sources,
             metadata_summary=metadata,
+            dag_verified=dag_verified,
+            dag_detail=dag_detail,
         )
         self._history.add_assistant(r.summary)
 

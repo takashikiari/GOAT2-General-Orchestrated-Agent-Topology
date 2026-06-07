@@ -108,6 +108,8 @@ class SupervisorResult:
     session_id:       str            = ""
     sources:          dict[str, str] = field(default_factory=dict)  # task_id -> SourceTag
     metadata_summary: str            = ""  # structured DAG execution metadata
+    dag_verified:     bool           = False  # True when dag_result retrieved from Redis
+    dag_detail:       str            = ""  # Full DAG execution detail for synthesis
 
     @property
     def success(self) -> bool:
@@ -116,11 +118,12 @@ class SupervisorResult:
 
     @property
     def validated(self) -> bool:
-        """True when all tasks completed AND tool parameters verified.
+        """True when all tasks completed AND tool parameters verified AND dag_result retrieved.
 
         GOAT supervisor cannot report success without parameter validation.
+        dag_verified must be True — ensures LLM synthesizes from real DAG output.
         """
-        return all(r.validated for r in self.results.values())
+        return all(r.validated for r in self.results.values()) and self.dag_verified
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict suitable for JSON output."""
@@ -134,6 +137,8 @@ class SupervisorResult:
             "session_id":       self.session_id,
             "sources":          self.sources,
             "metadata_summary": self.metadata_summary,
+            "dag_verified":     self.dag_verified,
+            "dag_detail":       self.dag_detail[:500] + "…" if len(self.dag_detail) > 500 else self.dag_detail,
             "tasks": [
                 {
                     "id": r.task_id, "role": r.role, "model": r.model,
