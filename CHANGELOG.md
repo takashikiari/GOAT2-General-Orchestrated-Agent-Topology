@@ -5,6 +5,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 64)
+
+### Fixed
+
+#### Memory tool binding — GOAT vs DAG separation enforced
+
+**Memory tool access is now strictly separated:**
+
+**GOAT (supervisor/assistant)**:
+- Full access to all three memory backends: Redis (working), ChromaDB (episodic), Letta (long-term)
+- Uses `memory_manager` directly with `role="goat"`
+- Memory tools: `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE` with `tier="any"` or specific tier
+
+**DAG (agents — planner, researcher, coder, critic, summarizer)**:
+- Redis read/write only — DAG agents access working memory tier only
+- No access to ChromaDB (episodic) or Letta (long-term)
+- Uses memory tools with `tier="working"` as default and only permitted value
+- Uses `role="user_session"` for all memory operations
+
+**Implementation**:
+- `tools/memory_tools.py`: `_ROLE = "goat"`, `_TIERS = ("working", "episodic", "long_term")`
+- `tools/memory_temporal_tools.py`: `_ROLE = "user_session"`, default `tier="working"`
+- `supervisor/session.py`: `store_turn()` writes to WORKING tier (Redis) only with `role="user_session"`
+- `supervisor/supervisor.py`: `finalize_session()` may promote turns from WORKING to EPISODIC/LONG_TERM
+
+**`tools/__init__.py`** (updated):
+- Added missing imports for `MEMORY_DIRECT_QUERY` and `MEMORY_LAST_WRITE` (from patch 60)
+- Added both to `ALL_TOOLS` (now 19 tools total)
+- Added both to `MEMORY_TOOLS` convenience group (now 8 tools)
+
+**`readme.md`** (updated):
+- Added "Memory Tool Binding — GOAT vs DAG Separation" section documenting the access rules
+- Updated tool inventory table to 19 tools
+- Updated `MEMORY_TOOLS` convenience group description
+
+All 37 tests pass. All files ≤200 lines with docstrings.
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 63)
 
 ### Fixed

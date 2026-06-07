@@ -16,6 +16,8 @@ from tools.file_read import FILE_READ
 from tools.file_read_lines import FILE_READ_LINES
 from tools.file_search import FILE_SEARCH
 from tools.file_write import FILE_WRITE
+from tools.memory_direct_query import MEMORY_DIRECT_QUERY
+from tools.memory_last_write import MEMORY_LAST_WRITE
 from tools.memory_temporal_tools import MEMORY_DEBUG_TRACE, MEMORY_RECENT, MEMORY_TIMELINE
 from tools.memory_tools import MEMORY_SEARCH, MEMORY_GET, MEMORY_STORE
 from tools.think import THINK
@@ -28,6 +30,7 @@ __all__ = [
     "FILE_GREP", "FILE_INFO", "FILE_READ_LINES",
     "MEMORY_SEARCH", "MEMORY_GET", "MEMORY_STORE",
     "MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_DEBUG_TRACE",
+    "MEMORY_DIRECT_QUERY", "MEMORY_LAST_WRITE",
     "ALL_TOOLS", "FILE_TOOLS", "MEMORY_TOOLS",
 ]
 
@@ -37,6 +40,7 @@ ALL_TOOLS: list[ToolDefinition] = [
     FILE_GREP, FILE_INFO, FILE_READ_LINES,
     MEMORY_SEARCH, MEMORY_GET, MEMORY_STORE,
     MEMORY_TIMELINE, MEMORY_RECENT, MEMORY_DEBUG_TRACE,
+    MEMORY_DIRECT_QUERY, MEMORY_LAST_WRITE,
 ]
 
 FILE_TOOLS: list[ToolDefinition] = [
@@ -48,4 +52,5 @@ FILE_TOOLS: list[ToolDefinition] = [
 MEMORY_TOOLS: list[ToolDefinition] = [
     MEMORY_SEARCH, MEMORY_GET, MEMORY_STORE,
     MEMORY_TIMELINE, MEMORY_RECENT, MEMORY_DEBUG_TRACE,
+    MEMORY_DIRECT_QUERY, MEMORY_LAST_WRITE,
 ]

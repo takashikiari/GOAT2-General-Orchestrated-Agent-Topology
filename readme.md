@@ -15,7 +15,7 @@ any agent. All tools follow the same contract:
 - **Error convention** — return `"ERROR: <reason>"` on failure; never raise
 - **Docstring** — each file has a module-level docstring describing its purpose
 
-### Tool inventory (17 tools)
+### Tool inventory (19 tools)
 
 | Tool | File | Purpose |
 |------|------|---------|
@@ -36,26 +36,16 @@ any agent. All tools follow the same contract:
 | `MEMORY_TIMELINE` | `memory_temporal_tools.py` | Entries in time range |
 | `MEMORY_RECENT` | `memory_temporal_tools.py` | Most recent entries |
 | `MEMORY_DEBUG_TRACE` | `memory_temporal_tools.py` | Per-tier debug JSON |
-
-### Fixes applied to tools
-
-1. **Docstrings added** — every tool file now has a module-level docstring in English
-   describing its purpose and functionality. Files modified: `tools/__init__.py`,
-   `tools/calculator.py`, `tools/memory_temporal_tools.py`, `tools/memory_tools.py`,
-   `tools/think.py`, `tools/web_search.py`. No other code was changed.
-
-2. **`file_storage_service.py` refactored** — rewritten to under 200 lines by importing
-   shared helpers from `file_storage_helpers.py`. The abstract `FileStorageService` base
-   class and its concrete implementations (`LocalFileStorage`, `S3FileStorage`) now
-   delegate path resolution, error handling, and factory logic to the helpers module.
+| `MEMORY_DIRECT_QUERY` | `memory_direct_query.py` | Raw SQL-like queries to Letta/ChromaDB/Redis |
+| `MEMORY_LAST_WRITE` | `memory_last_write.py` | Check last-write timestamp for any tier |
 
 ### Convenience groups
 
 | Export | Contents |
 |--------|----------|
-| `ALL_TOOLS` | All 17 tools |
+| `ALL_TOOLS` | All 19 tools |
 | `FILE_TOOLS` | `FILE_READ`, `FILE_WRITE`, `FILE_CREATE`, `FILE_LIST`, `FILE_SEARCH`, `FILE_GREP`, `FILE_INFO`, `FILE_READ_LINES`, `WEB_SEARCH` |
-| `MEMORY_TOOLS` | `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE`, `MEMORY_TIMELINE`, `MEMORY_RECENT`, `MEMORY_DEBUG_TRACE` |
+| `MEMORY_TOOLS` | `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE`, `MEMORY_TIMELINE`, `MEMORY_RECENT`, `MEMORY_DEBUG_TRACE`, `MEMORY_DIRECT_QUERY`, `MEMORY_LAST_WRITE` |
 
 ### Security
 
@@ -65,6 +55,31 @@ All file tools delegate to `FileToolExecutor` (`tools/file_executor.py`):
 - Blocks: dotdot traversal, symlink escape, sensitive files (`.env`, `id_rsa`, `.pem`, etc.)
 - Atomic writes via `tempfile.NamedTemporaryFile` + `os.replace`
 - `GOAT_ALLOW_OUTSIDE_WORKSPACE=true` + `GOAT_ALLOWED_PATHS` allowlist
+
+---
+
+## Memory Tool Binding — GOAT vs DAG Separation
+
+Memory tool access is strictly separated between GOAT (supervisor) and DAG (agent pipeline):
+
+### GOAT (supervisor/assistant)
+- **Full access** to all three memory backends: **Redis** (working), **ChromaDB** (episodic), **Letta** (long-term)
+- Uses `memory_manager` directly with `role="goat"`
+- Memory tools: `MEMORY_SEARCH`, `MEMORY_GET`, `MEMORY_STORE` with `tier="any"` or specific tier
+- Reads recent turns, session context, user profile directly — no tool calls needed
+
+### DAG (agents — planner, researcher, coder, critic, summarizer)
+- **Redis read/write only** — DAG agents access **working** memory tier only
+- **No access** to ChromaDB (episodic) or Letta (long-term)
+- Uses memory tools with `tier="working"` as default and only permitted value
+- Uses `role="user_session"` for all memory operations
+- System prompt explicitly states: "Memory checks use memory tools, NEVER file search"
+
+### Implementation
+- `tools/memory_tools.py`: `_ROLE = "goat"`, `_TIERS = ("working", "episodic", "long_term")`
+- `tools/memory_temporal_tools.py`: `_ROLE = "user_session"`, default `tier="working"`
+- `supervisor/session.py`: `store_turn()` writes to WORKING tier (Redis) only with `role="user_session"`
+- `supervisor/supervisor.py`: `finalize_session()` may promote turns from WORKING to EPISODIC/LONG_TERM
 
 ---
 
