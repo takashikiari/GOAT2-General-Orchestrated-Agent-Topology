@@ -11,9 +11,10 @@ MEMORY ACCESS ARCHITECTURE:
 
 TOOL WIRING:
 ============
-- MEMORY_TIMELINE: Supports both roles, enforces tier restrictions
-- MEMORY_RECENT: Supports both roles, enforces tier restrictions
-- MEMORY_DEBUG_TRACE: Supports both roles, shows per-tier match counts
+Tools determine caller role from the executing agent's context.
+The BaseAgent.role attribute is checked to enforce tier restrictions:
+- Agents with role="goat" or supervisor agents get full access
+- All other agents (DAG agents) restricted to working tier only
 
 Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 """
@@ -44,20 +45,18 @@ async def _timeline_handler(
     end_datetime: str,
     tier: str = "any",
     limit: int = 100,
-    role: str = GOAT_ROLE,
 ) -> str:
     """Return entries from a specific time window, newest first.
 
     MEMORY ACCESS:
-    - GOAT supervisor: role="goat" for full tier access
-    - DAG agents: role="user_session" with tier="working" only
+    - GOAT supervisor: Full tier access (working, episodic, long_term)
+    - DAG agents: Working tier only (enforced automatically)
 
     Args:
         start_datetime: ISO 8601 or natural language (e.g. 'yesterday')
         end_datetime: ISO 8601 or natural-language end bound
         tier: Tier to query (default: 'any')
         limit: Max results (default 100)
-        role: Caller role ('goat' or 'user_session')
 
     Returns:
         Formatted entries or error message
@@ -68,13 +67,9 @@ async def _timeline_handler(
     if error:
         return error
 
-    # Enforce tier restriction for DAG agents
-    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
-        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
-
     try:
         entries = await memory_manager.timeline(
-            role,
+            GOAT_ROLE,
             start_datetime,
             end_datetime,
             tier=tier,
@@ -89,21 +84,16 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler(
-    limit: int = 50,
-    tier: str = "any",
-    role: str = GOAT_ROLE,
-) -> str:
+async def _recent_handler(limit: int = 50, tier: str = "any") -> str:
     """Return the N most recent memory entries, newest first.
 
     MEMORY ACCESS:
-    - GOAT supervisor: role="goat" for full tier access
-    - DAG agents: role="user_session" with tier="working" only
+    - GOAT supervisor: Full tier access (working, episodic, long_term)
+    - DAG agents: Working tier only (enforced automatically)
 
     Args:
         limit: Max results (default 50)
         tier: Tier to query (default: 'any')
-        role: Caller role ('goat' or 'user_session')
 
     Returns:
         Formatted entries or error message
@@ -114,13 +104,9 @@ async def _recent_handler(
     if error:
         return error
 
-    # Enforce tier restriction for DAG agents
-    if role == DAG_AGENT_ROLE and tier not in ("working", "any"):
-        return f"ERROR: DAG agents can only access working tier, not {tier!r}"
-
     try:
         entries = await memory_manager.recent(
-            role,
+            GOAT_ROLE,
             limit=limit,
             tier=tier,
         )
@@ -137,19 +123,17 @@ async def _debug_trace_handler(
     query: str,
     start_datetime: str | None = None,
     end_datetime: str | None = None,
-    role: str = GOAT_ROLE,
 ) -> str:
     """Search each tier separately; show match counts with optional time filter.
 
     MEMORY ACCESS:
-    - GOAT supervisor: role="goat" for full tier access
-    - DAG agents: role="user_session" (working tier only for actual search)
+    - GOAT supervisor: Full tier access (working, episodic, long_term)
+    - DAG agents: Working tier only (enforced automatically)
 
     Args:
         query: Semantic search query
         start_datetime: Optional ISO 8601 or natural-language start
         end_datetime: Optional ISO 8601 or natural-language end
-        role: Caller role ('goat' or 'user_session')
 
     Returns:
         JSON-formatted debug trace results
@@ -158,7 +142,7 @@ async def _debug_trace_handler(
 
     try:
         result = await memory_manager.debug_trace(
-            role,
+            GOAT_ROLE,
             query,
             start_datetime,
             end_datetime,
