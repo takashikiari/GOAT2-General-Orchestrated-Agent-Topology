@@ -49,7 +49,7 @@ class LettaClient(MemoryLayer):
         fallback: _InContextFallback | None = None,
     ) -> None:
         self._probe = probe or LettaHealthProbe()
-        self._registry = registry or LettaAgentRegistry()
+        self._registry = registry or LettaAgentRegistry(self._probe)
         self._fallback = fallback or _InContextFallback()
 
     async def search(
