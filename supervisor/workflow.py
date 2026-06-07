@@ -41,13 +41,13 @@ class WorkflowGraph:
 
         # Add all tasks as nodes
         for task in tasks:
-            self._dag.add_node(DAGNode(id=task.id, data=task))
+            self._dag.add_node(DAGNode(node_id=task.id, role=task.role))
 
         # Add edges based on depends_on
         for task in tasks:
             for dep_id in task.depends_on:
                 if dep_id in self._tasks:
-                    self._dag.add_edge(DAGEdge(from_id=dep_id, to_id=task.id))
+                    self._dag.add_edge(DAGEdge(source=dep_id, target=task.id))
 
     async def execute(
         self,
