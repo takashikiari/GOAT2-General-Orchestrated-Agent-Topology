@@ -3,6 +3,44 @@
 
 ---
 
+## What was done this session (patch 66)
+
+### Automatic memory promotion pipeline with PollutionGuard validation
+
+**Architecture:**
+- **Turn 2+** (messages >= 4): WORKING → EPISODIC, keep_source=True
+- **Turn 3+** (messages >= 6): EPISODIC → LONG_TERM, keep_source=False
+- **Validation**: PollutionGuard checks content quality before promotion
+- **Duplicate detection**: Skips promotion if entry exists in destination tier
+
+**Implementation:**
+
+**`memory/memory_manager.py`**:
+- Added `promote_with_guard()` method — checks duplicates, runs PollutionGuard
+- Added `promote_turns()` method — background promotion task based on turn count
+- Both methods run non-blocking via asyncio.create_task()
+- Role namespace: "user_session" for all promotions
+
+**`supervisor/supervisor.py`**:
+- Added `_schedule_promotion()` helper method
+- After store_turn() in CONVERSATIONAL branch: schedules promotion task
+- After store_turn() in DAG branch: schedules promotion task
+- Promotion runs as background task (non-blocking)
+- Errors logged as warnings (non-critical)
+
+**Promotion rules:**
+- Duplicate detection: Checks destination tier before promoting
+- PollutionGuard: Validates content quality, blocks garbage accumulation
+- Keep source: WORKING→EPISODIC keeps source, EPISODIC→LONG_TERM deletes source
+- Turn thresholds: Turn 2+ for episodic, Turn 3+ for long_term
+
+**Validation:**
+- All files ≤200 lines with docstrings
+- Existing store_turn() and dag_result pipeline unchanged
+- Promotion tasks run asynchronously without blocking execution
+
+---
+
 ## What was done this session (patch 65)
 
 ### Memory binding and tool parameter validation — GOAT vs DAG separation enforced
@@ -113,10 +151,12 @@ which require file_read but don't match search keywords.
 - **Complex** — full DAG: planner → wave execution → critique → synthesize
 - **Session persistence** — turns stored to WORKING, promoted to EPISODIC at session end
 - **Tool validation** — GOAT validates parameters before marking tasks successful
+- **Automatic promotion** — Turn 2+ to EPISODIC, Turn 3+ to LONG_TERM
 
 ### CLI
 - Async chat loop, single GoatSupervisor instance across turns
 - store_turn() called after every successful run
+- promote_turns() scheduled as background task after store_turn()
 
 ### Tools
 - 19 tool definitions with module-level docstrings

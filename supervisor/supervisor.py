@@ -44,6 +44,16 @@ PARALLEL MEMORY PIPELINE:
     - Pipeline awaits completion before supervisor returns
     - Errors are logged but non-critical (don't fail execution)
 
+AUTOMATIC PROMOTION PIPELINE:
+    After each store_turn(), background tasks promote conversation turns:
+    - Turn 2+ (messages >= 4): WORKING → EPISODIC, keep_source=True
+    - Turn 3+ (messages >= 6): EPISODIC → LONG_TERM, keep_source=False
+    
+    Promotion includes:
+    - Duplicate detection in destination tier
+    - PollutionGuard validation for content quality
+    - Non-blocking execution via asyncio.create_task()
+
 TEMPERATURE SETTINGS:
     Supervisor temperature is set to 0.5 for accuracy:
     - Reduces hallucination in summaries and validations
@@ -84,6 +94,10 @@ ARCHITECTURE DIAGRAM:
     │         ▲                 ▲                 ▲              │
     │         └─────────────────┴─────────────────┘              │
     │              Supervisor Full Access                        │
+    │                                                             │
+    │  Automatic Promotion (background tasks):                    │
+    │  Turn 2+: WORKING → EPISODIC (keep_source=True)            │
+    │  Turn 3+: EPISODIC → LONG_TERM (keep_source=False)         │
     └─────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
@@ -186,6 +200,12 @@ class GoatSupervisor:
     - DAG Agents: Working memory (Redis) access only via task.memory_manager
     - Parallel Pipeline: Concurrent Redis operations during DAG execution
 
+    AUTOMATIC PROMOTION:
+    ====================
+    After store_turn(), background tasks promote conversation turns:
+    - Turn 2+ (messages >= 4): WORKING → EPISODIC, keep_source=True
+    - Turn 3+ (messages >= 6): EPISODIC → LONG_TERM, keep_source=False
+
     TEMPERATURE CONFIGURATION:
     ==========================
     - Supervisor temperature: 0.5 (configured in config/settings.py)
@@ -279,6 +299,25 @@ class GoatSupervisor:
         except Exception as e:
             log.warning("Memory pipeline failed (non-critical): %s", e)
 
+    async def _schedule_promotion(self, turn_count: int) -> None:
+        """Schedule automatic memory promotion based on turn count.
+
+        Promotion rules:
+        - Turn 2+ (messages >= 4): WORKING → EPISODIC, keep_source=True
+        - Turn 3+ (messages >= 6): EPISODIC → LONG_TERM, keep_source=False
+
+        Runs as non-blocking background task via asyncio.create_task().
+
+        Args:
+            turn_count: Current number of messages in conversation history
+        """
+        if not self.memory_manager:
+            return
+        try:
+            await self.memory_manager.promote_turns("user_session", turn_count)
+        except Exception as e:
+            log.warning("Promotion task failed (non-critical): %s", e)
+
     async def run(self, intent: str) -> SupervisorResult:
         """Unified message handling — all intents evaluated semantically with tool access.
 
@@ -295,6 +334,12 @@ class GoatSupervisor:
         3. DAG agents execute with working memory access only
         4. Supervisor validates results and stores in all three tiers
         5. ChromaDB/Letta writes are supervisor-only (not DAG agents)
+
+        AUTOMATIC PROMOTION:
+        ====================
+        After store_turn(), background tasks promote conversation turns:
+        - Turn 2+ (messages >= 4): WORKING → EPISODIC, keep_source=True
+        - Turn 3+ (messages >= 6): EPISODIC → LONG_TERM, keep_source=False
 
         VALIDATION PROCESS:
         ===================
@@ -345,9 +390,12 @@ class GoatSupervisor:
             if self.memory_manager:
                 try:
                     from supervisor.session import store_turn
+                    turn_count = len(self._history.messages)
                     await store_turn(
-                        self.memory_manager, len(self._history.messages), intent, r.summary
+                        self.memory_manager, turn_count, intent, r.summary
                     )
+                    # Schedule automatic promotion based on turn count
+                    asyncio.create_task(self._schedule_promotion(turn_count))
                 except ImportError:
                     log.debug("Session storage skipped: module not available")
             return r
@@ -475,9 +523,12 @@ class GoatSupervisor:
         if self.memory_manager:
             try:
                 from supervisor.session import store_turn
+                turn_count = len(self._history.messages)
                 await store_turn(
-                    self.memory_manager, len(self._history.messages), intent, r.summary
+                    self.memory_manager, turn_count, intent, r.summary
                 )
+                # Schedule automatic promotion based on turn count
+                asyncio.create_task(self._schedule_promotion(turn_count))
             except ImportError:
                 log.debug("Session storage skipped: module not available")
 
