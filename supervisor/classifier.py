@@ -30,12 +30,24 @@ class IntentDepth(str, Enum):
     COMPLEX        = "complex"         # full DAG with planner, researcher, critic
 
 
+_MEMORY_PATTERNS = (
+    'redis', 'chroma', 'letta', 'memory check', 'memory status',
+    'intrari', 'intrări', 'ultimele', 'working memory', 'episodic',
+    'long.term', 'verifica memoria', 'citeste memoria',
+)
+
+def _is_memory_query(intent: str) -> bool:
+    low = intent.lower()
+    return any(p in low for p in _MEMORY_PATTERNS)
+
 async def classify_intent(intent: str) -> IntentDepth:
     """Classify intent via LLM — no keyword short-circuits, all messages evaluated semantically.
 
     The model evaluates true intent depth regardless of message formatting,
     prefixes, or structural triggers. This enables autonomous tool selection.
     """
+    if _is_memory_query(intent):
+        return IntentDepth.CONVERSATIONAL
     raw = await _call_llm(
         settings.agents.get("memory"),  # gpt-4o-mini — fast, cheap
         [
