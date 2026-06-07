@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from config.settings import settings
 from memory.letta_fallback import _InContextFallback
 from memory.letta_health import LettaHealthProbe
 from memory.letta_ops_store import do_delete, do_store
@@ -37,6 +38,16 @@ if TYPE_CHECKING:
 log = logging.getLogger("goat2.memory.letta")
 
 __all__ = ["LettaClient", "letta_client"]
+
+
+def _get_letta_base_url() -> str:
+    """Get Letta base URL from settings."""
+    return settings.letta.base_url
+
+
+def _get_letta_headers() -> dict[str, str]:
+    """Get Letta API headers from settings."""
+    return settings.letta.headers
 
 
 class LettaClient(MemoryLayer):
@@ -75,8 +86,8 @@ class LettaClient(MemoryLayer):
         """Get or create the async HTTP client for Letta API calls."""
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
-                base_url=await self._probe.get_base_url(),
-                headers=await self._probe.get_headers(),
+                base_url=_get_letta_base_url(),
+                headers=_get_letta_headers(),
                 timeout=30.0,
             )
         return self._http_client
