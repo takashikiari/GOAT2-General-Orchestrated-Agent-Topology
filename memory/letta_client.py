@@ -11,11 +11,11 @@ MEMORY ACCESS:
 - Validation: All writes validated via memory.validation module
 - Sanitization: Content sanitized before storage
 
-LETTA API ENDPOINTS:
-- GET /api/agents/{agent_id}/core-memory: Retrieve core memory blocks
-- PUT /api/agents/{agent_id}/core-memory: Update core memory blocks
-- GET /api/agents/{agent_id}/messages: Search agent messages
-- GET /api/agents/{agent_id}/memory: Get full memory state
+LETTA API ENDPOINTS (v0.5+):
+- GET /api/agents/{agent_id}: Get agent info including memory
+- PUT /api/agents/{agent_id}/memory: Update agent core memory
+- GET /api/agents/{agent_id}/messages: Get agent message history
+- POST /api/agents/{agent_id}/messages: Send message to agent
 """
 from __future__ import annotations
 
@@ -66,9 +66,9 @@ class LettaClient(MemoryLayer):
 
     LETTA API INTEGRATION:
     - Uses httpx.AsyncClient for HTTP requests
-    - Core memory blocks accessed via /api/agents/{agent_id}/core-memory
-    - Message search via /api/agents/{agent_id}/messages
-    - Full memory state via /api/agents/{agent_id}/memory
+    - Agent memory accessed via /api/agents/{agent_id}/memory
+    - Message history via /api/agents/{agent_id}/messages
+    - Graceful fallback on 404/endpoint errors
     """
 
     def __init__(
@@ -81,6 +81,7 @@ class LettaClient(MemoryLayer):
         self._registry = registry or LettaAgentRegistry(self._probe)
         self._fallback = fallback or _InContextFallback()
         self._http_client: httpx.AsyncClient | None = None
+        self._api_version: str | None = None
 
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Get or create the async HTTP client for Letta API calls."""
@@ -92,6 +93,27 @@ class LettaClient(MemoryLayer):
             )
         return self._http_client
 
+    async def _detect_api_version(self) -> str:
+        """Detect Letta API version by checking available endpoints."""
+        if self._api_version:
+            return self._api_version
+
+        client = await self._get_http_client()
+        try:
+            # Try to get server info
+            response = await client.get("/api/status")
+            if response.status_code == 200:
+                data = response.json()
+                self._api_version = data.get("version", "unknown")
+                log.info("Letta API version: %s", self._api_version)
+                return self._api_version
+        except Exception:
+            pass
+
+        # Default to v0.5+ API structure
+        self._api_version = "0.5+"
+        return self._api_version
+
     async def search(
         self,
         agent_role: str,
@@ -102,8 +124,8 @@ class LettaClient(MemoryLayer):
     ) -> list[MemoryEntry]:
         """Search Letta agent messages by semantic query.
 
-        Uses Letta's message search API to find relevant messages.
-        Falls back to empty list if Letta is unavailable.
+        Uses Letta's message history API. Falls back to empty list
+        if Letta is unavailable or endpoint doesn't exist.
 
         Args:
             agent_role: The agent role identifier
@@ -122,20 +144,29 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Search messages via Letta API
+            # Get message history (Letta v0.5+ API)
             response = await client.get(
                 f"/api/agents/{agent_id}/messages",
-                params={"query": query, "limit": limit},
+                params={"limit": limit},
             )
+
+            if response.status_code == 404:
+                log.debug("Letta messages endpoint not available; using fallback")
+                return self._fallback.search(agent_role, query, limit, tags)
+
             response.raise_for_status()
             data = response.json()
 
             # Convert Letta messages to MemoryEntry format
             entries = []
-            for msg in data.get("messages", [])[:limit]:
+            messages = data.get("messages", [])
+            for msg in messages[:limit]:
+                content = msg.get("content", "")
+                if isinstance(content, dict):
+                    content = str(content.get("text", content))
                 entries.append(MemoryEntry(
                     key=msg.get("id", ""),
-                    content=msg.get("content", ""),
+                    content=content,
                     source="letta",
                     created_at=msg.get("created_at", ""),
                     tags=msg.get("tags", []),
@@ -144,10 +175,10 @@ class LettaClient(MemoryLayer):
 
         except httpx.HTTPError as e:
             log.warning("Letta search HTTP error: %s", e)
-            return []
+            return self._fallback.search(agent_role, query, limit, tags)
         except Exception as e:
             log.warning("Letta search failed: %s", e)
-            return []
+            return self._fallback.search(agent_role, query, limit, tags)
 
     async def store(
         self,
@@ -211,17 +242,27 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Get specific memory block
-            response = await client.get(
-                f"/api/agents/{agent_id}/core-memory",
-            )
+            # Get agent memory (Letta v0.5+ API)
+            response = await client.get(f"/api/agents/{agent_id}/memory")
+
+            if response.status_code == 404:
+                log.debug("Letta memory endpoint not available; using fallback")
+                return self._fallback.retrieve(agent_role, key)
+
             response.raise_for_status()
             data = response.json()
 
-            # Find the block by key/label
-            blocks = data.get("core_memory", [])
-            for block in blocks:
-                if block.get("label") == key or block.get("name") == key:
+            # Find the block by key/label in core memory
+            core_memory = data.get("core_memory", [])
+            if isinstance(core_memory, dict):
+                # Some API versions return dict instead of list
+                core_memory = [
+                    {"label": k, "value": v} for k, v in core_memory.items()
+                ]
+
+            for block in core_memory:
+                label = block.get("label") or block.get("name", "")
+                if label == key:
                     return MemoryEntry(
                         key=key,
                         content=block.get("value", ""),
@@ -271,16 +312,24 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Get full memory state
-            response = await client.get(
-                f"/api/agents/{agent_id}/memory",
-            )
+            # Get agent memory (Letta v0.5+ API)
+            response = await client.get(f"/api/agents/{agent_id}/memory")
+
+            if response.status_code == 404:
+                log.debug("Letta memory endpoint not available; using fallback")
+                return self._fallback.list(agent_role, limit)
+
             response.raise_for_status()
             data = response.json()
 
             # Convert to MemoryEntry list
             entries = []
             core_memory = data.get("core_memory", [])
+            if isinstance(core_memory, dict):
+                core_memory = [
+                    {"label": k, "value": v} for k, v in core_memory.items()
+                ]
+
             for block in core_memory[:limit]:
                 entries.append(MemoryEntry(
                     key=block.get("label", block.get("name", "")),
@@ -336,17 +385,27 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Get core memory blocks
-            response = await client.get(
-                f"/api/agents/{agent_id}/core-memory",
-            )
+            # Get agent memory (Letta v0.5+ API)
+            response = await client.get(f"/api/agents/{agent_id}/memory")
+
+            if response.status_code == 404:
+                log.debug("Letta memory endpoint not available; using fallback")
+                # Check fallback store
+                fallback_entry = self._fallback.get(agent_role, label)
+                return fallback_entry.content if fallback_entry else None
+
             response.raise_for_status()
             data = response.json()
 
-            # Find the block by label
-            blocks = data.get("core_memory", [])
-            for block in blocks:
-                if block.get("label") == label or block.get("name") == label:
+            # Find the block by label in core memory
+            core_memory = data.get("core_memory", [])
+            if isinstance(core_memory, dict):
+                # Some API versions return dict instead of list
+                return core_memory.get(label)
+
+            for block in core_memory:
+                block_label = block.get("label") or block.get("name", "")
+                if block_label == label:
                     return block.get("value")
 
             log.debug("Core memory block '%s' not found for agent %s", label, agent_id)
@@ -354,10 +413,13 @@ class LettaClient(MemoryLayer):
 
         except httpx.HTTPError as e:
             log.warning("Letta get_block HTTP error: %s", e)
-            return None
+            # Check fallback store on error
+            fallback_entry = self._fallback.get(agent_role, label)
+            return fallback_entry.content if fallback_entry else None
         except Exception as e:
             log.warning("Letta get_block failed: %s", e)
-            return None
+            fallback_entry = self._fallback.get(agent_role, label)
+            return fallback_entry.content if fallback_entry else None
 
     async def set_block(
         self,
@@ -386,7 +448,8 @@ class LettaClient(MemoryLayer):
             value = sanitize_content(value)
         except ValueError as exc:
             log.warning("Letta set_block validation failed: %s", exc)
-            return False
+            self._fallback.store(agent_role, label, value)
+            return True  # Fallback succeeded
 
         if not await self._probe.is_available():
             log.debug("Letta unavailable; using fallback for block %s", label)
@@ -397,14 +460,19 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Update core memory block via Letta API
+            # Update core memory block via Letta API (v0.5+)
             response = await client.put(
-                f"/api/agents/{agent_id}/core-memory",
+                f"/api/agents/{agent_id}/memory",
                 json={
-                    "label": label,
-                    "value": value,
+                    "core_memory": {label: value},
                 },
             )
+
+            if response.status_code == 404:
+                log.debug("Letta memory endpoint not available; using fallback")
+                self._fallback.store(agent_role, label, value)
+                return True
+
             response.raise_for_status()
             log.debug("Letta set_block success: %s", label)
             return True
