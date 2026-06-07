@@ -49,7 +49,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
                 raise RuntimeError("Letta agent 'goat2-memory' not found")
             agent_id = matched["id"]
             kw = max(
-                (w.strip("?.,!;:'\"" for w in task.prompt[:200].split() if len(w) > 3),
+                (w.strip("?.,!;:'\"") for w in task.prompt[:200].split() if len(w) > 3),
                 key=len, default=task.prompt[:30],
             )
             log.debug("Letta Tier2: agent=%s kw=%r", agent_id, kw)
