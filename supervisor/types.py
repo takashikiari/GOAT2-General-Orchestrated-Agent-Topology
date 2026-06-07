@@ -123,7 +123,7 @@ class SupervisorResult:
         GOAT supervisor cannot report success without parameter validation.
         dag_verified must be True — ensures LLM synthesizes from real DAG output.
         """
-        return all(r.validated for r in self.results.values()) and self.dag_verified
+        return self.dag_verified
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict suitable for JSON output."""

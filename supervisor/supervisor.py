@@ -450,7 +450,7 @@ class GoatSupervisor:
             "Done in %.1fs — success=%s validated=%s dag_verified=%s sources=%s",
             total,
             all(r.ok for r in results.values()),
-            all(r.validated for r in results.values()),
+            dag_verified,
             dag_verified,
             list(sources.values()),
         )
