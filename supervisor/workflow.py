@@ -102,6 +102,7 @@ class WorkflowGraph:
                         runner = registry.get(task.role)
                         output = await runner(task, context)
                         duration = time.monotonic() - t_start
+                        # Capture source from task (set by runner during execution)
                         results[tid] = AgentResult(
                             task_id=tid,
                             role=task.role,
@@ -109,7 +110,7 @@ class WorkflowGraph:
                             model="",
                             duration_s=duration,
                             error=None,
-                            source="",
+                            source=task.source,
                             tool_called=False,
                             tool_name="",
                             raw_output_hash="",
@@ -126,7 +127,7 @@ class WorkflowGraph:
                             model="",
                             duration_s=duration,
                             error=str(e),
-                            source="",
+                            source=task.source,
                             tool_called=False,
                             tool_name="",
                             raw_output_hash="",
