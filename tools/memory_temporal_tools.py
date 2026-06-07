@@ -106,7 +106,7 @@ async def _recent_handler(limit: int = 50, tier: str = "any") -> str:
 
     try:
         entries = await memory_manager.recent(
-            GOAT_ROLE,
+            DAG_AGENT_ROLE,
             limit=limit,
             tier=tier,
         )
