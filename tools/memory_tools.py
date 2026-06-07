@@ -6,8 +6,8 @@ storage across working, episodic, and long-term memory tiers.
 
 MEMORY ACCESS ARCHITECTURE:
 ===========================
-- GOAT (supervisor): Full tier access with role="goat"
-- DAG agents: Working tier only with role="user_session"
+- GOAT (supervisor): Full tier access with GOAT_ROLE from config.roles
+- DAG agents: Working tier only with SESSION_ROLE from config.roles
 - Validation: All writes validated via memory.validation module
 - Sanitization: Content sanitized before storage
 
@@ -15,7 +15,7 @@ TOOL WIRING:
 ============
 Tools determine caller role from the executing agent's context.
 The BaseAgent.role attribute is checked to enforce tier restrictions:
-- Agents with role="goat" or supervisor agents get full access
+- Agents with role=GOAT_ROLE or supervisor agents get full access
 - All other agents (DAG agents) restricted to working tier only
 
 Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
@@ -23,12 +23,11 @@ Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 from __future__ import annotations
 
 from agents.base_agent import ToolDefinition
+from config.roles import GOAT_ROLE
 from memory.validation import sanitize_content, validate_memory_write
 from tools.memory_helpers import (
     ANY_TIERS,
     ALL_TIERS,
-    GOAT_ROLE,
-    DAG_AGENT_ROLE,
     format_entries,
     format_memory_error,
     format_no_results,

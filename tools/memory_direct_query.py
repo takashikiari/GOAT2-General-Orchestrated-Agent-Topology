@@ -5,8 +5,8 @@ Letta or ChromaDB with a simple SQL-like syntax. Returns structured results
 as a list of dicts with id, timestamp, content, and metadata fields.
 Input is sanitized to prevent injection attacks.
 
-GOAT (supervisor) has full tier access with role="goat".
-DAG agents are restricted to working tier only with role="user_session".
+GOAT (supervisor) has full tier access with GOAT_ROLE from config.roles.
+DAG agents are restricted to working tier only with SESSION_ROLE from config.roles.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import re
 from typing import Final
 
 from agents.base_agent import ToolDefinition
+from config.roles import GOAT_ROLE
 
 __all__ = ["MEMORY_DIRECT_QUERY"]
 
@@ -93,8 +94,8 @@ def _parse_query(query: str) -> tuple[str, str | None, int]:
 async def _handler(query: str) -> str:
     """Execute direct memory query; return JSON results or ERROR: <reason>.
 
-    GOAT supervisor uses role="goat" for full tier access.
-    DAG agents are restricted to working tier with role="user_session".
+    GOAT supervisor uses GOAT_ROLE for full access to all tiers.
+    DAG agents are restricted to working tier with SESSION_ROLE.
     """
     import json
     from memory.memory_manager import memory_manager
@@ -106,8 +107,8 @@ async def _handler(query: str) -> str:
         return f"ERROR: query parsing failed: {exc}"
 
     try:
-        # GOAT uses role="goat" for full access to all tiers
-        role = "goat"
+        # GOAT uses GOAT_ROLE for full access to all tiers
+        role = GOAT_ROLE
         
         if tier == "letta":
             # Query Letta archival memory via keyword search

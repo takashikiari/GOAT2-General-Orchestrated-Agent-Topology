@@ -4,8 +4,8 @@ Provides a single ToolDefinition (MEMORY_LAST_WRITE) that queries Redis for
 the last write timestamp of any memory tier (working, chromadb, letta).
 The timestamp is automatically updated by the ChromaDB write wrapper on each store.
 
-GOAT (supervisor) has full tier access with role="goat".
-DAG agents are restricted to working tier only with role="user_session".
+GOAT (supervisor) has full tier access with GOAT_ROLE from config.roles.
+DAG agents are restricted to working tier only with SESSION_ROLE from config.roles.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ async def _handler(tier: str) -> str:
     Returns ISO 8601 timestamp or 'never' if no writes recorded.
     Returns ERROR: <reason> on failure.
     
-    GOAT supervisor uses role="goat" for full access.
-    DAG agents are restricted to working tier with role="user_session".
+    GOAT supervisor uses GOAT_ROLE for full access.
+    DAG agents are restricted to working tier with SESSION_ROLE.
     """
     from memory.redis_backend import RedisBackend
 

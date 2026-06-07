@@ -1,7 +1,7 @@
 """GOAT 2.0 top-level orchestrator — unified message handling with autonomous tool selection.
 
 GOAT supervisor manages memory read/write directly across all three tiers (Redis, ChromaDB, Letta).
-DAG agents access tools but are restricted to working memory (Redis) with role="user_session".
+DAG agents access tools but are restricted to working memory (Redis) with SESSION_ROLE.
 GOAT validates task success by checking tool parameters — never reports validated without verification.
 
 MEMORY ACCESS ARCHITECTURE:
@@ -108,6 +108,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from config.roles import SESSION_ROLE
 from config.settings import settings
 from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry, _build_default_registry
@@ -314,7 +315,7 @@ class GoatSupervisor:
         if not self.memory_manager:
             return
         try:
-            await self.memory_manager.promote_turns("user_session", turn_count)
+            await self.memory_manager.promote_turns(SESSION_ROLE, turn_count)
         except Exception as e:
             log.warning("Promotion task failed (non-critical): %s", e)
 

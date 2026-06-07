@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Final
 
+from config.roles import SESSION_ROLE
 from memory.memory_enums import MemoryType
 from memory.working_record import RecordDict
 
@@ -15,8 +16,6 @@ if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
 
 __all__ = ["store_turn", "store_dag_result", "retrieve_dag_result"]
-
-_ROLE:  Final[str] = "user_session"
 
 
 async def store_turn(mm: MemoryManager, turn: int, intent: str, summary: str) -> None:
@@ -27,7 +26,7 @@ async def store_turn(mm: MemoryManager, turn: int, intent: str, summary: str) ->
     GOAT supervisor handles promotion to EPISODIC/LONG_TERM at session end.
     """
     content = f"User: {intent}\nAssistant: {summary}"
-    await mm.store(_ROLE, f"turn_{turn:04d}", content, memory_type=MemoryType.WORKING)
+    await mm.store(SESSION_ROLE, f"turn_{turn:04d}", content, memory_type=MemoryType.WORKING)
 
 
 async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str) -> None:
@@ -41,7 +40,7 @@ async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str)
     now = time.time()
     record: RecordDict = {
         "id": key,
-        "agent_role": _ROLE,
+        "agent_role": SESSION_ROLE,
         "key": key,
         "content": full_detail,
         "metadata": {"type": "dag_result", "session_id": session_id},
@@ -50,7 +49,7 @@ async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str)
         "expires_at": now + 3600,
     }
     # Direct backend write with TTL enforcement
-    await mm.working.backend.set(_ROLE, key, record, expires_at=record["expires_at"])
+    await mm.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])
 
 
 async def retrieve_dag_result(mm: MemoryManager, session_id: str) -> str | None:
@@ -60,7 +59,7 @@ async def retrieve_dag_result(mm: MemoryManager, session_id: str) -> str | None:
     Supervisor uses this to independently validate DAG execution.
     """
     key = f"dag_result:{session_id}"
-    record: RecordDict | None = await mm.working.backend.get(_ROLE, key)
+    record: RecordDict | None = await mm.working.backend.get(SESSION_ROLE, key)
     if record is None:
         return None
     return record.get("content")

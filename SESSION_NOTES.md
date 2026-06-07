@@ -3,6 +3,51 @@
 
 ---
 
+## What was done this session (patch 67)
+
+### Central roles registry for memory access control
+
+**Architecture:**
+- Created `config/roles.py` with `GOAT_ROLE` and `SESSION_ROLE` constants
+- All hardcoded role strings centralized in single location
+- Prevents role string inconsistencies across codebase
+
+**Implementation:**
+
+**`config/roles.py`** (new):
+- `GOAT_ROLE: Final[str] = "goat"` — supervisor identity, persona, profile, behavior
+- `SESSION_ROLE: Final[str] = "user_session"` — conversation turns, DAG results, session memory
+- Comprehensive docstrings explaining each role's purpose
+- Exported in `__all__` for clean imports
+
+**Files refactored to import from config.roles:**
+- `supervisor/behavior_store.py` — `_ROLE` → `GOAT_ROLE`
+- `supervisor/identity.py` — `_PROFILE_ROLE` → `GOAT_ROLE`
+- `supervisor/session.py` — `_ROLE` → `SESSION_ROLE`
+- `supervisor/mem_inject.py` — `_ROLE` → `SESSION_ROLE`
+- `supervisor/info_extract.py` — `_ROLE` → `GOAT_ROLE`
+- `supervisor/history.py` — `_SUMMARY_ROLE` → `SESSION_ROLE`
+- `tools/memory_helpers.py` — removed duplicate definitions, imports from config.roles
+- `tools/memory_tools.py` — updated imports
+- `tools/memory_temporal_tools.py` — updated imports
+- `tools/memory_direct_query.py` — updated imports
+- `tools/memory_last_write.py` — updated imports
+- `supervisor/runner_memory.py` — hardcoded role → `SESSION_ROLE`
+- `supervisor/supervisor.py` — `"user_session"` → `SESSION_ROLE` in promote_turns call
+
+**Benefits:**
+- Single source of truth for role strings
+- Easier to audit memory access patterns
+- Prevents typos in role strings
+- Simplifies future role additions
+
+**Validation:**
+- All files ≤200 lines with docstrings
+- No logic changes — only centralization of role strings
+- All imports verified working
+
+---
+
 ## What was done this session (patch 66)
 
 ### Automatic memory promotion pipeline with PollutionGuard validation
@@ -152,6 +197,7 @@ which require file_read but don't match search keywords.
 - **Session persistence** — turns stored to WORKING, promoted to EPISODIC at session end
 - **Tool validation** — GOAT validates parameters before marking tasks successful
 - **Automatic promotion** — Turn 2+ to EPISODIC, Turn 3+ to LONG_TERM
+- **Central roles registry** — GOAT_ROLE and SESSION_ROLE in config/roles.py
 
 ### CLI
 - Async chat loop, single GoatSupervisor instance across turns
@@ -162,6 +208,7 @@ which require file_read but don't match search keywords.
 - 19 tool definitions with module-level docstrings
 - All file tools share FileToolExecutor security gateway
 - Memory tools: GOAT has full tier access, DAG restricted to working tier only
+- All role strings imported from config/roles.py
 
 ---
 

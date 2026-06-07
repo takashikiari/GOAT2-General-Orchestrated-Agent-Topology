@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from config.roles import SESSION_ROLE
+
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
 
 __all__ = ["ConversationHistory", "load_session_summary"]
 
-_SUMMARY_ROLE = "user_session"
 _SUMMARY_KEY  = "session_summary"
 
 
@@ -71,7 +72,7 @@ async def load_session_summary(mm: MemoryManager | None) -> str:
         return ""
     from memory.memory_enums import MemoryType
     try:
-        entry = await mm.retrieve(_SUMMARY_ROLE, _SUMMARY_KEY, memory_type=MemoryType.EPISODIC)
+        entry = await mm.retrieve(SESSION_ROLE, _SUMMARY_KEY, memory_type=MemoryType.EPISODIC)
         return entry.content if entry else ""
     except Exception:
         return ""

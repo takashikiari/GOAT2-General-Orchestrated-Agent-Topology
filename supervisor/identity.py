@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Final
 
+from config.roles import GOAT_ROLE
+
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
 
@@ -25,11 +27,10 @@ GOAT_SYSTEM: Final[str] = (
     "For any task requiring file access, memory queries (Redis/ChromaDB/Letta), or web search — "
     "use the available tools directly. Do not hallucinate file contents or memory data. "
     "Memory tools: memory_search, memory_recent, memory_get, memory_timeline. "
-    "File tools: file_read, file_write, file_list, file_search, file_grep, file_info. "
+    "File tools: file_read, file_write, file_create, file_list, file_search, file_grep, file_info. "
     "Mirror the user's language, tone, and register. "
     "No filler, no preamble, no apologies, no sign-offs. Never end with a question. For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."
 )
-_PROFILE_ROLE: Final[str] = "goat"
 _PROFILE_KEY:  Final[str] = "human"
 _BLOCKED_KEYS: Final[frozenset[str]] = frozenset({
     "agent_id", "passage_id", "search_key", "limit", "offset", "score", "source",
@@ -51,7 +52,7 @@ def _filter_profile(text: str) -> str:
 async def load_user_profile(mm: MemoryManager) -> str:
     """Load user profile from Letta core-memory; returns '' if unavailable or unset."""
     try:
-        return await mm.get_block(_PROFILE_ROLE, _PROFILE_KEY) or ""
+        return await mm.get_block(GOAT_ROLE, _PROFILE_KEY) or ""
     except Exception:
         return ""
 
@@ -87,9 +88,7 @@ async def direct_response(
     from tools import MEMORY_TOOLS, FILE_TOOLS
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
-        sys_content = sys_content + "
-
-" + mem_ctx
+        sys_content = sys_content + "\n" + mem_ctx
     sys_msg = {"role": "system", "content": sys_content}
     return await _call_with_tools(
         settings.agents.get("tool_caller"),

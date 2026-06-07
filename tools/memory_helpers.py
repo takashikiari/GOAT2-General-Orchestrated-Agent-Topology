@@ -5,12 +5,12 @@ memory_temporal_tools.py to keep those files under 200 lines.
 
 MEMORY ACCESS ARCHITECTURE:
 ===========================
-- GOAT (supervisor): Full tier access with role="goat"
-- DAG agents: Working tier only with role="user_session"
+- GOAT (supervisor): Full tier access with GOAT_ROLE from config.roles
+- DAG agents: Working tier only with SESSION_ROLE from config.roles
 - Validation: Tier restrictions enforced in tool handlers
 
 Provides:
-- Role and tier constants for memory access control
+- Role imports from config.roles for memory access control
 - Error formatting helpers
 - Entry formatting for consistent output
 - Validation helpers for memory operations
@@ -18,17 +18,19 @@ Provides:
 TOOL WIRING:
 ============
 All memory tools accept an optional 'role' parameter:
-- Default: GOAT_ROLE ("goat") for supervisor
-- DAG agents: DAG_AGENT_ROLE ("user_session")
+- Default: GOAT_ROLE for supervisor
+- DAG agents: SESSION_ROLE
 - Tier restrictions automatically enforced based on role
 """
 from __future__ import annotations
 
 from typing import Final
 
+from config.roles import GOAT_ROLE, SESSION_ROLE
+
 __all__ = [
     "GOAT_ROLE",
-    "DAG_AGENT_ROLE",
+    "SESSION_ROLE",
     "ALL_TIERS",
     "ANY_TIERS",
     "format_memory_error",
@@ -36,28 +38,6 @@ __all__ = [
     "format_no_results",
     "validate_tier",
 ]
-
-# ---------------------------------------------------------------------------
-# Role constants — control memory tier access
-# ---------------------------------------------------------------------------
-
-GOAT_ROLE: Final[str] = "goat"
-"""Supervisor role with full access to all memory tiers.
-
-GOAT can read/write to:
-- WORKING (Redis): Session-scoped with TTL
-- EPISODIC (ChromaDB): Semantic search storage
-- LONG_TERM (Letta): Core memory blocks
-"""
-
-DAG_AGENT_ROLE: Final[str] = "user_session"
-"""DAG agent role restricted to working tier only.
-
-DAG agents can only:
-- Read/write WORKING memory (Redis)
-- Cannot access EPISODIC or LONG_TERM tiers
-- Prevents memory pollution from agent operations
-"""
 
 # ---------------------------------------------------------------------------
 # Tier constants — define valid memory tier identifiers

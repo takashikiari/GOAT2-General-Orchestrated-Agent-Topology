@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 
+from config.roles import SESSION_ROLE
 from config.settings import settings
 from supervisor.types import AgentTask, AgentResult
 
@@ -21,7 +22,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
     """
     # Tier 1: memory_manager injected by GoatSupervisor (preferred path)
     if task.memory_manager is not None:
-        hits = await task.memory_manager.recall(task.role, task.prompt[:200], limit=5)
+        hits = await task.memory_manager.recall(SESSION_ROLE, task.prompt[:200], limit=5)
         if hits:
             task.source = "memory"
             return "\n\n".join(h.content for h in hits)
@@ -48,7 +49,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
                 raise RuntimeError("Letta agent 'goat2-memory' not found")
             agent_id = matched["id"]
             kw = max(
-                (w.strip("?.,!;:'\"") for w in task.prompt[:200].split() if len(w) > 3),
+                (w.strip("?.,!;:'\"" for w in task.prompt[:200].split() if len(w) > 3),
                 key=len, default=task.prompt[:30],
             )
             log.debug("Letta Tier2: agent=%s kw=%r", agent_id, kw)

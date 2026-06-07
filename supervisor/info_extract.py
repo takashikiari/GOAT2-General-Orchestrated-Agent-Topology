@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Final
 
+from config.roles import GOAT_ROLE
+
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
 
@@ -21,7 +23,6 @@ from supervisor.llm_utils import _call_llm, _extract_json
 
 __all__ = ["maybe_store_info"]
 
-_ROLE: Final[str] = "goat"
 _KEY:  Final[str] = "human"
 _GUARD = PollutionGuard()
 
@@ -77,7 +78,7 @@ async def _store_in_chroma(mm: MemoryManager, facts: list[ScoredFact]) -> None:
             continue
         meta = MemoryEntryMetadata(tags=["info_extract"], expires_at_ts=exp)
         await mm.store(
-            _ROLE, f"info:{nk}", f"{nk}: {f['value'].strip()}",
+            GOAT_ROLE, f"info:{nk}", f"{nk}: {f['value'].strip()}",
             memory_type=MemoryType.EPISODIC, metadata=meta,
         )
 
@@ -91,7 +92,7 @@ async def _store_inferred(mm: MemoryManager, facts: list[ScoredFact]) -> None:
             continue
         meta = MemoryEntryMetadata(tags=["inferred"], expires_at_ts=exp)
         await mm.store(
-            _ROLE, f"inferred:{nk}", f"{nk}: {f['value'].strip()}",
+            GOAT_ROLE, f"inferred:{nk}", f"{nk}: {f['value'].strip()}",
             memory_type=MemoryType.EPISODIC, metadata=meta,
         )
 
@@ -125,11 +126,11 @@ async def maybe_store_info(mm: MemoryManager | None, message: str) -> None:
         explicit_other = [f for f in explicit if f["key"].strip().lower() not in _ALLOWED_KEYS]
         
         if explicit_whitelisted:
-            current = await mm.get_block(_ROLE, _KEY) or ""
+            current = await mm.get_block(GOAT_ROLE, _KEY) or ""
             valid = {f["key"]: f["value"] for f in explicit_whitelisted
                      if _GUARD.validate(f["key"], f["value"], "explicit", current)["decision"] == "allowed"}
             if valid:
-                await mm.set_block(_ROLE, _KEY, _merge(current, valid))
+                await mm.set_block(GOAT_ROLE, _KEY, _merge(current, valid))
         
         # Non-whitelisted explicit facts → ChromaDB with 7-day TTL
         if explicit_other:

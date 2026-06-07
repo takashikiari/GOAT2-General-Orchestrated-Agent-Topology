@@ -5,15 +5,15 @@ MEMORY_DEBUG_TRACE) for time-based memory queries.
 
 MEMORY ACCESS ARCHITECTURE:
 ===========================
-- GOAT (supervisor): Full tier access with role="goat"
-- DAG agents: Working tier only with role="user_session"
+- GOAT (supervisor): Full tier access with GOAT_ROLE from config.roles
+- DAG agents: Working tier only with SESSION_ROLE from config.roles
 - Validation: Tier restrictions enforced per caller role
 
 TOOL WIRING:
 ============
 Tools determine caller role from the executing agent's context.
 The BaseAgent.role attribute is checked to enforce tier restrictions:
-- Agents with role="goat" or supervisor agents get full access
+- Agents with role=GOAT_ROLE or supervisor agents get full access
 - All other agents (DAG agents) restricted to working tier only
 
 Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
@@ -23,10 +23,9 @@ from __future__ import annotations
 import json
 
 from agents.base_agent import ToolDefinition
+from config.roles import GOAT_ROLE, SESSION_ROLE
 from tools.memory_helpers import (
     ANY_TIERS,
-    DAG_AGENT_ROLE,
-    GOAT_ROLE,
     format_entries,
     format_memory_error,
     format_no_results,
@@ -106,7 +105,7 @@ async def _recent_handler(limit: int = 50, tier: str = "any") -> str:
 
     try:
         entries = await memory_manager.recent(
-            DAG_AGENT_ROLE,
+            SESSION_ROLE,
             limit=limit,
             tier=tier,
         )

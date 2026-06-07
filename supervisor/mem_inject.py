@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Final
 
+from config.roles import SESSION_ROLE
+
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
 
@@ -11,16 +13,15 @@ from supervisor.info_extract import maybe_store_info
 
 __all__ = ["mem_turn", "recall_context"]
 
-_ROLE:  Final[str] = "user_session"
 _LIMIT: Final[int] = 20
 
 
 async def recall_context(mm: MemoryManager | None, query: str) -> str:
-    """Fan-out recall across WORKING + EPISODIC + LONG_TERM; returns '[Memory]\\n- …' or ''."""
+    """Fan-out recall across WORKING + EPISODIC + LONG_TERM; returns '[Memory]\n- …' or ''."""
     if mm is None:
         return ""
     try:
-        hits = await mm.recall(_ROLE, query, limit=_LIMIT)
+        hits = await mm.recall(SESSION_ROLE, query, limit=_LIMIT)
     except Exception:
         return ""
     lines = [h.content.strip() for h in hits if h.content.strip()]
