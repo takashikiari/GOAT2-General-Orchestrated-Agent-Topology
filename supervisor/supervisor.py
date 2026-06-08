@@ -92,7 +92,7 @@ DIRECT REQUEST BYPASS (PATCH 71):
 
 REGISTRY INJECTION (PHASE 4):
 ===============================
-    GoatSupervisor requires Registry parameter for dependency injection.
+    GoatSupervisor requires ServiceRegistry parameter for dependency injection.
     Uses registry.settings, registry.memory_manager, registry tools.
     No fallback to old singletons (removed in Phase 4).
 """
@@ -111,7 +111,7 @@ from supervisor.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
 from supervisor.critique import critique_results, synthesize_results, CriticVerdict
 from supervisor.history import ConversationHistory
-from supervisor.identity import conv_result, direct_response
+from supervisor.identity import conv_result
 from supervisor.classifier import classify_intent, IntentDepth
 from supervisor.mem_inject import mem_turn
 from supervisor.session_init import init_session
@@ -123,7 +123,7 @@ from supervisor.request_classifier import classify_direct_request
 
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
-    from config.registry import Registry
+    from config.registry import ServiceRegistry
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -230,7 +230,7 @@ def _get_stricter_prompt(task_role: str, original_prompt: str) -> str:
 async def _rerun_failed_tasks(
     plan: Plan,
     results: dict[str, AgentResult],
-    registry: "Registry",
+    registry: "ServiceRegistry",
     semaphore: asyncio.Semaphore,
     memory_manager: MemoryManager | None,
     session_id: str,
@@ -245,7 +245,7 @@ async def _rerun_failed_tasks(
     Args:
         plan: Original plan with task definitions
         results: Current results dict (mutated in-place)
-        registry: Registry for dependency injection (Phase 4)
+        registry: ServiceRegistry for dependency injection (Phase 4)
         semaphore: Concurrency semaphore
         memory_manager: Memory manager for Redis access
         session_id: Current session ID
@@ -372,19 +372,19 @@ class GoatSupervisor:
 
     REGISTRY INJECTION (PHASE 4):
     ==============================
-    Requires Registry parameter for dependency injection.
+    Requires ServiceRegistry parameter for dependency injection.
     Uses registry.settings, registry.memory_manager, registry tools.
     No fallback to old singletons.
     """
 
     def __init__(
         self,
-        registry: "Registry",
+        registry: "ServiceRegistry",
     ) -> None:
-        """Initialize GoatSupervisor with Registry.
+        """Initialize GoatSupervisor with ServiceRegistry.
 
         Args:
-            registry: Central Registry container. Required.
+            registry: Central ServiceRegistry container. Required.
                      Uses registry.settings, registry.memory_manager, etc.
 
         MEMORY ACCESS INITIALIZATION:
@@ -393,7 +393,7 @@ class GoatSupervisor:
         - working memory (Redis) accessible to DAG agents via injection
         - episodic (ChromaDB) and long_term (Letta) are supervisor-only
         """
-        log.info("GoatSupervisor: using Registry for dependency injection")
+        log.info("GoatSupervisor: using ServiceRegistry for dependency injection")
         self.registry = registry
         self.memory_manager = registry.memory_manager
         self.agent_registry = registry
@@ -634,7 +634,7 @@ class GoatSupervisor:
         - decompose_plan() for supervisor model
         - WorkflowGraph.execute() for runner injection
         - critique_results() and synthesize_results() for model selection
-        - conv_result() and direct_response() for tool access
+        - conv_result() for tool access
 
         Args:
             intent: User message/intent to process

@@ -1,6 +1,6 @@
 """GOAT 2.0 CLI entry point — run supervisor from command line with optional JSON output.
 
-PHASE 4 UPDATE: Now requires Registry for dependency injection.
+PHASE 4 UPDATE: Now requires ServiceRegistry for dependency injection.
 Legacy singleton fallback removed.
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import logging
 import sys
 
-from config.registry import Registry
+from config.registry import ServiceRegistry
 from supervisor.supervisor import GoatSupervisor
 
 logging.basicConfig(
@@ -40,8 +40,8 @@ def main() -> None:
         print("Usage: python -m supervisor '<intent>'", file=sys.stderr)
         sys.exit(1)
 
-    # Phase 4: Registry is now required
-    registry = Registry()
+    # Phase 4: ServiceRegistry is now required
+    registry = ServiceRegistry()
     supervisor = GoatSupervisor(registry=registry)
     result = asyncio.run(supervisor.run(args.intent))
 

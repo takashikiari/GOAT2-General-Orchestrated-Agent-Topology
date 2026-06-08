@@ -1,7 +1,7 @@
 """
 supervisor — GOAT 2.0 workflow orchestration package.
 
-PHASE 4 UPDATE: run() now requires Registry parameter.
+PHASE 4 UPDATE: run() now requires ServiceRegistry parameter.
 Legacy singleton fallback removed.
 """
 
@@ -24,18 +24,18 @@ async def run(
 ) -> SupervisorResult:
     """Top-level convenience entry point: asyncio.run(run('…')).
 
-    PHASE 4: Registry parameter is now REQUIRED.
+    PHASE 4: ServiceRegistry parameter is now REQUIRED.
     Legacy singleton fallback removed.
 
     Args:
         intent: User intent string
-        registry: Registry instance for dependency injection
+        registry: ServiceRegistry instance for dependency injection
 
     Example:
-        from config.registry import Registry
+        from config.registry import ServiceRegistry
         from supervisor import run
         
-        registry = Registry()
+        registry = ServiceRegistry()
         result = await run("Build a REST API", registry=registry)
     """
     return await GoatSupervisor(registry).run(intent)
