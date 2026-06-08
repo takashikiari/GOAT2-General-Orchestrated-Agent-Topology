@@ -223,7 +223,7 @@ class MemoryManager(
         try:
             # Turn 2+ : promote working → episodic
             if turn_count >= 4:
-                keys = await self.working.keys(agent_role)
+                keys = await self.working.backend.keys(agent_role)
                 for key in keys:
                     if key.startswith("turn_"):
                         await self.promote_with_guard(
@@ -236,9 +236,8 @@ class MemoryManager(
 
             # Turn 3+ : promote episodic → long_term
             if turn_count >= 6:
-                from memory.chromadb_client import ChromaStoredMetadata
                 # ChromaDB doesn't have simple keys() — use recent entries
-                entries = await self.episodic.query(agent_role, "turn", limit=10)
+                entries = await self.episodic.search(agent_role, "turn", limit=10)
                 for entry in entries:
                     key = entry.key if hasattr(entry, 'key') else entry.get('id', '')
                     if key.startswith("turn_"):
