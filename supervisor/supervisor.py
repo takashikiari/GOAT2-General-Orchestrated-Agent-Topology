@@ -77,6 +77,18 @@ CRITIC FALLBACK (FIX Problema 5):
     2. Re-runs the critic on the new results
     3. If still failing after max retries, includes the critic's warnings in the summary
     This prevents bad output from reaching the user silently.
+
+DIRECT REQUEST BYPASS (PATCH 71):
+=================================
+    Simple single-tool queries bypass the full DAG pipeline:
+    - memory_recent: queries about recent memory items
+    - memory_get: queries retrieving specific named facts
+    - file_read: queries reading specific files by path
+    
+    Classification uses rule-based pattern matching (no LLM calls):
+    - Rejects multi-step indicators (and, explain, analyze, compare)
+    - Confidence threshold >= 0.5 required for bypass
+    - Falls back to DAG on any uncertainty or error
 """
 from __future__ import annotations
 import uuid
@@ -102,6 +114,7 @@ from supervisor.behavior_session import finalize_behavior
 from supervisor.task_prep import prepare_tasks
 from supervisor.dag_validator import validate_results
 from supervisor.auditor import run_auditor
+from supervisor.request_classifier import classify_direct_request
 
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
@@ -342,6 +355,13 @@ class GoatSupervisor:
     =================================
     When critic returns MAJOR or CRITICAL, tasks are re-executed with stricter prompts.
     Up to _MAX_CRITIC_RETRIES (2) attempts before accepting the output.
+
+    DIRECT REQUEST BYPASS (PATCH 71):
+    =================================
+    Simple single-tool queries bypass the full DAG pipeline:
+    - memory_recent, memory_get, file_read
+    - Rule-based classification (no LLM calls)
+    - Falls back to DAG on uncertainty or error
     """
 
     def __init__(
@@ -372,6 +392,107 @@ class GoatSupervisor:
         self._history: ConversationHistory | None = None
         # Parallel memory pipeline tasks for Redis operations during DAG execution
         self._memory_pipeline_tasks: list[asyncio.Task] = []
+
+    async def _handle_direct_request(
+        self,
+        intent: str,
+        t0: float,
+    ) -> SupervisorResult | None:
+        """Handle simple single-tool requests without DAG execution.
+
+        Bypasses planner and workflow graph for queries that can be
+        answered by memory_recent, memory_get, or file_read directly.
+
+        Args:
+            intent: User's message text
+            t0: Start timestamp for duration calculation
+
+        Returns:
+            SupervisorResult if direct handling succeeded, None otherwise
+
+        DIRECT TOOL MAPPING:
+        ====================
+        - memory_recent: queries about recent memory items
+        - memory_get: queries retrieving specific named facts
+        - file_read: queries reading specific files by path
+
+        SAFETY:
+        =======
+        - Falls back to DAG if classification uncertain
+        - Falls back to DAG if tool execution fails
+        - Logs bypass events at INFO level
+        """
+        from tools.memory_tools import MEMORY_RECENT, MEMORY_GET
+        from tools.file_executor import EXECUTOR
+
+        classification = classify_direct_request(intent)
+
+        if not classification:
+            return None
+
+        log.info(
+            "Direct request bypass: tool=%s confidence=%.2f query=%.60s",
+            classification.tool,
+            classification.confidence,
+            intent,
+        )
+
+        try:
+            if classification.tool == "memory_recent":
+                # Execute memory_recent directly
+                result = await MEMORY_RECENT.handler()
+                tool_name = "memory_recent"
+            elif classification.tool == "memory_get":
+                # Execute memory_get with extracted key
+                if classification.extracted_param:
+                    result = await MEMORY_GET.handler(key=classification.extracted_param)
+                else:
+                    return None  # Safety: no key extracted
+                tool_name = "memory_get"
+            elif classification.tool == "file_read":
+                # Execute file_read directly using FileToolExecutor
+                if classification.extracted_param:
+                    result = EXECUTOR.read(classification.extracted_param)
+                else:
+                    return None  # Safety: no path extracted
+                tool_name = "file_read"
+            else:
+                return None
+
+            # Build SupervisorResult for direct response
+            duration = time.monotonic() - t0
+            session_id = str(uuid.uuid4())
+
+            # Store in working memory for conversational continuity
+            if self.memory_manager:
+                try:
+                    from supervisor.session import store_turn
+                    await store_turn(
+                        self.memory_manager,
+                        1,  # First turn
+                        intent,
+                        result,
+                    )
+                except Exception as e:
+                    log.warning("Direct request memory store failed: %s", e)
+
+            return SupervisorResult(
+                intent=intent,
+                plan=Plan(tasks=[]),
+                results={},
+                critique="",
+                summary=result,
+                total_duration_s=duration,
+                session_id=session_id,
+                sources={"direct": classification.tool},
+                metadata_summary=f"direct_bypass tool={tool_name}",
+                dag_verified=False,
+                dag_detail="",
+            )
+
+        except Exception as e:
+            log.warning("Direct request handler failed, falling back to DAG: %s", e)
+            return None
 
     async def _run_memory_pipeline(
         self,
@@ -449,14 +570,16 @@ class GoatSupervisor:
         CONVERSATIONAL: LLM with CORE_TOOLS (file/memory access) — autonomous tool selection.
         ANALYTICAL: Lightweight DAG (≤2 tasks) with tool execution.
         COMPLEX: Full DAG with planner, researcher, critic, synthesizer.
+        DIRECT BYPASS: Single-tool queries (memory_recent, memory_get, file_read).
 
         MEMORY ACCESS FLOW:
         ===================
         1. Supervisor receives intent and classifies depth
-        2. For DAG execution: parallel memory pipeline starts for Redis ops
-        3. DAG agents execute with working memory access only
-        4. Supervisor validates results and stores in all three tiers
-        5. ChromaDB/Letta writes are supervisor-only (not DAG agents)
+        2. Direct request pre-check for simple single-tool queries
+        3. For DAG execution: parallel memory pipeline starts for Redis ops
+        4. DAG agents execute with working memory access only
+        5. Supervisor validates results and stores in all three tiers
+        6. ChromaDB/Letta writes are supervisor-only (not DAG agents)
 
         AUTOMATIC PROMOTION:
         ====================
@@ -479,6 +602,13 @@ class GoatSupervisor:
         - Re-run critic on new results
         - Up to _MAX_CRITIC_RETRIES (2) attempts
         - If still failing after max retries, include critic warnings in summary
+
+        DIRECT REQUEST BYPASS (PATCH 71):
+        =================================
+        Before planner invocation, checks if query can be handled by single tool:
+        - memory_recent, memory_get, file_read
+        - Rule-based classification (no LLM calls)
+        - Falls back to DAG on uncertainty or error
 
         Args:
             intent: User message/intent to process
@@ -503,6 +633,13 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent)
         depth = await classify_intent(intent)
+
+        # PRE-CHECK: Direct tool bypass for simple single-tool queries
+        # This happens before planner invocation to avoid unnecessary DAG overhead
+        direct_result = await self._handle_direct_request(intent, t0)
+        if direct_result:
+            self._history.add_assistant(direct_result.summary)
+            return direct_result
 
         # CONVERSATIONAL: LLM with CORE_TOOLS — autonomous tool selection, no DAG bypass
         if depth == IntentDepth.CONVERSATIONAL:

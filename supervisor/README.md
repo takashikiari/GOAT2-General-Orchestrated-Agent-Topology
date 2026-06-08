@@ -51,6 +51,7 @@ finalize_session() → analyze_style(user_turns) → save_style → Letta goat/p
 | `behavior_mirror.py` | `mirror_instruction(style)` → single-line system-prompt directive |
 | `behavior_session.py` | `finalize_behavior` — session-end orchestrator |
 | `interfaces/telegram_bot.py` | Telegram adapter — per-chat `GoatSupervisor`; long-polling |
+| `request_classifier.py` | `classify_direct_request()` — single-tool bypass detection |
 
 ## Behavioral learning flow
 
@@ -79,6 +80,41 @@ GOAT_SYSTEM: "You are GOAT… Mirror the user's language, tone, and register.
 | `CONVERSATIONAL` | `direct_response` (no DAG) | greetings, simple Q&A |
 | `ANALYTICAL` | lightweight DAG ≤2 tasks | explain, compare, light coding |
 | `COMPLEX` | full DAG + critique | implement, design, multi-step research |
+
+## Direct Request Bypass (Patch 71)
+
+**Problem solved:** Simple queries like "What's in my recent memory?" or "Read file X" 
+were triggering full DAG execution, wasting resources and adding latency.
+
+**Solution:** Lightweight pre-check classifier identifies single-tool requests before 
+planner invocation.
+
+**Bypassed tools:**
+- `memory_recent` — queries about recent memory items
+- `memory_get` — queries retrieving specific named facts
+- `file_read` — queries reading specific files by path
+
+**Classification rules:**
+1. Pattern matching (case-insensitive, Romanian/English)
+2. Rejects multi-step indicators (and, explain, analyze, compare, why, how)
+3. Confidence threshold: >= 0.5 for bypass
+4. Falls back to DAG if classification uncertain
+
+**Example bypass queries:**
+- "What recent memory items do I have?"
+- "Show me the last stored fact"
+- "Read file config.toml"
+- "Ce am în memorie recent?"
+
+**Example DAG queries (not bypassed):**
+- "Show me recent changes and explain their impact"
+- "Analyze the codebase and suggest refactoring"
+- "Compare the two files and tell me which is better"
+
+**Logging:**
+```
+INFO goat2.supervisor: Direct request bypass: tool=memory_recent confidence=0.50 query=What recent memory items do I have?
+```
 
 ## DAG Dependency Validation
 

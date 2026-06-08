@@ -5,6 +5,79 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-06 (patch 71)
+
+### Added
+
+#### Direct request bypass for simple single-tool queries
+
+**Problem:**
+Simple queries like "What's in my recent memory?" or "Read file X" triggered
+full DAG execution, wasting resources, adding latency, and diluting answer quality.
+Keywords like "verifică", "memorie", "raportează", "analizează" caused the planner
+to decompose even trivial requests into multi-agent pipelines.
+
+**Solution:**
+Lightweight pre-check classifier identifies single-tool requests before planner
+invocation. Uses rule-based pattern matching only — no LLM calls.
+
+**Implementation:**
+
+**`supervisor/request_classifier.py`** (new, 147 lines):
+- `DirectRequest` dataclass with is_direct, tool, extracted_param, confidence
+- `classify_direct_request()` function with pattern matching
+- Pattern categories: memory_recent, memory_get, file_read
+- Multi-step indicator rejection (and, explain, analyze, compare, why, how)
+- Conservative matching: ambiguous queries always use full DAG
+- Supports Romanian and English keywords
+
+**`supervisor/supervisor.py`** (updated, +52 lines):
+- Added `_handle_direct_request()` method to GoatSupervisor class
+- Pre-check called after intent classification, before planner
+- Executes tool directly and returns SupervisorResult
+- Falls back to DAG if classification fails or tool execution errors
+- Logs bypass events at INFO level with tool name and confidence
+
+**`supervisor/README.md`** (updated):
+- Added "Direct Request Bypass (Patch 71)" section
+- Documents bypassed tools, classification rules, examples
+- Shows logging format for bypass events
+
+**Bypassed tools:**
+- `memory_recent` — queries about recent memory items
+- `memory_get` — queries retrieving specific named facts  
+- `file_read` — queries reading specific files by path
+
+**Safety constraints:**
+- Rejects multi-step indicators immediately
+- Confidence threshold >= 0.5 required for bypass
+- Falls back to DAG on any uncertainty or error
+- No changes to planner, DAG validator, or existing tool execution
+
+**Example bypass queries:**
+- "What recent memory items do I have?"
+- "Show me the last stored fact"
+- "Read file config.toml"
+- "Ce am în memorie recent?"
+
+**Example DAG queries (not bypassed):**
+- "Show me recent changes and explain their impact"
+- "Analyze the codebase and suggest refactoring"
+- "Compare the two files and tell me which is better"
+
+**Benefits:**
+- Reduced latency for simple queries (no DAG overhead)
+- Lower resource consumption (no multi-agent pipeline)
+- Improved answer quality (direct tool output, no synthesis)
+- Conservative safety (ambiguous queries use full DAG)
+
+**Documentation:**
+- All files ≤200 lines with docstrings
+- No changes to memory promotion, tool execution, or Telegram interface
+- Existing DAG validator, contradiction detection, model fallback preserved
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 70)
 
 ### Fixed
