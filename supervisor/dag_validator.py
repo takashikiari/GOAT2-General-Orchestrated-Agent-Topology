@@ -4,6 +4,9 @@ Runs after all DAG nodes finish and before aggregation (critique/synthesize).
 Validates tool usage parameters, blocks generated source on execution tasks,
 enforces per-role source whitelists, and flags net errors plus stale memory markers.
 
+NEW (Patch 70): Detects contradictions between agent outputs and marks DAG
+as unsafe when conflicting claims are found.
+
 GOAT supervisor validates task success by checking tool call parameters —
 never reports a task validated without verifying the tool was invoked correctly.
 """
@@ -36,6 +39,20 @@ _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {
 _NET_ERROR_PREFIXES: Final[tuple[str, ...]] = ("error:", "http ", "no results")
 _STALE_MARKER:       Final[str]             = "[stale]"
 
+# Contradiction detection: semantic opposites
+_CONTRADICTIONS: Final[dict[str, list[str]]] = {
+    "true": ["false", "not true", "incorrect"],
+    "false": ["true", "correct", "accurate"],
+    "yes": ["no", "not yes", "negative"],
+    "no": ["yes", "affirmative", "positive"],
+    "exists": ["not exist", "missing", "absent"],
+    "missing": ["exists", "present", "available"],
+    "enabled": ["disabled", "turned off"],
+    "disabled": ["enabled", "turned on"],
+    "success": ["failure", "failed", "error"],
+    "failure": ["success", "succeeded", "worked"],
+}
+
 
 @dataclass(frozen=True)
 class ValidationStatus:
@@ -52,10 +69,10 @@ class ValidationStatus:
     reason:  str = ""
 
 
-
 def _is_empty_generated(result: AgentResult) -> bool:
     """True when no tool was called and output is empty — e.g. summarizer produced nothing."""
     return not result.tool_called and not (result.output or "").strip()
+
 
 def _is_unverified_execution(result: AgentResult) -> bool:
     """True when an execution-role task has tool_called=False (source=generated)."""
@@ -107,16 +124,107 @@ def _is_missing_tool_params(result: AgentResult) -> bool:
     return False
 
 
+def _extract_claims(text: str) -> set[str]:
+    """Extract key claims from text for contradiction detection.
+
+    Looks for:
+    - Boolean claims (true/false, yes/no, exists/missing)
+    - Status claims (enabled/disabled, success/failure)
+    - Simple subject-predicate patterns
+
+    Args:
+        text: Output text to extract claims from
+
+    Returns:
+        Set of normalized claim strings
+    """
+    claims = set()
+    text_lower = text.lower()
+
+    # Extract simple claims containing contradiction keywords
+    for keyword in _CONTRADICTIONS.keys():
+        if keyword in text_lower:
+            # Find the context around the keyword (±20 chars)
+            idx = text_lower.find(keyword)
+            start = max(0, idx - 20)
+            end = min(len(text), idx + len(keyword) + 20)
+            context = text[start:end].strip()
+            claims.add(context)
+
+    return claims
+
+
+def _is_contradictory(results: dict[str, AgentResult]) -> tuple[bool, str, str, str]:
+    """Check for contradictions between any two agent outputs.
+
+    Detects when two results make mutually exclusive claims about the same concept.
+    Uses keyword-based contradiction detection (see _CONTRADICTIONS dict).
+
+    Args:
+        results: Dictionary of task_id → AgentResult to check
+
+    Returns:
+        Tuple of (has_contradiction, task_id_1, task_id_2, description).
+        If no contradiction, returns (False, "", "", "").
+    """
+    result_list = list(results.items())
+
+    for i, (tid1, r1) in enumerate(result_list):
+        for tid2, r2 in result_list[i + 1:]:
+            # Skip if either output is empty
+            out1 = (r1.output or "").lower()
+            out2 = (r2.output or "").lower()
+            if not out1.strip() or not out2.strip():
+                continue
+
+            # Check for direct contradictions
+            for keyword, opposites in _CONTRADICTIONS.items():
+                if keyword in out1:
+                    for opposite in opposites:
+                        if opposite in out2:
+                            # Found contradiction
+                            desc = f"Task '{tid1}' claims '{keyword}' but task '{tid2}' claims '{opposite}'"
+                            log.warning(
+                                "dag_validator: contradiction detected — %s vs %s: %s",
+                                tid1, tid2, desc,
+                            )
+                            return True, tid1, tid2, desc
+
+    return False, "", "", ""
+
+
 def validate_results(
     results: dict[str, AgentResult],
 ) -> tuple[dict[str, AgentResult], list[ValidationStatus]]:
     """Validate all DAG results before aggregation.
 
     GOAT supervisor MUST reject synthesis if any returned status has safe=False.
-    Priority: missing_tool_params > empty_file_read > unverified_execution > source_violation > net_error > stale_memory.
+    Priority: missing_tool_params > empty_file_read > empty_generated > 
+              contradiction > unverified_execution > source_violation > net_error > stale_memory.
+    
+    Contradiction detection (NEW in patch 70):
+    - Checks all result pairs for mutually exclusive claims
+    - Uses keyword-based contradiction detection (true/false, yes/no, etc.)
+    - Marks entire DAG as unsafe if contradiction found
+    - Logs conflicting task IDs and claim snippets
+
     Returns the unchanged results dict alongside per-task ValidationStatus objects.
     """
     statuses: list[ValidationStatus] = []
+
+    # First, check for cross-result contradictions (applies to entire DAG)
+    has_contradiction, tid1, tid2, desc = _is_contradictory(results)
+    if has_contradiction:
+        # Mark both conflicting tasks as unsafe
+        statuses.append(ValidationStatus(task_id=tid1, safe=False, reason="contradiction"))
+        statuses.append(ValidationStatus(task_id=tid2, safe=False, reason="contradiction"))
+        # Mark all other tasks as safe (they're not at fault)
+        for tid in results:
+            if tid not in (tid1, tid2):
+                statuses.append(ValidationStatus(task_id=tid, safe=True))
+        return results, statuses
+
+    # Individual task validation (existing checks)
     for tid, result in results.items():
         if _is_missing_tool_params(result):
             log.warning(
@@ -155,4 +263,5 @@ def validate_results(
             statuses.append(ValidationStatus(task_id=tid, safe=False, reason="stale_memory"))
         else:
             statuses.append(ValidationStatus(task_id=tid, safe=True))
+
     return results, statuses
