@@ -12,6 +12,12 @@ IMPROVEMENTS (FIX):
 - Issues extraction handles multiple formats: -, *, •, numbered lists (1., 2.)
 - critique_results() has a timeout to prevent hanging
 - Fallback verdict if parsing fails completely
+
+REGISTRY INJECTION (PHASE 3):
+=============================
+critique_results() and synthesize_results() now accept optional `registry` parameter.
+If registry provided: uses registry.settings.agents.get("critic"/"planner")
+Otherwise: falls back to config.settings singleton
 """
 from __future__ import annotations
 import asyncio
@@ -27,7 +33,7 @@ from supervisor.llm_utils import _call_llm, _format_dep_context
 from supervisor.identity import _system_with_profile
 
 if TYPE_CHECKING:
-    pass
+    from config.registry import Registry
 
 log = logging.getLogger("goat2.critique")
 
@@ -148,18 +154,29 @@ def parse_verdict(raw: str) -> CriticVerdict:
     )
 
 
-async def critique_results(intent: str, results: dict[str, AgentResult], lang: str = "") -> CriticVerdict:
+async def critique_results(
+    intent: str,
+    results: dict[str, AgentResult],
+    lang: str = "",
+    registry: "Registry" | None = None,
+) -> CriticVerdict:
     """Critic agent reviews the full set of completed task results end-to-end.
 
     Returns a CriticVerdict with severity classification for fallback logic.
     Has a timeout to prevent hanging on LLM failures.
+
+    REGISTRY INJECTION:
+    ===================
+    If registry provided: uses registry.settings.agents.get("critic")
+    Otherwise: falls back to config.settings singleton
     """
+    _settings = registry.settings if registry else settings
     context = _format_dep_context(results)
     lang_pfx = f"Respond in {lang}. " if lang and lang.lower() != "english" else ""
     try:
         raw = await asyncio.wait_for(
             _call_llm(
-                settings.agents.get("critic"),
+                _settings.agents.get("critic"),
                 [
                     {"role": "system", "content": (
                         f"{lang_pfx}You are a critical reviewer for a multi-agent pipeline. "
@@ -207,12 +224,19 @@ async def synthesize_results(
     lang: str = "",
     session_summary: str = "",
     dag_detail: str = "",
+    registry: "Registry" | None = None,
 ) -> str:
     """Synthesize agent outputs into a terse, persona-matched final answer.
 
     When dag_detail is provided, prepends [DAG Execution Result] to context
     to ensure the LLM synthesizes from real DAG output instead of hallucinating.
+
+    REGISTRY INJECTION:
+    ===================
+    If registry provided: uses registry.settings.agents.get("planner")
+    Otherwise: falls back to config.settings singleton
     """
+    _settings = registry.settings if registry else settings
     context = _format_dep_context(results)
     sys_base = _system_with_profile(profile, session_summary, style)
     lang_sfx = f"\nRespond in {lang}." if lang and lang.lower() != "english" else ""
@@ -222,7 +246,7 @@ async def synthesize_results(
         context = f"[DAG Execution Result]\n{dag_detail}\n\n{context}"
 
     return await _call_llm(
-        settings.agents.get("planner"),
+        _settings.agents.get("planner"),
         [
             {"role": "system", "content": (
                 f"{sys_base}{lang_sfx}\n\nDeliver a direct answer that mirrors the user's tone. "

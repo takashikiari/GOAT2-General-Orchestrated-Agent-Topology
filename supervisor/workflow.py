@@ -63,33 +63,11 @@ The re-execution flow:
    d. Run critic again on the new output
 3. If severity is PASS or MINOR, continue normally
 
-ARCHITECTURE DIAGRAM:
-    ┌─────────────────────────────────────────────────────────────┐
-    │                    WorkflowGraph.execute()                  │
-    │                                                             │
-    │  memory_manager (passed from supervisor)                    │
-    │         │                                                   │
-    │         ▼                                                   │
-    │  ┌──────────────────────────────────────────────────────┐  │
-    │  │  Wave 0: Concurrent Task Execution                    │  │
-    │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │  │
-    │  │  │   Task 1    │  │   Task 2    │  │   Task 3    │   │  │
-    │  │  │ memory_mgr  │  │ memory_mgr  │  │ memory_mgr  │   │  │
-    │  │  │ (Redis only)│  │ (Redis only)│  │ (Redis only)│   │  │
-    │  │  └─────────────┘  └─────────────┘  └─────────────┘   │  │
-    │  └──────────────────────────────────────────────────────┘  │
-    │         │                                                   │
-    │         ▼                                                   │
-    │  ┌──────────────────────────────────────────────────────┐  │
-    │  │  Wave 1: Dependent Tasks                              │  │
-    │  │  ┌─────────────┐  ┌─────────────┐                     │  │
-    │  │  │   Task 4    │  │   Task 5    │                     │  │
-    │  │  │ (reads Wave 0 results)                            │  │
-    │  │  └─────────────┘  └─────────────┘                     │  │
-    │  └──────────────────────────────────────────────────────┘  │
-    │                                                             │
-    │  Results → Supervisor validation → Storage to all tiers    │
-    └─────────────────────────────────────────────────────────────┘
+REGISTRY INJECTION (PHASE 3):
+=============================
+WorkflowGraph.execute() now accepts optional `registry` parameter.
+Passed to runner functions for consistent dependency injection.
+If registry=None: falls back to legacy behavior (direct imports)
 """
 from __future__ import annotations
 
@@ -106,6 +84,7 @@ if TYPE_CHECKING:
     from supervisor.types import AgentTask
     from supervisor.registry import AgentRegistry
     from memory.memory_manager import MemoryManager
+    from config.registry import Registry
 
 log = logging.getLogger("goat2.workflow")
 
@@ -180,6 +159,11 @@ class WorkflowGraph:
     3. The critic runs again on the new output
     4. Max 1 re-execution per critic task to prevent infinite loops
 
+    REGISTRY INJECTION (PHASE 3):
+    =============================
+    execute() accepts optional `registry` parameter passed to runner functions.
+    If registry=None: falls back to legacy behavior (direct imports in runners)
+
     Example:
         tasks = [
             AgentTask(id="t1", role="researcher", prompt="...", depends_on=[]),
@@ -239,6 +223,8 @@ class WorkflowGraph:
         registry: AgentRegistry,
         verbose: bool,
         t_start: float,
+        memory_manager: MemoryManager | None,
+        phase3_registry: "Registry" | None = None,
     ) -> None:
         """Re-execută upstream tasks și re-rules criticul.
 
@@ -252,6 +238,8 @@ class WorkflowGraph:
             registry: AgentRegistry pentru a obține runneri
             verbose: Flag de logging detaliat
             t_start: Timpul de start pentru calculul duratei
+            memory_manager: MemoryManager for Redis access
+            phase3_registry: Registry for dependency injection (Phase 3)
         """
         # Verifică limită de re-executări
         current_count = self._critic_rerun_count.get(tid, 0)
@@ -315,7 +303,7 @@ class WorkflowGraph:
                 # Re-execută cu timeout
                 up_runner = registry.get(up_task.role)
                 up_output = await asyncio.wait_for(
-                    up_runner(up_task, up_context),
+                    up_runner(up_task, up_context, phase3_registry),
                     timeout=_UPSTREAM_REEXEC_TIMEOUT,
                 )
                 up_duration = time.monotonic() - t_start
@@ -390,7 +378,7 @@ class WorkflowGraph:
         try:
             critic_runner = registry.get(task.role)
             new_output = await asyncio.wait_for(
-                critic_runner(task, new_context),
+                critic_runner(task, new_context, phase3_registry),
                 timeout=_CRITIC_RERUN_TIMEOUT,
             )
             new_duration = time.monotonic() - t_start
@@ -444,6 +432,7 @@ class WorkflowGraph:
         verbose: bool = False,
         memory_manager: MemoryManager | None = None,
         session_id: str | None = None,
+        phase3_registry: "Registry" | None = None,
     ) -> dict[str, AgentResult]:
         """
         Execute all tasks in topological order with wave-level concurrency.
@@ -454,12 +443,20 @@ class WorkflowGraph:
                        NOTE: Only working tier (Redis) is accessible here.
                        ChromaDB and Letta are supervisor-only.
 
+        REGISTRY INJECTION (PHASE 3):
+        =============================
+        phase3_registry: Optional Registry for dependency injection.
+                        Passed to runner functions for consistent settings access.
+                        If None, runners fall back to direct imports.
+
         Args:
             registry: AgentRegistry to look up agent runners by role.
             semaphore: asyncio.Semaphore to limit concurrent task execution.
             verbose: If True, log detailed execution progress.
             memory_manager: MemoryManager injected into tasks for Redis access.
                            DAG agents use task.memory_manager.working only.
+            session_id: Session ID for storing DAG results
+            phase3_registry: Registry for dependency injection (Phase 3)
 
         Returns:
             Dictionary mapping task_id → AgentResult for all executed tasks.
@@ -569,6 +566,10 @@ class WorkflowGraph:
                 3. Re-run critic on the new upstream output
                 4. Max 1 re-execution per critic task (prevent infinite loops)
 
+                REGISTRY INJECTION (PHASE 3):
+                =============================
+                Passes phase3_registry to runner functions for dependency injection.
+
                 Args:
                     tid: Task identifier to execute
                 """
@@ -592,7 +593,8 @@ class WorkflowGraph:
                     t_start = time.monotonic()
                     try:
                         runner = registry.get(task.role)
-                        output = await runner(task, context)
+                        # Phase 3: Pass registry to runner for dependency injection
+                        output = await runner(task, context, phase3_registry)
                         duration = time.monotonic() - t_start
                         # Capture source from task (set by runner during execution)
                         results[tid] = AgentResult(
@@ -626,6 +628,8 @@ class WorkflowGraph:
                                     registry=registry,
                                     verbose=verbose,
                                     t_start=t_start,
+                                    memory_manager=memory_manager,
+                                    phase3_registry=phase3_registry,
                                 )
 
                     except Exception as e:

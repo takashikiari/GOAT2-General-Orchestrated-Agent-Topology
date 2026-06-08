@@ -3,6 +3,13 @@
 All conversational responses have CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) available.
 The LLM autonomously decides when to invoke tools based on semantic intent —
 no keyword-based routing, all messages have equal tool access.
+
+REGISTRY INJECTION (PHASE 3):
+=============================
+direct_response() and conv_result() now accept optional `registry` parameter.
+If registry provided: uses registry.settings.agents.get("tool_caller")
+                     and registry.memory_tools, registry.file_tools
+Otherwise: falls back to config.settings singleton and tools module imports
 """
 from __future__ import annotations
 
@@ -10,11 +17,12 @@ import time
 from typing import TYPE_CHECKING, Final
 
 from config.roles import GOAT_ROLE
+from config.settings import settings
 
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
+    from config.registry import Registry
 
-from config.settings import settings
 from supervisor.source_types import TaggedResult
 from supervisor.tool_runner import _call_with_tools
 from supervisor.types import Plan, SupervisorResult
@@ -75,8 +83,12 @@ def _system_with_profile(profile: str, summary: str = "", style: str = "") -> st
 
 
 async def direct_response(
-    messages: list[dict[str, str]], profile: str, summary: str = "",
-    mem_ctx: str = "", style: str = "",
+    messages: list[dict[str, str]],
+    profile: str,
+    summary: str = "",
+    mem_ctx: str = "",
+    style: str = "",
+    registry: "Registry" | None = None,
 ) -> TaggedResult:
     """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
@@ -84,27 +96,47 @@ async def direct_response(
     No keyword-based routing — all messages have equal tool access regardless of formatting.
     This enables proper handling of conversational requests like 'Goat! Citește changelogs...'
     which require file_read access even without explicit command syntax.
+
+    REGISTRY INJECTION:
+    ===================
+    If registry provided: uses registry.settings.agents.get("tool_caller")
+                         and registry.memory_tools, registry.file_tools
+    Otherwise: falls back to config.settings singleton and tools module imports
     """
     from tools import MEMORY_TOOLS, FILE_TOOLS
+    _settings = registry.settings if registry else settings
+    _memory_tools = registry.memory_tools if registry else MEMORY_TOOLS
+    _file_tools = registry.file_tools if registry else FILE_TOOLS
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
     sys_msg = {"role": "system", "content": sys_content}
     return await _call_with_tools(
-        settings.agents.get("tool_caller"),
+        _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        MEMORY_TOOLS + FILE_TOOLS,
+        _memory_tools + _file_tools,
         temperature=0.7,
         tool_choice="auto",
     )
 
 
 async def conv_result(
-    intent: str, messages: list[dict[str, str]], profile: str,
-    summary: str, mem_ctx: str, t0: float, style: str = "",
+    intent: str,
+    messages: list[dict[str, str]],
+    profile: str,
+    summary: str,
+    mem_ctx: str,
+    t0: float,
+    style: str = "",
+    registry: "Registry" | None = None,
 ) -> SupervisorResult:
-    """Return a SupervisorResult from a direct LLM response with full conversation history."""
-    tagged = await direct_response(messages, profile, summary, mem_ctx, style)
+    """Return a SupervisorResult from a direct LLM response with full conversation history.
+
+    REGISTRY INJECTION:
+    ===================
+    Passes registry to direct_response() for consistent dependency injection.
+    """
+    tagged = await direct_response(messages, profile, summary, mem_ctx, style, registry)
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},
         critique="", summary=tagged.content,

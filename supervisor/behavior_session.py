@@ -1,4 +1,11 @@
-"""Session-end behavior lifecycle: analyze user turns and persist updated style profile."""
+"""Session-end behavior lifecycle: analyze user turns and persist updated style profile.
+
+REGISTRY INJECTION (PHASE 3):
+=============================
+finalize_behavior() now accepts optional `registry` parameter.
+If registry provided: uses registry.settings.letta.base_url for logging
+Otherwise: falls back to config.settings singleton
+"""
 from __future__ import annotations
 
 import logging
@@ -11,6 +18,7 @@ from supervisor.behavior_store import save_style
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
     from supervisor.history import ConversationHistory
+    from config.registry import Registry
 
 __all__ = ["finalize_behavior"]
 
@@ -21,12 +29,19 @@ async def finalize_behavior(
     mm: MemoryManager | None,
     history: ConversationHistory | None,
     current_style: str,
+    registry: "Registry" | None = None,
 ) -> str:
     """
     Extract user turns from history, infer communication style, persist to Letta 'persona' block.
     Returns updated style text; returns current_style unchanged on failure or when mm is None.
     Only writes to Letta when the profile changes (skips identical result).
+
+    REGISTRY INJECTION:
+    ===================
+    If registry provided: uses registry.settings.letta.base_url for logging
+    Otherwise: falls back to config.settings singleton
     """
+    _settings = registry.settings if registry else settings
     if mm is None or history is None:
         log.debug("finalize_behavior: skipped (mm=%s, history=%s)", mm is None, history is None)
         return current_style
@@ -41,13 +56,13 @@ async def finalize_behavior(
         log.info("finalize_behavior: style unchanged — skipping Letta write")
         return current_style
     log.info("finalize_behavior: style updated, writing to Letta %s (goat/persona):\n%s",
-             settings.letta.base_url, style)
+             _settings.letta.base_url, style)
     saved = await save_style(mm, style)
     if not saved:
         log.error(
             "finalize_behavior: persona block NOT written — "
             "set_block(goat, persona) failed. Letta URL: %s. "
             "Check server logs or run: curl %s/v1/health",
-            settings.letta.base_url, settings.letta.base_url,
+            _settings.letta.base_url, _settings.letta.base_url,
         )
     return style
