@@ -52,6 +52,11 @@ class ValidationStatus:
     reason:  str = ""
 
 
+
+def _is_empty_generated(result: AgentResult) -> bool:
+    """True when no tool was called and output is empty — e.g. summarizer produced nothing."""
+    return not result.tool_called and not (result.output or "").strip()
+
 def _is_unverified_execution(result: AgentResult) -> bool:
     """True when an execution-role task has tool_called=False (source=generated)."""
     return result.role in _EXECUTION_ROLES and not result.tool_called
@@ -125,6 +130,12 @@ def validate_results(
                 tid,
             )
             statuses.append(ValidationStatus(task_id=tid, safe=False, reason="empty_file_read"))
+        elif _is_empty_generated(result):
+            log.warning(
+                "dag_validator: %s role=%s no tool called and output empty — empty_generated",
+                tid, result.role,
+            )
+            statuses.append(ValidationStatus(task_id=tid, safe=False, reason="empty_generated"))
         elif _is_unverified_execution(result):
             log.warning(
                 "dag_validator: %s role=%s tool_called=False — UNVERIFIED", tid, result.role,
