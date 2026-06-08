@@ -7,6 +7,7 @@ from typing import Final
 from config.settings import Provider, settings
 from supervisor.types import AgentTask, AgentResult, Plan
 from supervisor.llm_utils import _call_llm, _extract_json, _format_dep_context
+from supervisor.plan_validator import validate_plan
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -36,6 +37,24 @@ PLANNER_SYSTEM: Final[str] = (
 )
 
 
+def _fallback_plan(intent: str) -> Plan:
+    """Return a minimal safe fallback plan when validation fails."""
+    return Plan(tasks=[
+        AgentTask(
+            id="tool_caller_1",
+            role="tool_caller",
+            prompt=intent,
+            depends_on=[],
+        ),
+        AgentTask(
+            id="summarize_1",
+            role="summarizer",
+            prompt=intent,
+            depends_on=["tool_caller_1"],
+        ),
+    ])
+
+
 async def decompose_plan(intent: str) -> Plan:
     """Call the supervisor model to decompose intent into an AgentTask DAG."""
     spec = settings.supervisor.model
@@ -58,12 +77,24 @@ async def decompose_plan(intent: str) -> Plan:
         ]
     except (KeyError, TypeError, ValueError) as exc:
         log.warning("Planner output malformed (%s) — using fallback plan", exc)
-        tasks = [
-            AgentTask(id="research_1",  role="researcher", prompt=intent),
-            AgentTask(id="summarize_1", role="summarizer", prompt=intent,
-                      depends_on=["research_1"]),
-        ]
-    return Plan(tasks=tasks)
+        return _fallback_plan(intent)
+
+    plan = Plan(tasks=tasks)
+
+    # ── Validate the plan before returning ──────────────────────────────
+    is_valid, errors, warnings = validate_plan(plan)
+
+    if warnings:
+        for w in warnings:
+            log.warning("Plan warning: %s", w)
+
+    if not is_valid:
+        for err in errors:
+            log.error("Plan validation failed: %s", err)
+        log.warning("Validation errors — returning fallback plan")
+        return _fallback_plan(intent)
+
+    return plan
 
 
 async def _run_planner(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
@@ -79,4 +110,3 @@ async def _run_planner(task: AgentTask, dep_results: dict[str, AgentResult]) -> 
         ],
         json_mode=True,
     )
-

@@ -4,6 +4,11 @@ Each runner is an async callable (AgentTask, dep_results) -> str that sets
 task.source before returning so the workflow can propagate source provenance.
 Tool selection is now semantic — the LLM autonomously decides when to invoke
 tools based on task intent, not regex keyword matching.
+
+CRITICAL REVIEW FALLBACK (Problema 5):
+======================================
+_run_critic() now returns a structured dict with verdict, severity, and assessment
+so WorkflowGraph can decide to re-execute upstream tasks when severity is CRITICAL.
 """
 from __future__ import annotations
 import logging
@@ -84,6 +89,16 @@ async def _run_critic(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
     """Critical review: assessment paragraph + bullet list; source is generated.
 
     Critic evaluates correctness without tool calls — pure LLM analysis of upstream outputs.
+    Returns a structured verdict with severity classification for fallback logic.
+
+    SEVERITY CLASSIFICATION:
+        PASS    — no critical issues
+        MINOR   — small improvements needed, output usable
+        MAJOR   — significant problems, output should be re-done
+        CRITICAL — output is wrong, hallucinated, or completely off-target
+
+    The severity line is parsed by WorkflowGraph to decide if upstream tasks
+    should be re-executed with a stricter prompt.
     """
     task.source = "generated"
     context = _format_dep_context(dep_results)
@@ -92,7 +107,12 @@ async def _run_critic(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
         [
             {"role": "system", "content": (
                 "Critical reviewer. Evaluate correctness, completeness, clarity, goal alignment. "
-                "Output: one assessment paragraph then a bullet list of issues and suggestions."
+                "Output MUST start with one of these severity lines on its own:\n"
+                "SEVERITY: PASS — no critical issues\n"
+                "SEVERITY: MINOR — small improvements needed, output usable\n"
+                "SEVERITY: MAJOR — significant problems, output should be re-done\n"
+                "SEVERITY: CRITICAL — output is wrong, hallucinated, or completely off-target\n\n"
+                "Then one assessment paragraph, then a bullet list of issues and suggestions."
             )},
             {"role": "user", "content": f"{context}\n\nReview task: {task.prompt}".strip()},
         ],

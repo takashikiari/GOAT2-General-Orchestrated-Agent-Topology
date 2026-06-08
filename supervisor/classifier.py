@@ -1,7 +1,15 @@
 """Intent depth classifier — routes intents to conversational, analytical, or complex handling.
 
-All classification is now LLM-driven with no keyword short-circuits. The model
+All classification is LLM-driven with no keyword short-circuits. The model
 semantically evaluates intent depth regardless of message formatting or prefixes.
+Memory queries are routed through the same semantic path — if a user asks about
+memory, the LLM may classify it as analytical or complex if it requires DAG tools.
+
+FALLBACK SAFEGUARD (FIX):
+=========================
+If the LLM returns empty or unparseable output, we fall back to ANALYTICAL
+(a lightweight DAG with ≤2 tasks) instead of COMPLEX (full DAG). This prevents
+token waste on unnecessary full DAG execution when the classifier fails.
 """
 from __future__ import annotations
 
@@ -30,24 +38,19 @@ class IntentDepth(str, Enum):
     COMPLEX        = "complex"         # full DAG with planner, researcher, critic
 
 
-_MEMORY_PATTERNS = (
-    'redis', 'chroma', 'letta', 'memory check', 'memory status',
-    'intrari', 'intrări', 'ultimele', 'working memory', 'episodic',
-    'long.term', 'verifica memoria', 'citeste memoria',
-)
-
-def _is_memory_query(intent: str) -> bool:
-    low = intent.lower()
-    return any(p in low for p in _MEMORY_PATTERNS)
-
 async def classify_intent(intent: str) -> IntentDepth:
     """Classify intent via LLM — no keyword short-circuits, all messages evaluated semantically.
 
     The model evaluates true intent depth regardless of message formatting,
-    prefixes, or structural triggers. This enables autonomous tool selection.
+    prefixes, or structural triggers. Memory queries are routed through the
+    same semantic path, allowing the LLM to determine if they need DAG tools.
+
+    FALLBACK SAFEGUARD:
+    ===================
+    If the LLM returns empty or unparseable output, we fall back to ANALYTICAL
+    (lightweight DAG) instead of COMPLEX (full DAG). This prevents token waste
+    on unnecessary full DAG execution when the classifier fails.
     """
-    if _is_memory_query(intent):
-        return IntentDepth.CONVERSATIONAL
     raw = await _call_llm(
         settings.agents.get("memory"),  # gpt-4o-mini — fast, cheap
         [
@@ -59,5 +62,7 @@ async def classify_intent(intent: str) -> IntentDepth:
     try:
         depth = IntentDepth(token)
     except ValueError:
-        depth = IntentDepth.COMPLEX
+        # FIX: Fall back to ANALYTICAL (lightweight) instead of COMPLEX (full DAG)
+        # This prevents token waste when the classifier fails
+        depth = IntentDepth.ANALYTICAL
     return depth
