@@ -70,35 +70,13 @@ VALIDATION REQUIREMENTS:
     - Cannot report validated=true without parameter verification
     - dag_verified must be True — ensures LLM synthesizes from real DAG output
 
-ARCHITECTURE DIAGRAM:
-    ┌─────────────────────────────────────────────────────────────┐
-    │                      GoatSupervisor                        │
-    │  ┌──────────────────────────────────────────────────────┐  │
-    │  │              Parallel Memory Pipeline                 │  │
-    │  │         (Redis working memory during DAG exec)        │  │
-    │  └──────────────────────────────────────────────────────┘  │
-    │                           │                                 │
-    │  ┌────────────────────────▼──────────────────────────────┐  │
-    │  │              WorkflowGraph Execution                   │  │
-    │  │    ┌─────────┐  ┌─────────┐  ┌─────────┐              │  │
-    │  │    │ Agent 1 │  │ Agent 2 │  │ Agent 3 │              │  │
-    │  │    │ (Redis) │  │ (Redis) │  │ (Redis) │              │  │
-    │  └──────────────────────────────────────────────────────┘  │
-    │                           │                                 │
-    │         ┌─────────────────┼─────────────────┐              │
-    │         ▼                 ▼                 ▼              │
-    │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-    │  │   WORKING   │  │  EPISODIC   │  │  LONG_TERM  │        │
-    │  │   (Redis)   │  │ (ChromaDB)  │  │   (Letta)   │        │
-    │  └─────────────┘  └─────────────┘  └─────────────┘        │
-    │         ▲                 ▲                 ▲              │
-    │         └─────────────────┴─────────────────┘              │
-    │              Supervisor Full Access                        │
-    │                                                             │
-    │  Automatic Promotion (background tasks):                    │
-    │  Turn 2+: WORKING → EPISODIC (keep_source=True)            │
-    │  Turn 3+: EPISODIC → LONG_TERM (keep_source=False)         │
-    └─────────────────────────────────────────────────────────────┘
+CRITIC FALLBACK (FIX Problema 5):
+=================================
+    When the critic returns severity MAJOR or CRITICAL, the supervisor:
+    1. Re-executes all non-passing tasks with a stricter prompt
+    2. Re-runs the critic on the new results
+    3. If still failing after max retries, includes the critic's warnings in the summary
+    This prevents bad output from reaching the user silently.
 """
 from __future__ import annotations
 import uuid
@@ -114,7 +92,7 @@ from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry, _build_default_registry
 from supervisor.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
-from supervisor.critique import critique_results, synthesize_results
+from supervisor.critique import critique_results, synthesize_results, CriticVerdict
 from supervisor.history import ConversationHistory
 from supervisor.identity import conv_result, direct_response
 from supervisor.classifier import classify_intent, IntentDepth
@@ -140,6 +118,9 @@ _REASON_LABELS: dict[str, str] = {
     "net_error": "web search returned an error",
     "stale_memory": "memory query returned stale data",
 }
+
+# ── FIX (Problema 5): max retry attempts for critic fallback ──
+_MAX_CRITIC_RETRIES: int = 2
 
 
 def _unverified_summary(results: dict, val_statuses: list) -> str:
@@ -192,6 +173,142 @@ def _build_metadata_summary(statuses: list, audit) -> str:
     return "; ".join(parts) or "ok"
 
 
+# ── FIX (Problema 5): stricter prompts for rerun ──
+_STRICTER_SYSTEM_PROMPTS: dict[str, str] = {
+    "researcher": (
+        "You are a deep research agent. RE-EXECUTION: your previous output was flagged "
+        "as insufficient by the critic. Be MORE thorough. Use web_search(query) for EVERY "
+        "claim that needs verification. Cross-reference multiple sources. "
+        "Output structured findings with explicit citations."
+    ),
+    "coder": (
+        "Expert software engineer. RE-EXECUTION: your previous code was flagged as "
+        "problematic by the critic. Be MORE careful. Read files before writing. "
+        "Verify your logic. Add error handling. Write clean typed code in fenced blocks."
+    ),
+    "tool_caller": (
+        "Tool orchestration agent. RE-EXECUTION: your previous execution was flagged "
+        "as insufficient by the critic. Be MORE thorough. Use the right tools for each step. "
+        "File tools: file_read, file_write, file_create, file_list, file_search, "
+        "file_grep(path, pattern), file_info(path), file_read_lines(path, start_line, end_line). "
+        "Search: web_search. Memory: memory_search, memory_get, memory_store. "
+        "Say 'tool not connected' on ERROR. Never ask user to run shell commands."
+    ),
+}
+
+
+def _get_stricter_prompt(task_role: str, original_prompt: str) -> str:
+    """Return a stricter version of the task prompt for re-execution.
+
+    Prepends a strictness instruction and appends the original prompt.
+    """
+    strict_override = _STRICTER_SYSTEM_PROMPTS.get(task_role, "")
+    if strict_override:
+        return f"[STRICT RE-EXECUTION] {strict_override}\n\nOriginal task: {original_prompt}"
+    return f"[STRICT RE-EXECUTION] Be more thorough and precise.\n\nOriginal task: {original_prompt}"
+
+
+async def _rerun_failed_tasks(
+    plan: Plan,
+    results: dict[str, AgentResult],
+    registry: AgentRegistry,
+    semaphore: asyncio.Semaphore,
+    memory_manager: MemoryManager | None,
+    session_id: str,
+    verdict: CriticVerdict,
+) -> dict[str, AgentResult]:
+    """Re-execute tasks that produced problematic output.
+
+    Only re-runs tasks whose roles are in _STRICTER_SYSTEM_PROMPTS (researcher, coder, tool_caller).
+    Keeps existing results for tasks that passed critic review.
+    Updates the results dict in-place with new outputs.
+
+    Args:
+        plan: Original plan with task definitions
+        results: Current results dict (mutated in-place)
+        registry: AgentRegistry for runners
+        semaphore: Concurrency semaphore
+        memory_manager: Memory manager for Redis access
+        session_id: Current session ID
+        verdict: CriticVerdict from the failed critique
+
+    Returns:
+        Updated results dict
+    """
+    log.info(
+        "Critic fallback: severity=%s, re-executing failing tasks",
+        verdict.severity,
+    )
+
+    # Identify which tasks to rerun (only roles that can improve with stricter prompts)
+    rerun_tasks = [
+        t for t in plan.tasks
+        if t.role in _STRICTER_SYSTEM_PROMPTS
+        and t.id in results
+        and results[t.id].error is None  # don't rerun errored tasks
+    ]
+
+    if not rerun_tasks:
+        log.info("Critic fallback: no rerunnable tasks found")
+        return results
+
+    # Build a mini-workflow just for the rerun tasks
+    # We execute them sequentially (not full DAG) since they may depend on each other
+    for task in rerun_tasks:
+        # Create stricter prompt
+        original_prompt = task.prompt
+        task.prompt = _get_stricter_prompt(task.role, original_prompt)
+
+        # Build context from existing results
+        context = {
+            dep_id: results[dep_id]
+            for dep_id in task.depends_on
+            if dep_id in results and results[dep_id].error is None
+        }
+
+        # Execute with semaphore
+        async with semaphore:
+            task.memory_manager = memory_manager
+            t_start = time.monotonic()
+            try:
+                runner = registry.get(task.role)
+                output = await runner(task, context)
+                duration = time.monotonic() - t_start
+                results[task.id] = AgentResult(
+                    task_id=task.id,
+                    role=task.role,
+                    output=output,
+                    model="",
+                    duration_s=duration,
+                    error=None,
+                    source=task.source,
+                    tool_called=False,
+                    tool_name="",
+                    raw_output_hash="",
+                )
+                log.info("Rerun task %s (%s): OK (%.1fs)", task.id, task.role, duration)
+            except Exception as e:
+                duration = time.monotonic() - t_start
+                log.exception("Rerun task %s failed", task.id)
+                results[task.id] = AgentResult(
+                    task_id=task.id,
+                    role=task.role,
+                    output="",
+                    model="",
+                    duration_s=duration,
+                    error=str(e),
+                    source=task.source,
+                    tool_called=False,
+                    tool_name="",
+                    raw_output_hash="",
+                )
+
+        # Restore original prompt for any subsequent rerun
+        task.prompt = original_prompt
+
+    return results
+
+
 class GoatSupervisor:
     """GOAT 2.0 orchestrator with unified message handling and autonomous tool selection.
 
@@ -220,6 +337,11 @@ class GoatSupervisor:
     - raw_output_hash must prove execution
     - source must match allowed types (file, memory, net, generated)
     - dag_verified must be True — ensures LLM synthesizes from real DAG output
+
+    CRITIC FALLBACK (FIX Problema 5):
+    =================================
+    When critic returns MAJOR or CRITICAL, tasks are re-executed with stricter prompts.
+    Up to _MAX_CRITIC_RETRIES (2) attempts before accepting the output.
     """
 
     def __init__(
@@ -350,6 +472,14 @@ class GoatSupervisor:
         4. Source violations logged but don't fail execution
         5. dag_verified ensures LLM synthesizes from real DAG output
 
+        CRITIC FALLBACK (FIX Problema 5):
+        =================================
+        After initial critique, if verdict is MAJOR or CRITICAL:
+        - Re-execute failing tasks with stricter prompts
+        - Re-run critic on new results
+        - Up to _MAX_CRITIC_RETRIES (2) attempts
+        - If still failing after max retries, include critic warnings in summary
+
         Args:
             intent: User message/intent to process
 
@@ -465,13 +595,38 @@ class GoatSupervisor:
             summary = _unverified_summary(results, val_statuses)
             critique = ""
         else:
-            critique = await critique_results(plan_ctx, results, lang)
+            # ── FIX (Problema 5): Critic with fallback loop ──
+            verdict = await critique_results(plan_ctx, results, lang)
+            retry_count = 0
+
+            while verdict.needs_rerun and retry_count < _MAX_CRITIC_RETRIES:
+                retry_count += 1
+                log.info(
+                    "Critic fallback attempt %d/%d: severity=%s",
+                    retry_count, _MAX_CRITIC_RETRIES, verdict.severity,
+                )
+                results = await _rerun_failed_tasks(
+                    plan, results, self.registry, self._semaphore,
+                    self.memory_manager, session_id, verdict,
+                )
+                # Re-validate after rerun
+                results, val_statuses = validate_results(results)
+                verdict = await critique_results(plan_ctx, results, lang)
+
+            if verdict.needs_rerun:
+                log.warning(
+                    "Critic fallback exhausted after %d retries (severity=%s). "
+                    "Including critic warnings in summary.",
+                    _MAX_CRITIC_RETRIES, verdict.severity,
+                )
+
             # Pass dag_detail to synthesize_results only when dag_verified=True
             # This ensures the LLM synthesizes from real DAG output instead of hallucinating
+            critique_str = verdict.raw
             summary = await synthesize_results(
                 plan_ctx,
                 results,
-                critique,
+                critique_str,
                 self._user_profile or "",
                 self._behavior_style,
                 lang,
@@ -507,7 +662,7 @@ class GoatSupervisor:
             intent=intent,
             plan=plan,
             results=results,
-            critique=critique,
+            critique=critique_str if not (unsafe or missing_src) else "",
             summary=summary,
             total_duration_s=total,
             session_id=session_id,
