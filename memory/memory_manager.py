@@ -2,6 +2,11 @@
 
 Agents import only this module for memory access. Coordinates three tiers:
 WORKING (session-scoped, TTL), EPISODIC (ChromaDB semantic), LONG_TERM (Letta).
+
+PHASE 4 UPDATE:
+===============
+Module-level `memory_manager = MemoryManager()` singleton REMOVED.
+All code must now use Registry for memory manager access.
 """
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ from memory.memory_enums import LayerStatus, MemoryType
 from memory.memory_promote import MemoryPromoteMixin
 from memory.memory_search import MemorySearchMixin
 from memory.temporal_search import TemporalSearchMixin
-from memory.working_memory import WorkingMemoryLayer, working_memory as _default_working
+from memory.working_memory import WorkingMemoryLayer
 
 if TYPE_CHECKING:
     from memory.router import MemoryRouter
@@ -24,7 +29,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.memory.manager")
 
-__all__ = ["MemoryManager", "MemoryType", "LayerStatus", "memory_manager"]
+__all__ = ["MemoryManager", "MemoryType", "LayerStatus"]
 
 
 class MemoryManager(
@@ -50,7 +55,10 @@ class MemoryManager(
         episodic: ChromaMemoryClient | None = None,
         long_term: LettaClient | None = None,
     ) -> None:
-        self.working: WorkingMemoryLayer = working or _default_working
+        from memory.working_memory import WorkingMemoryLayer
+        from memory.redis_backend import RedisBackend
+        
+        self.working: WorkingMemoryLayer = working or WorkingMemoryLayer(backend=RedisBackend())
         self.episodic: ChromaMemoryClient = episodic or chroma_client
         self.long_term: LettaClient = long_term or letta_client
         self._layers: dict[MemoryType, MemoryLayer] = {
@@ -257,6 +265,3 @@ class MemoryManager(
             f"episodic={type(self.episodic).__name__}, "
             f"long_term={type(self.long_term).__name__})"
         )
-
-
-memory_manager = MemoryManager()

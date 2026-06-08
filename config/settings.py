@@ -61,6 +61,11 @@ Example:
     # or in goat.toml:
     # [model]
     # supervisor = "deepseek-chat"
+
+PHASE 4 UPDATE:
+===============
+Module-level `settings = Settings()` singleton REMOVED.
+All code must now use Registry for configuration access.
 """
 from __future__ import annotations
 
@@ -74,7 +79,6 @@ from config.toml_loader import load_toml
 
 __all__ = [
     "Settings",
-    "settings",
     "AgentModels",
     "APIKeys",
     "PROVIDER_BASE_URLS",
@@ -276,6 +280,11 @@ class Settings:
     - All required API keys are set
     - Provider names are valid
     - Model keys resolve correctly
+
+    PHASE 4 UPDATE:
+    ===============
+    Module-level `settings = Settings()` singleton REMOVED.
+    Instantiate Settings via Registry or directly as needed.
     """
 
     api_keys: APIKeys = field(default_factory=APIKeys)
@@ -350,6 +359,3 @@ class Settings:
             raise EnvironmentError(
                 "GOAT 2.0 configuration errors:\n" + "\n".join(errors)
             )
-
-
-settings = Settings()
