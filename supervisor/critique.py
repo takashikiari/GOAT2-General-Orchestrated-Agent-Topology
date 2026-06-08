@@ -155,8 +155,8 @@ def parse_verdict(raw: str) -> CriticVerdict:
 async def critique_results(
     intent: str,
     results: dict[str, AgentResult],
-    lang: str = "",
     registry: "Registry",
+    lang: str = "",
 ) -> CriticVerdict:
     """Critic agent reviews the full set of completed task results end-to-end.
 
@@ -216,12 +216,12 @@ async def synthesize_results(
     intent: str,
     results: dict[str, AgentResult],
     critique: str,
+    registry: "Registry",
     profile: str = "",
     style: str = "",
     lang: str = "",
     session_summary: str = "",
     dag_detail: str = "",
-    registry: "Registry",
 ) -> str:
     """Synthesize agent outputs into a terse, persona-matched final answer.
 

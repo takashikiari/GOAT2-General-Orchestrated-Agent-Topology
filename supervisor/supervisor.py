@@ -230,12 +230,11 @@ def _get_stricter_prompt(task_role: str, original_prompt: str) -> str:
 async def _rerun_failed_tasks(
     plan: Plan,
     results: dict[str, AgentResult],
-    registry: AgentRegistry,
+    registry: "Registry",
     semaphore: asyncio.Semaphore,
     memory_manager: MemoryManager | None,
     session_id: str,
     verdict: CriticVerdict,
-    registry: "Registry",
 ) -> dict[str, AgentResult]:
     """Re-execute tasks that produced problematic output.
 
@@ -246,12 +245,11 @@ async def _rerun_failed_tasks(
     Args:
         plan: Original plan with task definitions
         results: Current results dict (mutated in-place)
-        registry: AgentRegistry for runners
+        registry: Registry for dependency injection (Phase 4)
         semaphore: Concurrency semaphore
         memory_manager: Memory manager for Redis access
         session_id: Current session ID
         verdict: CriticVerdict from the failed critique
-        registry: Registry for dependency injection (Phase 4)
 
     Returns:
         Updated results dict
@@ -680,8 +678,8 @@ class GoatSupervisor:
                 self._history.summary,
                 mem_ctx,
                 t0,
-                self._behavior_style,
                 self.registry,
+                self._behavior_style,
             )
             self._history.add_assistant(r.summary)
             # Store result in WORKING memory for future conversational access
@@ -768,7 +766,7 @@ class GoatSupervisor:
         else:
             # ── FIX (Problema 5): Critic with fallback loop ──
             # Phase 4: Pass registry to critique_results
-            verdict = await critique_results(plan_ctx, results, lang, self.registry)
+            verdict = await critique_results(plan_ctx, results, self.registry, lang)
             retry_count = 0
 
             while verdict.needs_rerun and retry_count < _MAX_CRITIC_RETRIES:
@@ -779,13 +777,13 @@ class GoatSupervisor:
                 )
                 # Phase 4: Pass registry to _rerun_failed_tasks
                 results = await _rerun_failed_tasks(
-                    plan, results, self.agent_registry, self._semaphore,
-                    self.memory_manager, session_id, verdict, self.registry,
+                    plan, results, self.registry, self._semaphore,
+                    self.memory_manager, session_id, verdict,
                 )
                 # Re-validate after rerun
                 results, val_statuses = validate_results(results)
                 # Phase 4: Pass registry to critique_results
-                verdict = await critique_results(plan_ctx, results, lang, self.registry)
+                verdict = await critique_results(plan_ctx, results, self.registry, lang)
 
             if verdict.needs_rerun:
                 log.warning(
@@ -802,12 +800,12 @@ class GoatSupervisor:
                 plan_ctx,
                 results,
                 critique_str,
+                self.registry,
                 self._user_profile or "",
                 self._behavior_style,
                 lang,
                 self._history.summary,
                 dag_detail=dag_detail if dag_verified else "",
-                registry=self.registry,
             )
             if not summary.strip():
                 tools_called = sorted(

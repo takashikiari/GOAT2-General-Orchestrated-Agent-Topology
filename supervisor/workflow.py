@@ -218,11 +218,10 @@ class WorkflowGraph:
         task: AgentTask,
         output: str,
         results: dict[str, AgentResult],
-        registry: AgentRegistry,
+        registry: "Registry",
         verbose: bool,
         t_start: float,
         memory_manager: MemoryManager | None,
-        registry: "Registry",
     ) -> None:
         """Re-execută upstream tasks și re-rules criticul.
 
@@ -233,11 +232,10 @@ class WorkflowGraph:
             task: Task-ul critic
             output: Output-ul original al criticului (cu SEVERITY)
             results: Dicționarul de rezultate (modificat in-place)
-            registry: AgentRegistry pentru a obține runneri
+            registry: Registry for dependency injection (Phase 4)
             verbose: Flag de logging detaliat
             t_start: Timpul de start pentru calculul duratei
             memory_manager: MemoryManager for Redis access
-            registry: Registry for dependency injection (Phase 4)
         """
         # Verifică limită de re-executări
         current_count = self._critic_rerun_count.get(tid, 0)
@@ -424,13 +422,12 @@ class WorkflowGraph:
 
     async def execute(
         self,
-        registry: AgentRegistry,
+        registry: "Registry",
         semaphore: asyncio.Semaphore,
         *,
         verbose: bool = False,
         memory_manager: MemoryManager | None = None,
         session_id: str | None = None,
-        registry: "Registry",
     ) -> dict[str, AgentResult]:
         """
         Execute all tasks in topological order with wave-level concurrency.
@@ -447,13 +444,12 @@ class WorkflowGraph:
                   Passed to runner functions for consistent settings access.
 
         Args:
-            registry: AgentRegistry to look up agent runners by role.
+            registry: Registry for dependency injection (Phase 4)
             semaphore: asyncio.Semaphore to limit concurrent task execution.
             verbose: If True, log detailed execution progress.
             memory_manager: MemoryManager injected into tasks for Redis access.
                            DAG agents use task.memory_manager.working only.
             session_id: Session ID for storing DAG results
-            registry: Registry for dependency injection (Phase 4)
 
         Returns:
             Dictionary mapping task_id → AgentResult for all executed tasks.
@@ -626,7 +622,6 @@ class WorkflowGraph:
                                     verbose=verbose,
                                     t_start=t_start,
                                     memory_manager=memory_manager,
-                                    registry=registry,
                                 )
 
                     except Exception as e:

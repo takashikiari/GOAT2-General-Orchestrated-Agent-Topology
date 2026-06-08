@@ -82,10 +82,10 @@ def _system_with_profile(profile: str, summary: str = "", style: str = "") -> st
 async def direct_response(
     messages: list[dict[str, str]],
     profile: str,
+    registry: "Registry",
     summary: str = "",
     mem_ctx: str = "",
     style: str = "",
-    registry: "Registry",
 ) -> TaggedResult:
     """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
@@ -122,8 +122,8 @@ async def conv_result(
     summary: str,
     mem_ctx: str,
     t0: float,
-    style: str = "",
     registry: "Registry",
+    style: str = "",
 ) -> SupervisorResult:
     """Return a SupervisorResult from a direct LLM response with full conversation history.
 
@@ -131,7 +131,7 @@ async def conv_result(
     =============================
     Requires registry parameter for dependency injection.
     """
-    tagged = await direct_response(messages, profile, summary, mem_ctx, style, registry)
+    tagged = await direct_response(messages, profile, registry, summary, mem_ctx, style)
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},
         critique="", summary=tagged.content,
