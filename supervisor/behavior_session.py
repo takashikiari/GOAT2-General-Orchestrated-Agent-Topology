@@ -1,17 +1,15 @@
 """Session-end behavior lifecycle: analyze user turns and persist updated style profile.
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-finalize_behavior() now accepts optional `registry` parameter.
-If registry provided: uses registry.settings.letta.base_url for logging
-Otherwise: falls back to config.settings singleton
+finalize_behavior() now requires `registry` parameter.
+Uses registry.settings.letta.base_url for logging.
 """
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
-from config.settings import settings
 from supervisor.behavior_analyzer import analyze_style
 from supervisor.behavior_store import save_style
 
@@ -29,19 +27,18 @@ async def finalize_behavior(
     mm: MemoryManager | None,
     history: ConversationHistory | None,
     current_style: str,
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """
     Extract user turns from history, infer communication style, persist to Letta 'persona' block.
     Returns updated style text; returns current_style unchanged on failure or when mm is None.
     Only writes to Letta when the profile changes (skips identical result).
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.letta.base_url for logging
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.letta.base_url for logging.
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     if mm is None or history is None:
         log.debug("finalize_behavior: skipped (mm=%s, history=%s)", mm is None, history is None)
         return current_style

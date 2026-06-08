@@ -10,16 +10,14 @@ CRITICAL REVIEW FALLBACK (Problema 5):
 _run_critic() now returns a structured dict with verdict, severity, and assessment
 so WorkflowGraph can decide to re-execute upstream tasks when severity is CRITICAL.
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-All runner functions now accept optional `registry` parameter.
-If registry provided: uses registry.settings.agents.get(role)
-If registry=None: falls back to direct import from config.settings
+All runner functions now require `registry` parameter.
+Uses registry.settings.agents.get(role) and registry tools.
 """
 from __future__ import annotations
 import logging
 from typing import Final, TYPE_CHECKING
-from config.settings import settings
 from supervisor.types import AgentTask, AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
 from supervisor.tool_runner import _call_with_tools
@@ -45,20 +43,19 @@ def _dedupe_tools(tools: list) -> list:
 async def _run_researcher(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Deep research with forced web_search; raises if web_search was not called.
 
     The LLM autonomously decides when web search is needed based on task semantics.
     Tool invocation is enforced via tool_choice='required' — source=generated triggers UNVERIFIED.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("researcher")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("researcher").
     """
     from tools import WEB_SEARCH
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     context = _format_dep_context(dep_results)
     r = await _call_with_tools(
         _settings.agents.get("researcher"),
@@ -84,20 +81,19 @@ async def _run_researcher(
 async def _run_coder(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Code generation with full FILE_TOOLS access; LLM decides autonomously when to use them.
 
     The model evaluates task semantics to decide if file operations are needed.
     No regex-based forcing — semantic autonomy enables proper tool selection.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("coder")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("coder").
     """
     from tools import FILE_TOOLS
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     ctx  = _format_dep_context(dep_results)
     msgs = [
         {"role": "system", "content": (
@@ -117,7 +113,7 @@ async def _run_coder(
 async def _run_critic(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Critical review: assessment paragraph + bullet list; source is generated.
 
@@ -133,12 +129,11 @@ async def _run_critic(
     The severity line is parsed by WorkflowGraph to decide if upstream tasks
     should be re-executed with a stricter prompt.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("critic")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("critic").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     task.source = "generated"
     context = _format_dep_context(dep_results)
     return await _call_llm(
@@ -161,18 +156,17 @@ async def _run_critic(
 async def _run_summarizer(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Synthesis: report only facts from verified upstream outputs; source is generated.
 
     Skips LLM call entirely when all upstream outputs are empty — prevents hallucination.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("summarizer")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("summarizer").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     task.source = "generated"
     if dep_results and all(not (r.output or "").strip() for r in dep_results.values()):
         return "Not available. Upstream tasks returned no output."
@@ -194,7 +188,7 @@ async def _run_summarizer(
 async def _run_tool_caller(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Tool orchestration with FULL tool access — LLM decides autonomously based on semantic intent.
 
@@ -206,14 +200,12 @@ async def _run_tool_caller(
     tool_choice='auto' allows the model to select tools based on true intent.
     Tools are deduplicated by name before sending to API to prevent HTTP 400 errors.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("tool_caller")
-                         and registry.file_tools, registry.dag_memory_tools
-    Otherwise: falls back to config.settings singleton and tools module imports
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings, registry.file_tools, registry.dag_memory_tools.
     """
-    from tools import FILE_TOOLS, WEB_SEARCH, DAG_MEMORY_TOOLS
-    _settings = registry.settings if registry else settings
+    from tools import WEB_SEARCH
+    _settings = registry.settings
     spec = _settings.agents.get("tool_caller")
     if not spec.tool_calling:
         raise RuntimeError(f"tool_caller model '{spec.model_id}' has tool_calling=False; use deepseek-chat/gpt-4o-mini.")
@@ -229,8 +221,7 @@ async def _run_tool_caller(
             "Evaluate task semantics to decide which tools are needed — do not wait for explicit commands.")},
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
-    # Use registry tools if available, otherwise fall back to module imports
-    _tools = registry.file_tools + registry.dag_memory_tools + [WEB_SEARCH] if registry else FILE_TOOLS + DAG_MEMORY_TOOLS + [WEB_SEARCH]
+    _tools = registry.file_tools + registry.dag_memory_tools + [WEB_SEARCH]
     _tools = _dedupe_tools(_tools)
     log.debug("tool_caller: tools=%s (semantic selection, deduped)", [t.name for t in _tools])
     r = await _call_with_tools(spec, msgs, _tools, tool_choice="auto")

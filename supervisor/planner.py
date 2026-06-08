@@ -1,17 +1,16 @@
 """Task decomposition engine for GOAT 2.0 — breaks intent into minimal subtasks.
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-decompose_plan() now accepts optional `registry` parameter.
-If registry provided: uses registry.settings.supervisor.model
-Otherwise: falls back to config.settings singleton
+decompose_plan() now requires `registry` parameter.
+Uses registry.settings.supervisor.model for planner LLM calls.
 """
 from __future__ import annotations
 
 import logging
 from typing import Final, TYPE_CHECKING
 
-from config.settings import Provider, settings
+from config.settings import Provider
 from supervisor.types import AgentTask, AgentResult, Plan
 from supervisor.llm_utils import _call_llm, _extract_json, _format_dep_context
 from supervisor.plan_validator import validate_plan
@@ -65,15 +64,14 @@ def _fallback_plan(intent: str) -> Plan:
     ])
 
 
-async def decompose_plan(intent: str, registry: "Registry" | None = None) -> Plan:
+async def decompose_plan(intent: str, registry: "Registry") -> Plan:
     """Call the supervisor model to decompose intent into an AgentTask DAG.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.supervisor.model
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.supervisor.model.
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     spec = _settings.supervisor.model
     raw = await _call_llm(
         spec,
@@ -117,16 +115,15 @@ async def decompose_plan(intent: str, registry: "Registry" | None = None) -> Pla
 async def _run_planner(
     task: AgentTask,
     dep_results: dict[str, AgentResult],
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Built-in planner runner — registered for completeness; supervisor uses decompose_plan directly.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("planner")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("planner").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     task.source = "generated"
     spec    = _settings.agents.get("planner")
     context = _format_dep_context(dep_results)

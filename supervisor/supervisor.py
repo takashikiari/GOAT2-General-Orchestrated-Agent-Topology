@@ -90,13 +90,11 @@ DIRECT REQUEST BYPASS (PATCH 71):
     - Confidence threshold >= 0.5 required for bypass
     - Falls back to DAG on any uncertainty or error
 
-REGISTRY INJECTION (PHASE 2/3):
+REGISTRY INJECTION (PHASE 4):
 ===============================
-    GoatSupervisor accepts optional Registry parameter for dependency injection.
-    If registry provided: uses registry.settings, registry.memory_manager, etc.
-    If registry=None: falls back to old module-level singletons (backward compat)
-    
-    Phase 3: Registry is passed through to planner, workflow, runners, critique
+    GoatSupervisor requires Registry parameter for dependency injection.
+    Uses registry.settings, registry.memory_manager, registry tools.
+    No fallback to old singletons (removed in Phase 4).
 """
 from __future__ import annotations
 import uuid
@@ -107,9 +105,8 @@ import time
 from typing import TYPE_CHECKING
 
 from config.roles import SESSION_ROLE
-from config.settings import settings
 from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
-from supervisor.registry import AgentRegistry, _build_default_registry
+from supervisor.registry import AgentRegistry
 from supervisor.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
 from supervisor.critique import critique_results, synthesize_results, CriticVerdict
@@ -238,7 +235,7 @@ async def _rerun_failed_tasks(
     memory_manager: MemoryManager | None,
     session_id: str,
     verdict: CriticVerdict,
-    phase3_registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> dict[str, AgentResult]:
     """Re-execute tasks that produced problematic output.
 
@@ -254,7 +251,7 @@ async def _rerun_failed_tasks(
         memory_manager: Memory manager for Redis access
         session_id: Current session ID
         verdict: CriticVerdict from the failed critique
-        phase3_registry: Registry for dependency injection (Phase 3)
+        registry: Registry for dependency injection (Phase 4)
 
     Returns:
         Updated results dict
@@ -296,8 +293,8 @@ async def _rerun_failed_tasks(
             t_start = time.monotonic()
             try:
                 runner = registry.get(task.role)
-                # Phase 3: Pass registry to runner for dependency injection
-                output = await runner(task, context, phase3_registry)
+                # Phase 4: Pass registry to runner for dependency injection
+                output = await runner(task, context, registry)
                 duration = time.monotonic() - t_start
                 results[task.id] = AgentResult(
                     task_id=task.id,
@@ -375,57 +372,34 @@ class GoatSupervisor:
     - Rule-based classification (no LLM calls)
     - Falls back to DAG on uncertainty or error
 
-    REGISTRY INJECTION (PHASE 2/3):
-    ===============================
-    Accepts optional Registry parameter for dependency injection.
-    If registry provided: uses registry.settings, registry.memory_manager
-    If registry=None: falls back to old module-level singletons (backward compat)
-    
-    Phase 3: Registry is passed through to planner, workflow, runners, critique
+    REGISTRY INJECTION (PHASE 4):
+    ==============================
+    Requires Registry parameter for dependency injection.
+    Uses registry.settings, registry.memory_manager, registry tools.
+    No fallback to old singletons.
     """
 
     def __init__(
         self,
-        registry: "Registry" | None = None,
-        memory_manager: MemoryManager | None = None,
-        agent_registry: AgentRegistry | None = None,
+        registry: "Registry",
     ) -> None:
-        """Initialize GoatSupervisor with registry or legacy parameters.
+        """Initialize GoatSupervisor with Registry.
 
         Args:
-            registry: Central Registry container (Phase 2+). If provided,
-                     uses registry.settings, registry.memory_manager, etc.
-            memory_manager: Legacy parameter for MemoryManager. Used only
-                           if registry is None (backward compatibility).
-            agent_registry: Legacy parameter for AgentRegistry. Used only
-                           if registry is None (backward compatibility).
+            registry: Central Registry container. Required.
+                     Uses registry.settings, registry.memory_manager, etc.
 
         MEMORY ACCESS INITIALIZATION:
         =============================
         - registry.memory_manager provides access to all three tiers
         - working memory (Redis) accessible to DAG agents via injection
         - episodic (ChromaDB) and long_term (Letta) are supervisor-only
-        
-        BACKWARD COMPATIBILITY:
-        =======================
-        If registry is None, falls back to:
-        - memory_manager parameter or module-level singleton
-        - agent_registry parameter or _build_default_registry()
-        - settings module-level singleton
         """
-        # Phase 2: Registry injection with backward compatibility fallback
-        if registry is not None:
-            log.info("GoatSupervisor: using Registry for dependency injection")
-            self.registry = registry
-            self.memory_manager = registry.memory_manager
-            self.agent_registry = registry  # Registry contains AgentRegistry functionality
-            self._settings = registry.settings
-        else:
-            log.info("GoatSupervisor: using legacy singleton fallback (Phase 2 compat)")
-            self.registry = None
-            self.memory_manager = memory_manager
-            self.agent_registry = agent_registry or _build_default_registry()
-            self._settings = settings
+        log.info("GoatSupervisor: using Registry for dependency injection")
+        self.registry = registry
+        self.memory_manager = registry.memory_manager
+        self.agent_registry = registry
+        self._settings = registry.settings
 
         # Semaphore for concurrent task execution
         self._semaphore = asyncio.Semaphore(
@@ -655,7 +629,7 @@ class GoatSupervisor:
         - Rule-based classification (no LLM calls)
         - Falls back to DAG on uncertainty or error
 
-        REGISTRY INJECTION (PHASE 3):
+        REGISTRY INJECTION (PHASE 4):
         =============================
         Registry is passed through to:
         - classify_intent() for model selection
@@ -686,7 +660,7 @@ class GoatSupervisor:
             )
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent)
-        # Phase 3: Pass registry to classify_intent
+        # Phase 4: Pass registry to classify_intent
         depth = await classify_intent(intent, self.registry)
 
         # PRE-CHECK: Direct tool bypass for simple single-tool queries
@@ -698,7 +672,7 @@ class GoatSupervisor:
 
         # CONVERSATIONAL: LLM with CORE_TOOLS — autonomous tool selection, no DAG bypass
         if depth == IntentDepth.CONVERSATIONAL:
-            # Phase 3: Pass registry to conv_result
+            # Phase 4: Pass registry to conv_result
             r = await conv_result(
                 intent,
                 self._history.messages,
@@ -733,7 +707,7 @@ class GoatSupervisor:
         if depth == IntentDepth.ANALYTICAL:
             plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
 
-        # Phase 3: Pass registry to decompose_plan
+        # Phase 4: Pass registry to decompose_plan
         plan = await decompose_plan(plan_ctx, self.registry)
         lang = await prepare_tasks(plan.tasks, self.memory_manager, intent)
 
@@ -748,14 +722,14 @@ class GoatSupervisor:
         # NOTE: DAG agents can ONLY access working tier (Redis)
         # ChromaDB and Letta are supervisor-only
         session_id = str(uuid.uuid4())
-        # Phase 3: Pass registry to WorkflowGraph.execute as phase3_registry
+        # Phase 4: Pass registry to WorkflowGraph.execute
         results = await WorkflowGraph(plan.tasks).execute(
             self.agent_registry,
             self._semaphore,
             verbose=self._verbose,
             memory_manager=self.memory_manager,
             session_id=session_id,
-            phase3_registry=self.registry,
+            registry=self.registry,
         )
 
         # Read dag_result from Redis for independent validation
@@ -793,7 +767,7 @@ class GoatSupervisor:
             critique = ""
         else:
             # ── FIX (Problema 5): Critic with fallback loop ──
-            # Phase 3: Pass registry to critique_results
+            # Phase 4: Pass registry to critique_results
             verdict = await critique_results(plan_ctx, results, lang, self.registry)
             retry_count = 0
 
@@ -803,14 +777,14 @@ class GoatSupervisor:
                     "Critic fallback attempt %d/%d: severity=%s",
                     retry_count, _MAX_CRITIC_RETRIES, verdict.severity,
                 )
-                # Phase 3: Pass registry to _rerun_failed_tasks
+                # Phase 4: Pass registry to _rerun_failed_tasks
                 results = await _rerun_failed_tasks(
                     plan, results, self.agent_registry, self._semaphore,
                     self.memory_manager, session_id, verdict, self.registry,
                 )
                 # Re-validate after rerun
                 results, val_statuses = validate_results(results)
-                # Phase 3: Pass registry to critique_results
+                # Phase 4: Pass registry to critique_results
                 verdict = await critique_results(plan_ctx, results, lang, self.registry)
 
             if verdict.needs_rerun:
@@ -823,7 +797,7 @@ class GoatSupervisor:
             # Pass dag_detail to synthesize_results only when dag_verified=True
             # This ensures the LLM synthesizes from real DAG output instead of hallucinating
             critique_str = verdict.raw
-            # Phase 3: Pass registry to synthesize_results
+            # Phase 4: Pass registry to synthesize_results
             summary = await synthesize_results(
                 plan_ctx,
                 results,
@@ -907,11 +881,11 @@ class GoatSupervisor:
         - Updates core memory blocks with behavior style
         - Persists across sessions
         
-        REGISTRY INJECTION (PHASE 3):
+        REGISTRY INJECTION (PHASE 4):
         =============================
         Passes registry to finalize_behavior for settings access
         """
-        # Phase 3: Pass registry to finalize_behavior
+        # Phase 4: Pass registry to finalize_behavior
         self._behavior_style = await finalize_behavior(
             self.memory_manager, self._history, self._behavior_style, self.registry
         )

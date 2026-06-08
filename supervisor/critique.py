@@ -13,11 +13,10 @@ IMPROVEMENTS (FIX):
 - critique_results() has a timeout to prevent hanging
 - Fallback verdict if parsing fails completely
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-critique_results() and synthesize_results() now accept optional `registry` parameter.
-If registry provided: uses registry.settings.agents.get("critic"/"planner")
-Otherwise: falls back to config.settings singleton
+critique_results() and synthesize_results() now require `registry` parameter.
+Uses registry.settings.agents.get("critic"/"planner") for LLM calls.
 """
 from __future__ import annotations
 import asyncio
@@ -26,7 +25,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from config.settings import settings
 from config.timeouts import TURN_TIMEOUT
 from supervisor.types import AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
@@ -158,19 +156,18 @@ async def critique_results(
     intent: str,
     results: dict[str, AgentResult],
     lang: str = "",
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> CriticVerdict:
     """Critic agent reviews the full set of completed task results end-to-end.
 
     Returns a CriticVerdict with severity classification for fallback logic.
     Has a timeout to prevent hanging on LLM failures.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("critic")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("critic").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     context = _format_dep_context(results)
     lang_pfx = f"Respond in {lang}. " if lang and lang.lower() != "english" else ""
     try:
@@ -224,19 +221,18 @@ async def synthesize_results(
     lang: str = "",
     session_summary: str = "",
     dag_detail: str = "",
-    registry: "Registry" | None = None,
+    registry: "Registry",
 ) -> str:
     """Synthesize agent outputs into a terse, persona-matched final answer.
 
     When dag_detail is provided, prepends [DAG Execution Result] to context
     to ensure the LLM synthesizes from real DAG output instead of hallucinating.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("planner")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("planner").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     context = _format_dep_context(results)
     sys_base = _system_with_profile(profile, session_summary, style)
     lang_sfx = f"\nRespond in {lang}." if lang and lang.lower() != "english" else ""

@@ -11,18 +11,16 @@ If the LLM returns empty or unparseable output, we fall back to ANALYTICAL
 (a lightweight DAG with ≤2 tasks) instead of COMPLEX (full DAG). This prevents
 token waste on unnecessary full DAG execution when the classifier fails.
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-classify_intent() now accepts optional `registry` parameter.
-If registry provided: uses registry.settings.agents.get("memory")
-Otherwise: falls back to config.settings singleton
+classify_intent() now requires `registry` parameter.
+Uses registry.settings.agents.get("memory") for classification.
 """
 from __future__ import annotations
 
 from enum import Enum
 from typing import Final, TYPE_CHECKING
 
-from config.settings import settings
 from supervisor.llm_utils import _call_llm
 
 if TYPE_CHECKING:
@@ -47,7 +45,7 @@ class IntentDepth(str, Enum):
     COMPLEX        = "complex"         # full DAG with planner, researcher, critic
 
 
-async def classify_intent(intent: str, registry: "Registry" | None = None) -> IntentDepth:
+async def classify_intent(intent: str, registry: "Registry") -> IntentDepth:
     """Classify intent via LLM — no keyword short-circuits, all messages evaluated semantically.
 
     The model evaluates true intent depth regardless of message formatting,
@@ -60,12 +58,11 @@ async def classify_intent(intent: str, registry: "Registry" | None = None) -> In
     (lightweight DAG) instead of COMPLEX (full DAG). This prevents token waste
     on unnecessary full DAG execution when the classifier fails.
 
-    REGISTRY INJECTION:
-    ===================
-    If registry provided: uses registry.settings.agents.get("memory")
-    Otherwise: falls back to config.settings singleton
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get("memory").
     """
-    _settings = registry.settings if registry else settings
+    _settings = registry.settings
     raw = await _call_llm(
         _settings.agents.get("memory"),  # gpt-4o-mini — fast, cheap
         [

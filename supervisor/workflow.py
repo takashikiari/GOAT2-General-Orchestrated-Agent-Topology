@@ -63,11 +63,10 @@ The re-execution flow:
    d. Run critic again on the new output
 3. If severity is PASS or MINOR, continue normally
 
-REGISTRY INJECTION (PHASE 3):
+REGISTRY INJECTION (PHASE 4):
 =============================
-WorkflowGraph.execute() now accepts optional `registry` parameter.
+WorkflowGraph.execute() requires `registry` parameter.
 Passed to runner functions for consistent dependency injection.
-If registry=None: falls back to legacy behavior (direct imports)
 """
 from __future__ import annotations
 
@@ -159,10 +158,9 @@ class WorkflowGraph:
     3. The critic runs again on the new output
     4. Max 1 re-execution per critic task to prevent infinite loops
 
-    REGISTRY INJECTION (PHASE 3):
+    REGISTRY INJECTION (PHASE 4):
     =============================
-    execute() accepts optional `registry` parameter passed to runner functions.
-    If registry=None: falls back to legacy behavior (direct imports in runners)
+    execute() requires `registry` parameter passed to runner functions.
 
     Example:
         tasks = [
@@ -224,7 +222,7 @@ class WorkflowGraph:
         verbose: bool,
         t_start: float,
         memory_manager: MemoryManager | None,
-        phase3_registry: "Registry" | None = None,
+        registry: "Registry",
     ) -> None:
         """Re-execută upstream tasks și re-rules criticul.
 
@@ -239,7 +237,7 @@ class WorkflowGraph:
             verbose: Flag de logging detaliat
             t_start: Timpul de start pentru calculul duratei
             memory_manager: MemoryManager for Redis access
-            phase3_registry: Registry for dependency injection (Phase 3)
+            registry: Registry for dependency injection (Phase 4)
         """
         # Verifică limită de re-executări
         current_count = self._critic_rerun_count.get(tid, 0)
@@ -303,7 +301,7 @@ class WorkflowGraph:
                 # Re-execută cu timeout
                 up_runner = registry.get(up_task.role)
                 up_output = await asyncio.wait_for(
-                    up_runner(up_task, up_context, phase3_registry),
+                    up_runner(up_task, up_context, registry),
                     timeout=_UPSTREAM_REEXEC_TIMEOUT,
                 )
                 up_duration = time.monotonic() - t_start
@@ -378,7 +376,7 @@ class WorkflowGraph:
         try:
             critic_runner = registry.get(task.role)
             new_output = await asyncio.wait_for(
-                critic_runner(task, new_context, phase3_registry),
+                critic_runner(task, new_context, registry),
                 timeout=_CRITIC_RERUN_TIMEOUT,
             )
             new_duration = time.monotonic() - t_start
@@ -432,7 +430,7 @@ class WorkflowGraph:
         verbose: bool = False,
         memory_manager: MemoryManager | None = None,
         session_id: str | None = None,
-        phase3_registry: "Registry" | None = None,
+        registry: "Registry",
     ) -> dict[str, AgentResult]:
         """
         Execute all tasks in topological order with wave-level concurrency.
@@ -443,11 +441,10 @@ class WorkflowGraph:
                        NOTE: Only working tier (Redis) is accessible here.
                        ChromaDB and Letta are supervisor-only.
 
-        REGISTRY INJECTION (PHASE 3):
+        REGISTRY INJECTION (PHASE 4):
         =============================
-        phase3_registry: Optional Registry for dependency injection.
-                        Passed to runner functions for consistent settings access.
-                        If None, runners fall back to direct imports.
+        registry: Required Registry for dependency injection.
+                  Passed to runner functions for consistent settings access.
 
         Args:
             registry: AgentRegistry to look up agent runners by role.
@@ -456,7 +453,7 @@ class WorkflowGraph:
             memory_manager: MemoryManager injected into tasks for Redis access.
                            DAG agents use task.memory_manager.working only.
             session_id: Session ID for storing DAG results
-            phase3_registry: Registry for dependency injection (Phase 3)
+            registry: Registry for dependency injection (Phase 4)
 
         Returns:
             Dictionary mapping task_id → AgentResult for all executed tasks.
@@ -566,9 +563,9 @@ class WorkflowGraph:
                 3. Re-run critic on the new upstream output
                 4. Max 1 re-execution per critic task (prevent infinite loops)
 
-                REGISTRY INJECTION (PHASE 3):
+                REGISTRY INJECTION (PHASE 4):
                 =============================
-                Passes phase3_registry to runner functions for dependency injection.
+                Passes registry to runner functions for dependency injection.
 
                 Args:
                     tid: Task identifier to execute
@@ -593,8 +590,8 @@ class WorkflowGraph:
                     t_start = time.monotonic()
                     try:
                         runner = registry.get(task.role)
-                        # Phase 3: Pass registry to runner for dependency injection
-                        output = await runner(task, context, phase3_registry)
+                        # Phase 4: Pass registry to runner for dependency injection
+                        output = await runner(task, context, registry)
                         duration = time.monotonic() - t_start
                         # Capture source from task (set by runner during execution)
                         results[tid] = AgentResult(
@@ -629,7 +626,7 @@ class WorkflowGraph:
                                     verbose=verbose,
                                     t_start=t_start,
                                     memory_manager=memory_manager,
-                                    phase3_registry=phase3_registry,
+                                    registry=registry,
                                 )
 
                     except Exception as e:
