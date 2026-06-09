@@ -29,7 +29,7 @@ class MemoryPromoteMixin:
         destination = await self.store(  # type: ignore[attr-defined]
             agent_role, key, source.content,
             memory_type=to_type,
-            metadata=dict(source.metadata),
+            metadata=dict(source.metadata) if source.metadata else None,
         )
 
         if not keep_source:

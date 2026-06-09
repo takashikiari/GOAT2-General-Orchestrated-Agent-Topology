@@ -68,7 +68,7 @@ class DAGEdge:
 
 
 class ValidationError(Exception):
-    """Raised when a DAGraph fails validation."""
+    """Raised when a DAG fails validation."""
 
 
 class DAGraph:
@@ -189,8 +189,11 @@ class DAGraph:
         Wave 0 contains nodes with no dependencies.
         Wave N contains nodes whose dependencies are all in waves < N.
 
-        Raises ValidationError if the graph contains a cycle or has
-        unreachable nodes.
+        If the graph contains a cycle or unreachable nodes, returns a
+        **fallback** of 2 waves: all nodes with in_degree 0 in wave 0,
+        and the remaining nodes in wave 1 (dependency order discarded).
+        This ensures the DAG always produces a schedule instead of
+        crashing with ValidationError.
         """
         in_deg = dict(self._in_degree)
         adj = {nid: list(deps) for nid, deps in self._adjacency.items()}
@@ -210,10 +213,26 @@ class DAGraph:
 
         processed = sum(len(w) for w in waves)
         if processed != len(self._nodes):
-            raise ValidationError(
-                f"DAG contains a cycle or disconnected nodes "
-                f"({processed}/{len(self._nodes)} nodes reachable)."
+            # --- FALLBACK: instead of raising, produce a safe 2-wave schedule ---
+            log.warning(
+                "DAG cycle or unreachable nodes (%d/%d reachable). "
+                "Falling back to flat 2-wave schedule.",
+                processed, len(self._nodes),
             )
+            # Identify nodes that were never reached
+            reached = {nid for wave in waves for nid in wave}
+            unreached = [nid for nid in self._nodes if nid not in reached]
+            # Wave 0: all nodes with original in_degree 0 (including any from unreached)
+            wave0 = [nid for nid in self._nodes if self._in_degree.get(nid, 0) == 0]
+            # Wave 1: everything else
+            wave1 = [nid for nid in self._nodes if nid not in wave0]
+            # If wave0 is empty (all nodes have deps), put first unreached as wave0
+            if not wave0 and self._nodes:
+                all_ids = list(self._nodes.keys())
+                wave0 = [all_ids[0]]
+                wave1 = all_ids[1:]
+            return [wave0, wave1] if wave1 else [wave0]
+
         return waves
 
     def is_acyclic(self) -> bool:

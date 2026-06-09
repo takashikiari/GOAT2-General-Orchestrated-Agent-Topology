@@ -86,22 +86,26 @@ def _get_model_list_for_role(role: str) -> list[str]:
     return _DEFAULT_FALLBACKS.get(role, ["gpt-4o-mini"])
 
 
-def check_model_health(spec: ModelSpec) -> bool:
-    """Quick health check for a model (API key presence + basic validation).
+def check_model_health(spec: ModelSpec, api_keys: APIKeys | None = None) -> bool:
+    """
+    Quick health check for a model (API key presence + basic validation).
 
     Does NOT make network calls - just validates configuration.
     For actual availability, the LLM call itself will reveal issues.
 
     Args:
         spec: ModelSpec to check
+        api_keys: Optional APIKeys instance. If None, creates from Settings.
 
     Returns:
         True if model appears configured correctly, False otherwise
     """
     try:
         # Check API key exists for provider
-        from config.settings import settings
-        key = settings.api_keys.for_provider(spec.provider)
+        if api_keys is None:
+            from config.settings import Settings
+            api_keys = Settings().api_keys
+        key = api_keys.for_provider(spec.provider)
         if not key:
             log.debug("Model %s: API key missing for %s", spec.model_id, spec.provider.value)
             return False

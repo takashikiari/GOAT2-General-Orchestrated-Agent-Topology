@@ -2,25 +2,44 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 
-from config.settings import settings
 from memory.letta_helpers import _HEALTH_CHECK_INTERVAL, _HTTP_TIMEOUT
+
+if TYPE_CHECKING:
+    from config.settings import LettaConfig
 
 log = logging.getLogger("goat2.memory.letta")
 
 
 class LettaHealthProbe:
-    """Manages the HTTP client and liveness state for the Letta REST API."""
+    """Manages the HTTP client and liveness state for the Letta REST API.
+
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    LettaConfig can be passed via constructor for dependency injection.
+    """
 
     __slots__ = ("_cfg", "_http", "_available", "_last_health_check")
 
-    def __init__(self) -> None:
-        self._cfg                        = settings.letta
+    def __init__(self, letta_config: "LettaConfig | None" = None) -> None:
+        """
+        Initialize LettaHealthProbe with optional LettaConfig.
+
+        Args:
+            letta_config: LettaConfig instance. If None, imports from settings
+                        (backward compatibility during migration).
+        """
+        if letta_config is None:
+            from config.settings import Settings
+            self._cfg = Settings().letta
+        else:
+            self._cfg = letta_config
         self._http: httpx.AsyncClient | None = None
-        self._available: bool | None         = None
-        self._last_health_check: float       = 0.0
+        self._available: bool | None = None
+        self._last_health_check: float = 0.0
 
     async def get_http(self) -> httpx.AsyncClient:
         if self._http is None or self._http.is_closed:

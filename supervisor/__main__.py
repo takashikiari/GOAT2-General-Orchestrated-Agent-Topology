@@ -42,6 +42,9 @@ def main() -> None:
 
     # Phase 4: ServiceRegistry is now required
     registry = ServiceRegistry()
+    # Set global registry for tool handlers
+    from tools.registry_accessor import set_registry
+    set_registry(registry)
     supervisor = GoatSupervisor(registry=registry)
     result = asyncio.run(supervisor.run(args.intent))
 

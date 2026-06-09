@@ -1,12 +1,20 @@
-"""Infer user communication style from recent turns and merge with the existing profile."""
+"""Infer user communication style from recent turns and merge with the existing profile.
+
+REGISTRY INJECTION (PHASE 4):
+=============================
+analyze_style() now requires `registry` parameter.
+Uses registry.settings.agents.get() for model access.
+"""
 from __future__ import annotations
 
 import logging
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from config.settings import settings
 from supervisor.behavior_profile import BehaviorProfile, deserialize, serialize
 from supervisor.llm_utils import _call_llm, _extract_json
+
+if TYPE_CHECKING:
+    from config.registry import Registry
 
 __all__ = ["analyze_style"]
 
@@ -28,12 +36,20 @@ _SYSTEM: Final[str] = (
 )
 
 
-async def analyze_style(user_turns: list[str], existing: str = "") -> str:
+async def analyze_style(
+    user_turns: list[str],
+    registry: "Registry",
+    existing: str = "",
+) -> str:
     """
     Call gpt-4o-mini to infer communication style from recent user messages.
     Merges new observations with the existing serialized profile.
     Returns serialized updated profile text, or existing unchanged on failure.
     Skips analysis when fewer than _MIN_TURNS turns are available.
+
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get() for model access.
     """
     if len(user_turns) < _MIN_TURNS:
         log.debug("analyze_style: %d turn(s) < _MIN_TURNS=%d — skipping", len(user_turns), _MIN_TURNS)
@@ -44,7 +60,7 @@ async def analyze_style(user_turns: list[str], existing: str = "") -> str:
         msgs.append({"role": "system", "content": f"Existing profile:\n{existing}"})
     msgs.append({"role": "user", "content": "\n---\n".join(user_turns[-_MAX_TURNS:])})
     try:
-        raw  = await _call_llm(settings.agents.get("memory"), msgs, temperature=0.0, json_mode=True)
+        raw  = await _call_llm(registry.settings.agents.get("memory"), msgs, temperature=0.0, json_mode=True)
         data = _extract_json(raw)
         new: dict = data.get("profile", {}) if isinstance(data, dict) else {}
         if not new:

@@ -6,14 +6,19 @@ import asyncio
 import logging
 import sys
 
-from config.settings import settings
-from memory.memory_manager import memory_manager
-from memory.redis_backend import RedisBackend
+from config.registry import ServiceRegistry
 from supervisor.session import store_turn
 from supervisor.supervisor import GoatSupervisor
 
+# Create ServiceRegistry first to get settings
+_registry = ServiceRegistry()
+
+# Set global registry for tool handlers
+from tools.registry_accessor import set_registry
+set_registry(_registry)
+
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    level=getattr(logging, _registry.settings.log_level.upper(), logging.INFO),
     format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
 )
 log = logging.getLogger("goat2.cli")
@@ -35,13 +40,7 @@ async def _read_line(loop: asyncio.AbstractEventLoop) -> str:
 
 async def chat_loop() -> None:
     """Interactive GOAT 2.0 session; supervisor and memory persist across turns."""
-    b = RedisBackend()
-    if await b.ping():
-        memory_manager.working.backend = b
-        print("Working memory: RedisBackend")
-    else:
-        print("Working memory: DictBackend (Redis unavailable)")
-    sv   = GoatSupervisor(memory_manager=memory_manager)
+    sv = GoatSupervisor(registry=_registry)
     loop = asyncio.get_running_loop()
     turn = 0
     print("GOAT 2.0 — type your intent, 'exit' to quit.")
@@ -67,7 +66,7 @@ async def chat_loop() -> None:
                 result = await sv.run(intent)
                 _print_result(result)
                 turn += 1
-                await store_turn(memory_manager, turn, intent, result.summary)
+                await store_turn(_registry.memory_manager, turn, intent, result.summary)
             except Exception as exc:
                 log.error("Run failed: %s", exc)
                 print(f"\n[error] {exc}")

@@ -3,6 +3,11 @@
 Strict ALLOWED_KEYS whitelist prevents Letta human block from accumulating garbage.
 Non-whitelisted explicit facts go to ChromaDB with 7-day TTL; inferred non-whitelisted
 facts are discarded entirely.
+
+REGISTRY INJECTION (PHASE 4):
+=============================
+maybe_store_info() now requires `registry` parameter.
+Uses registry.settings.agents.get() for model access.
 """
 from __future__ import annotations
 
@@ -13,8 +18,8 @@ from config.roles import GOAT_ROLE
 
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
+    from config.registry import Registry
 
-from config.settings import settings
 from memory.memory_enums import MemoryType
 from memory.pollution_guard import PollutionGuard
 from memory.types import MemoryEntryMetadata
@@ -97,20 +102,29 @@ async def _store_inferred(mm: MemoryManager, facts: list[ScoredFact]) -> None:
         )
 
 
-async def maybe_store_info(mm: MemoryManager | None, message: str) -> None:
-    """Route extracted facts: explicit→ALLOWED_KEYS→Letta or ChromaDB; inferred→ChromaDB or discard.
+async def maybe_store_info(
+    mm: MemoryManager | None,
+    message: str,
+    registry: "Registry",
+) -> None:
+    """
+    Route extracted facts: explicit→ALLOWED_KEYS→Letta or ChromaDB; inferred→ChromaDB or discard.
 
     Facts are routed as follows:
     - explicit + whitelisted → PollutionGuard → Letta human block
     - explicit + non-whitelisted → ChromaDB episodic with 7-day TTL
     - inferred + whitelisted → ChromaDB episodic with 7-day TTL
     - inferred + non-whitelisted → discarded entirely
+
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get() for model access.
     """
     if mm is None:
         return
     try:
         raw = await _call_llm(
-            settings.agents.get("memory"),
+            registry.settings.agents.get("memory"),
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": message}],
             temperature=0.0, json_mode=True,
         )

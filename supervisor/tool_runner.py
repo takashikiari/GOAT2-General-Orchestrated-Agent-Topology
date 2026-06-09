@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from config.settings import ModelSpec
+from config.timeouts import TOOL_TIMEOUT
 
 from supervisor.llm_utils import _call_llm, _get_client
 from supervisor.source_types import TaggedResult, TOOL_SOURCE_MAP, infer_source
@@ -15,6 +16,7 @@ from supervisor.structured_logger import log_tool_call
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
+    from memory.memory_manager import MemoryManager
 
 log = logging.getLogger("goat2.tool_runner")
 __all__ = ["_call_with_tools"]
@@ -23,15 +25,34 @@ _MAX_ROUNDS: Final[int] = 8
 ToolChoice = Literal["auto", "required", "none"]
 
 
-def _apply_defaults(args: dict, tool_map: dict, name: str) -> dict:
-    """Complete missing arguments with default values from the tool's parameter schema."""
+def _prepare_args(args: dict, tool_map: dict, name: str) -> tuple[dict, str | None]:
+    """Apply defaults and validate required parameters from the tool's schema.
+
+    Args:
+        args: Raw arguments from the LLM tool call.
+        tool_map: Map of tool names to ToolDefinition objects.
+        name: Name of the tool being called.
+
+    Returns:
+        Tuple of (prepared_args, error_message). error_message is None on success.
+    """
     if name not in tool_map:
-        return args
+        return args, f"unknown tool '{name}'"
     schema = tool_map[name].parameters
-    for prop_name, prop_schema in schema.get("properties", {}).items():
+    props = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    # Apply defaults for missing optional parameters
+    for prop_name, prop_schema in props.items():
         if prop_name not in args and "default" in prop_schema:
             args[prop_name] = prop_schema["default"]
-    return args
+
+    # Validate all required parameters are present
+    missing = [p for p in required if p not in args]
+    if missing:
+        return args, f"ERROR: missing required parameters for '{name}': {missing}"
+
+    return args, None
 
 
 def _serialize_arguments(raw: str) -> str:
@@ -43,13 +64,41 @@ def _serialize_arguments(raw: str) -> str:
         return raw  # fallback to original
 
 
-async def _dispatch(name: str, args: dict, tool_map: dict) -> str:
-    if name not in tool_map:
-        return f"ERROR: unknown tool '{name}'"
+def _strip_dsml(text: str) -> str:
+    """Remove DeepSeek DSML markers from text to prevent LLM confusion.
+
+    DeepSeek's model outputs tool calls in two formats:
+    1. Structured (msg.tool_calls) - parsed correctly by GOAT
+    2. Embedded in text content - DSML markers that confuse the LLM
+
+    This strips DSML markers from text before adding to history.
+    """
+    import re
+    # Strip full wrapper tags: <｜｜DSML｜｜...>...</｜｜DSML｜｜...>
+    text = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
+    # Strip orphaned opening tags
+    text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
+    return text.strip()
+
+
+async def _dispatch(name: str, args: dict, tool_map: dict, memory_manager) -> str:
+    """Dispatch a tool call by name, injecting memory_manager for memory tools if accepted.
+
+    Note: Arguments are pre-validated by _prepare_args() before calling this function.
+    """
     h = tool_map[name].handler
+    # Inject memory_manager for memory tools only if handler accepts it
+    if name.startswith("memory_") and "memory_manager" not in args:
+        handler_params = inspect.signature(h).parameters
+        if "memory_manager" in handler_params:
+            args["memory_manager"] = memory_manager
     try:
-        out = await h(**args) if inspect.iscoroutinefunction(h) else await asyncio.to_thread(lambda: h(**args))
+        coro = h(**args) if inspect.iscoroutinefunction(h) else asyncio.to_thread(lambda: h(**args))
+        out = await asyncio.wait_for(coro, timeout=TOOL_TIMEOUT)
         return str(out)
+    except asyncio.TimeoutError:
+        log.warning("tool '%s' timed out after %ds", name, TOOL_TIMEOUT)
+        return f"ERROR: tool '{name}' timed out after {TOOL_TIMEOUT}s"
     except Exception as exc:
         return f"ERROR calling '{name}': {exc}"
 
@@ -61,11 +110,22 @@ async def _call_with_tools(
     *,
     temperature: float = 0.2,
     tool_choice: ToolChoice = "auto",
+    memory_manager: "MemoryManager | None" = None,
 ) -> TaggedResult:
     """Tool-calling LLM loop; falls back to _call_llm when tools is empty or unsupported.
 
-    Returns a TaggedResult with content, the inferred source tag, and the list
-    of tool names that were actually called during this invocation.
+    Arguments are validated and defaults applied via _prepare_args() before dispatch.
+
+    Args:
+        spec: Model specification
+        messages: Conversation messages
+        tools: Available tools
+        temperature: LLM temperature
+        tool_choice: "auto", "required", or "none"
+        memory_manager: Optional MemoryManager for injection into memory tools
+
+    Returns:
+        TaggedResult with content, inferred source tag, and list of called tool names.
     """
     if not tools or not spec.tool_calling:
         log.debug("tool_runner bypass: model=%s tools=%d tool_calling=%s",
@@ -99,8 +159,10 @@ async def _call_with_tools(
             return TaggedResult(content=final_content, source=source,
                                 called_tools=tuple(called_tools))
         log.debug("tool_runner: round=%d calls=%s", rnd, [tc.function.name for tc in msg.tool_calls])
+        # Strip DSML markers from content to prevent LLM confusion in subsequent rounds
+        clean_content = _strip_dsml(msg.content or "")
         history.append({
-            "role": "assistant", "content": msg.content,
+            "role": "assistant", "content": clean_content,
             "tool_calls": [
                 {
                     "id": tc.id,
@@ -120,14 +182,21 @@ async def _call_with_tools(
                 log.warning("tool_runner: invalid JSON arguments for '%s': %.120r",
                             tc.function.name, tc.function.arguments)
                 args = {}
-            args = _apply_defaults(args, tool_map, tc.function.name)
-            result = await _dispatch(tc.function.name, args, tool_map)
+            args, error = _prepare_args(args, tool_map, tc.function.name)
+            if error:
+                result = error
+            else:
+                result = await _dispatch(tc.function.name, args, tool_map, memory_manager)
+            # Strip DSML from tool results to keep history clean
+            clean_result = _strip_dsml(result)
             called_tools.append(tc.function.name)
             tool_src = TOOL_SOURCE_MAP.get(tc.function.name, "generated")
-            log_tool_call(tc.function.name, args, tool_src, result)
-            history.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            log.debug("tool %s → %.80s", tc.function.name, result)
+            log_tool_call(tc.function.name, args, tool_src, clean_result)
+            history.append({"role": "tool", "tool_call_id": tc.id, "content": clean_result})
+            log.debug("tool %s → %.80s", tc.function.name, clean_result)
     resp = await client.chat.completions.create(model=spec.model_id, messages=history)
     source = infer_source(called_tools)
-    return TaggedResult(content=resp.choices[0].message.content or "", source=source,
+    # Also strip DSML from final response
+    final_content = _strip_dsml(resp.choices[0].message.content or "")
+    return TaggedResult(content=final_content, source=source,
                         called_tools=tuple(called_tools))

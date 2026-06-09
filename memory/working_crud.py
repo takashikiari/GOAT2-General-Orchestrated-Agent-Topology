@@ -74,3 +74,25 @@ class WorkingCrudMixin:
 
     async def health(self) -> bool:
         return await self.backend.ping()
+
+    async def list(self, agent_role: AgentRole, limit: int = 50) -> list:
+        """Return up to `limit` most recent entries for agent_role."""
+        from memory.types import MemoryEntry
+        try:
+            keys = await self.backend.keys(agent_role)
+        except AttributeError:
+            return []
+        entries = []
+        for key in keys[-limit:]:
+            record = await self.backend.get(agent_role, key)
+            if record:
+                entries.append(MemoryEntry(
+                    id=str(uuid.uuid4()),
+                    agent_role=agent_role,
+                    key=key,
+                    content=record.get("content", ""),
+                    metadata=record.get("metadata") or {},
+                    created_at=record.get("created_at", ""),
+                    source=record.get("source", "redis"),
+                ))
+        return entries

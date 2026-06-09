@@ -1,12 +1,20 @@
-"""Conversational file-operation handler — routes direct file requests through tool_caller."""
+"""Conversational file-operation handler — routes direct file requests through tool_caller.
+
+REGISTRY INJECTION (PHASE 4):
+=============================
+file_op_result() now requires `registry` parameter.
+Uses registry.settings.agents.get() for model access.
+"""
 from __future__ import annotations
 
 import time
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from config.settings import settings
 from supervisor.tool_runner import _call_with_tools
 from supervisor.types import Plan, SupervisorResult
+
+if TYPE_CHECKING:
+    from config.registry import Registry
 
 __all__ = ["file_op_result"]
 
@@ -27,9 +35,16 @@ async def file_op_result(
     summary: str,
     mem_ctx: str,
     t0: float,
+    registry: "Registry",
     style: str = "",
 ) -> SupervisorResult:
-    """Run tool_caller for a conversational file-operation request."""
+    """
+    Run tool_caller for a conversational file-operation request.
+
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Uses registry.settings.agents.get() for model access.
+    """
     from tools import FILE_TOOLS
     from supervisor.behavior_mirror import mirror_instruction
 
@@ -42,11 +57,11 @@ async def file_op_result(
         parts.append(f"\nUser profile:\n{profile}")
     if summary:
         parts.append(f"\nPrevious sessions:\n{summary}")
-    sys_msg  = {"role": "system", "content": "".join(parts)}
+    sys_msg = {"role": "system", "content": "".join(parts)}
     ctx_msgs = [{"role": "system", "content": mem_ctx}] if mem_ctx else []
-    msgs     = [sys_msg, *ctx_msgs, *messages]
-    reply    = await _call_with_tools(
-        settings.agents.get("tool_caller"), msgs, FILE_TOOLS, temperature=0.7,
+    msgs = [sys_msg, *ctx_msgs, *messages]
+    reply = await _call_with_tools(
+        registry.settings.agents.get("tool_caller"), msgs, FILE_TOOLS, temperature=0.7,
     )
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},

@@ -45,7 +45,7 @@ async def finalize_behavior(
     turns = [m["content"] for m in history.messages if m["role"] == "user"]
     log.info("finalize_behavior: %d user turn(s); existing style: %s",
              len(turns), repr(current_style[:80]) if current_style else "<empty>")
-    style = await analyze_style(turns, current_style)
+    style = await analyze_style(turns, registry, current_style)
     if not style:
         log.info("finalize_behavior: analyze returned empty profile — nothing to write")
         return current_style

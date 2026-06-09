@@ -196,9 +196,8 @@ async def _run_tool_caller(
     when web_search, file operations, or memory queries are needed. This enables proper handling
     of conversational requests like 'Goat! Citește changelogs...' which require file_read access.
 
-    All tools available: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
+    All tools available: FILE_TOOLS + DAG_MEMORY_TOOLS (working tier only for memory)
     tool_choice='auto' allows the model to select tools based on true intent.
-    Tools are deduplicated by name before sending to API to prevent HTTP 400 errors.
 
     REGISTRY INJECTION (PHASE 4):
     =============================
@@ -215,15 +214,15 @@ async def _run_tool_caller(
             "Tool orchestration agent. "
             "File tools: file_read, file_write, file_create, file_list, file_search, "
             "file_grep(path, pattern), file_info(path), file_read_lines(path, start_line, end_line). "
+            "Shell (basic read-only): ls, pwd, cat, head, tail, grep, echo, find, wc, du, etc. "
             "Search: web_search. "
-            "Memory: memory_search, memory_get, memory_store. "
-            "Say 'tool not connected' on ERROR. Never ask user to run shell commands. "
+            "Memory (working tier only): memory_search, memory_get, memory_store, memory_recent. "
+            "Say 'tool not connected' on ERROR. "
             "Evaluate task semantics to decide which tools are needed — do not wait for explicit commands.")},
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
-    _tools = registry.file_tools + registry.dag_memory_tools + [WEB_SEARCH]
-    _tools = _dedupe_tools(_tools)
-    log.debug("tool_caller: tools=%s (semantic selection, deduped)", [t.name for t in _tools])
-    r = await _call_with_tools(spec, msgs, _tools, tool_choice="auto")
+    _tools = registry.file_tools + registry.dag_memory_tools
+    log.debug("tool_caller: tools=%s (semantic selection)", [t.name for t in _tools])
+    r = await _call_with_tools(spec, msgs, _tools, tool_choice="required")
     task.source = r.source
     return r.content

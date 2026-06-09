@@ -11,11 +11,16 @@ DAG agents are restricted to working tier only with SESSION_ROLE from config.rol
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Final
+from typing import Final, TYPE_CHECKING
 
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
+from tools.registry_accessor import get_registry
+
+if TYPE_CHECKING:
+    from memory.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_DIRECT_QUERY"]
 
@@ -91,14 +96,25 @@ def _parse_query(query: str) -> tuple[str, str | None, int]:
     return tier, where_clause, min(limit, 100)  # Cap at 100 results
 
 
-async def _handler(query: str) -> str:
+async def _handler(
+    query: str,
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
     """Execute direct memory query; return JSON results or ERROR: <reason>.
 
     GOAT supervisor uses GOAT_ROLE for full access to all tiers.
     DAG agents are restricted to working tier with SESSION_ROLE.
+
+    Args:
+        query: Memory query string
+        memory_manager: Optional injected MemoryManager
+
+    Returns:
+        JSON results or error message
     """
-    import json
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        registry = get_registry()
+        memory_manager = registry.memory_manager
 
     try:
         sanitized = _sanitize_query(query)
@@ -109,7 +125,7 @@ async def _handler(query: str) -> str:
     try:
         # GOAT uses GOAT_ROLE for full access to all tiers
         role = GOAT_ROLE
-        
+
         if tier == "letta":
             # Query Letta archival memory via keyword search
             results = await memory_manager.long_term.search(

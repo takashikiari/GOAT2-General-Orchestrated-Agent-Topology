@@ -12,7 +12,7 @@ import ast
 import json
 import re
 
-from config.settings import ModelSpec, settings
+from config.settings import ModelSpec, Settings
 from supervisor import AgentResult, AgentTask
 
 from .base_agent import BaseAgent, tool
@@ -69,7 +69,7 @@ class CoderAgent(BaseAgent):
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
         super().__init__(
-            spec=spec or settings.agents.get("coder"),
+            spec=spec or Settings().agents.get("coder"),
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.2,  # low: code should be precise and deterministic
         )

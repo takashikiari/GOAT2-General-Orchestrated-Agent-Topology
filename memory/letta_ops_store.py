@@ -47,6 +47,33 @@ async def do_delete(
         return fallback.delete(agent_role, key)
 
 
+
+
+async def do_store_profile(
+    probe: LettaHealthProbe,
+    registry: LettaAgentRegistry,
+    agent_role: AgentRole,
+    label: str,
+    value: str,
+) -> bool:
+    """Write a profile block (persona/human) to Letta core-memory.
+    
+    Uses PATCH /v1/agents/{agent_id}/core-memory/blocks/{label}
+    """
+    try:
+        agent_id = await registry.get_agent_id(agent_role)
+        http = await probe.get_http()
+        resp = await http.patch(
+            f"/v1/agents/{agent_id}/core-memory/blocks/{label}",
+            json={"value": value},
+        )
+        resp.raise_for_status()
+        log.info("Profile %s saved for %s", label, agent_role)
+        return True
+    except Exception as exc:
+        log.warning("do_store_profile(%s, %s) failed: %s", agent_role, label, exc)
+        return False
+
 async def do_store(
     probe: LettaHealthProbe, registry: LettaAgentRegistry,
     fallback: _InContextFallback, agent_role: AgentRole, key: MemoryKey,

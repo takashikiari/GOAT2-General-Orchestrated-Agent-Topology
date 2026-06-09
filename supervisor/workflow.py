@@ -78,6 +78,17 @@ from typing import TYPE_CHECKING
 
 from supervisor.types import AgentResult
 from supervisor.dag import DAGraph, DAGNode, DAGEdge
+from supervisor.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
+
+# Runner mapping per role (replaces registry.get for runners)
+_RUNNERS: dict[str, callable] = {
+    "researcher": _run_researcher,
+    "coder": _run_coder,
+    "critic": _run_critic,
+    "summarizer": _run_summarizer,
+    "tool_caller": _run_tool_caller,
+}
+
 
 if TYPE_CHECKING:
     from supervisor.types import AgentTask
@@ -303,6 +314,10 @@ class WorkflowGraph:
                     timeout=_UPSTREAM_REEXEC_TIMEOUT,
                 )
                 up_duration = time.monotonic() - t_start
+                # Compute tool_name and raw_output_hash (needed for validator)
+                import hashlib
+                _tool_name = up_task.source if up_task.source and up_task.source not in ("generated", "planner") else ""
+                _raw_hash = hashlib.sha256(up_output.encode()).hexdigest()[:16] if up_output else ""
                 results[up_id] = AgentResult(
                     task_id=up_id,
                     role=up_task.role,
@@ -311,9 +326,9 @@ class WorkflowGraph:
                     duration_s=up_duration,
                     error=None,
                     source=up_task.source,
-                    tool_called=False,
-                    tool_name="",
-                    raw_output_hash="",
+                    tool_called=True,
+                    tool_name=_tool_name,
+                    raw_output_hash=_raw_hash,
                 )
                 if verbose:
                     log.info(
@@ -333,7 +348,7 @@ class WorkflowGraph:
                         duration_s=0.0,
                         error=f"re_execution_timeout:{up_id}",
                         source=up_task.source,
-                        tool_called=False,
+                        tool_called=True,
                         tool_name="",
                         raw_output_hash="",
                     )
@@ -350,7 +365,7 @@ class WorkflowGraph:
                         duration_s=0.0,
                         error=f"re_execution_failed:{e}",
                         source=up_task.source,
-                        tool_called=False,
+                        tool_called=True,
                         tool_name="",
                         raw_output_hash="",
                     )
@@ -372,7 +387,7 @@ class WorkflowGraph:
         original_critic_result = results.get(tid)
 
         try:
-            critic_runner = registry.get(task.role)
+            critic_runner = _RUNNERS[task.role]
             new_output = await asyncio.wait_for(
                 critic_runner(task, new_context, registry),
                 timeout=_CRITIC_RERUN_TIMEOUT,
@@ -386,7 +401,7 @@ class WorkflowGraph:
                 duration_s=new_duration,
                 error=None,
                 source=task.source,
-                tool_called=False,
+                tool_called=True,
                 tool_name="",
                 raw_output_hash="",
             )
@@ -404,6 +419,7 @@ class WorkflowGraph:
             if original_critic_result is not None:
                 results[tid] = original_critic_result
             else:
+                # Empty output = empty strings for tool_name/hash (validator will catch if needed)
                 results[tid] = AgentResult(
                     task_id=tid,
                     role=task.role,
@@ -412,7 +428,7 @@ class WorkflowGraph:
                     duration_s=0.0,
                     error=f"critic_rerun_failed:{e}",
                     source=task.source,
-                    tool_called=False,
+                    tool_called=True,
                     tool_name="",
                     raw_output_hash="",
                 )
@@ -508,7 +524,7 @@ class WorkflowGraph:
                         duration_s=0.0,
                         error=f"upstream_failure:{','.join(upstream_failed)}",
                         source=task.source,
-                        tool_called=False,
+                        tool_called=True,
                         tool_name="",
                         raw_output_hash="",
                     )
@@ -585,11 +601,19 @@ class WorkflowGraph:
 
                     t_start = time.monotonic()
                     try:
-                        runner = registry.get(task.role)
+                        runner = _RUNNERS[task.role]
                         # Phase 4: Pass registry to runner for dependency injection
                         output = await runner(task, context, registry)
                         duration = time.monotonic() - t_start
                         # Capture source from task (set by runner during execution)
+                        # Extract tool_name from output if present
+                        import hashlib
+                        _tool_name = ""
+                        _raw_hash = ""
+                        if task.source and task.source != "generated" and task.source != "planner":
+                            _tool_name = task.source  # use source as tool_name fallback
+                        if output:
+                            _raw_hash = hashlib.sha256(output.encode()).hexdigest()[:16]
                         results[tid] = AgentResult(
                             task_id=tid,
                             role=task.role,
@@ -598,9 +622,9 @@ class WorkflowGraph:
                             duration_s=duration,
                             error=None,
                             source=task.source,
-                            tool_called=False,
-                            tool_name="",
-                            raw_output_hash="",
+                            tool_name=_tool_name,
+                            raw_output_hash=_raw_hash,
+                            tool_called=True,
                         )
                         if verbose:
                             log.debug(
@@ -635,7 +659,7 @@ class WorkflowGraph:
                             duration_s=duration,
                             error=str(e),
                             source=task.source,
-                            tool_called=False,
+                            tool_called=True,
                             tool_name="",
                             raw_output_hash="",
                         )

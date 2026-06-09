@@ -23,7 +23,10 @@ __all__ = ["ValidationStatus", "validate_results"]
 log = logging.getLogger("goat2.dag_validator")
 
 # Roles that must invoke a real tool — generated output is never acceptable.
-_EXECUTION_ROLES: Final[frozenset[str]] = frozenset({"researcher", "memory"})
+_EXECUTION_ROLES: Final[frozenset[str]] = frozenset({"researcher", "memory", "tool_caller"})
+
+# Roles where source=generated is valid (no tool calls expected).
+_GENERATED_ROLES: Final[frozenset[str]] = frozenset({"critic", "summarizer", "planner"})
 
 # Allowed sources per role. Roles absent from this dict pass all source checks.
 _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {
@@ -114,9 +117,15 @@ def _is_missing_tool_params(result: AgentResult) -> bool:
 
     GOAT supervisor cannot validate task success without verifying tool parameters.
     This check ensures tool calls have meaningful arguments before marking safe.
+
+    Note: Roles where source=generated is valid (critic, summarizer, planner)
+    are allowed to have empty tool_name since they don't call external tools.
     """
     if not result.tool_called:
         return False  # No tool called — different validation path
+    # Skip tool_name check for roles that don't use external tools
+    if result.role in _GENERATED_ROLES:
+        return False
     if not result.tool_name:
         return True  # Tool called but name not recorded — validation impossible
     if not result.raw_output_hash:

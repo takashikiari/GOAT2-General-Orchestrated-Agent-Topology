@@ -1,7 +1,7 @@
 """ResearcherAgent — deep analysis; tool support driven by ModelSpec.tool_calling."""
 from __future__ import annotations
 
-from config.settings import ModelSpec, settings
+from config.settings import ModelSpec, Settings
 from supervisor import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
@@ -23,7 +23,7 @@ class ResearcherAgent(BaseAgent):
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
         super().__init__(
-            spec=spec or settings.agents.get("researcher"),
+            spec=spec or Settings().agents.get("researcher"),
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.3,
         )

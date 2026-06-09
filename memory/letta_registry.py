@@ -74,9 +74,17 @@ class LettaAgentRegistry:
         """POST /v1/agents/ — minimal Letta 0.16.8 payload: name + memory_blocks only."""
         http    = await self._probe.get_http()
         cfg     = self._probe._cfg
+        # Discover available models from Letta (no hardcoded fallback)
+        models_resp = await http.get("/v1/models/")
+        models_resp.raise_for_status()
+        available_models = models_resp.json()
+        if not available_models:
+            raise RuntimeError("Letta has no models configured")
+        log.info("Using Letta model %s (discovered dynamically)", available_models[0]["handle"])
+
         payload = {
             "name":  name,
-            "model": cfg.llm_model,  # configurable via LETTA_LLM_MODEL; default: gpt-4o-mini
+            "model": available_models[0]["handle"],
             "memory_blocks": [
                 {
                     "label": "persona",

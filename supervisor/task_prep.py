@@ -1,4 +1,10 @@
-"""Prepare AgentTask instances before execution — inject memory_manager and language."""
+"""Prepare AgentTask instances before execution — inject memory_manager and language.
+
+REGISTRY INJECTION (PHASE 4):
+=============================
+prepare_tasks() now requires `registry` parameter.
+Passed to detect_language() for settings access.
+"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
@@ -6,14 +12,21 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager
     from supervisor.types import AgentTask
+    from config.registry import Registry
 
 __all__ = ["prepare_tasks"]
 
 _LANG_ROLES: Final[frozenset[str]] = frozenset({"researcher", "coder", "critic", "summarizer"})
 
 
-async def prepare_tasks(tasks: list[AgentTask], memory_manager: MemoryManager | None, intent: str) -> str:
-    """Inject memory_manager, language directive, and default source into each task.
+async def prepare_tasks(
+    tasks: list[AgentTask],
+    memory_manager: MemoryManager | None,
+    intent: str,
+    registry: "Registry",
+) -> str:
+    """
+    Inject memory_manager, language directive, and default source into each task.
 
     Every task receives:
     - memory_manager for in-task recall.
@@ -22,9 +35,13 @@ async def prepare_tasks(tasks: list[AgentTask], memory_manager: MemoryManager | 
       validation. The runner overwrites this with the real source during execution.
 
     Returns the detected language string.
+
+    REGISTRY INJECTION (PHASE 4):
+    =============================
+    Requires registry parameter. Passed to detect_language() for settings access.
     """
     from supervisor.lang_detect import detect_language  # deferred: supervisor→tools→agents cycle
-    lang      = await detect_language(intent)
+    lang = await detect_language(intent, registry)
     directive = f"Respond in {lang}.\n" if lang.lower() != "english" else ""
     for task in tasks:
         task.memory_manager = memory_manager

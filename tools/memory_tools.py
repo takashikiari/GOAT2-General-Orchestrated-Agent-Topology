@@ -13,17 +13,16 @@ MEMORY ACCESS ARCHITECTURE:
 
 TOOL WIRING:
 ============
-Tools determine caller role from the executing agent's context.
-The BaseAgent.role attribute is checked to enforce tier restrictions:
-- Agents with role=GOAT_ROLE or supervisor agents get full access
-- All other agents (DAG agents) restricted to working tier only
-
-Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
+- GOAT/supervisor: Uses MEMORY_SEARCH, MEMORY_GET, MEMORY_STORE (full access)
+- DAG agents: Uses dag_memory_tools list with DAG-restricted handlers
+- DAG handlers force tier=working and use SESSION_ROLE internally
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from agents.base_agent import ToolDefinition
-from config.roles import GOAT_ROLE
+from config.roles import GOAT_ROLE, SESSION_ROLE
 from memory.validation import sanitize_content, validate_memory_write
 from tools.memory_helpers import (
     ANY_TIERS,
@@ -33,11 +32,15 @@ from tools.memory_helpers import (
     format_no_results,
     validate_tier,
 )
+from tools.registry_accessor import get_registry
+
+if TYPE_CHECKING:
+    from memory.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_SEARCH", "MEMORY_GET", "MEMORY_STORE"]
 
 # ---------------------------------------------------------------------------
-# Tool handlers
+# GOAT Handlers (full tier access)
 # ---------------------------------------------------------------------------
 
 
@@ -47,24 +50,14 @@ async def _search_handler(
     start_datetime: str | None = None,
     end_datetime: str | None = None,
     tier: str = "any",
+    memory_manager: "MemoryManager | None" = None,
 ) -> str:
     """Semantic search across memory tiers with optional time window.
 
-    MEMORY ACCESS:
-    - GOAT supervisor: Full tier access (working, episodic, long_term)
-    - DAG agents: Working tier only (enforced automatically)
-
-    Args:
-        query: Semantic search query
-        limit: Max results (default 20)
-        start_datetime: ISO 8601 or natural-language start
-        end_datetime: ISO 8601 or natural-language end bound
-        tier: Tier to search (default: 'any')
-
-    Returns:
-        Formatted search results or error message
+    MEMORY ACCESS: GOAT supervisor has full tier access.
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
@@ -90,21 +83,17 @@ async def _search_handler(
     return format_entries(entries, max_content_len=200)
 
 
-async def _get_handler(key: str, tier: str = "any") -> str:
+async def _get_handler(
+    key: str,
+    tier: str = "any",
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
     """Retrieve a memory entry by exact key.
 
-    MEMORY ACCESS:
-    - GOAT supervisor: Full tier access (working, episodic, long_term)
-    - DAG agents: Working tier only (enforced automatically)
-
-    Args:
-        key: Exact memory key
-        tier: Tier to probe (default: 'any')
-
-    Returns:
-        Entry content or error message
+    MEMORY ACCESS: GOAT supervisor has full tier access.
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
@@ -123,24 +112,14 @@ async def _store_handler(
     key: str,
     value: str,
     tier: str = "working",
+    memory_manager: "MemoryManager | None" = None,
 ) -> str:
     """Store a key-value pair in a memory tier (default: working/Redis).
 
-    MEMORY ACCESS:
-    - GOAT supervisor: Can write to all tiers (working, episodic, long_term)
-    - DAG agents: Can only write to working tier (enforced automatically)
-
-    Includes validation and sanitization to prevent garbage data.
-
-    Args:
-        key: Memory key
-        value: Content to store
-        tier: Target tier (default: 'working')
-
-    Returns:
-        Success message or error string
+    MEMORY ACCESS: GOAT supervisor can write to all tiers.
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
 
     error = validate_tier(tier, ALL_TIERS)
     if error:
@@ -162,7 +141,86 @@ async def _store_handler(
 
 
 # ---------------------------------------------------------------------------
-# Tool definitions
+# DAG Handlers (working tier only)
+# ---------------------------------------------------------------------------
+
+
+async def _search_handler_dag(
+    query: str,
+    limit: int = 20,
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
+    """Semantic search in working memory only (DAG-restricted).
+
+    DAG agents can only access working tier for session context.
+    """
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
+
+    try:
+        entries = await memory_manager.search(
+            SESSION_ROLE,
+            query,
+            limit=limit,
+            memory_type="working",
+        )
+    except Exception as exc:
+        return format_memory_error("memory_search", exc)
+
+    if not entries:
+        return format_no_results(f"for: {query!r}")
+
+    return format_entries(entries, max_content_len=200)
+
+
+async def _get_handler_dag(
+    key: str,
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
+    """Retrieve a memory entry from working memory only (DAG-restricted).
+
+    DAG agents can only access working tier for session context.
+    """
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
+
+    try:
+        entry = await memory_manager.locate(SESSION_ROLE, key, memory_type="working")
+    except Exception as exc:
+        return format_memory_error("memory_get", exc)
+
+    return entry.content if entry else f"No entry found for key: {key!r}"
+
+
+async def _store_handler_dag(
+    key: str,
+    value: str,
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
+    """Store a key-value pair in working memory only (DAG-restricted).
+
+    DAG agents can only write to working tier for session context.
+    """
+    if memory_manager is None:
+        memory_manager = get_registry().memory_manager
+
+    # Validate and sanitize before storing
+    try:
+        validate_memory_write(key, value, "working")
+        value = sanitize_content(value)
+    except ValueError as exc:
+        return f"ERROR: validation failed: {exc}"
+
+    try:
+        await memory_manager.store(SESSION_ROLE, key, value, memory_type="working")
+    except Exception as exc:
+        return format_memory_error("memory_store", exc)
+
+    return f"Stored {key!r} in working"
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions (GOAT - full access)
 # ---------------------------------------------------------------------------
 
 MEMORY_SEARCH = ToolDefinition(
@@ -246,4 +304,66 @@ MEMORY_STORE = ToolDefinition(
         },
     },
     handler=_store_handler,
+)
+
+
+# ---------------------------------------------------------------------------
+# DAG Tool definitions (working tier only)
+# ---------------------------------------------------------------------------
+
+MEMORY_SEARCH_DAG = ToolDefinition(
+    name="memory_search",
+    description="Semantic search in working memory only (DAG agents).",
+    parameters={
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Semantic search query.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 20).",
+                "default": 20,
+            },
+        },
+    },
+    handler=_search_handler_dag,
+)
+
+MEMORY_GET_DAG = ToolDefinition(
+    name="memory_get",
+    description="Retrieve a memory entry from working memory by exact key (DAG agents).",
+    parameters={
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Exact memory key.",
+            },
+        },
+    },
+    handler=_get_handler_dag,
+)
+
+MEMORY_STORE_DAG = ToolDefinition(
+    name="memory_store",
+    description="Store a key-value pair in working memory (DAG agents).",
+    parameters={
+        "type": "object",
+        "required": ["key", "value"],
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Memory key.",
+            },
+            "value": {
+                "type": "string",
+                "description": "Content to store.",
+            },
+        },
+    },
+    handler=_store_handler_dag,
 )

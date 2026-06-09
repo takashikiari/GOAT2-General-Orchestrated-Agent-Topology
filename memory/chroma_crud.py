@@ -66,6 +66,35 @@ class ChromaCrudMixin(ChromaBase):
             created_at=iso, source=_SOURCE,
         )
 
+    
+    async def list(self, agent_role: str, limit: int = 50) -> list:
+        """Return up to `limit` most recent entries for agent_role from ChromaDB."""
+        from memory.types import MemoryEntry
+        try:
+            collection = self._get_collection(agent_role)
+            # ChromaDB nu are "list all" direct; folosim get() cu ids
+            results = collection.get()
+            if not results or not results.get("ids"):
+                return []
+            entries = []
+            for i, doc_id in enumerate(results["ids"][-limit:]):
+                idx = -limit + i if i >= len(results["ids"]) - limit else i
+                entries.append(MemoryEntry(
+                    id=doc_id,
+                    agent_role=agent_role,
+                    key=results["metadatas"][i].get("key", doc_id) if results.get("metadatas") else doc_id,
+                    content=results["documents"][i] if results.get("documents") else "",
+                    metadata=results["metadatas"][i] if results.get("metadatas") else {},
+                    created_at=results["metadatas"][i].get("created_at", "") if results.get("metadatas") else "",
+                    source="chromadb",
+                ))
+            return entries
+        except Exception as exc:
+            import logging
+            log = logging.getLogger("goat2.memory.chroma")
+            log.warning("ChromaDB list() error: %s", exc)
+            return []
+
     async def _sync_last_write_to_redis(self) -> None:
         """Update Redis last-write timestamp for chromadb tier.
 

@@ -246,8 +246,8 @@ The conversational path had tools available but DAG results weren't properly bri
 
 **`supervisor/runners.py`** (updated, 145 lines):
 - Removed `needs_internet()` regex helper entirely — no keyword-based tool forcing
-- `_run_tool_caller` now has FULL tool access: FILE_TOOLS + MEMORY_TOOLS + WEB_SEARCH
-- System prompt updated: "Evaluate task semantics to decide which tools are needed"
+- `_run_tool_caller` has FILE_TOOLS + DAG_MEMORY_TOOLS + WEB_SEARCH (working tier only for memory)
+- System prompt updated: "Memory (working tier only): memory_search, memory_get, memory_store, memory_recent"
 - `tool_choice='auto'` allows model to select tools based on true semantic intent
 - `_run_coder` and `_run_researcher` already had proper tool access — no changes needed
 
@@ -271,3 +271,51 @@ The conversational path had tools available but DAG results weren't properly bri
 - DAG results stored in WORKING memory, accessible to subsequent conversational turns
 - All 37 tests pass. All files ≤200 lines with docstrings.
 - No changes to memory databases, schemas, or tool implementations.
+
+---
+
+## [Unreleased] — 2026-06-09 (patch 64)
+
+### Added
+
+#### Memory embedding tool and DAG memory tool restrictions
+
+**New tool: `memory_embedding`**
+- Added `tools/memory_embedding_tool.py` with `MEMORY_EMBEDDING` ToolDefinition
+- Retrieves embedding vectors for memory entries from episodic (ChromaDB) or long-term (Letta) tiers
+- Returns: key, tier, dimensions, source, and vector_preview (first 10 values)
+- GOAT-only tool (not available to DAG agents)
+
+**Fixed: DAG memory tool restrictions**
+- Added DAG-specific handlers in `tools/memory_tools.py`:
+  - `_search_handler_dag()` - forces `memory_type="working"` internally
+  - `_get_handler_dag()` - forces `memory_type="working"` internally
+  - `_store_handler_dag()` - forces `memory_type="working"` internally
+- Added DAG ToolDefinitions (no `tier` parameter):
+  - `MEMORY_SEARCH_DAG`
+  - `MEMORY_GET_DAG`
+  - `MEMORY_STORE_DAG`
+- Updated `DAG_MEMORY_TOOLS` to include all 4 working-tier tools:
+  - `MEMORY_SEARCH_DAG`, `MEMORY_GET_DAG`, `MEMORY_STORE_DAG`, `MEMORY_RECENT_DAG`
+- Updated `supervisor/runners.py` system prompt to reflect available DAG memory tools
+
+**Architecture enforcement:**
+- **GOAT**: Uses `MEMORY_TOOLS` (16 tools) with full tier access via `GOAT_ROLE`
+- **DAG**: Uses `DAG_MEMORY_TOOLS` (4 tools) with working-tier-only access via `SESSION_ROLE`
+- No `tier` parameter in DAG tools — enforced at handler level
+- Prevents DAG agents from hallucinating tasks by browsing all memory
+
+**Files modified:**
+- `tools/memory_embedding_tool.py` (new)
+- `tools/memory_tools.py` - added DAG handlers and DAG ToolDefinitions
+- `tools/__init__.py` - imported DAG tools, updated `DAG_MEMORY_TOOLS` list
+- `supervisor/runners.py` - updated system prompt for DAG memory tools
+- `readme.md` - updated tool inventory (25 tools), convenience groups, GOAT vs DAG section
+- `CHANGELOG.md` - corrected outdated documentation about `_run_tool_caller` tool access
+
+All tests pass. No changes to memory databases, schemas, or existing tool implementations.
+- `tools/memory_tools.py` - added DAG handlers and DAG ToolDefinitions
+- `tools/__init__.py` - imported DAG tools, updated `DAG_MEMORY_TOOLS` list
+- `supervisor/runners.py` - updated system prompt for DAG memory tools
+- `readme.md` - updated tool inventory (25 tools), convenience groups, GOAT vs DAG section
+- `CHANGELOG.md` - corrected outdated documentation about `_run_tool_caller` tool access

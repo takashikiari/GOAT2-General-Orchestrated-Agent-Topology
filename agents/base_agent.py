@@ -51,7 +51,7 @@ from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
-from config.settings import ModelSpec, Provider, PROVIDER_BASE_URLS, settings
+from config.settings import ModelSpec, Provider, PROVIDER_BASE_URLS, Settings
 from supervisor import AgentResult, AgentTask
 
 log = logging.getLogger("goat2.agent")
@@ -127,8 +127,10 @@ _clients: dict[str, AsyncOpenAI] = {}
 def _get_client(spec: ModelSpec) -> AsyncOpenAI:
     key = spec.provider.value
     if key not in _clients:
+        # Import Settings on demand to avoid circular imports
+        from config.settings import Settings
         _clients[key] = AsyncOpenAI(
-            api_key=settings.api_keys.for_provider(spec.provider),
+            api_key=Settings().api_keys.for_provider(spec.provider),
             base_url=PROVIDER_BASE_URLS[key],
         )
     return _clients[key]

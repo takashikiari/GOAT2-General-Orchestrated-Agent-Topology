@@ -1,3 +1,3 @@
-from .settings import settings, Settings, Provider, ModelSpec, get_model
+from .settings import Settings, Provider, ModelSpec, get_model
 
-__all__ = ["settings", "Settings", "Provider", "ModelSpec", "get_model"]
+__all__ = ["Settings", "Provider", "ModelSpec", "get_model"]

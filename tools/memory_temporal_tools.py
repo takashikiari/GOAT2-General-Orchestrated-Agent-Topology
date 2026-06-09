@@ -21,6 +21,7 @@ Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING, Any
 
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
@@ -32,8 +33,12 @@ from tools.memory_helpers import (
     format_no_results,
     validate_tier,
 )
+from tools.registry_accessor import get_registry
 
-__all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_DEBUG_TRACE"]
+if TYPE_CHECKING:
+    from memory.memory_manager import MemoryManager
+
+__all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_RECENT_DAG", "MEMORY_DEBUG_TRACE"]
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -45,6 +50,7 @@ async def _timeline_handler(
     end_datetime: str,
     tier: str = ANY,
     limit: int = 100,
+    memory_manager: "MemoryManager | None" = None,
 ) -> str:
     """Return entries from a specific time window, newest first.
 
@@ -57,11 +63,14 @@ async def _timeline_handler(
         end_datetime: ISO 8601 or natural-language end bound
         tier: Tier to query (default: 'any')
         limit: Max results (default 100)
+        memory_manager: Optional injected MemoryManager
 
     Returns:
         Formatted entries or error message
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        registry = get_registry()
+        memory_manager = registry.memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
@@ -84,7 +93,16 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler(limit: int = 50, tier: str = ANY) -> str:
+async def _recent_handler_dag(params: dict[str, Any], caller_role: str) -> str:
+    """Wrapper that forces tier=working for DAG agents."""
+    return await _recent_handler(limit=params.get("limit", 50), tier="working")
+
+
+async def _recent_handler(
+    limit: int = 50,
+    tier: str = ANY,
+    memory_manager: "MemoryManager | None" = None,
+) -> str:
     """Return the N most recent memory entries, newest first.
 
     MEMORY ACCESS:
@@ -94,11 +112,14 @@ async def _recent_handler(limit: int = 50, tier: str = ANY) -> str:
     Args:
         limit: Max results (default 50)
         tier: Tier to query (default: 'any')
+        memory_manager: Optional injected MemoryManager
 
     Returns:
         Formatted entries or error message
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        registry = get_registry()
+        memory_manager = registry.memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
@@ -123,6 +144,7 @@ async def _debug_trace_handler(
     query: str,
     start_datetime: str | None = None,
     end_datetime: str | None = None,
+    memory_manager: "MemoryManager | None" = None,
 ) -> str:
     """Search each tier separately; show match counts with optional time filter.
 
@@ -134,11 +156,14 @@ async def _debug_trace_handler(
         query: Semantic search query
         start_datetime: Optional ISO 8601 or natural-language start
         end_datetime: Optional ISO 8601 or natural-language end
+        memory_manager: Optional injected MemoryManager
 
     Returns:
         JSON-formatted debug trace results
     """
-    from memory.memory_manager import memory_manager
+    if memory_manager is None:
+        registry = get_registry()
+        memory_manager = registry.memory_manager
 
     try:
         result = await memory_manager.debug_trace(
@@ -185,6 +210,23 @@ MEMORY_TIMELINE = ToolDefinition(
         },
     },
     handler=_timeline_handler,
+)
+
+MEMORY_RECENT_DAG = ToolDefinition(
+    name="memory_recent",
+    description="Return the N most recent working memory entries, newest first. DAG-safe: only searches working tier (Redis).",
+    parameters={
+        "type": "object",
+        "required": [],
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 50).",
+                "default": 50,
+            },
+        },
+    },
+    handler=_recent_handler_dag,
 )
 
 MEMORY_RECENT = ToolDefinition(

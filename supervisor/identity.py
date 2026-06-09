@@ -8,6 +8,11 @@ REGISTRY INJECTION (PHASE 4):
 =============================
 direct_response() and conv_result() now require `registry` parameter.
 Uses registry.settings.agents.get("tool_caller") and registry tools.
+
+ONBOARDING (PHASE 5):
+=====================
+First-session users receive a welcome message + adaptive hints for the first 3 turns.
+A persistent flag `onboarding_done` in working memory prevents repeated welcome.
 """
 from __future__ import annotations
 
@@ -24,7 +29,14 @@ from supervisor.source_types import TaggedResult
 from supervisor.tool_runner import _call_with_tools
 from supervisor.types import Plan, SupervisorResult
 
-__all__ = ["GOAT_SYSTEM", "load_user_profile", "direct_response", "conv_result"]
+__all__ = [
+    "GOAT_SYSTEM",
+    "load_user_profile",
+    "direct_response",
+    "conv_result",
+    "check_onboarding_done",
+    "set_onboarding_done",
+]
 
 GOAT_SYSTEM: Final[str] = (
     "You are GOAT — a multi-agent supervisor with persistent memory and a DAG execution engine. "
@@ -40,6 +52,97 @@ _PROFILE_KEY:  Final[str] = "human"
 _BLOCKED_KEYS: Final[frozenset[str]] = frozenset({
     "agent_id", "passage_id", "search_key", "limit", "offset", "score", "source",
     "memory_type", "ttl", "count", "timestamp", "created_at", "updated_at"})
+
+# ── Onboarding constants ──
+_ONBOARDING_KEY: Final[str] = "onboarding_done"
+_WELCOME_MESSAGE: Final[str] = (
+    "\n\n"
+    "\u250C\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n"
+    "\u2502  \U0001F410 GOAT \u2014 always ready                          \u2502\n"
+    "\u2502                                                     \u2502\n"
+    "\u2502  I can read files, search the web, write code,       \u2502\n"
+    "\u2502  check memory, analyze, compare, implement.          \u2502\n"
+    "\u2502                                                     \u2502\n"
+    "\u2502  Just tell me what you need.                         \u2502\n"
+    "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518"
+)
+
+# Adaptive hints for the first 3 turns (rotating)
+_HINTS: Final[list[str]] = [
+    "\n\n\U0001F410 I can read any file in the workspace \u2014 just tell me which one.",
+    "\n\n\U0001F410 I search the web in real time \u2014 give me a query.",
+    "\n\n\U0001F410 I can write code, analyze, compare \u2014 tell me what you need.",
+]
+
+
+# ── Public onboarding helpers ──
+
+async def check_onboarding_done(mm: MemoryManager | None) -> bool:
+    """Check if onboarding has been completed in working memory (Redis).
+
+    Returns True if the flag exists and is truthy, False otherwise.
+    Safe when mm is None (returns True — no memory = assume done).
+    """
+    if mm is None:
+        return True
+    try:
+        record = await mm.get(GOAT_ROLE, _ONBOARDING_KEY)
+        if record and record.get("content"):
+            return record["content"].strip().lower() == "true"
+        return False
+    except Exception:
+        return False
+
+
+async def set_onboarding_done(mm: MemoryManager | None) -> None:
+    """Persist the onboarding_done flag to working memory (Redis).
+
+    Safe when mm is None (no-op).
+    """
+    if mm is None:
+        return
+    try:
+        await mm.store(GOAT_ROLE, _ONBOARDING_KEY, "true")
+    except Exception:
+        pass
+
+
+# ── Internal helpers ──
+
+def _build_welcome_message(turn: int, onboarding_done: bool) -> str:
+    """Build the onboarding hint to append to the first response.
+
+    Args:
+        turn: Current turn number (1-based).
+        onboarding_done: Whether the welcome message was already shown.
+
+    Returns:
+        Welcome message string if applicable, empty string otherwise.
+    """
+    if onboarding_done:
+        return ""
+    if turn == 1:
+        return _WELCOME_MESSAGE
+    return ""
+
+
+def _build_adaptive_hint(turn: int, onboarding_done: bool) -> str:
+    """Build an adaptive hint for the first 3 turns.
+
+    Args:
+        turn: Current turn number (1-based).
+        onboarding_done: Whether onboarding is complete.
+
+    Returns:
+        Hint string if applicable, empty string otherwise.
+    """
+    if onboarding_done:
+        return ""
+    if 2 <= turn <= 4:
+        idx = turn - 2  # turn 2 → hint 0, turn 3 → hint 1, turn 4 → hint 2
+        if idx < len(_HINTS):
+            return _HINTS[idx]
+    return ""
 
 
 def _filter_profile(text: str) -> str:
@@ -86,13 +189,21 @@ async def direct_response(
     summary: str = "",
     mem_ctx: str = "",
     style: str = "",
+    turn: int = 1,
+    onboarding_done: bool = True,
 ) -> TaggedResult:
     """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
     The LLM autonomously decides when to invoke tools based on semantic intent.
     No keyword-based routing — all messages have equal tool access regardless of formatting.
-    This enables proper handling of conversational requests like 'Goat! Citește changelogs...'
+    This enables proper handling of conversational requests like 'Goat! Cite\u0219te changelogs...'
     which require file_read access even without explicit command syntax.
+
+    ONBOARDING (PHASE 5):
+    =====================
+    - First session (onboarding_done=False, turn=1): appends welcome message
+    - Turns 2-4 (onboarding_done=False): appends adaptive hints
+    - After turn 4: no hints (normal operation)
 
     REGISTRY INJECTION (PHASE 4):
     =============================
@@ -102,9 +213,18 @@ async def direct_response(
     _settings = registry.settings
     _memory_tools = registry.memory_tools
     _file_tools = registry.file_tools
+    _memory_manager = registry.memory_manager
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
+
+    # Append onboarding content to the system message
+    onboarding_content = _build_welcome_message(turn, onboarding_done)
+    if not onboarding_content:
+        onboarding_content = _build_adaptive_hint(turn, onboarding_done)
+    if onboarding_content:
+        sys_content = sys_content + onboarding_content
+
     sys_msg = {"role": "system", "content": sys_content}
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
@@ -112,6 +232,7 @@ async def direct_response(
         _memory_tools + _file_tools,
         temperature=0.7,
         tool_choice="auto",
+        memory_manager=_memory_manager,
     )
 
 
@@ -124,14 +245,25 @@ async def conv_result(
     t0: float,
     registry: "Registry",
     style: str = "",
+    turn: int = 1,
+    onboarding_done: bool = True,
 ) -> SupervisorResult:
     """Return a SupervisorResult from a direct LLM response with full conversation history.
+
+    ONBOARDING (PHASE 5):
+    =====================
+    - First session (onboarding_done=False, turn=1): appends welcome message
+    - Turns 2-4 (onboarding_done=False): appends adaptive hints
+    - After turn 4: no hints (normal operation)
 
     REGISTRY INJECTION (PHASE 4):
     =============================
     Requires registry parameter for dependency injection.
     """
-    tagged = await direct_response(messages, profile, registry, summary, mem_ctx, style)
+    tagged = await direct_response(
+        messages, profile, registry, summary, mem_ctx, style,
+        turn=turn, onboarding_done=onboarding_done,
+    )
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},
         critique="", summary=tagged.content,

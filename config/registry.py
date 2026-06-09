@@ -83,6 +83,7 @@ class ServiceRegistry:
         "memory_tools",
         "dag_memory_tools",
         "agent_models",
+        "letta_client",
     )
 
     def __init__(self, config_path: str = "config/goat.toml") -> None:
@@ -115,8 +116,15 @@ class ServiceRegistry:
         # Working memory layer (Redis-backed by default)
         self.working_memory = WorkingMemoryLayer(backend=RedisBackend())
 
+        # Letta client with LettaConfig for dependency injection
+        from memory.letta_client import LettaClient
+        self.letta_client = LettaClient(letta_config=self.settings.letta)
+
         # Memory manager coordinating all three tiers
-        self.memory_manager = MemoryManager(working=self.working_memory)
+        self.memory_manager = MemoryManager(
+            working=self.working_memory,
+            long_term=self.letta_client,
+        )
 
         # Tool definitions imported from tools module
         # These remain module constants in tools/__init__.py

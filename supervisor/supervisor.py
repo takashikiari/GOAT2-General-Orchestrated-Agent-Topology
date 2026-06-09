@@ -439,7 +439,8 @@ class GoatSupervisor:
         - Falls back to DAG if tool execution fails
         - Logs bypass events at INFO level
         """
-        from tools.memory_tools import MEMORY_RECENT, MEMORY_GET
+        from tools.memory_tools import MEMORY_GET
+        from tools.memory_temporal_tools import MEMORY_RECENT
         from tools.file_executor import EXECUTOR
 
         classification = classify_direct_request(intent)
@@ -490,6 +491,17 @@ class GoatSupervisor:
                         intent,
                         result,
                     )
+                    # Auto-save to episodic/long-term memory
+                    try:
+                        from memory.hooks import auto_save_memory
+                        await auto_save_memory(
+                            self.memory_manager,
+                            "user_session",
+                            intent,
+                            r.summary if "r" in dir() else "",
+                        )
+                    except Exception as e:
+                        log.warning("auto_save_memory failed: %s", e)
                 except Exception as e:
                     log.warning("Direct request memory store failed: %s", e)
 
@@ -554,6 +566,17 @@ class GoatSupervisor:
                     intent,
                     str(results),
                 )
+                # Auto-save to episodic/long-term memory
+                try:
+                    from memory.hooks import auto_save_memory
+                    await auto_save_memory(
+                        self.memory_manager,
+                        "user_session",
+                        intent,
+                        r.summary if "r" in dir() else "",
+                    )
+                except Exception as e:
+                    log.warning("auto_save_memory failed: %s", e)
             log.debug("Memory pipeline: stored DAG results in working memory (Redis)")
         except ImportError:
             log.debug("Memory pipeline skipped: session module not available")
@@ -653,11 +676,11 @@ class GoatSupervisor:
 
         # Initialize session on first run
         if self._history is None:
-            self._user_profile, self._history, self._behavior_style = await init_session(
+            self._user_profile, self._history, self._behavior_style, _ = await init_session(
                 self.memory_manager
             )
         self._history.add_user(intent)
-        mem_ctx = await mem_turn(self.memory_manager, intent)
+        mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
         # Phase 4: Pass registry to classify_intent
         depth = await classify_intent(intent, self.registry)
 
@@ -691,6 +714,17 @@ class GoatSupervisor:
                     await store_turn(
                         self.memory_manager, turn_count, intent, r.summary
                     )
+                    # Auto-save to episodic/long-term memory
+                    try:
+                        from memory.hooks import auto_save_memory
+                        await auto_save_memory(
+                            self.memory_manager,
+                            "user_session",
+                            intent,
+                            r.summary if "r" in dir() else "",
+                        )
+                    except Exception as e:
+                        log.warning("auto_save_memory failed: %s", e)
                     # Schedule automatic promotion based on turn count
                     asyncio.create_task(self._schedule_promotion(turn_count))
                 except ImportError:
@@ -707,7 +741,7 @@ class GoatSupervisor:
 
         # Phase 4: Pass registry to decompose_plan
         plan = await decompose_plan(plan_ctx, self.registry)
-        lang = await prepare_tasks(plan.tasks, self.memory_manager, intent)
+        lang = await prepare_tasks(plan.tasks, self.memory_manager, intent, self.registry)
 
         # Start parallel memory pipeline for Redis operations during DAG execution
         # This allows concurrent memory read/write without blocking task execution
@@ -727,7 +761,6 @@ class GoatSupervisor:
             verbose=self._verbose,
             memory_manager=self.memory_manager,
             session_id=session_id,
-            registry=self.registry,
         )
 
         # Read dag_result from Redis for independent validation
@@ -857,6 +890,17 @@ class GoatSupervisor:
                 await store_turn(
                     self.memory_manager, turn_count, intent, r.summary
                 )
+                # Auto-save to episodic/long-term memory
+                try:
+                    from memory.hooks import auto_save_memory
+                    await auto_save_memory(
+                        self.memory_manager,
+                        "user_session",
+                        intent,
+                        r.summary if "r" in dir() else "",
+                    )
+                except Exception as e:
+                    log.warning("auto_save_memory failed: %s", e)
                 # Schedule automatic promotion based on turn count
                 asyncio.create_task(self._schedule_promotion(turn_count))
             except ImportError:

@@ -16,7 +16,7 @@ from agents.base_agent import ToolDefinition
 
 __all__ = ["MEMORY_LAST_WRITE"]
 
-_ALLOWED_TIERS: Final[tuple[str, ...]] = ("working", "chromadb", "letta")
+_ALLOWED_TIERS: Final[tuple[str, ...]] = ("working", "episodic", "long_term")
 
 _SCHEMA = {
     "type": "object",
@@ -24,7 +24,7 @@ _SCHEMA = {
         "tier": {
             "type": "string",
             "description": (
-                "Memory tier to check: 'working', 'chromadb', or 'letta'. "
+                "Memory tier to check: 'working', 'episodic', or 'long_term'. "
                 "Returns ISO 8601 timestamp of last write to that tier."
             ),
             "enum": list(_ALLOWED_TIERS),
@@ -66,8 +66,8 @@ async def _handler(tier: str) -> str:
 MEMORY_LAST_WRITE = ToolDefinition(
     name="memory_last_write",
     description=(
-        "Check the last write timestamp for a memory tier (working/chromadb/letta). "
-        "Returns ISO 8601 timestamp from Redis. Automatically updated on ChromaDB writes. "
+        "Check the last write timestamp for a memory tier (working/episodic/long_term). "
+        "Returns ISO 8601 timestamp from Redis. Automatically updated on writes. "
         "GOAT has full tier access; DAG agents restricted to working tier only."
     ),
     parameters=_SCHEMA,

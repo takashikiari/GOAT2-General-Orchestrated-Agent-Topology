@@ -52,35 +52,53 @@ class DirectRequest:
 
 
 # ── Pattern definitions (case-insensitive) ──
+# Note: Word boundaries (\b) may not work reliably with Romanian characters
+# Using flexible patterns instead for broader coverage
 
 _MEMORY_RECENT_PATTERNS = [
-    r"\b(recent|last|latest)\s+(memory|items|facts|entries|stored)\b",
-    r"\b(ce|what)\s+(am|do\s+i)\s+(în|in)\s+memorie\b",
-    r"\b(memorie|memory)\s+(recentă|recent|ultimă|last)\b",
-    r"\b(ultimele|last)\s+(intrări|entries|elemente|items)\b",
-    r"\b(arată|show|afișează|display)\s+(memoria|memory)\s+(recentă|recent)\b",
+    r"(recent|last|latest)\s+(memory|items|facts|entries|stored)",
+    r"(recent|last|latest)\s+(fact|facts)",
+    r"(ce|what)\s+(am|do\s+i)\s+(în|in)\s+memorie",
+    r"(ce\s+este|what\s+is)\s+(în|in)\s+(memorie|memory)",
+    r"(memorie|memory)\s+(recentă|recent|ultimă|last)",
+    r"(ultimele|last)\s+(intrări|entries|elemente|items)",
+    r"(arată|show|afișează|display)\s+(memoria|memory)\s+(recentă|recent)",
+    r"(verifică|verifica|check|afirmă)\s+(memoria|memory)\s+(recentă|recent|ultimă|last)",
+    r"(show|afișează)\s+(me\s+)?(the\s+)?(recent|last|latest)\s+(stored|memory)",
+    r"(ce\s+este|what\s+is)\s+(în|in)\s+(memorie|memory)\s+(recentă|recent)",
+    r"(arată|show)\s+(ce|what)\s+(am|do\s+i)\s+(în|in)\s+(memorie|memory)",
+    r"(ce\s+este|what\s+is)\s+(în|in)\s+(memorie|memory)\.",
+    # ── Broader Romanian patterns (patch 72) ──
+    r"(verifică|verifica|check)\s+(memoria|memory)",                       # "check memory"
+    r"(arată|afișează|raportează)\s+(memoria|memory)",                     # "show/report memory"
+    r"(raportează|report)\s+(memoria|memory)\s+(recentă|recent)",          # "report recent memory"
+    r"(ai|aveți|am)\s+(în|in)\s+(memorie|memory)",                        # "you have in memory"
 ]
 
 _MEMORY_GET_PATTERNS = [
-    r"\b(get|retrieve|fetch|ia|extrage)\s+(fact|value|data|information)\s+(from\s+)?memory\b",
-    r"\b(memory|memorie)\s+(get|ia|extrage|retrieve)\s+\w+\b",
-    r"\b(what\s+is|care\s+este)\s+the\s+(fact|value)\s+(for\s+)?['\"]?\w+['\"]?\b",
+    r"(get|retrieve|fetch|ia|extrage)\s+(fact|value|data|information)\s+(from\s+)?memory",
+    r"(memory|memorie)\s+(get|ia|extrage|retrieve)\s+\w+",
+    r"(what\s+is|care\s+este)\s+the\s+(fact|value)\s+(for\s+)?['\"]?\w+['\"]?",
 ]
 
 _FILE_READ_PATTERNS = [
-    r"\b(read|open|show|display|citește|afișează)\s+(file|fișier)\s+['\"]?[^\s'\"]+['\"]?\b",
-    r"\b(file|fișier)\s+(read|citește|open|deschide)\s+['\"]?[^\s'\"]+['\"]?\b",
+    r"(read|open|show|display|citește|afișează)\s+(file|fișier)\s+['\"]?[^\s'\"]+['\"]?",
+    r"(file|fișier)\s+(read|citește|open|deschide)\s+['\"]?[^\s'\"]+['\"]?",
     r"['\"]?[a-zA-Z0-9_\-./]+\.(py|md|txt|json|yaml|yml|toml|cfg|ini|log|csv)['\"]?",
-    r"\b(show|afișează|arătă)\s+content\s+(of|din)\s+['\"]?[^\s'\"]+['\"]?\b",
+    r"(show|afișează|arătă)\s+content\s+(of|din)\s+['\"]?[^\s'\"]+['\"]?",
 ]
 
 # Multi-step indicators that should NOT bypass DAG
 _MULTI_STEP_INDICATORS = [
-    r"\b(and|și|then|apoi|după)\b",
-    r"\b(explain|analyze|analyse|analizează|explică)\b",
-    r"\b(compare|compară|difference|diferență)\b",
-    r"\b(why|de ce|how|cum|impact|consequence)\b",
-    r"\b(suggest|recommend|propune|optimize|refactor)\b",
+    r"\b(and|și)\b",
+    r"\b(then|apoi|după)\b",
+    r"\b(explain|explică)\s+(why|how|de ce|cum)\b",
+    r"\b(analyze|analyse|analizează)\s+\w+",
+    r"\b(compare|compară)\s+\w+",
+    r"\b(difference|diferență)\s+between\b",
+    r"\b(why|de ce)\s+(did|does|was|is|are)\b",
+    r"\bhow\s+(to|do|can|could|should|would)\b",
+    r"\b(suggest|recommend|propune|optimize|refactor)\s+\w+",
 ]
 
 

@@ -7,7 +7,7 @@ critique. Defaults to llama-3.3-70b on Groq for fast, high-quality review.
 
 from __future__ import annotations
 
-from config.settings import ModelSpec, settings
+from config.settings import ModelSpec, Settings
 from supervisor import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
@@ -85,7 +85,7 @@ class CriticAgent(BaseAgent):
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
         super().__init__(
-            spec=spec or settings.agents.get("critic"),
+            spec=spec or Settings().agents.get("critic"),
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.3,  # low: reviews should be consistent, not creative
         )

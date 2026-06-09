@@ -6,16 +6,23 @@ which tier responds. Never generates fake memory content.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from config.roles import SESSION_ROLE
-from config.settings import settings
 from config.timeouts import LETTA_TIMEOUT
 from supervisor.types import AgentTask, AgentResult
+
+if TYPE_CHECKING:
+    from config.registry import Registry
 
 log = logging.getLogger("goat2.supervisor")
 
 
-async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> str:
+async def _run_memory(
+    task: AgentTask,
+    dep_results: dict[str, AgentResult],
+    registry: "Registry",
+) -> str:
     """Retrieve relevant prior memories; sets task.source based on which tier responds.
 
     Tier 1: memory_manager (source=memory). Tier 2: direct Letta HTTP (source=memory).
@@ -30,7 +37,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
 
     # Tier 2: direct Letta HTTP (backward-compat — no memory_manager)
     # Path: GET /v1/agents/{agent_id}/archival-memory  (agent-scoped, never global)
-    letta = settings.letta
+    letta = registry.settings.letta
     try:
         import httpx
         async with httpx.AsyncClient(
@@ -60,6 +67,7 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
                 timeout=LETTA_TIMEOUT,
             )
             log.debug("Letta Tier2: status=%d body=%.300s", sr.status_code, sr.text[:300])
+            log.debug("Letta Tier2: parsed %d passages", len(passages))
             sr.raise_for_status()
             data = sr.json()
             passages = data if isinstance(data, list) else (
@@ -67,10 +75,13 @@ async def _run_memory(task: AgentTask, dep_results: dict[str, AgentResult]) -> s
             )
             texts = [p.get("text") or p.get("content") or "" for p in passages]
             texts = [t for t in texts if t.strip()]
+            log.debug("Letta Tier2: extracted %d texts from passages", len(texts))
             if texts:
                 log.debug("Letta Tier2: found %d passages", len(texts))
                 task.source = "memory"
-                return "\n\n".join(texts)
+                result = "\n\n".join(texts)
+                log.debug("Letta Tier2: returning %d chars", len(result))
+                return result
     except Exception as exc:
         log.debug("Letta Tier2 unavailable (%s) — falling through", exc)
 
