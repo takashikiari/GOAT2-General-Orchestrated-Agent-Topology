@@ -743,13 +743,6 @@ class GoatSupervisor:
         plan = await decompose_plan(plan_ctx, self.registry)
         lang = await prepare_tasks(plan.tasks, self.memory_manager, intent, self.registry)
 
-        # Start parallel memory pipeline for Redis operations during DAG execution
-        # This allows concurrent memory read/write without blocking task execution
-        memory_pipeline_task = asyncio.create_task(
-            self._run_memory_pipeline(intent, {})
-        )
-        self._memory_pipeline_tasks.append(memory_pipeline_task)
-
         # Execute DAG with memory_manager passed for Redis working memory access
         # NOTE: DAG agents can ONLY access working tier (Redis)
         # ChromaDB and Letta are supervisor-only
@@ -776,12 +769,6 @@ class GoatSupervisor:
                 log.warning("dag_result:%s missing from Redis — validated=False", session_id)
         except Exception as e:
             log.warning("retrieve_dag_result failed: %s", e)
-
-        # Wait for memory pipeline to complete
-        try:
-            await memory_pipeline_task
-        except Exception as e:
-            log.warning("Memory pipeline task failed (non-critical): %s", e)
 
         # Validate results through dag_validator
         results, val_statuses = validate_results(results)

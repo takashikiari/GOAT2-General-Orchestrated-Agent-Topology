@@ -40,7 +40,7 @@ _GENERATED_ROLES = SYNTHESIS_ROLES
 _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {
     "researcher":  frozenset({"net"}),
     "coder":       frozenset({"file", "net", "generated"}),
-    "tool_caller": frozenset({"file", "net", "generated"}),
+    "tool_caller": frozenset({"file", "net", "generated", "memory"}),
     "critic":      frozenset({"generated", "file"}),
     "summarizer":  frozenset({"generated", "file"}),
     "planner":     frozenset({"generated"}),

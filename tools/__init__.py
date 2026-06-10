@@ -125,6 +125,11 @@ __all__ = [
     "ALL_TOOLS",
     "FILE_TOOLS",
     "MEMORY_TOOLS",
+    # Tool namespaces
+    "DAG_NAMESPACE",
+    "GOAT_NAMESPACE",
+    "VALIDATOR_NAMESPACE",
+    "PROMOTER_NAMESPACE",
 ]
 
 # All tool definitions (17 total)
@@ -198,3 +203,10 @@ DAG_MEMORY_TOOLS: list[ToolDefinition] = [
     MEMORY_STORE_DAG,
     MEMORY_RECENT_DAG,
 ]
+
+# ── TOOL NAMESPACE CONSTANTS ──
+# Redis key namespaces for tool distribution
+DAG_NAMESPACE: str = "dag"  # DAG agents: dag:* namespace
+GOAT_NAMESPACE: str = "goat"  # GOAT conversational: goat:* namespace
+VALIDATOR_NAMESPACE: str = "validator"  # GOAT Validator: direct access only
+PROMOTER_NAMESPACE: str = "promoter"  # Memory Promoter: direct access only
