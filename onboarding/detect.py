@@ -6,6 +6,8 @@ import subprocess
 import platform
 from pathlib import Path
 
+from config.onboarding import CONFIG_FILE_NAME, ENV_FILE_NAME
+
 
 def detect_environment() -> dict:
     """Detect and return full environment snapshot."""
@@ -25,8 +27,8 @@ def detect_environment() -> dict:
         "has_chromadb": _has_chromadb(),
         "has_letta": _has_letta(),
         "has_searxng": _has_searxng(),
-        "env_file_exists": Path(".env").exists(),
-        "goat_config_exists": Path("config/goat.toml").exists(),
+        "env_file_exists": Path(ENV_FILE_NAME).exists(),
+        "goat_config_exists": Path(CONFIG_FILE_NAME).exists(),
         "goat_config_valid": False,  # filled later
     }
     return env

@@ -4,13 +4,22 @@ import json
 import os
 from datetime import datetime, timezone
 
+from config.onboarding import (
+    CHROMA_COLLECTION_NAME,
+    PROFILE_TTL_SESSION,
+    PROFILE_TTL_WORKING,
+    REDIS_KEY_IDENTITY,
+    REDIS_KEY_ONBOARDING,
+    REDIS_KEY_SESSION,
+)
+
 
 def persist_identity(env: dict, config_status: dict, memory_status: dict) -> dict:
     """Store onboarding results in all available memory tiers."""
     result = {"working": False, "episodic": False, "long_term": False, "errors": []}
 
     profile = {
-        "goat_version": "2.0",
+        "goat_version": "2.0",  # Note: Could import from config.onboarding
         "onboarded_at": datetime.now(timezone.utc).isoformat(),
         "environment": {
             "os": env.get("os"),
@@ -40,8 +49,8 @@ def persist_identity(env: dict, config_status: dict, memory_status: dict) -> dic
         try:
             import redis
             r = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
-            r.set("goat:identity:profile", json.dumps(profile, default=str), ex=86400)  # 24h TTL
-            r.set("goat:onboarding:complete", "true", ex=86400)
+            r.set(REDIS_KEY_IDENTITY, json.dumps(profile, default=str), ex=PROFILE_TTL_WORKING)
+            r.set(REDIS_KEY_ONBOARDING, "true", ex=PROFILE_TTL_WORKING)
             result["working"] = True
         except Exception as e:
             result["errors"].append(f"working persist: {e}")
@@ -52,7 +61,7 @@ def persist_identity(env: dict, config_status: dict, memory_status: dict) -> dic
             import chromadb
             persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "chroma_db")
             client = chromadb.PersistentClient(path=persist_dir)
-            collection = client.get_or_create_collection("goat_onboarding")
+            collection = client.get_or_create_collection(CHROMA_COLLECTION_NAME)
             collection.add(
                 documents=[json.dumps(profile, default=str)],
                 metadatas=[{"type": "identity_profile", "timestamp": profile["onboarded_at"]}],
@@ -80,7 +89,7 @@ def persist_session_profile(profile: dict) -> dict:
     try:
         import redis
         r = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
-        r.set("goat:session:profile", json.dumps(profile, default=str), ex=3600)  # 1h TTL
+        r.set(REDIS_KEY_SESSION, json.dumps(profile, default=str), ex=PROFILE_TTL_SESSION)
         result["stored"] = True
     except Exception as e:
         result["errors"].append(f"session persist: {e}")

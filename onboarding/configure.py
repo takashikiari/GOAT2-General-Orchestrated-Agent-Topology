@@ -5,6 +5,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from config.onboarding import (
+    CONFIG_FILE_NAME,
+    CONFIG_REQUIRED_SECTIONS,
+    ENV_FILE_NAME,
+    PIP_TIMEOUT_SECONDS,
+)
+
 
 def install_requirements(env: dict) -> dict:
     """Install production requirements based on environment."""
@@ -21,7 +28,7 @@ def install_requirements(env: dict) -> dict:
             try:
                 subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-r", req_file, "--quiet"],
-                    capture_output=True, check=True, timeout=120
+                    capture_output=True, check=True, timeout=PIP_TIMEOUT_SECONDS
                 )
                 result["extras_installed"].append(label)
             except subprocess.CalledProcessError as e:
@@ -37,9 +44,9 @@ def validate_goat_config() -> dict:
     """Validate goat.toml and return config status."""
     result = {"valid": False, "errors": [], "sections": {}}
 
-    config_path = Path("config/goat.toml")
+    config_path = Path(CONFIG_FILE_NAME)
     if not config_path.exists():
-        result["errors"].append("config/goat.toml not found")
+        result["errors"].append(f"{CONFIG_FILE_NAME} not found")
         return result
 
     try:
@@ -58,8 +65,7 @@ def validate_goat_config() -> dict:
         result["errors"].append(f"parse error: {e}")
         return result
 
-    required_sections = ["model", "agents", "memory", "supervisor"]
-    for section in required_sections:
+    for section in CONFIG_REQUIRED_SECTIONS:
         if section in config:
             result["sections"][section] = list(config[section].keys())
         else:
