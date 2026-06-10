@@ -18,6 +18,7 @@
 **Files Updated:**
 - supervisor/dag_validator.py — now imports from config/agents.py
 - agents/__init__.py — re-exports from prompts/
+- config/README.md — comprehensive config/ documentation (512 lines)
 
 ---
 
