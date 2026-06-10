@@ -79,3 +79,5 @@ goat_the_liar.txt
 # OS files
 .DS_Store
 Thumbs.db
+.env
+config/goat.toml
