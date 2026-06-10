@@ -5,7 +5,65 @@
 GOAT uses a three-tier memory system to separate short-term session context,
 medium-term episodic history, and long-term persistent knowledge.
 
----
+## Directory Structure
+
+```
+memory/
+├── __init__.py          # Re-exports for backward compatibility
+├── router/             # Memory routing and classification
+├── working/             # Redis-backed session-scoped storage
+│   ├── __init__.py
+│   ├── working_memory.py   # Main working memory layer
+│   ├── working_backend.py # StorageBackend Protocol
+│   ├── redis_backend.py   # Redis implementation
+│   ├── dict_backend.py    # In-memory dict implementation
+│   ├── working_crud.py   # CRUD mixin
+│   ├── working_query.py   # Query mixin
+│   ├── working_search.py  # Search utilities
+│   ├── working_sweep.py   # TTL eviction
+│   ├── working_record.py # Record serialization
+│   ├── redis_conn.py      # Redis connection
+│   └── redis_scan.py      # Redis SCAN utilities
+├── episodic/           # ChromaDB semantic storage
+│   ├── __init__.py
+│   ├── chromadb_client.py # Main ChromaDB client
+│   ├── chromadb_base.py   # ChromaDB client management
+│   ├── chroma_crud.py    # CRUD operations
+│   ├── chroma_query.py    # Query operations
+│   ├── chroma_extras.py  # Introspection
+│   ├── chroma_helpers.py # Helper functions
+│   ├── chroma_parsers.py # Result parsing
+│   └── chroma_types.py   # Type definitions
+├── long_term/          # Letta API integration
+│   ├── __init__.py
+│   ├── letta_client.py    # Main Letta client
+│   ├── letta_blocks.py   # Core memory operations
+│   ├── letta_health.py  # Health probing
+│   ├── letta_helpers.py # Helper functions
+│   ├── letta_registry.py # Agent registry
+│   ├── letta_fallback.py # In-context fallback
+│   ├── letta_ops_*.py   # Letta operations
+├── temporal/          # Time-based search
+│   ├── __init__.py
+│   ├── temporal_filter.py # Time filtering
+│   ├── temporal_list.py  # Tier listing
+│   ├── temporal_search.py # Temporal search
+│   └── time_parser.py    # Time parsing
+├── shared/            # Types and utilities
+│   ├── __init__.py
+│   ├── types.py           # Core types
+│   ├── memory_enums.py    # Enumerations
+│   ├── memory_manager.py # MemoryManager
+│   ├── memory_crud.py   # CRUD mixin
+│   ├── memory_search.py # Search mixin
+│   ├── memory_promote.py # Promotion mixin
+│   ├── hooks.py         # Auto-save hooks
+│   └── pollution_guard.py # Quality validation
+├── chroma_types.py    # Backward compat shim
+├── types.py           # Backward compat shim
+├── validation.py     # Backward compat shim
+└── ...
+```
 
 ## Tiers
 
@@ -50,7 +108,42 @@ medium-term episodic history, and long-term persistent knowledge.
 - Core memories that persist across all sessions
 - Promoted important episodic memories
 
----
+## Import Examples
+
+### New Style (Recommended)
+
+```python
+# Import directly from subdirectories
+from memory.working import WorkingMemoryLayer, RedisBackend
+from memory.episodic import ChromaMemoryClient
+from memory.long_term import LettaClient
+from memory.shared import MemoryManager, MemoryEntry, MemoryType
+from memory.temporal import filter_by_time, parse_time_range
+```
+
+### Old Style (Backward Compatible)
+
+```python
+# Import from memory module root
+from memory import MemoryManager, MemoryEntry, WorkingMemoryLayer
+from memory.chromadb_client import ChromaMemoryClient
+from memory.letta_client import LettaClient
+```
+
+## Configuration
+
+Memory configuration constants are in `config/memory.py`:
+
+```python
+from config.memory import (
+    WORKING_BACKEND,      # "redis"
+    EPISODIC_BACKEND,    # "chromadb"
+    LONG_TERM_BACKEND,   # "letta"
+    PROMOTION_TURN_EPISODIC,  # 2
+    PROMOTION_TURN_LONG_TERM,  # 3
+    POLLUTION_GUARD_MIN_LENGTH, # 10
+)
+```
 
 ## Access Control
 
@@ -62,7 +155,7 @@ medium-term episodic history, and long-term persistent knowledge.
 
 ### Memory Agent — Redis Bridge
 
-Memory agent este un DAG agent special care:
+Memory agent is a special DAG agent:
 
 1. **Scrie în Redis** — comunică cu ceilalți agenți prin working memory
 2. **Își ia context** din working memory pentru task-uri ample
@@ -70,8 +163,6 @@ Memory agent este un DAG agent special care:
 4. **Query către GOAT** — dacă are nevoie de informații din straturile profunde, face request către GOAT
 5. **GOAT filtrează** — decide ce informații să returneze, cât, și dacă e relevant
 6. **Zero halucinații** — memory agent nu primește niciodată date nevăzute sau nefiltrate
-
----
 
 ## Data Flow
 
@@ -96,8 +187,6 @@ Episodic (ChromaDB)
    ▼  (promoted by GOAT for permanent knowledge)
 Long-term (Letta)
 ```
-
----
 
 ## Tool Access
 
@@ -130,8 +219,6 @@ Long-term (Letta)
 | `memory_get` | Get from working memory |
 | `memory_store` | Store to working memory |
 | `memory_recent` | Recent working memory entries |
-
----
 
 ## Implementation Details
 

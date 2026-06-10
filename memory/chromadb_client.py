@@ -1,31 +1,7 @@
-"""ChromaMemoryClient — Episodic memory backend using embedded ChromaDB.
+"""Backward compatibility shim for memory.chromadb_client.
 
-One persistent collection per GOAT agent role. Upsert semantics:
-each (role, key) maps to exactly one document via a deterministic ID.
-Semantic search uses HNSW (cosine space).
+This module has been moved to memory.episodic.chromadb_client.
 """
-from __future__ import annotations
+from memory.episodic.chromadb_client import ChromaMemoryClient
 
-from memory.chroma_crud import ChromaCrudMixin
-from memory.chroma_extras import ChromaExtrasMixin
-from memory.chroma_query import ChromaQueryMixin
-
-__all__ = ["ChromaMemoryClient", "chroma_client"]
-
-
-class ChromaMemoryClient(ChromaCrudMixin, ChromaQueryMixin, ChromaExtrasMixin):
-    """
-    Episodic memory backend using embedded ChromaDB.
-
-    One persistent collection per GOAT agent role. Upsert semantics:
-    each (role, key) maps to exactly one document via a deterministic ID.
-    Semantic search uses HNSW (cosine space).
-
-    Mixins provide:
-    - ChromaCrudMixin: store, retrieve, delete
-    - ChromaQueryMixin: search, list, clear, health
-    - ChromaExtrasMixin: count, introspection
-    """
-
-
-chroma_client = ChromaMemoryClient()
+__all__ = ["ChromaMemoryClient"]
