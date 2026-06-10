@@ -69,7 +69,7 @@ class ChromaCrudMixin(ChromaBase):
     
     async def list(self, agent_role: str, limit: int = 50) -> list:
         """Return up to `limit` most recent entries for agent_role from ChromaDB."""
-        from memory.types import MemoryEntry
+        from memory.shared.types import MemoryEntry
         try:
             collection = self._get_collection(agent_role)
             # ChromaDB nu are "list all" direct; folosim get() cu ids
