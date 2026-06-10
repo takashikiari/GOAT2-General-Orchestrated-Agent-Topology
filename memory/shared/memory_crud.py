@@ -43,7 +43,7 @@ class MemoryCrudMixin:
         ttl is forwarded only to WORKING layer; EPISODIC and LONG_TERM
         use their own persistence semantics and ignore ttl.
         """
-        from memory.working_memory import WorkingMemoryLayer
+        from memory.working.working_memory import WorkingMemoryLayer
 
         layer = self._layer(memory_type)
         if isinstance(layer, WorkingMemoryLayer):
@@ -52,6 +52,16 @@ class MemoryCrudMixin:
             )
         entry = await layer.store(agent_role, key, content, metadata=metadata)
         log.debug("store(%s, %s) → %s", agent_role, key, memory_type)
+        try:
+            import time
+            from memory.working.redis_backend import RedisBackend
+            redis = RedisBackend()
+            r = await redis._get_redis()
+            tier = str(memory_type.value if hasattr(memory_type, "value") else memory_type)
+            await r.set(f"goat2:working:last_write:{tier}", str(time.time()))
+            await redis.close()
+        except Exception:
+            pass
         return entry
 
     async def retrieve(
