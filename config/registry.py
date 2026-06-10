@@ -146,6 +146,13 @@ class ServiceRegistry:
             len(self.dag_memory_tools),
         )
 
+    def get(self, role: str):
+        """Get agent runner by role — delegates to AgentRegistry."""
+        from supervisor.registry import AgentRegistry
+        if not hasattr(self, '_agent_registry'):
+            self._agent_registry = AgentRegistry()
+        return self._agent_registry.get(role)
+
     def __repr__(self) -> str:
         """Return compact representation for debugging."""
         return (
