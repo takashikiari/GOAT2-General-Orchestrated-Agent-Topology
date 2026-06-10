@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["GOAT_ROLE", "SESSION_ROLE"]
+__all__ = ["GOAT_ROLE", "SESSION_ROLE", "DAG_PREFIX", "GOAT_PREFIX"]
 
 GOAT_ROLE: Final[str] = "goat"
 """Supervisor identity role with full memory tier access.
@@ -48,4 +48,18 @@ SESSION_ROLE: Final[str] = "user_session"
 Used for conversation turns, DAG results, working memory operations, and
 session context. DAG agents restricted to WORKING tier; supervisor can
 promote to EPISODIC and LONG_TERM.
+"""
+
+DAG_PREFIX: Final[str] = "dag"
+"""Redis key namespace prefix for DAG agent operations.
+
+DAG agents write exclusively to dag:* namespace. GOAT reads dag:* keys via
+DagBridge for post-execution validation. GOAT never writes to dag:* namespace.
+"""
+
+GOAT_PREFIX: Final[str] = "goat"
+"""Redis key namespace prefix for GOAT supervisor operations.
+
+GOAT conversational writes to goat:* namespace only. DAG agents cannot
+write here. Enforces strict namespace separation between supervisor and agents.
 """

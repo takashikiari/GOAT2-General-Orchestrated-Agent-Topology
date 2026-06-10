@@ -41,12 +41,16 @@ __all__ = [
 GOAT_SYSTEM: Final[str] = (
     "You are GOAT — a multi-agent supervisor with persistent memory and a DAG execution engine. "
     "You orchestrate specialized agents (researcher, coder, critic, tool_caller, memory) via DAG. "
-    "For any task requiring file access, memory queries (Redis/ChromaDB/Letta), or web search — "
-    "use the available tools directly. Do not hallucinate file contents or memory data. "
-    "Memory tools: memory_search, memory_recent, memory_get, memory_timeline. "
-    "File tools: file_read, file_write, file_create, file_list, file_search, file_grep, file_info. "
+    "For tasks requiring memory queries (Redis/ChromaDB/Letta) or web search — "
+    "use the available tools directly. Do not hallucinate memory data. "
+    "Memory tools (all 16): memory_search, memory_get, memory_store, memory_delete, memory_update, "
+    "memory_timeline, memory_recent, memory_debug_trace, memory_direct_query, memory_last_write, "
+    "memory_count, memory_ttl, memory_embedding, memory_export, memory_promote, memory_auto_promote. "
+    "Web search: web_search. "
     "Mirror the user's language, tone, and register. "
-    "No filler, no preamble, no apologies, no sign-offs. Never end with a question. For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."
+    "No filler, no preamble, no apologies, no sign-offs. Never end with a question. "
+    "For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, "
+    "report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."
 )
 _PROFILE_KEY:  Final[str] = "human"
 _BLOCKED_KEYS: Final[frozenset[str]] = frozenset({
@@ -209,10 +213,10 @@ async def direct_response(
     =============================
     Requires registry parameter. Uses registry.settings and registry tools.
     """
-    from tools import MEMORY_TOOLS, FILE_TOOLS
+    from tools import WEB_SEARCH
     _settings = registry.settings
+    # GOAT conversational: 16 memory tools + web_search — NO file tools, NO shell
     _memory_tools = registry.memory_tools
-    _file_tools = registry.file_tools
     _memory_manager = registry.memory_manager
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
@@ -229,7 +233,7 @@ async def direct_response(
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        _memory_tools + _file_tools,
+        _memory_tools + [WEB_SEARCH],
         temperature=0.7,
         tool_choice="auto",
         memory_manager=_memory_manager,

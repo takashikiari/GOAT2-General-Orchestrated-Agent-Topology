@@ -159,7 +159,7 @@ async def _call_with_tools(
                     ""
                 )
                 final_content = last_tool
-            return TaggedResult(content=final_content, source=source,
+            return TaggedResult(content=_strip_dsml(final_content), source=source,
                                 called_tools=tuple(called_tools))
         log.debug("tool_runner: round=%d calls=%s", rnd, [tc.function.name for tc in msg.tool_calls])
         # Strip DSML markers from content to prevent LLM confusion in subsequent rounds

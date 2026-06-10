@@ -117,7 +117,6 @@ from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
 from supervisor.pipeline.task_prep import prepare_tasks
-from supervisor.pipeline.dag_validator import validate_results
 from supervisor.logging.auditor import run_auditor
 from supervisor.classification.request_classifier import classify_direct_request
 
@@ -747,7 +746,7 @@ class GoatSupervisor:
         # NOTE: DAG agents can ONLY access working tier (Redis)
         # ChromaDB and Letta are supervisor-only
         session_id = str(uuid.uuid4())
-        # Phase 4: Pass registry to WorkflowGraph.execute
+        # Execute DAG — GOAT does not invoke any tool calls while DAG runs
         results = await WorkflowGraph(plan.tasks).execute(
             self.agent_registry,
             self._semaphore,
@@ -756,36 +755,48 @@ class GoatSupervisor:
             session_id=session_id,
         )
 
-        # Read dag_result from Redis for independent validation
+        # DagBridge: poll Redis for dag:{session_id}:result written by workflow.py
         dag_verified = False
         dag_detail = ""
-        try:
-            from supervisor.session import retrieve_dag_result
-            dag_detail = await retrieve_dag_result(self.memory_manager, session_id)
-            if dag_detail:
-                dag_verified = True
-                log.info("dag_result:%s retrieved — validated=True", session_id)
+        validation_errors: list[str] = []
+        if self.memory_manager:
+            try:
+                from supervisor.pipeline.dag_bridge import DagBridge
+                bridge = DagBridge(self.memory_manager)
+                dag_result = await bridge.wait_for_result(session_id, timeout=120)
+                if dag_result:
+                    dag_detail = dag_result
+                    # GoatValidator: validate structure and content before synthesis
+                    from supervisor.pipeline.goat_validator import validate_dag_result
+                    report = validate_dag_result(dag_detail, results)
+                    if report.passed:
+                        dag_verified = True
+                        log.info(
+                            "GoatValidator: passed — dag_verified=True session=%s",
+                            session_id,
+                        )
+                    else:
+                        validation_errors = report.errors
+                        log.warning("GoatValidator: failed — %s", report.errors)
+                else:
+                    log.warning(
+                        "DagBridge: timeout session=%s — dag_verified=False", session_id
+                    )
+            except Exception as e:
+                log.warning("DagBridge/GoatValidator failed: %s", e)
+
+        # dag_validator replaced by GoatValidator; val_statuses kept for metadata shape
+        val_statuses: list = []
+
+        # Route: unverified if DAG result missing or GoatValidator rejected it
+        if not dag_verified:
+            if validation_errors:
+                summary = "Not available. " + "; ".join(validation_errors) + "."
             else:
-                log.warning("dag_result:%s missing from Redis — validated=False", session_id)
-        except Exception as e:
-            log.warning("retrieve_dag_result failed: %s", e)
-
-        # Validate results through dag_validator
-        results, val_statuses = validate_results(results)
-
-        # Check for validation failures
-        unsafe = [s for s in val_statuses if not s.safe]
-        missing_src = not all(r.source for r in results.values())
-        if unsafe or missing_src:
-            for s in unsafe:
-                log.warning(
-                    "Source validation failed: task=%s reason=%s", s.task_id, s.reason
-                )
-            summary = _unverified_summary(results, val_statuses)
-            critique = ""
+                summary = "UNVERIFIED"
+            critique_str = ""
         else:
             # ── FIX (Problema 5): Critic with fallback loop ──
-            # Phase 4: Pass registry to critique_results
             verdict = await critique_results(plan_ctx, results, self.registry, lang)
             retry_count = 0
 
@@ -795,14 +806,10 @@ class GoatSupervisor:
                     "Critic fallback attempt %d/%d: severity=%s",
                     retry_count, _MAX_CRITIC_RETRIES, verdict.severity,
                 )
-                # Phase 4: Pass registry to _rerun_failed_tasks
                 results = await _rerun_failed_tasks(
                     plan, results, self.registry, self._semaphore,
                     self.memory_manager, session_id, verdict,
                 )
-                # Re-validate after rerun
-                results, val_statuses = validate_results(results)
-                # Phase 4: Pass registry to critique_results
                 verdict = await critique_results(plan_ctx, results, self.registry, lang)
 
             if verdict.needs_rerun:
@@ -812,10 +819,7 @@ class GoatSupervisor:
                     _MAX_CRITIC_RETRIES, verdict.severity,
                 )
 
-            # Pass dag_detail to synthesize_results only when dag_verified=True
-            # This ensures the LLM synthesizes from real DAG output instead of hallucinating
             critique_str = verdict.raw
-            # Phase 4: Pass registry to synthesize_results
             summary = await synthesize_results(
                 plan_ctx,
                 results,
@@ -856,7 +860,7 @@ class GoatSupervisor:
             intent=intent,
             plan=plan,
             results=results,
-            critique=critique_str if not (unsafe or missing_src) else "",
+            critique=critique_str if dag_verified else "",
             summary=summary,
             total_duration_s=total,
             session_id=session_id,

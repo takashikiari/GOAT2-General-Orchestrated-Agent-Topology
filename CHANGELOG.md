@@ -5,6 +5,71 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-11
+
+### Added
+
+#### DagBridge + GoatValidator integration (TASKS 1, 2, 5)
+
+**Problem:**
+Supervisor used `retrieve_dag_result` (key `dag_result:{id}`) with dag_validator for post-DAG
+validation. DagBridge and GoatValidator existed but were not wired into the execution path.
+
+**Changes:**
+
+- `supervisor/pipeline/workflow.py`: DAG now writes result with key `dag:{session_id}:result`
+  (TTL 3600s) via `DagBridge.write_result()` instead of `store_dag_result`.
+
+- `supervisor/supervisor.py`:
+  - Removed import of `validate_results` from `dag_validator` (replaced by GoatValidator).
+  - After `WorkflowGraph.execute()`, uses `DagBridge.wait_for_result(session_id, timeout=120)`
+    to poll Redis for `dag:{session_id}:result`.
+  - If result found → `validate_dag_result(dag_detail, results)` → `ValidationReport`.
+    - `report.passed` → `dag_verified=True`, proceeds to critique + synthesis.
+    - `report.failed` → `dag_verified=False`, summary from `ValidationReport.errors`.
+  - If result missing (timeout) → `dag_verified=False`, `summary="UNVERIFIED"`.
+  - Removed re-validation inside critic fallback loop (was dead computation).
+  - `SupervisorResult.critique` now uses `dag_verified` instead of `not (unsafe or missing_src)`.
+  - GOAT does NOT invoke tool calls while DAG runs (DAG is awaited sequentially).
+  - Pipeline 3 (Memory Promoter) runs via `asyncio.create_task()` after response (unchanged).
+
+#### Tool distribution per role (TASK 3)
+
+**Problem:**
+GOAT conversational had file tools it shouldn't use. DAG agents had inconsistent tool access.
+
+**Changes:**
+
+- `supervisor/identity.py` (GOAT CONVERSATIONAL):
+  - Tools: 16 memory tools (`registry.memory_tools`) + `WEB_SEARCH`. NO file tools, NO shell.
+  - Updated `GOAT_SYSTEM` to list all 16 memory tools; removed file tool references.
+
+- `supervisor/pipeline/runners.py` (DAG agents):
+  - `researcher`: `[WEB_SEARCH, MEMORY_SEARCH_DAG]` — web + working-tier memory search.
+  - `coder`: 8 file tools + `SHELL` (read-only). Explicit imports; removed `FILE_TOOLS` shim.
+  - `critic`: `[MEMORY_RECENT_DAG, MEMORY_GET_DAG]`, `tool_choice="auto"` — read-only context.
+    Changed from `_call_llm` to `_call_with_tools`; source propagated via `r.source`.
+  - `summarizer`: `[MEMORY_RECENT_DAG]`, `tool_choice="auto"` — read-only recent context.
+    Changed from `_call_llm` to `_call_with_tools`; source propagated via `r.source`.
+  - `tool_caller`: 8 file tools + 4 DAG memory tools (`dag:*` namespace). No web_search, no shell.
+    Explicit tool list replaces `registry.file_tools + registry.dag_memory_tools`.
+  - Removed unused `_call_llm` import.
+
+#### config/roles.py prefix constants (TASK 4)
+
+- Added `DAG_PREFIX: Final[str] = "dag"` — Redis namespace for DAG agents.
+- Added `GOAT_PREFIX: Final[str] = "goat"` — Redis namespace for GOAT supervisor.
+- Updated `__all__` to export both constants.
+
+**Files modified:**
+- `supervisor/supervisor.py`
+- `supervisor/pipeline/workflow.py`
+- `supervisor/pipeline/runners.py`
+- `supervisor/identity.py`
+- `config/roles.py`
+
+---
+
 ## [Unreleased] — 2026-06-10
 
 ### Changed

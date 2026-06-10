@@ -677,7 +677,7 @@ class WorkflowGraph:
             try:
                 import json as _json
                 import time as _time
-                from supervisor.session import store_dag_result
+                from supervisor.pipeline.dag_bridge import DagBridge
                 full_detail = _json.dumps(
                     {
                         "session_id": session_id,
@@ -695,8 +695,10 @@ class WorkflowGraph:
                     },
                     indent=2,
                 )
-                await store_dag_result(memory_manager, session_id, full_detail)
-                log.info("dag_result:%s written to Redis", session_id)
+                # Write with key dag:{session_id}:result — TTL 3600s (via DagBridge)
+                bridge = DagBridge(memory_manager)
+                await bridge.write_result(session_id, full_detail)
+                log.info("dag:%s:result written to Redis (TTL=3600s)", session_id)
             except Exception as e:
                 log.warning("Failed to write dag_result: %s", e)
 
