@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- **config/agents.py**: Central agent role registry with AGENT_ROLES, EXECUTION_ROLES, SYNTHESIS_ROLES, DEFAULT_AGENT_ROLE
+- **agents/prompts/**: New subdirectory for prompt templates
+  - `agents/prompts/__init__.py` — exports RESEARCHER_SYSTEM
+  - `agents/prompts/researcher_prompt.py` — moved from agents/researcher_prompt.py
+
+### Changed
+- **agents/__init__.py**: Now re-exports RESEARCHER_SYSTEM from prompts/
+- **supervisor/dag_validator.py**: Imports EXECUTION_ROLES and SYNTHESIS_ROLES from config/agents.py instead of hardcoding
+
 ### Changed
 - **Memory access control revizuit complet:**
   - Memory agent (DAG) are acces **doar la Working (Redis)** — bridge de comunicare

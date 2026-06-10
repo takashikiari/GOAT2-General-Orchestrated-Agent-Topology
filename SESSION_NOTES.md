@@ -2,6 +2,25 @@
 
 ## Current Architecture
 
+### Reorganization (June 2026)
+
+**Module Structure:**
+- `agents/prompts/` — New subdirectory for agent prompt templates
+- `agents/researcher_prompt.py` → moved to `agents/prompts/researcher_prompt.py`
+- `config/agents.py` — New central registry for agent roles
+
+**Role Constants (config/agents.py):**
+- AGENT_ROLES: ["researcher", "coder", "critic", "planner", "summarizer", "tool_caller", "memory"]
+- EXECUTION_ROLES: frozenset({"researcher", "tool_caller", "memory"})
+- SYNTHESIS_ROLES: frozenset({"summarizer", "critic", "planner"})
+- DEFAULT_AGENT_ROLE: "tool_caller"
+
+**Files Updated:**
+- supervisor/dag_validator.py — now imports from config/agents.py
+- agents/__init__.py — re-exports from prompts/
+
+---
+
 ### Memory Access Control (as of June 2026)
 
 **GOAT (Supervisor):**

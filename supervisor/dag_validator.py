@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import Final
 
+from config.agents import EXECUTION_ROLES, SYNTHESIS_ROLES
 from supervisor.types import AgentResult
 
 __all__ = ["ValidationStatus", "validate_results"]
@@ -28,10 +29,12 @@ __all__ = ["ValidationStatus", "validate_results"]
 log = logging.getLogger("goat2.dag_validator")
 
 # Roles that must invoke a real tool — generated output is never acceptable.
-_EXECUTION_ROLES: Final[frozenset[str]] = frozenset({"researcher", "tool_caller"})
+# IMPORTED from config/agents.py — DO NOT hardcode
+_EXECUTION_ROLES = EXECUTION_ROLES
 
 # Roles where source=generated is valid (no tool calls expected).
-_GENERATED_ROLES: Final[frozenset[str]] = frozenset({"critic", "summarizer", "planner"})
+# IMPORTED from config/agents.py — DO NOT hardcode
+_GENERATED_ROLES = SYNTHESIS_ROLES
 
 # Allowed sources per role. Roles absent from this dict pass all source checks.
 _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {

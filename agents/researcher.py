@@ -5,7 +5,7 @@ from config.settings import ModelSpec, Settings
 from supervisor import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
-from .researcher_prompt import _SYSTEM_PROMPT
+from .prompts.researcher_prompt import _SYSTEM_PROMPT
 
 __all__ = ["ResearcherAgent"]
 

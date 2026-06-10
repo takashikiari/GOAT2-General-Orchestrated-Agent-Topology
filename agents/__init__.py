@@ -3,6 +3,7 @@ from .planner import PlannerAgent
 from .researcher import ResearcherAgent
 from .coder import CoderAgent
 from .critic import CriticAgent
+from .prompts import RESEARCHER_SYSTEM
 
 __all__ = [
     "BaseAgent",
@@ -12,4 +13,5 @@ __all__ = [
     "ResearcherAgent",
     "CoderAgent",
     "CriticAgent",
+    "RESEARCHER_SYSTEM",
 ]
