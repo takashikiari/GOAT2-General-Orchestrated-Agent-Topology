@@ -2,81 +2,181 @@
 
 Pre-built `ToolDefinition` instances ready to inject into any `BaseAgent`.
 
-```python
-from tools import THINK, CALCULATOR, WEB_SEARCH
-from tools import FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST, FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES
-from tools import ALL_TOOLS, FILE_TOOLS, MEMORY_TOOLS
+## Directory Structure
 
-agent = MyAgent(spec=..., tools=[CALCULATOR, THINK])
-agent = CoderAgent(spec=..., tools=FILE_TOOLS)   # all 9 file tools + web_search
+```
+tools/
+├── __init__.py              — Re-exports all tools, maintains backward compatibility
+├── file/                  — File operation tools
+│   ├── __init__.py
+│   ├── file_executor.py    — Central security gateway
+│   ├── file_create.py    — Create new files
+│   ├── file_executor_helpers.py
+│   ├── file_grep.py      — Search within files
+│   ├── file_info.py     — Get file metadata
+│   ├── file_list.py      — List directories
+│   ├── file_read.py     — Read file contents
+│   ├── file_read_lines.py — Read specific lines
+│   ├── file_search.py   — Find files by glob
+│   ├── file_write.py    — Write file contents
+│   ├── file_storage_helpers.py
+│   ├── file_storage_service.py
+│   └── path_utils.py
+├── memory/                — Memory operation tools
+│   ├── __init__.py
+│   ├── memory_tools.py       — Core CRUD tools
+│   ├── memory_helpers.py   — Shared utilities
+│   ├── memory_temporal_tools.py
+│   ├── memory_delete_tool.py
+│   ├── memory_direct_query.py
+│   ├── memory_count_tool.py
+│   ├── memory_update_tool.py
+│   ├── memory_promote_tool.py
+│   ├── memory_auto_promote_tool.py
+│   ├── memory_embedding_tool.py
+│   ├── memory_export_tool.py
+│   ├── memory_last_write.py
+│   └── memory_ttl_tool.py
+├── web/                   — Web search tools
+│   ├── __init__.py
+│   └── web_search.py
+├── system/                — System tools
+│   ├── __init__.py
+│   ├── calculator.py
+│   ├── think.py
+│   └── shell_tool.py
+├── registry_accessor.py   — Global registry accessor
+└── README.md             — This file
 ```
 
-## Tools (17 total)
+## Quick Start
 
-| Tool | File | Signature | Notes |
-|------|------|-----------|-------|
-| `THINK` | `think.py` | `think(thought)` | Chain-of-thought scratchpad; pure, no I/O |
-| `CALCULATOR` | `calculator.py` | `calculator(expression)` | AST-based, no `eval()`, exponents capped at 1000 |
-| `WEB_SEARCH` | `web_search.py` | `web_search(query, num_results=5)` | DuckDuckGo; override via `SEARCH_API_URL` |
-| `FILE_READ` | `file_read.py` | `file_read(path, offset=0, limit=MAX, format_aware=True)` | Read file; UTF-8, 1 MB limit; chunked reads; format-aware JSON/CSV/XML parsing |
-| `FILE_WRITE` | `file_write.py` | `file_write(path, content, mode="overwrite")` | Atomic write (tempfile+os.replace); creates files; supports append mode |
-| `FILE_CREATE` | `file_create.py` | `file_create(path, content="", exist_ok=False)` | Create new file; fails if exists unless exist_ok=true |
-| `FILE_LIST` | `file_list.py` | `file_list(path, limit=200)` | List directory; 'f'/'d' prefixed entries with sizes |
-| `FILE_SEARCH` | `file_search.py` | `file_search(pattern, path=".", limit=100)` | Find files by glob pattern; returns relative paths |
-| `FILE_GREP` | `file_grep.py` | `file_grep(path, pattern, max_results=50)` | Case-insensitive substring search within a file; returns matching lines with numbers |
-| `FILE_INFO` | `file_info.py` | `file_info(path)` | File/dir metadata: name, size, timestamps, permissions, entry count |
-| `FILE_READ_LINES` | `file_read_lines.py` | `file_read_lines(path, start_line=1, end_line=None)` | Read a specific line range (1-indexed); returns numbered lines |
-| `MEMORY_SEARCH` | `memory_tools.py` | `memory_search(query, limit=20, start_datetime=None, end_datetime=None, tier="any")` | Semantic fan-out with optional time window; ISO 8601 or natural language |
-| `MEMORY_GET` | `memory_tools.py` | `memory_get(key, tier="any")` | Exact-key lookup; tier="any" probes WORKING→EPISODIC→LONG_TERM |
-| `MEMORY_STORE` | `memory_tools.py` | `memory_store(key, value, tier="working")` | Write to the specified tier; validates tier |
-| `MEMORY_TIMELINE` | `memory_temporal_tools.py` | `memory_timeline(start_datetime, end_datetime, tier="any", limit=100)` | All entries in a time window, newest first |
-| `MEMORY_RECENT` | `memory_temporal_tools.py` | `memory_recent(limit=50, tier="any")` | Most recent N entries |
-| `MEMORY_DEBUG_TRACE` | `memory_temporal_tools.py` | `memory_debug_trace(query, start_datetime=None, end_datetime=None)` | Per-tier search with match counts; JSON output |
+```python
+from tools import THINK, CALCULATOR, WEB_SEARCH
+from tools import FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST, FILE_SEARCH, FILE_GREP
+from tools import ALL_TOOLS, FILE_TOOLS, MEMORY_TOOLS
 
-## Convenience groups
+# Individual tools
+agent = MyAgent(spec=..., tools=[CALCULATOR, THINK])
+
+# Tool groups
+agent = CoderAgent(spec=..., tools=FILE_TOOLS)   # all 9 file tools + web_search
+agent = SupervisorAgent(spec=..., tools=MEMORY_TOOLS)  # all memory tools
+```
+
+## Tools Overview
+
+### System Tools
+
+| Tool | File | Description |
+|------|------|-------------|
+| `THINK` | `system/think.py` | Chain-of-thought reasoning; pure, no I/O |
+| `CALCULATOR` | `system/calculator.py` | AST-based math evaluator; +, -, *, /, //, %, ** |
+| `SHELL` | `system/shell_tool.py` | Restricted shell commands (DAG agents only) |
+
+### File Tools
+
+| Tool | File | Description |
+|------|------|-------------|
+| `FILE_READ` | `file/file_read.py` | Read file (up to 1 MB); format-aware JSON/CSV/XML |
+| `FILE_WRITE` | `file/file_write.py` | Atomic write via tempfile+os.replace |
+| `FILE_CREATE` | `file/file_create.py` | Create new file (fails if exists) |
+| `FILE_LIST` | `file/file_list.py` | List directory; 'f'/'d' prefixed |
+| `FILE_SEARCH` | `file/file_search.py` | Find files by glob pattern |
+| `FILE_GREP` | `file/file_grep.py` | Search within files (case-insensitive) |
+| `FILE_INFO` | `file/file_info.py` | File/directory metadata |
+| `FILE_READ_LINES` | `file/file_read_lines.py` | Read specific line range (1-indexed) |
+
+### Web Tools
+
+| Tool | File | Description |
+|------|------|-------------|
+| `WEB_SEARCH` | `web/web_search.py` | Search via local SearXNG instance |
+
+### Memory Tools (GOAT Supervisor)
+
+| Tool | File | Description |
+|------|------|-------------|
+| `MEMORY_SEARCH` | `memory/memory_tools.py` | Semantic search across tiers |
+| `MEMORY_GET` | `memory/memory_tools.py` | Exact-key lookup |
+| `MEMORY_STORE` | `memory/memory_tools.py` | Key-value storage |
+| `MEMORY_DELETE` | `memory/memory_delete_tool.py` | Delete by key |
+| `MEMORY_UPDATE` | `memory/memory_update_tool.py` | Update or upsert |
+| `MEMORY_TIMELINE` | `memory/memory_temporal_tools.py` | Time-based query |
+| `MEMORY_RECENT` | `memory/memory_temporal_tools.py` | Most recent entries |
+| `MEMORY_DEBUG_TRACE` | `memory/memory_temporal_tools.py` | Per-tier debug search |
+| `MEMORY_DIRECT_QUERY` | `memory/memory_direct_query.py` | Raw query syntax |
+| `MEMORY_LAST_WRITE` | `memory/memory_last_write.py` | Check last write timestamp |
+| `MEMORY_COUNT` | `memory/memory_count_tool.py` | Count entries per tier |
+| `MEMORY_TTL` | `memory/memory_ttl_tool.py` | Check remaining TTL |
+| `MEMORY_EMBEDDING` | `memory/memory_embedding_tool.py` | Get embedding vectors |
+| `MEMORY_EXPORT` | `memory/memory_export_tool.py` | Bulk export as JSON |
+| `MEMORY_PROMOTE` | `memory/memory_promote_tool.py` | Move between tiers |
+| `MEMORY_AUTO_PROMOTE` | `memory/memory_auto_promote_tool.py` | Bulk promotion |
+
+### Memory Tools (DAG Agents - Working Tier Only)
+
+| Tool | File | Description |
+|------|------|-------------|
+| `MEMORY_SEARCH_DAG` | `memory/memory_tools.py` | Semantic search (working tier) |
+| `MEMORY_GET_DAG` | `memory/memory_tools.py` | Exact-key lookup (working tier) |
+| `MEMORY_STORE_DAG` | `memory/memory_tools.py` | Key-value storage (working tier) |
+| `MEMORY_RECENT_DAG` | `memory/memory_temporal_tools.py` | Recent entries (working tier) |
+
+## Tool Groups
 
 | Export | Contents |
 |--------|----------|
-| `ALL_TOOLS` | All 17 tools |
-| `FILE_TOOLS` | `[FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST, FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, WEB_SEARCH]` |
-| `MEMORY_TOOLS` | `[MEMORY_SEARCH, MEMORY_GET, MEMORY_STORE, MEMORY_TIMELINE, MEMORY_RECENT, MEMORY_DEBUG_TRACE]` |
+| `ALL_TOOLS` | All 26 tools (system + file + web + memory) |
+| `FILE_TOOLS` | `[FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST, FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, WEB_SEARCH, SHELL]` |
+| `MEMORY_TOOLS` | All 16 memory tools (GOAT supervisor) |
+| `DAG_MEMORY_TOOLS` | `[MEMORY_SEARCH_DAG, MEMORY_GET_DAG, MEMORY_STORE_DAG, MEMORY_RECENT_DAG]` |
 
-## File tool path safety (`tools/file_executor.py`)
+## File Tool Security (`file/file_executor.py`)
 
-All file tools share `FileToolExecutor` from `tools/file_executor.py`:
+All file tools share `FileToolExecutor`:
 
-- **Workspace root** — `GOAT_WORKSPACE` env var, or the project root (`tools/../`) by default.
-- **`~` / `$HOME` expansion** — `os.path.expanduser` + `os.path.expandvars` run before resolution.
-- **Symlink escape** — `Path.resolve()` follows all symlinks; resolved path must be inside workspace.
-- **Dotdot traversal** — `../../secret` resolves outside workspace and is blocked.
-- **Sensitive file blocking** — `.env`, `id_rsa`, `id_ed25519`, `.pem`, `.key`, `.p12`, `.pfx`,
-  `.git/`, `__pycache__/`, `secrets/`, `.ssh/` are denied on read and write.
-- **Size limits** — reads capped at `FILE_READ_MAX_BYTES` (default 1 MB); writes at
-  `FILE_WRITE_MAX_BYTES` (default 1 MB).
-- **Atomic writes** — `file_write` uses `tempfile.NamedTemporaryFile` + `os.replace` for
-  crash-safe updates. No partial files on failure.
-- **`GOAT_ALLOW_OUTSIDE_WORKSPACE=true`** — permit absolute paths outside workspace.
-  Combine with `GOAT_ALLOWED_PATHS=/path1:/path2` to restrict which outside paths are allowed.
-- All errors returned as `"ERROR: ..."` strings — handlers never raise.
+- **Workspace root** — `GOAT_WORKSPACE` env var, or project root
+- **`~` / `$HOME` expansion** — `os.path.expanduser` + `os.path.expandvars`
+- **Symlink escape prevention** — resolved path must be inside workspace
+- **Dotdot blocking** — `../../secret` resolves outside workspace is blocked
+- **Sensitive file blocking** — `.env`, `id_rsa`, `id_ed25519`, `.pem`, `.key`, `.git`, etc.
+- **Size limits** — reads capped at 1 MB; writes at 1 MB
+- **Atomic writes** — `file_write` uses `tempfile.NamedTemporaryFile` + `os.replace`
+- **`GOAT_ALLOW_OUTSIDE_WORKSPACE=true`** — permit absolute paths outside workspace
+- All errors returned as `"ERROR: ..."` strings
 
-### Tool semantics
+## Memory Access Architecture
 
-| Tool | File must exist? | Creates parents? | Overwrites? |
-|------|-----------------|-----------------|-------------|
-| `file_read` | yes | — | — |
-| `file_write` | no (creates) | yes | always (atomic) |
-| `file_create` | no | yes | only when `exist_ok=true` |
-| `file_list` | dir must exist | — | — |
+- **GOAT (supervisor)**: Full tier access with `GOAT_ROLE` from `config.roles`
+- **DAG agents**: Working tier only with `SESSION_ROLE` from `config.roles`
+- Validation enforced in tool handlers
 
-`file_write` creates files atomically via tempfile + os.replace. `file_create` fails on
-existing files unless `exist_ok=true` — useful when the agent must not silently overwrite.
+Tiers:
+- `working`: Redis-backed, session-scoped, TTL-enforced
+- `episodic`: ChromaDB persistent, semantic search
+- `long_term`: Letta core-memory blocks, most persistent
 
-## Adding a tool
+## Configuration Reference
 
-1. Create `tools/my_tool.py` (≤90 lines).
-2. Write `async def _handler(**kwargs) -> str` — return `"ERROR: ..."` on failure.
-3. Create module-level `MY_TOOL = ToolDefinition(name, description, parameters, handler)`.
-4. Add to `tools/__init__.py` and `ALL_TOOLS`.
+See `config/tools.py` for tool-related constants:
+
+```python
+from config.tools import (
+    MAX_FILE_SIZE,      # 1 MB default
+    MAX_SEARCH_RESULTS, # 100
+    SHELL_TIMEOUT,     # 30 seconds
+    FILE_ALLOWED_EXTENSIONS,
+)
+```
+
+## Adding a Tool
+
+1. Create `tools/category/my_tool.py`
+2. Write `async def _handler(**kwargs) -> str` — return `"ERROR: ..."` on failure
+3. Create module-level `MY_TOOL = ToolDefinition(name, description, parameters, handler)`
+4. Add to `tools/category/__init__.py`
+5. Re-export in `tools/__init__.py` and add to `ALL_TOOLS`
 
 ```python
 from agents.base_agent import ToolDefinition

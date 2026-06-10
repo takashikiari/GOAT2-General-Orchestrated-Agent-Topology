@@ -10,7 +10,7 @@ Supports:
 from __future__ import annotations
 
 from agents.base_agent import ToolDefinition
-from tools.file_executor import EXECUTOR, MAX_READ
+from tools.file.file_executor import EXECUTOR, MAX_READ
 
 __all__ = ["FILE_READ"]
 

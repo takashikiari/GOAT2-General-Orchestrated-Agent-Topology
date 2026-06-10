@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
 from config.tiers import ANY
-from tools.memory_helpers import (
+from tools.memory.memory_helpers import (
     ANY_TIERS,
     format_entries,
     format_memory_error,

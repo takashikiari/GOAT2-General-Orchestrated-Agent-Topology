@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
-from tools.memory_helpers import format_memory_error, validate_tier
+from tools.memory.memory_helpers import format_memory_error, validate_tier
 from tools.registry_accessor import get_registry
 
 if TYPE_CHECKING:

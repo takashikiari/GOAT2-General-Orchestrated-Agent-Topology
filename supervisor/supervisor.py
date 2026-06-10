@@ -439,9 +439,9 @@ class GoatSupervisor:
         - Falls back to DAG if tool execution fails
         - Logs bypass events at INFO level
         """
-        from tools.memory_tools import MEMORY_GET
-        from tools.memory_temporal_tools import MEMORY_RECENT
-        from tools.file_executor import EXECUTOR
+        from tools.memory.memory_tools import MEMORY_GET
+        from tools.memory.memory_temporal_tools import MEMORY_RECENT
+        from tools.file.file_executor import EXECUTOR
 
         classification = classify_direct_request(intent)
 

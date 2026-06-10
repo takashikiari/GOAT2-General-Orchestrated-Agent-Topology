@@ -9,6 +9,47 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Reorganized tools/ into subdirectories
+
+**Problem:**
+All tool files were in a flat tools/ directory, making it hard to navigate.
+
+**Changes:**
+- Moved file operations to `tools/file/`:
+  - file_create.py, file_executor.py, file_executor_helpers.py
+  - file_grep.py, file_info.py, file_list.py, file_read.py
+  - file_read_lines.py, file_search.py, file_write.py
+  - file_storage_helpers.py, file_storage_service.py, path_utils.py
+- Moved memory operations to `tools/memory/`:
+  - memory_tools.py, memory_helpers.py, memory_temporal_tools.py
+  - memory_delete_tool.py, memory_direct_query.py, memory_count_tool.py
+  - memory_update_tool.py, memory_promote_tool.py
+  - memory_auto_promote_tool.py, memory_embedding_tool.py
+  - memory_export_tool.py, memory_last_write.py, memory_ttl_tool.py
+- Moved web search to `tools/web/`:
+  - web_search.py
+- Moved system tools to `tools/system/`:
+  - calculator.py, think.py, shell_tool.py
+- Created `__init__.py` in each subdirectory
+- Updated `tools/__init__.py` to re-export from subdirectories
+- Updated all import paths in tool files
+- Created `config/tools.py` with tool constants
+
+**Files created:**
+- tools/file/__init__.py
+- tools/memory/__init__.py
+- tools/web/__init__.py
+- tools/system/__init__.py
+- config/tools.py
+
+**Backward compatibility:**
+- All existing imports from `tools import FILE_TOOLS, MEMORY_TOOLS` still work
+- tools/__init__.py re-exports everything from subdirectories
+
+---
+
+### Changed
+
 #### Updated memory imports to new module style
 
 **Problem:**

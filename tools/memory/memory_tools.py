@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
 from memory.validation import sanitize_content, validate_memory_write
-from tools.memory_helpers import (
+from tools.memory.memory_helpers import (
     ANY_TIERS,
     ALL_TIERS,
     format_entries,

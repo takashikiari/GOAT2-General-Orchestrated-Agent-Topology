@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from agents.base_agent import ToolDefinition
-from tools.file_executor import EXECUTOR, MAX_LIST
+from tools.file.file_executor import EXECUTOR, MAX_LIST
 
 __all__ = ["FILE_LIST"]
 
