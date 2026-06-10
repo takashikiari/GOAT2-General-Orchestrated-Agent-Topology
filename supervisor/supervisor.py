@@ -107,22 +107,22 @@ from typing import TYPE_CHECKING
 from config.roles import SESSION_ROLE
 from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry
-from supervisor.workflow import WorkflowGraph
+from supervisor.pipeline.workflow import WorkflowGraph
 from supervisor.planner import decompose_plan
 from supervisor.critique import critique_results, synthesize_results, CriticVerdict
-from supervisor.history import ConversationHistory
+from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
-from supervisor.classifier import classify_intent, IntentDepth
-from supervisor.mem_inject import mem_turn
-from supervisor.session_init import init_session
-from supervisor.behavior_session import finalize_behavior
-from supervisor.task_prep import prepare_tasks
-from supervisor.dag_validator import validate_results
-from supervisor.auditor import run_auditor
-from supervisor.request_classifier import classify_direct_request
+from supervisor.classification.classifier import classify_intent, IntentDepth
+from supervisor.session.mem_inject import mem_turn
+from supervisor.session.session_init import init_session
+from supervisor.behavior.behavior_session import finalize_behavior
+from supervisor.pipeline.task_prep import prepare_tasks
+from supervisor.pipeline.dag_validator import validate_results
+from supervisor.logging.auditor import run_auditor
+from supervisor.classification.request_classifier import classify_direct_request
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
 
 log = logging.getLogger("goat2.supervisor")

@@ -1,0 +1,10 @@
+Rezultate search: GOAT multi-agent DAG execution engine 2025
+
+1. Comparing Open-Source AI Agent Frameworks - Langfuse (19 Mar 2025)
+   - LangGraph's DAG philosophy makes it easier to visualize or debug in multi-agent orchestration.
+
+2. Building a Multi-Machine Distributed DAG Execution Engine with Agentic Intelligence - Abhilash Krishnan
+   - Flint DAG Execution Engine — high-performance, multi-machine distributed DAG orchestrator.
+
+3. Instagram / LangGraph (22 Aug 2025)
+   - Execute multi-step workflows, coordinate AI agents, chain multiple operations.

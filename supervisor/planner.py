@@ -13,7 +13,7 @@ from typing import Final, TYPE_CHECKING
 from config.settings import Provider
 from supervisor.types import AgentTask, AgentResult, Plan
 from supervisor.llm_utils import _call_llm, _extract_json, _format_dep_context
-from supervisor.plan_validator import validate_plan
+from supervisor.pipeline.plan_validator import validate_plan
 
 if TYPE_CHECKING:
     from config.registry import Registry

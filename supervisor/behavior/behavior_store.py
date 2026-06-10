@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 from config.roles import GOAT_ROLE
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
 
 __all__ = ["load_style", "save_style"]
 
@@ -28,7 +28,7 @@ async def load_style(mm: MemoryManager | None) -> str:
         text = await mm.get_block(GOAT_ROLE, _BLOCK) or ""
         if not text:
             return ""
-        from supervisor.behavior_profile import deserialize
+        from supervisor.behavior.behavior_profile import deserialize
         profile = deserialize(text)
         if not profile:
             log.debug("load_style: block is not a style profile (initial agent description?) — ignoring")

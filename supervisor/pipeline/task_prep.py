@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from supervisor.types import AgentTask
     from config.registry import Registry
 
@@ -40,7 +40,7 @@ async def prepare_tasks(
     =============================
     Requires registry parameter. Passed to detect_language() for settings access.
     """
-    from supervisor.lang_detect import detect_language  # deferred: supervisor→tools→agents cycle
+    from supervisor.classification.lang_detect import detect_language  # deferred: supervisor→tools→agents cycle
     lang = await detect_language(intent, registry)
     directive = f"Respond in {lang}.\n" if lang.lower() != "english" else ""
     for task in tasks:

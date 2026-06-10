@@ -10,7 +10,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from agents.base_agent import ToolDefinition
 
 __all__ = [

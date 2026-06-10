@@ -1,186 +1,253 @@
 # supervisor/ — GOAT 2.0 Workflow Orchestration
 
+Multi-agent supervisor system with DAG execution, behavioral learning, and tiered memory access.
+
+## Quick Start
+
 ```python
 from supervisor import GoatSupervisor
-from memory.memory_manager import memory_manager
+from config.registry import ServiceRegistry
 
-sv = GoatSupervisor(memory_manager=memory_manager)
+registry = ServiceRegistry()
+sv = GoatSupervisor(registry)
 result = await sv.run("Build a REST API for a todo app")
-await sv.finalize_session()   # persist behavioral style to Letta
 ```
 
-## Pipeline (every turn)
+## Directory Structure
 
 ```
-init_session(mm)          — first call only; concurrent load: profile + summary + style
-mem_turn(mm, intent)      — concurrent: MemoryRouter.recall + info_extract user facts
-classify_intent(intent)   — gpt-4o-mini → CONVERSATIONAL | ANALYTICAL | COMPLEX
-
-CONVERSATIONAL → direct_response(history, profile, summary, mem_ctx, behavior_style)
-                 model=gpt-4o  temperature=0.7
-ANALYTICAL     → decompose_plan("[Lightweight: ≤2 tasks]") → WorkflowGraph
-COMPLEX        → decompose_plan() → WorkflowGraph → critique → synthesize
-                 all DAG agents: temperature=0.2 (default in _call_llm)
-
-finalize_session() → analyze_style(user_turns) → save_style → Letta goat/persona
+supervisor/
+├── behavior/          # Behavioral learning: style analysis, mirroring, persistence
+│   ├── behavior_analyzer.py   — Infer user communication style from turns
+│   ├── behavior_mirror.py     — Format style profile for system prompt
+│   ├── behavior_profile.py     — BehaviorProfile TypedDict + serialization
+│   ├── behavior_session.py    — Session-end style lifecycle
+│   ├── behavior_store.py      — Letta 'persona' block persistence
+│   ├── info_extract.py       — Fact extraction from user messages
+│   └── info_types.py       — Fact confidence types
+│
+├── pipeline/          # DAG execution: workflow, runners, validation
+│   ├── workflow.py        — WorkflowGraph with wave-level concurrency
+│   ├── dag.py           — DAGraph, DAGNode, DAGEdge primitives
+│   ├── dag_validator.py  — Post-execution result validation
+│   ├── plan_validator.py — Pre-execution plan validation
+│   ├── runners.py       — Agent runners (researcher, coder, critic, etc.)
+│   └── task_prep.py    — Task preparation (memory_manager, language injection)
+│
+├── session/          # Session management: turns, history, memory injection
+│   ├── session.py       — Turn/DAG result storage to Redis
+│   ├── session_init.py  — Concurrent session startup
+│   ├── history.py      — ConversationHistory, session summary
+│   └── mem_inject.py   — Cross-tier memory recall
+│
+├── classification/   # Intent classification: depth routing, language detection
+│   ├── classifier.py          — IntentDepth (conversational/analytical/complex)
+│   ├── request_classifier.py   — Direct request bypass detection
+│   └── lang_detect.py       — Language detection
+│
+├── logging/         # Structured logging: audit, provenance, tool call tracing
+│   ├── auditor.py          — Cross-tool consistency check
+│   ├── structured_logger.py — JSON tool call logging
+│   └── source_types.py     — SourceTag, TaggedResult types
+│
+├── interfaces/      # External interfaces (keep as-is)
+│   ├── content_filter.py
+│   └── telegram_bot.py
+│
+├── supervisor.py   # GoatSupervisor — main orchestrator
+├── identity.py    # GOAT_SYSTEM, profile loading, direct_response
+├── types.py       # AgentTask, AgentResult, Plan, SupervisorResult
+├── registry.py     # AgentRegistry (not a singleton)
+├── planner.py    # Task decomposition
+├── critique.py    # Critique and synthesis agents
+├── llm_utils.py   # LLM client utilities
+├── tool_runner.py # Tool-calling loop
+└── __init__.py   # Re-exports for backward compatibility
 ```
 
-## Module map
+## How GoatSupervisor Orchestrates the 3 Async Pipelines
 
-| File | Responsibility |
-|------|----------------|
-| `types.py` | `AgentTask`, `AgentResult`, `Plan`, `SupervisorResult`, `AgentRunner` |
-| `llm_utils.py` | `_call_llm` (default temp=0.2), `_get_client`, `_extract_json` |
-| `registry.py` | `AgentRegistry`, `_build_default_registry` — 7 built-in runners |
-| `planner.py` | `PLANNER_SYSTEM`, `decompose_plan()` — includes dependency validation |
-| `runners.py` | researcher/coder/critic/summarizer/tool_caller runners |
-| `runner_memory.py` | `_run_memory` — 3-tier fallback with memory_manager |
-| `critique.py` | `critique_results()`, `synthesize_results()` |
-| `workflow.py` | `WorkflowGraph` — Kahn's algorithm + concurrent wave execution |
-| `classifier.py` | `IntentDepth`, `classify_intent()` |
-| `identity.py` | `GOAT_SYSTEM`, `load_user_profile`, `direct_response`, `conv_result` |
-| `history.py` | `ConversationHistory`, `load_session_summary` |
-| `session.py` | `store_turn` — 3-tier session persistence |
-| `session_init.py` | `init_session` — concurrent startup (profile + summary + style) |
-| `info_extract.py` | `maybe_store_info` — LLM fact extraction → Letta `human` block |
-| `mem_inject.py` | `mem_turn` — concurrent recall + info extract per turn |
-| `supervisor.py` | `GoatSupervisor` — assembles all of the above |
-| `behavior_profile.py` | `BehaviorProfile` TypedDict, `serialize`/`deserialize` — pure |
-| `behavior_analyzer.py` | `analyze_style(turns, existing)` — gpt-4o-mini JSON, temp=0.0 |
-| `behavior_store.py` | `load_style`/`save_style` → Letta `goat/persona` block |
-| `behavior_mirror.py` | `mirror_instruction(style)` → single-line system-prompt directive |
-| `behavior_session.py` | `finalize_behavior` — session-end orchestrator |
-| `interfaces/telegram_bot.py` | Telegram adapter — per-chat `GoatSupervisor`; long-polling |
-| `request_classifier.py` | `classify_direct_request()` — single-tool bypass detection |
+### Pipeline 1: Conversational Turn (no DAG)
+```
+intent → classify_intent → CONVERSATIONAL → direct_response
+```
+- No DAG execution
+- Direct LLM call with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS)
+- Temperature: 0.7 for natural conversation
 
-## Behavioral learning flow
+### Pipeline 2: Analytical (lightweight DAG)
+```
+intent → classify_intent → ANALYTICAL → decompose_plan(lightweight)
+    → WorkflowGraph (≤2 tasks) → synthesize
+```
+- Lightweight task decomposition (max 2 tasks)
+- Wave-level concurrency with semaphore limit
+- Synthesis from task outputs
+
+### Pipeline 3: Complex (full DAG)
+```
+intent → classify_intent → COMPLEX → decompose_plan
+    → WorkflowGraph → validate_results → critique → synthesize
+    → run_auditor (cross-tool consistency)
+```
+- Full task decomposition with dependencies
+- Wave execution via Kahn's algorithm
+- Critical review fallback (re-execute on CRITICAL/MAJOR)
+- Final synthesis + audit
+
+## DAG Execution Flow
 
 ```
-Session start:  init_session → load_style("goat","persona") → _behavior_style cached
-Every response: _system_with_profile(profile, summary, style)
-                  → GOAT_SYSTEM + mirror_instruction(style) + profile + summary
-Session end:    finalize_session → finalize_behavior(mm, history, current_style)
-                  → analyze_style(user_turns) → save_style → PATCH Letta goat/persona
+decompose_plan(intent)
+    ↓
+Plan.validate() — structural validation
+    ↓
+WorkflowGraph.execute(plan.tasks, registry)
+    ├── Wave 1: tasks with no dependencies (parallel)
+    ├── Wave 2: tasks depending on Wave 1
+    └── ... continue until all done
+    ↓
+validate_results() — post-execution validation
+    ↓
+critique_results() — verify task success
+    ↓
+synthesize_results() — produce final answer
+    ↓
+run_auditor() — cross-tool consistency check
 ```
 
-## System prompt structure
+### Wave-Level Concurrency
 
+- Tasks grouped into waves by topological sort (Kahn's algorithm)
+- Each wave executes in parallel (bounded by semaphore)
+- Next wave starts after all tasks in current wave complete
+- Maximum 10 waves, 5 tasks per wave (from config/supervisor.py)
+
+## Behavioral Learning Integration
+
+### Session Start
 ```
-GOAT_SYSTEM: "You are GOAT… Mirror the user's language, tone, and register.
-              No filler, no preamble, no sign-offs. Never end with a question."
-+ "\nLearned user style — mirror it: formality: casual; tone: technical; …."
-+ "\nUser profile:\n{filtered_human_block}"   ← technical keys stripped
-+ "\nPrevious sessions:\n{summary}"
-```
-
-## Intent routing thresholds
-
-| Depth | Handler | Trigger examples |
-|-------|---------|-----------------|
-| `CONVERSATIONAL` | `direct_response` (no DAG) | greetings, simple Q&A |
-| `ANALYTICAL` | lightweight DAG ≤2 tasks | explain, compare, light coding |
-| `COMPLEX` | full DAG + critique | implement, design, multi-step research |
-
-## Direct Request Bypass (Patch 71)
-
-**Problem solved:** Simple queries like "What's in my recent memory?" or "Read file X" 
-were triggering full DAG execution, wasting resources and adding latency.
-
-**Solution:** Lightweight pre-check classifier identifies single-tool requests before 
-planner invocation.
-
-**Bypassed tools:**
-- `memory_recent` — queries about recent memory items
-- `memory_get` — queries retrieving specific named facts
-- `file_read` — queries reading specific files by path
-
-**Classification rules:**
-1. Pattern matching (case-insensitive, Romanian/English)
-2. Rejects multi-step indicators (and, explain, analyze, compare, why, how)
-3. Confidence threshold: >= 0.5 for bypass
-4. Falls back to DAG if classification uncertain
-
-**Example bypass queries:**
-- "What recent memory items do I have?"
-- "Show me the last stored fact"
-- "Read file config.toml"
-- "Ce am în memorie recent?"
-
-**Example DAG queries (not bypassed):**
-- "Show me recent changes and explain their impact"
-- "Analyze the codebase and suggest refactoring"
-- "Compare the two files and tell me which is better"
-
-**Logging:**
-```
-INFO goat2.supervisor: Direct request bypass: tool=memory_recent confidence=0.50 query=What recent memory items do I have?
+init_session(mm)
+    → load_user_profile(mm)      # Letta 'human' block
+    → load_session_summary(mm)   # ChromaDB
+    → load_style(mm)           # Letta 'persona' block
+    → check_onboarding_done(mm) # Redis flag
 ```
 
-## DAG Dependency Validation
-
-**Added in patch 69:** Planner now validates dependency integrity before passing plan to WorkflowGraph.
-
-**Validation checks:**
-1. **Missing dependencies**: Every `depends_on` entry must reference a task ID that exists in the plan.
-2. **Circular dependencies**: Detects cycles using DFS (A→B→A or longer chains).
-
-**Recovery strategy:**
-1. **Automatic repair**: Invalid `depends_on` references are stripped from tasks.
-2. **Fallback plan**: If repair fails (cycle detected), falls back to minimal 2-task plan.
-3. **Logging**: All validation failures logged at WARNING level with specific error details.
-
-## Dynamic Model Fallback (Patch 70)
-
-**Problem solved:** Hard-coded model fallbacks (e.g., "gpt-4o") ignored user preferences and caused style clashes.
-
-**Solution:** Configurable priority lists per role with health checks.
-
-**Configuration (goat.toml):**
-```toml
-# Preferred: list of models in priority order
-[agents.planner]
-models = ["deepseek-r1", "gpt-4o", "llama-3.3-70b"]
-
-# Backward-compatible: single model
-[agents]
-researcher = "deepseek-chat"
+### Every Response
+```
+_system_with_profile(profile, summary, style)
+    → GOAT_SYSTEM
+    → mirror_instruction(style)  # "formality: casual; tone: technical..."
+    → profile (filtered)
+    → summary (previous sessions)
 ```
 
-**Behavior:**
-1. Checks models in priority order (first = preferred)
-2. Validates API key presence for each model's provider
-3. Returns first available model that passes health check
-4. Raises `ModelUnavailableError` if all models fail (no silent fallback)
-5. Logs model switches at INFO level for observability
-
-**Environment variable override:**
-```bash
-export AGENT_PLANNER_MODEL="gpt-4o"  # Highest priority
+### Session End
+```
+finalize_behavior(mm, history, style)
+    → analyze_style(user_turns)
+    → save_style(style)  # Letta 'goat/persona'
 ```
 
-## Contradiction Detection (Patch 70)
+## Classification and Routing
 
-**Problem solved:** DAG validator marked results as `validated=True` even when agents produced contradictory outputs.
+### IntentDepth Levels
 
-**Solution:** Cross-result contradiction detection in `dag_validator.py`.
+| Level | Handler | Description |
+|-------|---------|-------------|
+| CONVERSATIONAL | direct_response | Questions, greetings, simple Q&A |
+| ANALYTICAL | lightweight DAG | Comparisons, light coding, analysis |
+| COMPLEX | full DAG | Implementation, research, design |
 
-**Detection method:**
-- Scans all result pairs for mutually exclusive claims
-- Keyword-based detection (true/false, yes/no, exists/missing, etc.)
-- Logs conflicting task IDs and claim snippets at WARNING level
+### Help Detection (Onboarding)
+- Patterns: help, ?, capabilities, commands, "ce poți face"
+- Forces CONVERSATIONAL mode for onboarding queries
 
-**Validation priority:**
-1. `missing_tool_params` — tool called but parameters missing
-2. `empty_file_read` — file tool invoked but output empty
-3. `empty_generated` — no tool called and output empty
-4. **`contradiction`** — NEW: conflicting claims between agents
-5. `unverified_execution` — execution role with tool_called=False
-6. `source_violation` — source not in role whitelist
-7. `net_error` — web search returned error
-8. `stale_memory` — memory contains [stale] marker
+### First Message Guard
+- Vague patterns: greetings, empty, punctuation only
+- Forces CONVERSATIONAL for first interaction
 
-**Example contradiction:**
+## Import Examples
+
+```python
+# Core classes (backward compatible)
+from supervisor import (
+    GoatSupervisor,
+    WorkflowGraph,
+    AgentRegistry,
+    AgentTask,
+    AgentResult,
+    Plan,
+    SupervisorResult,
+)
+
+# Behavior module
+from supervisor.behavior import (
+    analyze_style,
+    mirror_instruction,
+    BehaviorProfile,
+    finalize_behavior,
+    load_style,
+    save_style,
+    maybe_store_info,
+)
+
+# Pipeline module
+from supervisor.pipeline import (
+    WorkflowGraph,
+    validate_plan,
+    validate_results,
+    prepare_tasks,
+    _run_researcher,
+    _run_coder,
+    _run_critic,
+)
+
+# Session module
+from supervisor.session import (
+    store_turn,
+    store_dag_result,
+    retrieve_dag_result,
+    ConversationHistory,
+    init_session,
+    mem_turn,
+)
+
+# Classification module
+from supervisor.classification import (
+    IntentDepth,
+    classify_intent,
+    classify_direct_request,
+    detect_language,
+)
+
+# Logging module
+from supervisor.logging import (
+    AuditReport,
+    run_auditor,
+    log_tool_call,
+    SourceTag,
+    TaggedResult,
+)
 ```
-Task 'tool_caller_1' claims 'file exists' but task 'tool_caller_2' claims 'file missing'
-→ DAG marked safe=False, reason="contradiction"
-```
+
+## Memory Access Architecture
+
+### Supervisor (Full Access)
+- WORKING (Redis): Session-scoped with TTL
+- EPISODIC (ChromaDB): Semantic search
+- LONG_TERM (Letta): Core memory blocks
+
+### DAG Agents (Restricted Access)
+- Only WORKING memory via task.memory_manager
+- Cannot access ChromaDB or Letta
+- Prevents memory pollution
+
+## Configuration
+
+Constants in `config/supervisor.py`:
+- MAX_WAVES: 10 — maximum concurrent waves
+- MAX_TASKS_PER_WAVE: 5 — tasks per wave
+- SYNTHESIS_TEMPERATURE: 0.3 — critique/synthesis temp
+- DEFAULT_TIMEOUT_SECONDS: 300 — task timeout

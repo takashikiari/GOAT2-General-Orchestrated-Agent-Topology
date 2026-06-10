@@ -21,7 +21,7 @@ from config.tiers import WORKING
 from memory.working_record import RecordDict
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
 
 __all__ = ["store_turn", "store_dag_result", "retrieve_dag_result"]
 

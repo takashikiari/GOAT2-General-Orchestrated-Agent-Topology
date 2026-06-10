@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from config.roles import SESSION_ROLE
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
 
 __all__ = ["ConversationHistory", "load_session_summary"]
 

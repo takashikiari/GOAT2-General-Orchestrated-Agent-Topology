@@ -14,12 +14,12 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from supervisor.history import ConversationHistory, load_session_summary
+from supervisor.session.history import ConversationHistory, load_session_summary
 from supervisor.identity import load_user_profile, check_onboarding_done
-from supervisor.behavior_store import load_style
+from supervisor.behavior.behavior_store import load_style
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
 
 __all__ = ["init_session"]
 

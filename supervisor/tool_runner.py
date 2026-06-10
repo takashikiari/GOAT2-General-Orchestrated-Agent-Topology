@@ -11,12 +11,12 @@ from config.settings import ModelSpec
 from config.timeouts import TOOL_TIMEOUT
 
 from supervisor.llm_utils import _call_llm, _get_client
-from supervisor.source_types import TaggedResult, TOOL_SOURCE_MAP, infer_source
-from supervisor.structured_logger import log_tool_call
+from supervisor.logging.source_types import TaggedResult, TOOL_SOURCE_MAP, infer_source
+from supervisor.logging.structured_logger import log_tool_call
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
 
 log = logging.getLogger("goat2.tool_runner")
 __all__ = ["_call_with_tools"]

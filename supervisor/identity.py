@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Final
 from config.roles import GOAT_ROLE
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from config.registry import Registry
 
-from supervisor.source_types import TaggedResult
+from supervisor.logging.source_types import TaggedResult
 from supervisor.tool_runner import _call_with_tools
 from supervisor.types import Plan, SupervisorResult
 
@@ -167,7 +167,7 @@ async def load_user_profile(mm: MemoryManager) -> str:
 
 def _system_with_profile(profile: str, summary: str = "", style: str = "") -> str:
     """Build system prompt: GOAT identity + optional behavior style + filtered profile + summary."""
-    from supervisor.behavior_mirror import mirror_instruction
+    from supervisor.behavior.behavior_mirror import mirror_instruction
     parts = [GOAT_SYSTEM]
     if style:
         directive = mirror_instruction(style)

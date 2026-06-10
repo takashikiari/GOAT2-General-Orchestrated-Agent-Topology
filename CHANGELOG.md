@@ -5,6 +5,56 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-10
+
+### Changed
+
+#### Updated memory imports to new module style
+
+**Problem:**
+Old import style used nested paths (from memory.memory_manager import MemoryManager).
+
+**Changes:**
+- Replaced all imports with new module-style paths:
+  - from memory.memory_manager import MemoryManager
+  - with: from memory.shared import MemoryManager
+- Applied to all supervisor/ files
+
+**Files updated:**
+- supervisor/identity.py, supervisor/types.py, supervisor/supervisor.py
+- supervisor/behavior/behavior_session.py, behavior_store.py, info_extract.py
+- supervisor/pipeline/workflow.py, task_prep.py
+- supervisor/session/history.py, session_init.py, session.py, mem_inject.py
+- supervisor/tool_runner.py
+
+---
+
+#### Reorganized supervisor/ into subdirectories
+
+**Problem:**
+All supervisor modules were in a flat directory structure, making it hard to navigate.
+
+**Changes:**
+- Created `supervisor/behavior/` — behavioral learning modules
+- Created `supervisor/pipeline/` — DAG execution modules
+- Created `supervisor/session/` — session management modules
+- Created `supervisor/classification/` — intent classification modules
+- Created `supervisor/logging/` — structured logging modules
+- Added `__init__.py` to each subdirectory with proper exports
+- Updated `supervisor/__init__.py` with re-exports for backward compatibility
+- Updated all internal import paths
+
+**New constants:**
+- Created `config/supervisor.py` with MAX_WAVES, MAX_TASKS_PER_WAVE, SYNTHESIS_TEMPERATURE
+
+**Documentation:**
+- Updated `supervisor/README.md` with full directory structure and module map
+
+**Breaking changes:**
+- None — backward compatibility maintained via `supervisor/__init__.py` re-exports
+
+---
+
 ## [Unreleased] — 2026-06-08 (patch 72)
 
 ### Fixed

@@ -77,8 +77,8 @@ import time
 from typing import TYPE_CHECKING
 
 from supervisor.types import AgentResult
-from supervisor.dag import DAGraph, DAGNode, DAGEdge
-from supervisor.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
+from supervisor.pipeline.dag import DAGraph, DAGNode, DAGEdge
+from supervisor.pipeline.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
 
 # Runner mapping per role (replaces registry.get for runners)
 _RUNNERS: dict[str, callable] = {
@@ -92,8 +92,7 @@ _RUNNERS: dict[str, callable] = {
 
 if TYPE_CHECKING:
     from supervisor.types import AgentTask
-    from supervisor.registry import AgentRegistry
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from config.registry import Registry
 
 log = logging.getLogger("goat2.workflow")

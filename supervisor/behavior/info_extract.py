@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, Final
 from config.roles import GOAT_ROLE
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from config.registry import Registry
 
 from memory.memory_enums import MemoryType
 from memory.pollution_guard import PollutionGuard
 from memory.types import MemoryEntryMetadata
-from supervisor.info_types import INFERRED_TTL, ScoredFact
+from supervisor.behavior.info_types import INFERRED_TTL, ScoredFact
 from supervisor.llm_utils import _call_llm, _extract_json
 
 __all__ = ["maybe_store_info"]

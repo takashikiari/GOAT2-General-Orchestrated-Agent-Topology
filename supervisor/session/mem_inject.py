@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Final
 from config.roles import SESSION_ROLE
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared import MemoryManager
     from config.registry import Registry
 
-from supervisor.info_extract import maybe_store_info
+from supervisor.behavior.info_extract import maybe_store_info
 
 __all__ = ["mem_turn", "recall_context"]
 

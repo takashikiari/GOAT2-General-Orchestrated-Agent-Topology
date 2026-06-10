@@ -10,12 +10,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from supervisor.behavior_analyzer import analyze_style
-from supervisor.behavior_store import save_style
+from supervisor.behavior.behavior_analyzer import analyze_style
+from supervisor.behavior.behavior_store import save_style
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
-    from supervisor.history import ConversationHistory
+    from memory.shared import MemoryManager
+    from supervisor.session.history import ConversationHistory
     from config.registry import Registry
 
 __all__ = ["finalize_behavior"]
