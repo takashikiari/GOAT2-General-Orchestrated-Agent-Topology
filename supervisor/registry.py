@@ -1,3 +1,15 @@
+"""Agent registry for GOAT 2.0 supervisor.
+
+MEMORY ACCESS:
+==============
+DAG agents (planner, researcher, coder, critic, summarizer, tool_caller)
+access only Redis via task.memory_manager.working.
+They CANNOT access ChromaDB or Letta — supervisor-only.
+
+DAG ↔ SUPERVISOR:
+=================
+DAG output → Redis (store_dag_result) → Supervisor (retrieve_dag_result)
+"""
 from __future__ import annotations
 
 import logging
@@ -7,7 +19,6 @@ from supervisor.types import AgentRunner, AgentTask, AgentResult
 from supervisor.llm_utils import _call_llm, _format_dep_context
 from supervisor.planner import _run_planner
 from supervisor.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
-from supervisor.runner_memory import _run_memory
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -69,7 +80,12 @@ class AgentRegistry:
 
 
 def _build_default_registry() -> AgentRegistry:
-    """Construct the default AgentRegistry with all 7 built-in runners pre-registered."""
+    """Construct the default AgentRegistry with 6 built-in DAG runners.
+
+    Note: "memory" is NOT an agent runner — it's a ModelSpec key used by
+    supervisor for behavioral learning, classification, and language detection.
+    DAG output is stored to Redis via store_dag_result() and read by supervisor.
+    """
     registry = AgentRegistry()
     registry.register("planner",     _run_planner)
     registry.register("researcher",  _run_researcher)
@@ -77,5 +93,4 @@ def _build_default_registry() -> AgentRegistry:
     registry.register("critic",      _run_critic)
     registry.register("summarizer",  _run_summarizer)
     registry.register("tool_caller", _run_tool_caller)
-    registry.register("memory",      _run_memory)
     return registry

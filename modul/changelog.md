@@ -5,6 +5,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-08 (patch 72)
+
+### Fixed
+
+#### Expanded Romanian keyword coverage in direct request classifier
+
+**Problem:**
+Simple Romanian memory queries like "verifică memoria", "raportează memoria",
+or "ce ai în memorie?" were not matched by the direct request classifier,
+causing unnecessary full DAG execution.
+
+**Changes in `supervisor/request_classifier.py`:**
+- Added patterns for `verifică/verifica/check memoria/memory` — memory check queries
+- Added patterns for `arată/afișează/raportează memoria/memory` — show/report memory queries
+- Added patterns for `ai/aveți/am în memorie` — "do you have in memory" queries
+- All new patterns are case-insensitive and support Romanian diacritics
+
+**Safety:**
+- Multi-step indicators (și, analizează, explică) still block bypass correctly
+- Queries like "verifică și raportează" still go through DAG (contains "și")
+
+**Documentation:**
+- No doc changes needed — README already documents the bypass in Patch 71 section
+
+---
+
 ## [Unreleased] — 2026-06-06 (patch 71)
 
 ### Added

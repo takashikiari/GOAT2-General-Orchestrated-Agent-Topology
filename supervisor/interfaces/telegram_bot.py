@@ -69,8 +69,11 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             text = "DAG returned empty result. Unverified."
         # Filter out tool calls from response (both wrapper and individual invoke tags)
         import re
-        # Match DSML tags: <｜｜DSML｜｜...>...</｜｜DSML｜｜...>
+        # Match DSML tags with DIFFERENT content: <｜｜DSML｜｜invoke>...</｜｜DSML｜｜tool_calls>
+        # The opening and closing tags have different content (invoke vs tool_calls)
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
+        # Also match mixed pairs: <tag1>...</tag2> where content differs
+        clean_text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', clean_text, flags=re.DOTALL)
         # Also strip any orphaned opening tags (no closing tag)
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', clean_text)
         clean_text = clean_text.strip() or text

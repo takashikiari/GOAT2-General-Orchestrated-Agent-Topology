@@ -55,6 +55,8 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+.env.save
+.envecho
 *.pem
 *.key
 id_rsa
@@ -68,6 +70,11 @@ goat2.tool_calls.structured.log
 
 # Aider chat history
 .aider*
+.aider.tags.cache.v4
+
+# Session & internal notes
+SESSION_NOTES.md
+goat_the_liar.txt
 
 # OS files
 .DS_Store

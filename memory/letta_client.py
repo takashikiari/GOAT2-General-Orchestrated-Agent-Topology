@@ -258,11 +258,11 @@ class LettaClient(MemoryLayer):
             value = sanitize_content(value)
         except ValueError as exc:
             log.warning("Letta store validation failed: %s", exc)
-            return self._fallback.store(agent_role, key, value)
+            return self._fallback.store(agent_role, key, value, metadata)
 
         if not await self._probe.is_available():
             log.debug("Letta unavailable; using fallback for %s", key)
-            return self._fallback.store(agent_role, key, value)
+            return self._fallback.store(agent_role, key, value, metadata)
 
         agent_id = await self._registry.get_agent_id(agent_role)
 

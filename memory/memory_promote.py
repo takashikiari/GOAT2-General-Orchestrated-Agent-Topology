@@ -26,6 +26,11 @@ class MemoryPromoteMixin:
             log.debug("promote(%s, %s): not found in %s", agent_role, key, from_type)
             return None
 
+        # Skip empty/whitespace content to prevent validation errors
+        if not source.content or not source.content.strip():
+            log.debug("promote(%s, %s): skipping empty content", agent_role, key)
+            return None
+
         destination = await self.store(  # type: ignore[attr-defined]
             agent_role, key, source.content,
             memory_type=to_type,

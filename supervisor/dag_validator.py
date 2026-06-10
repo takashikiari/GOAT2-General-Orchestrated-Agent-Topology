@@ -2,13 +2,18 @@
 
 Runs after all DAG nodes finish and before aggregation (critique/synthesize).
 Validates tool usage parameters, blocks generated source on execution tasks,
-enforces per-role source whitelists, and flags net errors plus stale memory markers.
+enforces per-role source whitelists, and flags net errors.
 
-NEW (Patch 70): Detects contradictions between agent outputs and marks DAG
-as unsafe when conflicting claims are found.
+ARCHITECTURE NOTE:
+==================
+DAG agents cannot access ChromaDB or Letta — only Redis working memory.
+All persistent memory writes are handled by supervisor post-execution.
+DAG output is stored to Redis and read by supervisor for validation.
 
-GOAT supervisor validates task success by checking tool call parameters —
-never reports a task validated without verifying the tool was invoked correctly.
+CONTRADICTION DETECTION:
+========================
+Detects conflicting claims between agent outputs and marks DAG as unsafe
+when mutually exclusive assertions are found.
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ __all__ = ["ValidationStatus", "validate_results"]
 log = logging.getLogger("goat2.dag_validator")
 
 # Roles that must invoke a real tool — generated output is never acceptable.
-_EXECUTION_ROLES: Final[frozenset[str]] = frozenset({"researcher", "memory", "tool_caller"})
+_EXECUTION_ROLES: Final[frozenset[str]] = frozenset({"researcher", "tool_caller"})
 
 # Roles where source=generated is valid (no tool calls expected).
 _GENERATED_ROLES: Final[frozenset[str]] = frozenset({"critic", "summarizer", "planner"})
@@ -31,16 +36,14 @@ _GENERATED_ROLES: Final[frozenset[str]] = frozenset({"critic", "summarizer", "pl
 # Allowed sources per role. Roles absent from this dict pass all source checks.
 _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {
     "researcher":  frozenset({"net"}),
-    "memory":      frozenset({"memory"}),
-    "coder":       frozenset({"file", "net", "memory", "generated"}),
-    "tool_caller": frozenset({"file", "net", "memory", "generated"}),
-    "critic":      frozenset({"generated", "file", "memory"}),
-    "summarizer":  frozenset({"generated", "file", "memory"}),
+    "coder":       frozenset({"file", "net", "generated"}),
+    "tool_caller": frozenset({"file", "net", "generated"}),
+    "critic":      frozenset({"generated", "file"}),
+    "summarizer":  frozenset({"generated", "file"}),
     "planner":     frozenset({"generated"}),
 }
 
 _NET_ERROR_PREFIXES: Final[tuple[str, ...]] = ("error:", "http ", "no results")
-_STALE_MARKER:       Final[str]             = "[stale]"
 
 # Contradiction detection: semantic opposites
 _CONTRADICTIONS: Final[dict[str, list[str]]] = {
@@ -96,11 +99,6 @@ def _is_net_error(result: AgentResult) -> bool:
         return True
     output = (result.output or "").lower().strip()
     return any(output.startswith(p) for p in _NET_ERROR_PREFIXES)
-
-
-def _is_stale_memory(result: AgentResult) -> bool:
-    """True when source=memory and output contains the stale data marker."""
-    return result.source == "memory" and _STALE_MARKER in (result.output or "")
 
 
 def _is_empty_file_read(result: AgentResult) -> bool:
@@ -208,14 +206,20 @@ def validate_results(
     """Validate all DAG results before aggregation.
 
     GOAT supervisor MUST reject synthesis if any returned status has safe=False.
-    Priority: missing_tool_params > empty_file_read > empty_generated > 
-              contradiction > unverified_execution > source_violation > net_error > stale_memory.
-    
-    Contradiction detection (NEW in patch 70):
-    - Checks all result pairs for mutually exclusive claims
-    - Uses keyword-based contradiction detection (true/false, yes/no, etc.)
-    - Marks entire DAG as unsafe if contradiction found
-    - Logs conflicting task IDs and claim snippets
+    Priority: missing_tool_params > empty_file_read > empty_generated >
+              contradiction > unverified_execution > source_violation > net_error.
+
+    Validation checks:
+    - missing_tool_params: Tool called but parameters missing or unverifiable
+    - empty_file_read: File read confirmed but no content in output
+    - empty_generated: No tool called and output is empty
+    - unverified_execution: Execution role (researcher/tool_caller) didn't call a tool
+    - source_violation: Role got source not in its whitelist
+    - net_error: source=net but returned an error
+    - contradiction: Two tasks made mutually exclusive claims
+
+    DAG agents can only produce: net, file, generated sources.
+    (memory source removed — DAG cannot access ChromaDB/Letta)
 
     Returns the unchanged results dict alongside per-task ValidationStatus objects.
     """
@@ -267,9 +271,6 @@ def validate_results(
         elif _is_net_error(result):
             log.warning("dag_validator: %s source=net returned error — unsafe", tid)
             statuses.append(ValidationStatus(task_id=tid, safe=False, reason="net_error"))
-        elif _is_stale_memory(result):
-            log.warning("dag_validator: %s source=memory is stale — revalidation needed", tid)
-            statuses.append(ValidationStatus(task_id=tid, safe=False, reason="stale_memory"))
         else:
             statuses.append(ValidationStatus(task_id=tid, safe=True))
 

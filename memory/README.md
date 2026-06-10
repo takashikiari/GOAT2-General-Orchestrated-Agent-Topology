@@ -1,81 +1,148 @@
-# memory/ — Three-Tier Memory System
+# Memory System — Three-Tier Architecture
 
-```python
-from memory.memory_manager import memory_manager, MemoryType
-from memory.router import MemoryRouter
+## Overview
+
+GOAT uses a three-tier memory system to separate short-term session context,
+medium-term episodic history, and long-term persistent knowledge.
+
+---
+
+## Tiers
+
+### 1. Working Memory — Redis (Short-term)
+
+**Backend:** Redis
+**Purpose:** Session context, active conversation, tool output, DAG bridge
+**TTL:** Configurable (default: 1 hour)
+**Access:** GOAT (full) + DAG agents (Redis only)
+
+**Used for:**
+- Current conversation turns
+- Tool call outputs during a session
+- Communication bridge between DAG agents
+- Context for task execution
+
+**DAG agents** read and write here exclusively.
+
+### 2. Episodic Memory — ChromaDB (Medium-term)
+
+**Backend:** ChromaDB
+**Purpose:** Past conversations, session histories, behavioral patterns
+**TTL:** Persistent (no auto-expiry)
+**Access:** GOAT only — DAG agents have NO direct access
+
+**Used for:**
+- Previous session summaries
+- User behavior patterns
+- Historical context for personalization
+- Learning from past interactions
+
+### 3. Long-term Memory — Letta (Permanent)
+
+**Backend:** Letta
+**Purpose:** User preferences, profiles, long-term knowledge, core memories
+**TTL:** Permanent
+**Access:** GOAT only — DAG agents have NO direct access
+
+**Used for:**
+- User identity and preferences
+- Long-term knowledge graph
+- Core memories that persist across all sessions
+- Promoted important episodic memories
+
+---
+
+## Access Control
+
+| Actor | Working (Redis) | Episodic (ChromaDB) | Long-term (Letta) |
+|-------|----------------|---------------------|-------------------|
+| **GOAT** | ✅ Full R/W | ✅ Full R/W | ✅ Full R/W |
+| **DAG Agents** | ✅ Redis only | ❌ | ❌ |
+| **Memory Agent** | ✅ Redis (bridge) | ❌ (query via GOAT) | ❌ (query via GOAT) |
+
+### Memory Agent — Redis Bridge
+
+Memory agent este un DAG agent special care:
+
+1. **Scrie în Redis** — comunică cu ceilalți agenți prin working memory
+2. **Își ia context** din working memory pentru task-uri ample
+3. **Nu are acces direct** la Episodic (ChromaDB) sau Long-term (Letta)
+4. **Query către GOAT** — dacă are nevoie de informații din straturile profunde, face request către GOAT
+5. **GOAT filtrează** — decide ce informații să returneze, cât, și dacă e relevant
+6. **Zero halucinații** — memory agent nu primește niciodată date nevăzute sau nefiltrate
+
+---
+
+## Data Flow
+
+```
+1. User sends message
+2. GOAT routes to DAG (if complex) or handles directly (if simple)
+3. DAG agents work → store results in Redis (working)
+4. GOAT reads results from Redis
+5. GOAT may promote relevant info:
+   Working → Episodic (ChromaDB) → Long-term (Letta)
+6. GOAT responds to user
 ```
 
-## Three tiers
+### Promotion Flow
 
-| Tier | Backend | Search | Scope |
-|------|---------|--------|-------|
-| `WORKING` | DictBackend / Redis | keyword token overlap | process + TTL 1 h |
-| `EPISODIC` | ChromaDB HNSW | semantic cosine | session, disk |
-| `LONG_TERM` | Letta REST API | semantic server-side | cross-session |
+```
+Working (Redis)
+   │
+   ▼  (promoted by GOAT after session ends or when valuable)
+Episodic (ChromaDB)
+   │
+   ▼  (promoted by GOAT for permanent knowledge)
+Long-term (Letta)
+```
 
-`recall()` routes through `MemoryRouter` (intelligent). `search(memory_type=X)` goes direct.
+---
 
-## Key behaviours
+## Tool Access
 
-- **Temporal search** — `search(start_datetime="yesterday morning")` applies post-filter via
-  `filter_by_time`; natural language parsed by `time_parser` (default TZ: Europe/Bucharest).
-  `timeline(start, end)` lists entries in a range; `recent(limit)` returns newest first;
-  `debug_trace(query)` returns per-tier JSON counts. Entries without `created_at_ts` are
-  excluded (never assumed to fall in range) — legacy records are never invented.
-- **Routed recall** — `recall(role, query)` → `MemoryRouter.search()`: classify intent,
-  confidence ≥0.70 → 1 layer, 0.40–0.69 → 2 sequential, <0.40 → full fan-out.
-- **Letta fallback** — `LettaHealthProbe` checks every 30 s; `_InContextFallback` handles
-  all ops when Letta is unreachable. Auto-reconnects.
-- **TTL priority** in `WorkingMemoryLayer.store()`: `ttl=` kwarg → `metadata["ttl"]` →
-  `default_ttl` (3600 s) → `ttl=0` = no expiry.
-- **Letta blocks** — each role agent has `persona` (behavioral style) and `human` (user
-  profile) core-memory blocks, both empty on creation.
-- **Fact confidence** — `info_extract.maybe_store_info` classifies each extracted fact as
-  `explicit` (direct user statement) or `inferred` (deduced). Only explicit facts reach
-  Letta core via `PollutionGuard`; inferred facts go to ChromaDB tagged `"inferred"` with
-  `expires_at_ts = now + 7 days` in metadata.
-- **Pollution guard** — `PollutionGuard.validate(key, value, kind, existing_block)` blocks
-  inferred facts and technical keys, and flags conflicts (existing key with different value)
-  at `WARNING` without auto-overwriting. The underlying `validate_fact()` is pure (PyO3 candidate).
+### GOAT Memory Tools (16 tools — full tier access)
 
-## Module map
+| Tool | Description |
+|------|-------------|
+| `MEMORY_SEARCH` | Semantic search across any tier |
+| `MEMORY_GET` | Get entry by exact key |
+| `MEMORY_STORE` | Store to any tier |
+| `MEMORY_DELETE` | Delete entry |
+| `MEMORY_UPDATE` | Update existing entry |
+| `MEMORY_TIMELINE` | Entries in time range |
+| `MEMORY_RECENT` | Most recent entries |
+| `MEMORY_DEBUG_TRACE` | Per-tier debug info |
+| `MEMORY_DIRECT_QUERY` | Raw queries to any backend |
+| `MEMORY_LAST_WRITE` | Last write timestamp |
+| `MEMORY_COUNT` | Entry count per tier |
+| `MEMORY_TTL` | TTL management |
+| `MEMORY_EMBEDDING` | Get embedding vector |
+| `MEMORY_EXPORT` | Export tier data |
+| `MEMORY_PROMOTE` | Promote between tiers |
+| `MEMORY_AUTO_PROMOTE` | Auto-promote |
 
-### Shared
-| `types.py` | NewTypes, `MemoryEntry`, `MemoryLayer` Protocol, `MemoryEntryMetadata` |
+### DAG Memory Tools (4 tools — working tier only)
 
-### Letta (long-term)
-| `letta_helpers.py` | constants, TypedDicts, PyO3-candidate pure helpers |
-| `letta_fallback.py` | `_InContextFallback` — keyword store when Letta is down |
-| `letta_health.py` | `LettaHealthProbe` — HTTP client + 30 s cooldown |
-| `letta_registry.py` | `LettaAgentRegistry` — lazy create/cache one agent per role; creates `persona` + `human` blocks |
-| `letta_ops_*.py` | `do_store`, `do_retrieve`, `do_search`, `do_list`, `do_clear` |
-| `letta_blocks.py` | `do_get_block`, `do_set_block` — core-memory block CRUD |
-| `letta_client.py` | `LettaClient` — thin coordinator + singleton |
+| Tool | Description |
+|------|-------------|
+| `memory_search` | Search working memory |
+| `memory_get` | Get from working memory |
+| `memory_store` | Store to working memory |
+| `memory_recent` | Recent working memory entries |
 
-### Working memory
-| `working_backend.py` | `StorageBackend` Protocol |
-| `dict_backend.py` | `DictBackend` — in-process dict, lazy TTL |
-| `redis_backend.py` | `RedisBackend` — drop-in, requires `redis[hiredis]≥5.0` |
-| `working_memory.py` | `WorkingMemoryLayer` + `working_memory` singleton |
+---
 
-### ChromaDB (episodic)
-| `chroma_types.py` | constants + TypedDicts |
-| `chroma_helpers.py` / `chroma_parsers.py` | PyO3-candidate pure transforms |
-| `chromadb_client.py` | `ChromaMemoryClient` + `chroma_client` singleton |
+## Implementation Details
 
-### Quality control
-| `pollution_guard.py` | `validate_fact()` (pure, PyO3 candidate) + `PollutionGuard` — blocks inferred facts from Letta core, detects key conflicts, logs at WARNING |
+### Storage Format
 
-### Temporal search
-| `time_parser.py` | `parse_time_range(expr)` — natural language + ISO 8601 → `(start_epoch, end_epoch)` |
-| `temporal_filter.py` | `filter_by_time(entries, start_ts, end_ts)` · `resolve_range(start_expr, end_expr)` |
-| `temporal_list.py` | `gather_tier_list(layers, role, tier, limit)` — fan-out list with deduplication |
-| `temporal_search.py` | `TemporalSearchMixin` — `timeline()`, `recent()`, `debug_trace()` |
+- **Working (Redis):** Key-value with TTL. Keys: `turn_<timestamp>_<role>`, `session:<id>:<field>`
+- **Episodic (ChromaDB):** Vector embeddings with metadata. IDs: `turn_<YYYYMMDD_HHMMSS_uuuuuu>`
+- **Long-term (Letta):** Structured passages with metadata. IDs: `passage-<uuid>` or `turn_<timestamp>`
 
-### Orchestration
-| `memory_enums.py` | `MemoryType` enum, `LayerStatus` |
-| `memory_crud.py` / `memory_search.py` / `memory_promote.py` | mixins |
-| `memory_manager.py` | `MemoryManager` — `recall()` via `MemoryRouter`; gains `timeline`, `recent`, `debug_trace` from `TemporalSearchMixin` |
+### Role Tagging
 
-### Router (`router/`)
-See `memory/router/README.md`. Entry point: `MemoryRouter(memory_manager)`.
+- GOAT operations use `role="goat"` for memory writes
+- DAG operations use `role="user_session"` for memory writes
+- This separation allows filtering and provenance tracking

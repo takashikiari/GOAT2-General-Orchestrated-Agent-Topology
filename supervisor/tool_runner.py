@@ -72,10 +72,13 @@ def _strip_dsml(text: str) -> str:
     2. Embedded in text content - DSML markers that confuse the LLM
 
     This strips DSML markers from text before adding to history.
+    Supports both matching pairs (same content) and mixed pairs (invoke/tool_calls).
     """
     import re
-    # Strip full wrapper tags: <｜｜DSML｜｜...>...</｜｜DSML｜｜...>
+    # Strip full wrapper tags with SAME content: <｜｜DSML｜｜...>...</｜｜DSML｜｜...>
     text = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
+    # Strip mixed pairs: <tag1>...</tag2> where content differs (invoke vs tool_calls)
+    text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', text, flags=re.DOTALL)
     # Strip orphaned opening tags
     text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
     return text.strip()

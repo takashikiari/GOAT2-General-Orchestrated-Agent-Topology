@@ -32,6 +32,16 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _strip_dsml(text: str) -> str:
+    """Remove DeepSeek DSML markers from text to prevent clutter in CLI output."""
+    import re
+    # Match full wrapper tags with different content: <tag1>...</tag2>
+    text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', text, flags=re.DOTALL)
+    # Strip orphaned opening tags
+    text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
+    return text.strip()
+
+
 def main() -> None:
     args = _parse_args()
     if args.verbose:
@@ -52,11 +62,14 @@ def main() -> None:
         print(json.dumps(result.to_dict(), indent=2))
         return
 
+    # Strip DSML markers from summary before printing
+    clean_summary = _strip_dsml(result.summary)
+
     width = 64
     print("\n" + "═" * width)
     print("  GOAT 2.0 — RESULT")
     print("═" * width)
-    print(result.summary)
+    print(clean_summary)
     print()
     print("─" * width)
     print(

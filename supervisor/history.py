@@ -1,6 +1,7 @@
 """In-session conversation history and cross-session summary for GoatSupervisor."""
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from config.roles import SESSION_ROLE
@@ -11,6 +12,15 @@ if TYPE_CHECKING:
 __all__ = ["ConversationHistory", "load_session_summary"]
 
 _SUMMARY_KEY  = "session_summary"
+
+
+def _strip_dsml(text: str) -> str:
+    """Remove DeepSeek DSML markers from text to prevent LLM confusion."""
+    # Match full wrapper tags with different content: <tag1>...</tag2>
+    text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', text, flags=re.DOTALL)
+    # Strip orphaned opening tags
+    text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
+    return text.strip()
 
 
 class ConversationHistory:
@@ -25,8 +35,9 @@ class ConversationHistory:
         self._msgs.append({"role": "user", "content": content})
 
     def add_assistant(self, content: str) -> None:
-        """Append an assistant turn."""
-        self._msgs.append({"role": "assistant", "content": content})
+        """Append an assistant turn, stripping DSML markers to prevent LLM confusion."""
+        clean = _strip_dsml(content)
+        self._msgs.append({"role": "assistant", "content": clean})
 
     @property
     def messages(self) -> list[dict[str, str]]:
