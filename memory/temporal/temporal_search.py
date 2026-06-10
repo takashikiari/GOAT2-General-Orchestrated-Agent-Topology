@@ -86,7 +86,7 @@ class TemporalSearchMixin:
         Useful for debugging query routing and understanding which
         tiers contain relevant results. Returns snippets of top matches.
         """
-        from memory.memory_enums import MemoryType
+        from memory.shared.memory_enums import MemoryType
 
         start_ts, end_ts = resolve_range(start_datetime, end_datetime)
         tiers: dict = {}
