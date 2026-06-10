@@ -40,8 +40,8 @@ from supervisor.workflow import WorkflowGraph
 from supervisor.supervisor import GoatSupervisor
 from supervisor.types import AgentTask, AgentResult, Plan
 from supervisor.registry import AgentRegistry
-from memory.memory_manager import MemoryManager
-from memory.working_memory import WorkingMemoryLayer
+from memory.shared import MemoryManager
+from memory.working import WorkingMemoryLayer
 from config.settings import settings
 
 
@@ -365,8 +365,8 @@ class TestMemoryTierRestrictions:
         - DictBackend works as fallback
         - Layer provides CRUD operations
         """
-        from memory.working_memory import WorkingMemoryLayer
-        from memory.dict_backend import DictBackend
+        from memory.working.working_memory import WorkingMemoryLayer
+        from memory.working.dict_backend import DictBackend
 
         # Create working memory layer
         working = WorkingMemoryLayer(backend=DictBackend())

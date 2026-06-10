@@ -17,7 +17,7 @@ from memory.router.types import (
     Millis,
     RoutingDecision,
 )
-from memory.types import AgentRole, MemoryEntry, MemoryLayer
+from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
 
 __all__ = ["execute_route"]
 

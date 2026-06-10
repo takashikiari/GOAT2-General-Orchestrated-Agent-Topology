@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from memory.validation import (
+from memory.shared.validation import (
     MAX_KEY_LENGTH,
     MAX_LETTA_BLOCK_LENGTH,
     MAX_VALUE_LENGTH,

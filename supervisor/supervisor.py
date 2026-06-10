@@ -493,7 +493,7 @@ class GoatSupervisor:
                     )
                     # Auto-save to episodic/long-term memory
                     try:
-                        from memory.hooks import auto_save_memory
+                        from memory.shared.hooks import auto_save_memory
                         await auto_save_memory(
                             self.memory_manager,
                             "user_session",
@@ -568,7 +568,7 @@ class GoatSupervisor:
                 )
                 # Auto-save to episodic/long-term memory
                 try:
-                    from memory.hooks import auto_save_memory
+                    from memory.shared.hooks import auto_save_memory
                     await auto_save_memory(
                         self.memory_manager,
                         "user_session",
@@ -716,7 +716,7 @@ class GoatSupervisor:
                     )
                     # Auto-save to episodic/long-term memory
                     try:
-                        from memory.hooks import auto_save_memory
+                        from memory.shared.hooks import auto_save_memory
                         await auto_save_memory(
                             self.memory_manager,
                             "user_session",
@@ -892,7 +892,7 @@ class GoatSupervisor:
                 )
                 # Auto-save to episodic/long-term memory
                 try:
-                    from memory.hooks import auto_save_memory
+                    from memory.shared.hooks import auto_save_memory
                     await auto_save_memory(
                         self.memory_manager,
                         "user_session",

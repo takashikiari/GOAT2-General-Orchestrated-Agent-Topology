@@ -20,9 +20,9 @@ if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import Registry
 
-from memory.memory_enums import MemoryType
-from memory.pollution_guard import PollutionGuard
-from memory.types import MemoryEntryMetadata
+from memory.shared.memory_enums import MemoryType
+from memory.shared.pollution_guard import PollutionGuard
+from memory.shared.types import MemoryEntryMetadata
 from supervisor.behavior.info_types import INFERRED_TTL, ScoredFact
 from supervisor.llm_utils import _call_llm, _extract_json
 

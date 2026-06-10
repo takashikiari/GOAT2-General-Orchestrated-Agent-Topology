@@ -10,6 +10,9 @@ medium-term episodic history, and long-term persistent knowledge.
 ```
 memory/
 ├── __init__.py          # Re-exports for backward compatibility
+├── config.py            # Memory-specific constants (moved from config/memory.py)
+├── chromadb_client.py   # Backward compat shim → memory.episodic
+├── letta_client.py     # Backward compat shim → memory.long_term
 ├── router/             # Memory routing and classification
 ├── working/             # Redis-backed session-scoped storage
 │   ├── __init__.py
@@ -42,7 +45,7 @@ memory/
 │   ├── letta_helpers.py # Helper functions
 │   ├── letta_registry.py # Agent registry
 │   ├── letta_fallback.py # In-context fallback
-│   ├── letta_ops_*.py   # Letta operations
+│   └── letta_ops_*.py   # Letta operations
 ├── temporal/          # Time-based search
 │   ├── __init__.py
 │   ├── temporal_filter.py # Time filtering
@@ -58,11 +61,26 @@ memory/
 │   ├── memory_search.py # Search mixin
 │   ├── memory_promote.py # Promotion mixin
 │   ├── hooks.py         # Auto-save hooks
-│   └── pollution_guard.py # Quality validation
-├── chroma_types.py    # Backward compat shim
-├── types.py           # Backward compat shim
-├── validation.py     # Backward compat shim
-└── ...
+│   ├── pollution_guard.py # Quality validation
+│   └── validation.py    # Input validation
+├── memory_tools/        # Tool definitions
+│   ├── __init__.py
+│   ├── memory_tools.py       # Core CRUD tools
+│   ├── memory_helpers.py     # Shared utilities
+│   ├── memory_temporal_tools.py
+│   ├── memory_delete_tool.py
+│   ├── memory_direct_query.py
+│   ├── memory_count_tool.py
+│   ├── memory_update_tool.py
+│   ├── memory_promote_tool.py
+│   ├── memory_auto_promote_tool.py
+│   ├── memory_embedding_tool.py
+│   ├── memory_export_tool.py
+│   ├── memory_last_write.py
+│   └── memory_ttl_tool.py
+└── memory_metrics/     # Health metrics
+    ├── __init__.py
+    └── metrics.py         # Health monitoring functions
 ```
 
 ## Tiers
@@ -132,17 +150,38 @@ from memory.letta_client import LettaClient
 
 ## Configuration
 
-Memory configuration constants are in `config/memory.py`:
+Memory configuration constants are in `memory/config.py`:
 
 ```python
-from config.memory import (
-    WORKING_BACKEND,      # "redis"
-    EPISODIC_BACKEND,    # "chromadb"
-    LONG_TERM_BACKEND,   # "letta"
+from memory.config import (
+    WORKING_BACKEND,         # "redis"
+    EPISODIC_BACKEND,       # "chromadb"
+    LONG_TERM_BACKEND,     # "letta"
     PROMOTION_TURN_EPISODIC,  # 2
     PROMOTION_TURN_LONG_TERM,  # 3
     POLLUTION_GUARD_MIN_LENGTH, # 10
 )
+```
+
+**Note:** `config/memory.py` is now a shim that re-exports from `memory.config` for backward compatibility.
+
+## Memory Metrics
+
+Health monitoring functions in `memory/memory_metrics`:
+
+```python
+from memory.memory_metrics import (
+    count_working_entries,
+    count_episodic_entries,
+    count_long_term_entries,
+    memory_health_report,
+)
+
+# Example usage
+report = await memory_health_report(mm)
+# Returns: {"status": {"working": True, "episodic": True, "long_term": False},
+#          "counts": {"working": 50, "episodic": 100, "long_term": 0},
+#          "healthy": True}
 ```
 
 ## Access Control
@@ -161,7 +200,7 @@ Memory agent is a special DAG agent:
 2. **Își ia context** din working memory pentru task-uri ample
 3. **Nu are acces direct** la Episodic (ChromaDB) sau Long-term (Letta)
 4. **Query către GOAT** — dacă are nevoie de informații din straturile profunde, face request către GOAT
-5. **GOAT filtrează** — decide ce informații să returneze, cât, și dacă e relevant
+5. **GOAT filtrează** — decide ce informații s�� returneze, cât, și dacă e relevant
 6. **Zero halucinații** — memory agent nu primește niciodată date nevăzute sau nefiltrate
 
 ## Data Flow
@@ -192,24 +231,28 @@ Long-term (Letta)
 
 ### GOAT Memory Tools (16 tools — full tier access)
 
-| Tool | Description |
-|------|-------------|
-| `MEMORY_SEARCH` | Semantic search across any tier |
-| `MEMORY_GET` | Get entry by exact key |
-| `MEMORY_STORE` | Store to any tier |
-| `MEMORY_DELETE` | Delete entry |
-| `MEMORY_UPDATE` | Update existing entry |
-| `MEMORY_TIMELINE` | Entries in time range |
-| `MEMORY_RECENT` | Most recent entries |
-| `MEMORY_DEBUG_TRACE` | Per-tier debug info |
-| `MEMORY_DIRECT_QUERY` | Raw queries to any backend |
-| `MEMORY_LAST_WRITE` | Last write timestamp |
-| `MEMORY_COUNT` | Entry count per tier |
-| `MEMORY_TTL` | TTL management |
-| `MEMORY_EMBEDDING` | Get embedding vector |
-| `MEMORY_EXPORT` | Export tier data |
-| `MEMORY_PROMOTE` | Promote between tiers |
-| `MEMORY_AUTO_PROMOTE` | Auto-promote |
+Import from `memory.memory_tools`:
+
+```python
+from memory.memory_tools import (
+    MEMORY_SEARCH,       # Semantic search across any tier
+    MEMORY_GET,          # Get entry by exact key
+    MEMORY_STORE,        # Store to any tier
+    MEMORY_DELETE,      # Delete entry
+    MEMORY_UPDATE,      # Update existing entry
+    MEMORY_TIMELINE,    # Entries in time range
+    MEMORY_RECENT,      # Most recent entries
+    MEMORY_DEBUG_TRACE, # Per-tier debug info
+    MEMORY_DIRECT_QUERY, # Raw queries to any backend
+    MEMORY_LAST_WRITE,  # Last write timestamp
+    MEMORY_COUNT,       # Entry count per tier
+    MEMORY_TTL,         # TTL management
+    MEMORY_EMBEDDING,   # Get embedding vector
+    MEMORY_EXPORT,       # Export tier data
+    MEMORY_PROMOTE,     # Promote between tiers
+    MEMORY_AUTO_PROMOTE, # Auto-promote
+)
+```
 
 ### DAG Memory Tools (4 tools — working tier only)
 
@@ -219,6 +262,8 @@ Long-term (Letta)
 | `memory_get` | Get from working memory |
 | `memory_store` | Store to working memory |
 | `memory_recent` | Recent working memory entries |
+
+**Note:** Tools are also available from `tools.memory` (shim for backward compatibility).
 
 ## Implementation Details
 

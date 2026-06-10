@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Final
 from config.limits import DAG_RESULT_TTL
 from config.roles import SESSION_ROLE
 from config.tiers import WORKING
-from memory.working_record import RecordDict
+from memory.working.working_record import RecordDict
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager

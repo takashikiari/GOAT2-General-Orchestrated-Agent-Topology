@@ -55,8 +55,8 @@ class MemoryManager(
         episodic: ChromaMemoryClient | None = None,
         long_term: LettaClient | None = None,
     ) -> None:
-        from memory.working_memory import WorkingMemoryLayer
-        from memory.redis_backend import RedisBackend
+        from memory.working.working_memory import WorkingMemoryLayer
+        from memory.working.redis_backend import RedisBackend
         
         self.working: WorkingMemoryLayer = working or WorkingMemoryLayer(backend=RedisBackend())
         self.episodic: ChromaMemoryClient = episodic or ChromaMemoryClient()
@@ -106,7 +106,7 @@ class MemoryManager(
             return await self._fan_out_search(
                 agent_role, query, limit=limit, tags=tags
             )
-        from memory.types import AgentRole
+        from memory.shared.types import AgentRole
         return await self._get_router().search(
             AgentRole(agent_role), query, limit=limit
         )
@@ -170,7 +170,7 @@ class MemoryManager(
         Returns:
             True if promoted successfully, False if skipped
         """
-        from memory.pollution_guard import PollutionGuard
+        from memory.shared.pollution_guard import PollutionGuard
 
         # Check for duplicate in destination tier
         existing = await self.locate(agent_role, key, memory_type=to_type)

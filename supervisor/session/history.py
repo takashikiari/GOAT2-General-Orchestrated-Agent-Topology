@@ -81,7 +81,7 @@ async def load_session_summary(mm: MemoryManager | None) -> str:
     """Retrieve compressed summary of prior sessions from episodic memory; returns '' if absent."""
     if mm is None:
         return ""
-    from memory.memory_enums import MemoryType
+    from memory.shared.memory_enums import MemoryType
     try:
         entry = await mm.retrieve(SESSION_ROLE, _SUMMARY_KEY, memory_type=MemoryType.EPISODIC)
         return entry.content if entry else ""

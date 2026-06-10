@@ -23,21 +23,7 @@ tools/
 │   ├── file_storage_helpers.py
 │   ├── file_storage_service.py
 │   └── path_utils.py
-├── memory/              — memory operation tools
-│   ├── __init__.py
-│   ├── memory_tools.py       — core CRUD tools
-│   ├── memory_helpers.py   — shared utilities
-│   ├── memory_temporal_tools.py
-│   ├── memory_delete_tool.py
-│   ├── memory_direct_query.py
-│   ├── memory_count_tool.py
-│   ├── memory_update_tool.py
-│   ├── memory_promote_tool.py
-│   ├── memory_auto_promote_tool.py
-│   ├── memory_embedding_tool.py
-│   ├── memory_export_tool.py
-│   ├── memory_last_write.py
-│   └── memory_ttl_tool.py
+├── memory/              — memory operation tools (shim, re-exports from memory.memory_tools)
 ├── web/                — web search tools
 │   ├── __init__.py
 │   └── web_search.py
@@ -70,7 +56,7 @@ from tools.file import (
     SUPPORTED_TEXT_EXTENSIONS,
 )
 
-# Re-export from memory/ subdirectory
+# Re-export from memory/ subdirectory (shim that re-exports from memory.memory_tools)
 from tools.memory import (
     MEMORY_AUTO_PROMOTE,
     MEMORY_COUNT,

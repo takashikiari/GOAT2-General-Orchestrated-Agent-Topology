@@ -8,7 +8,7 @@ import pytest
 
 from memory.temporal_filter import filter_by_time, resolve_range
 from memory.time_parser import parse_time_range
-from memory.types import AgentRole, EntryId, MemoryEntry, MemoryEntryMetadata, MemoryKey
+from memory.shared.types import AgentRole, EntryId, MemoryEntry, MemoryEntryMetadata, MemoryKey
 
 _UTC_EPOCH = __import__("datetime").timezone.utc
 _R = AgentRole("ttest")
@@ -103,7 +103,7 @@ def test_resolve_explicit_bounds():
 # --- working memory integration (no external deps) ---
 
 def test_working_store_search_no_filter():
-    from memory.working_memory import WorkingMemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
 
     async def _run():
         wm = WorkingMemoryLayer()
@@ -115,7 +115,7 @@ def test_working_store_search_no_filter():
 
 
 def test_working_list_returns_recent_first():
-    from memory.working_memory import WorkingMemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
 
     async def _run():
         base = time.time()
@@ -131,7 +131,7 @@ def test_working_list_returns_recent_first():
 
 
 def test_no_timestamp_no_crash():
-    from memory.working_memory import WorkingMemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
 
     async def _run():
         wm = WorkingMemoryLayer()
@@ -144,9 +144,9 @@ def test_no_timestamp_no_crash():
 
 
 def test_debug_trace_structure():
-    from memory.memory_enums import MemoryType
+    from memory.shared.memory_enums import MemoryType
     from memory.temporal_search import TemporalSearchMixin
-    from memory.working_memory import WorkingMemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
 
     class _MM(TemporalSearchMixin):
         def __init__(self) -> None:
@@ -166,9 +166,9 @@ def test_debug_trace_structure():
 
 
 def test_timeline_empty_range():
-    from memory.memory_enums import MemoryType
+    from memory.shared.memory_enums import MemoryType
     from memory.temporal_search import TemporalSearchMixin
-    from memory.working_memory import WorkingMemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
 
     class _MM(TemporalSearchMixin):
         def __init__(self) -> None:

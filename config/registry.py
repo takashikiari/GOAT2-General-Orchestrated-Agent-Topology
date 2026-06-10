@@ -34,9 +34,9 @@ from typing import TYPE_CHECKING
 
 from config.settings import Settings
 from config.agent_models import AgentModels
-from memory.working_memory import WorkingMemoryLayer
-from memory.memory_manager import MemoryManager
-from memory.redis_backend import RedisBackend
+from memory.working import WorkingMemoryLayer
+from memory.shared import MemoryManager
+from memory.working import RedisBackend
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition

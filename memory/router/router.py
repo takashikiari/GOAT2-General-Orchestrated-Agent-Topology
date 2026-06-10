@@ -16,7 +16,7 @@ from memory.router.executor import execute_route
 from memory.router.layer_stats import LayerStats, LayerStatsTracker
 from memory.router.preferences import preferred_layers
 from memory.router.types import LayerName, RoutingDecision
-from memory.types import AgentRole, MemoryEntry, MemoryLayer
+from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
 
 if TYPE_CHECKING:
     from memory.memory_manager import MemoryManager

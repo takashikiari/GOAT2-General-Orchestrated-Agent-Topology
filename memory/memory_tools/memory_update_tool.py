@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
 from memory.shared.validation import sanitize_content, validate_memory_write
-from tools.memory.memory_helpers import (
+from memory.memory_tools.memory_helpers import (
     ALL_TIERS,
     format_memory_error,
     format_no_results,
