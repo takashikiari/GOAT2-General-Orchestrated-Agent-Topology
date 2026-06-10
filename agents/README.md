@@ -7,12 +7,14 @@ The instance is immediately usable as an `AgentRunner` (via `__call__`).
 
 ```
 agents/
-├── __init__.py           # Re-exports all public agent classes and prompts
-├── base_agent.py        # BaseAgent abstract class + @tool decorator
-├── planner.py         # PlannerAgent for task decomposition
-├── researcher.py      # ResearcherAgent for web research
-├── coder.py          # CoderAgent for code generation
-├── critic.py         # CriticAgent for review/assessment
+├── __init__.py              # Re-exports all public agent classes and prompts
+├── base_agent.py           # BaseAgent abstract class + @tool decorator
+├── planner.py              # PlannerAgent for task decomposition
+├── planner_decompose.py    # decompose_plan() - intent to task DAG
+├── researcher.py         # ResearcherAgent for web research
+├── coder.py              # CoderAgent for code generation
+├── critic.py             # CriticAgent for review/assessment
+├── critique.py          # critique_results(), synthesize_results()
 ├── prompts/
 │   ├── __init__.py           # Exports RESEARCHER_SYSTEM
 │   └── researcher_prompt.py   # System prompt for ResearcherAgent
@@ -22,10 +24,13 @@ agents/
 
 | Class | File | Model | Temp | Purpose |
 |-------|------|-------|------|---------|
-| `PlannerAgent` | `planner.py` | gpt-4o | 0.3 | Structured plan output via decompose_plan() |
+| `PlannerAgent` | `planner.py` | gpt-4o | 0.3 | Structured plan output |
+| `decompose_plan()` | `planner_decompose.py` | supervisor.model | 0.3 | Intent to task DAG |
 | `ResearcherAgent` | `researcher.py` | deepseek-reasoner | 0.3 | Auto-suppresses tools for R1 model |
 | `CoderAgent` | `coder.py` | deepseek-coder | 0.2 | `validate_syntax` tool |
 | `CriticAgent` | `critic.py` | llama-3.3-70b | 0.3 | `extract_verdict()`, `is_blocking()` |
+| `critique_results()` | `critique.py` | critic | 0.2 | Review task results |
+| `synthesize_results()` | `critique.py` | planner | 0.5 | Final answer synthesis |
 
 ## Quick Start
 

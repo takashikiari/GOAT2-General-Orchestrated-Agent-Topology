@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from supervisor.llm_utils import _call_llm
+from utils.llm_utils import _call_llm
 
 if TYPE_CHECKING:
     from config.registry import Registry

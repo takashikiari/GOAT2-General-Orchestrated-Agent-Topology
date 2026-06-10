@@ -40,6 +40,7 @@ from tools.file.file_read import FILE_READ
 from tools.file.file_read_lines import FILE_READ_LINES
 from tools.file.file_search import FILE_SEARCH
 from tools.file.file_write import FILE_WRITE
+from tools.file.file_op_response import file_op_result
 
 __all__ = [
     # Tool definitions
@@ -58,4 +59,6 @@ __all__ = [
     "MAX_WRITE",
     "MAX_LIST",
     "SUPPORTED_TEXT_EXTENSIONS",
+    # File operation handler
+    "file_op_result",
 ]

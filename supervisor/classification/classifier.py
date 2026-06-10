@@ -34,7 +34,7 @@ import re
 from enum import Enum
 from typing import Final, TYPE_CHECKING
 
-from supervisor.llm_utils import _call_llm
+from utils.llm_utils import _call_llm
 
 if TYPE_CHECKING:
     from config.registry import Registry

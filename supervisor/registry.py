@@ -16,8 +16,8 @@ import logging
 
 from config.settings import get_model
 from supervisor.types import AgentRunner, AgentTask, AgentResult
-from supervisor.llm_utils import _call_llm, _format_dep_context
-from supervisor.planner import _run_planner
+from utils.llm_utils import _call_llm, _format_dep_context
+from agents.planner_decompose import _run_planner
 from supervisor.pipeline.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
 
 log = logging.getLogger("goat2.supervisor")

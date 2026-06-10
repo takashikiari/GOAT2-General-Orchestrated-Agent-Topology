@@ -19,8 +19,8 @@ from __future__ import annotations
 import logging
 from typing import Final, TYPE_CHECKING
 from supervisor.types import AgentTask, AgentResult
-from supervisor.llm_utils import _call_llm, _format_dep_context
-from supervisor.tool_runner import _call_with_tools
+from utils.llm_utils import _call_llm, _format_dep_context
+from tools.tool_runner import _call_with_tools
 
 if TYPE_CHECKING:
     from config.registry import Registry

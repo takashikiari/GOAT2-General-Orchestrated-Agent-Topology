@@ -108,8 +108,8 @@ from config.roles import SESSION_ROLE
 from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry
 from supervisor.pipeline.workflow import WorkflowGraph
-from supervisor.planner import decompose_plan
-from supervisor.critique import critique_results, synthesize_results, CriticVerdict
+from agents.planner_decompose import decompose_plan
+from agents.critique import critique_results, synthesize_results, CriticVerdict
 from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
 from supervisor.classification.classifier import classify_intent, IntentDepth
@@ -439,8 +439,8 @@ class GoatSupervisor:
         - Falls back to DAG if tool execution fails
         - Logs bypass events at INFO level
         """
-        from tools.memory.memory_tools import MEMORY_GET
-        from tools.memory.memory_temporal_tools import MEMORY_RECENT
+        from memory.memory_tools.memory_tools import MEMORY_GET
+        from memory.memory_tools.memory_temporal_tools import MEMORY_RECENT
         from tools.file.file_executor import EXECUTOR
 
         classification = classify_direct_request(intent)

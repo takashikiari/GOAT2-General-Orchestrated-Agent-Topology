@@ -58,11 +58,22 @@ supervisor/
 ├── identity.py    # GOAT_SYSTEM, profile loading, direct_response
 ├── types.py       # AgentTask, AgentResult, Plan, SupervisorResult
 ├── registry.py     # AgentRegistry (not a singleton)
-├── planner.py    # Task decomposition
-├── critique.py    # Critique and synthesis agents
-├── llm_utils.py   # LLM client utilities
-├── tool_runner.py # Tool-calling loop
+├── planner.py    # Task decomposition (DEPRECATED: use agents.planner_decompose)
+├── critique.py    # Critique and synthesis (DEPRECATED: use agents.critique)
+├── llm_utils.py   # LLM client utilities (DEPRECATED: use utils.llm_utils)
+├── tool_runner.py # Tool-calling loop (DEPRECATED: use tools.tool_runner)
+├── file_op_response.py # File operation handler (DEPRECATED: use tools.file.file_op_response)
 └── __init__.py   # Re-exports for backward compatibility
+```
+
+**Note**: The following modules have been moved to more appropriate locations:
+- `planner.py` → `agents.planner_decompose.py`
+- `critique.py` → `agents/critique.py`
+- `llm_utils.py` → `utils/llm_utils.py`
+- `tool_runner.py` → `tools/tool_runner.py`
+- `file_op_response.py` → `tools/file/file_op_response.py`
+
+The old locations in `supervisor/` still work via backward compatibility shims.
 ```
 
 ## How GoatSupervisor Orchestrates the 3 Async Pipelines

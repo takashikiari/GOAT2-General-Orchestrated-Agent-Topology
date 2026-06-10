@@ -7,6 +7,7 @@ Pre-built `ToolDefinition` instances ready to inject into any `BaseAgent`.
 ```
 tools/
 ├── __init__.py              — Re-exports all tools, maintains backward compatibility
+├── tool_runner.py        — _call_with_tools() tool-calling loop
 ├── file/                  — File operation tools
 │   ├── __init__.py
 │   ├── file_executor.py    — Central security gateway
@@ -19,6 +20,7 @@ tools/
 │   ├── file_read_lines.py — Read specific lines
 │   ├── file_search.py   — Find files by glob
 │   ├── file_write.py    — Write file contents
+│   ├── file_op_response.py — file_op_result() conversational handler
 │   ├── file_storage_helpers.py
 │   ├── file_storage_service.py
 │   └── path_utils.py
@@ -65,6 +67,12 @@ agent = SupervisorAgent(spec=..., tools=MEMORY_TOOLS)  # all memory tools
 ```
 
 ## Tools Overview
+
+### Tool Runner
+
+| Function | File | Description |
+|----------|------|-------------|
+| `_call_with_tools()` | `tool_runner.py` | Agentic tool-calling loop with retries |
 
 ### System Tools
 

@@ -57,7 +57,7 @@ from tools.file import (
 )
 
 # Re-export from memory/ subdirectory (shim that re-exports from memory.memory_tools)
-from tools.memory import (
+from memory.memory_tools import (
     MEMORY_AUTO_PROMOTE,
     MEMORY_COUNT,
     MEMORY_DELETE,
@@ -87,6 +87,7 @@ from tools.web import WEB_SEARCH
 from tools.system import CALCULATOR, SHELL, THINK
 
 from agents.base_agent import ToolDefinition
+from tools.tool_runner import _call_with_tools
 
 __all__ = [
     # Individual tools
@@ -118,6 +119,7 @@ __all__ = [
     "MEMORY_PROMOTE",
     "MEMORY_AUTO_PROMOTE",
     "MEMORY_EMBEDDING",
+    "_call_with_tools",
     # Convenience groups
     "DAG_MEMORY_TOOLS",
     "ALL_TOOLS",

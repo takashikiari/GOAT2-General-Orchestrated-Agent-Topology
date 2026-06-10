@@ -11,7 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Final
 
 from supervisor.behavior.behavior_profile import BehaviorProfile, deserialize, serialize
-from supervisor.llm_utils import _call_llm, _extract_json
+from utils.llm_utils import _call_llm, _extract_json
 
 if TYPE_CHECKING:
     from config.registry import Registry

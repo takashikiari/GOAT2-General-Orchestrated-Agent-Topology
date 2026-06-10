@@ -24,7 +24,7 @@ from memory.shared.memory_enums import MemoryType
 from memory.shared.pollution_guard import PollutionGuard
 from memory.shared.types import MemoryEntryMetadata
 from supervisor.behavior.info_types import INFERRED_TTL, ScoredFact
-from supervisor.llm_utils import _call_llm, _extract_json
+from utils.llm_utils import _call_llm, _extract_json
 
 __all__ = ["maybe_store_info"]
 

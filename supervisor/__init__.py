@@ -83,6 +83,23 @@ from supervisor.logging import (
     infer_source,
 )
 
+# Re-export from moved locations for backward compatibility
+# These modules were moved to more appropriate locations but are re-exported here
+from agents.critique import critique_results, synthesize_results, CriticVerdict, parse_verdict
+from agents.planner_decompose import decompose_plan
+from tools.tool_runner import _call_with_tools
+from tools.file.file_op_response import file_op_result
+from utils.llm_utils import (
+    _get_client,
+    _call_llm,
+    _extract_json,
+    _extract_balanced_json,
+    _format_dep_context,
+    _model_label,
+    _truncate_content,
+    _truncate_messages,
+)
+
 
 async def run(
     intent: str,
@@ -167,4 +184,20 @@ __all__ = [
     "TaggedResult",
     "TOOL_SOURCE_MAP",
     "infer_source",
+    # Re-exported from moved modules
+    "critique_results",
+    "synthesize_results",
+    "CriticVerdict",
+    "parse_verdict",
+    "decompose_plan",
+    "_call_with_tools",
+    "file_op_result",
+    "_get_client",
+    "_call_llm",
+    "_extract_json",
+    "_extract_balanced_json",
+    "_format_dep_context",
+    "_model_label",
+    "_truncate_content",
+    "_truncate_messages",
 ]

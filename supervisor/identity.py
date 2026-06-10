@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from config.registry import Registry
 
 from supervisor.logging.source_types import TaggedResult
-from supervisor.tool_runner import _call_with_tools
+from tools.tool_runner import _call_with_tools
 from supervisor.types import Plan, SupervisorResult
 
 __all__ = [
