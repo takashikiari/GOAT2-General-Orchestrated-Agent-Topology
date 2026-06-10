@@ -80,4 +80,3 @@ goat_the_liar.txt
 .DS_Store
 Thumbs.db
 .env
-config/goat.toml

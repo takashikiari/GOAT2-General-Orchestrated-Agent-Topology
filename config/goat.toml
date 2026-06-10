@@ -1,0 +1,168 @@
+# GOAT 2.0 — local development configuration
+# Resolution order: environment variable → this file → hard-coded default
+#
+# ⚠️ SECURITY WARNING: Never commit API keys to version control!
+# 
+# API keys in [api_keys] are for local dev ONLY.
+# In CI/production set OPENAI_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY as env vars.
+# The .env file is no longer loaded automatically; migrate secrets here or to env vars.
+#
+# 🔴 IMPORTANT: If this file is in git, rotate ALL keys below immediately!
+
+# =============================================================================
+# MEMORY ACCESS ARCHITECTURE
+# =============================================================================
+# 
+# GOAT 2.0 implements a tiered memory access model:
+#
+# SUPERVISOR (Full Access):
+#   - Can read/write to all three memory tiers:
+#     * WORKING (Redis) — Session-scoped, TTL-enforced
+#     * EPISODIC (ChromaDB) — Semantic search, persistent
+#     * LONG_TERM (Letta) — Core memory blocks, most persistent
+#
+# DAG AGENTS (Restricted Access):
+#   - Can ONLY access WORKING memory (Redis) via task.memory_manager
+#   - CANNOT directly access ChromaDB or Letta
+#   - Prevents memory pollution from agent-executed operations
+#
+# PARALLEL MEMORY PIPELINE:
+#   - Runs concurrently with DAG execution for Redis operations
+#   - Non-blocking memory read/write during task execution
+#   - Persistent memory writes happen post-execution via supervisor
+#
+# =============================================================================
+
+[model]
+default    = "deepseek-chat"  # fallback for all agents when role env var is unset
+provider   = "deepseek"       # informational; validated by Settings.validate()
+supervisor = "deepseek-chat"  # GoatSupervisor.decompose_plan and routing
+
+# =============================================================================
+# AGENT MODEL CONFIGURATION
+# =============================================================================
+#
+# Each agent role has a dedicated model assignment:
+#   - planner: Decomposes intents into task DAGs
+#   - researcher: Gathers information via tools
+#   - coder: Generates and modifies code
+#   - critic: Reviews agent outputs (temperature: 0.3)
+#   - summarizer: Synthesizes results (temperature: 0.5)
+#   - tool_caller: Executes tool-based operations
+#   - memory: Handles memory-related queries
+#
+# Temperature Settings:
+#   - Supervisor: 0.5 (reduced for accuracy, minimizes false information)
+#   - Default Agent: 0.4 (balanced creativity/accuracy)
+#   - Critic Agent: 0.3 (analytical, consistent reviews)
+#
+# =============================================================================
+
+[agents]
+planner     = "deepseek-r1"
+researcher  = "deepseek-chat"
+coder       = "deepseek-coder"
+critic      = "deepseek-chat"
+summarizer  = "llama-3.1–8b"
+tool_caller = "deepseek-chat"
+memory      = "llama-3.1-8b"
+
+[api_keys]
+# ⚠️ LEAVE BLANK to rely solely on environment variables (RECOMMENDED)
+# Set these in your shell or .env file instead:
+#   export OPENAI_API_KEY="sk-..."
+#   export DEEPSEEK_API_KEY="sk-..."
+#   export GROQ_API_KEY="gsk_..."
+#   export TELEGRAM_BOT_TOKEN="..."
+#
+# Only uncomment below for local testing NEVER commit real keys to git!
+openai   = ""
+deepseek = ""
+groq     = ""
+
+# =============================================================================
+# MEMORY CONFIGURATION
+# =============================================================================
+#
+# WORKING MEMORY (Redis):
+#   - Session-scoped with TTL enforcement
+#   - Accessible by both supervisor and DAG agents
+#   - Used for active conversation context
+#
+# EPISODIC MEMORY (ChromaDB):
+#   - Semantic search across conversation history
+#   - SUPERVISOR-ONLY access (prevents pollution)
+#   - Persistent across sessions
+#
+# LONG-TERM MEMORY (Letta):
+#   - Core memory blocks for agent identity/behavior
+#   - SUPERVISOR-ONLY access (prevents pollution)
+#   - Most persistent tier
+#
+# =============================================================================
+
+[memory]
+letta_base_url    = "http://localhost:8283"
+letta_api_key     = ""
+letta_llm_model   = "groq/llama-3.1-8b-instant"
+letta_embed_model = "openai/text-embedding-ada-002"
+letta_token_limit = 4096
+chroma_persist_dir = ""  # defaults to <project_root>/chroma_db when blank
+
+# =============================================================================
+# SUPERVISOR CONFIGURATION
+# =============================================================================
+#
+# The supervisor orchestrates all agent execution:
+#   - Decomposes intents into task DAGs
+#   - Manages memory access across all three tiers
+#   - Validates task results before reporting success
+#   - Runs parallel memory pipeline for Redis during DAG execution
+#
+# Temperature: 0.7
+#   - Reduced from default to minimize hallucination
+#   - Ensures accurate summaries and reduced false information
+#   - Critical for reliable task validation and reporting
+#
+# =============================================================================
+
+[supervisor]
+max_workers  = 7      # Concurrent task execution limit
+max_turns    = 20      # Maximum conversation turns
+turn_timeout = 120     # Seconds before task timeout
+verbose      = true   # Enable detailed logging
+temperature  = 0.5     # Reduced for accuracy (minimizes false information)
+
+# =============================================================================
+# COMMUNICATION CHANNELS
+# =============================================================================
+#
+# Telegram interface (supervisor/interfaces/telegram_bot.py — planned)
+# ⚠️ Set TELEGRAM_BOT_TOKEN environment variable instead
+#
+# =============================================================================
+
+[channels]
+telegram_token   = ""
+telegram_enabled = true
+
+# =============================================================================
+# END-TO-END TESTING
+# =============================================================================
+#
+# Run tests with: pytest tests/test_memory_pipeline.py -v
+#
+# Tests verify:
+#   1. Supervisor has full memory access (Redis, ChromaDB, Letta)
+#   2. DAG agents can only access working memory (Redis)
+#   3. Parallel memory pipeline runs concurrently during DAG execution
+#   4. Temperature settings are correct (supervisor: 0.5)
+#   5. Memory pollution prevention works correctly
+#
+# =============================================================================
+ # WEBSEARCH TOOL
+ [tools.web_search]
+enabled = true
+searxng_url = "http://localhost:7777"
+timeout = 30
+max_results = 10
