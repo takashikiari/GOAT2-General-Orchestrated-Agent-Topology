@@ -195,9 +195,11 @@ If any parameter is missing, task is marked `validated=False` and synthesis is s
 
 ## DAG Agent Roster (all 7)
 
-The supervisor registry (`supervisor/registry.py:_build_default_registry`)
-wires all 7 built-in agents into the DAG. Each has its own logger under
-`goat2.agents.<role>` for per-agent observability.
+The supervisor `AgentRegistry` (`supervisor/registry.py`) self-registers
+all 7 built-in agents in its constructor. Each has its own logger under
+`goat2.agents.<role>` for per-agent observability. The legacy helper
+`_build_default_registry()` is preserved as a thin wrapper that
+returns `AgentRegistry()`.
 
 | Role | Class | Default model | Temp | Tools |
 |---|---|---|---|---|
@@ -226,7 +228,7 @@ from agents import (
 GOAT 2.0 is split into three layers that must not import each other at
 module level: `agents/`, `supervisor/`, and `tools/`. A naive cross-module
 import risks a circular chain through the `ServiceRegistry` initialization.
-Three mechanisms together enforce the boundary:
+Four mechanisms together enforce the boundary:
 
 ### 1. `from __future__ import annotations`
 
@@ -278,13 +280,14 @@ import in many call sites). `config/routing.py` centralises them:
 
 ```python
 from config.routing import (
+    routing_debug_enabled,    # bool — toggle verbose routing logs
+    get_agent_registry,       # AgentRegistry — all 7 DAG runners
     get_supervisor_result,    # SupervisorResult class
     get_agent_result,         # AgentResult class
     get_agent_task,           # AgentTask class
     get_file_tools,           # tools.FILE_TOOLS list
     get_memory_tools,         # tools.MEMORY_TOOLS list (GOAT full-tier)
     get_dag_memory_tools,     # tools.DAG_MEMORY_TOOLS list (DAG working-tier)
-    routing_debug_enabled,    # bool — toggle verbose routing logs
 )
 ```
 
@@ -311,7 +314,88 @@ result = await supervisor.run("Build a REST API")
 
 The registry is constructed once at application startup and passed to every
 component. The cycle risk is contained to registry initialization
-(`_build_default_registry` runs lazy imports).
+(`ServiceRegistry.__init__` lazy-imports `AgentRegistry` from supervisor/).
+
+### 6. The cross-wiring — `ServiceRegistry` ↔ `AgentRegistry`
+
+`config/registry.py` performs a **function-local** import of
+`supervisor.registry.AgentRegistry` inside `__init__`. This is the
+*only* cross-layer import in `config/`, and because it lives inside
+the constructor body, the file can be imported at startup without
+pulling in `supervisor/`, `agents/`, or `tools/`. The type hint is
+declared under `TYPE_CHECKING`.
+
+```python
+# config/registry.py
+if TYPE_CHECKING:
+    from supervisor.registry import AgentRegistry
+
+class ServiceRegistry:
+    def __init__(self, config_path: str = "config/goat.toml") -> None:
+        ...
+        # 7. Agent registry — function-local import, NOT at module level
+        from supervisor.registry import AgentRegistry
+        self.agent_registry: AgentRegistry = AgentRegistry()
+```
+
+The constructed `AgentRegistry` self-registers all 7 DAG runners in its
+own `__init__`, so the parent `ServiceRegistry` needs no further wiring.
+
+---
+
+## ServiceRegistry ↔ AgentRegistry Relationship
+
+```
+ServiceRegistry (config/registry.py, the only module-level container)
+  ├── settings             Settings (env + toml resolution)
+  ├── working_memory       WorkingMemoryLayer (Redis-backed)
+  ├── memory_manager       MemoryManager (working + long_term tiers)
+  ├── letta_client         LettaClient (long-term memory)
+  ├── file_tools           [ToolDefinition] — file + web + shell
+  ├── memory_tools         [ToolDefinition] — 16 GOAT full-tier tools
+  ├── dag_memory_tools     [ToolDefinition] — 4 DAG working-tier tools
+  ├── agent_models         AgentModels (per-role model keys)
+  └── agent_registry  ──►  AgentRegistry (supervisor/registry.py, NOT a singleton)
+                              ├── researcher   → _run_researcher
+                              ├── coder        → _run_coder
+                              ├── critic       → _run_critic
+                              ├── planner      → _run_planner
+                              ├── summarizer   → _run_summarizer
+                              ├── tool_caller  → _run_tool_caller
+                              └── memory       → _run_memory
+```
+
+### Why two registries?
+
+- **`ServiceRegistry`** owns **infrastructure** (memory, settings, tools,
+  models) and the lifetime of the application. It is instantiated
+  once at startup.
+- **`AgentRegistry`** owns **agent wiring** (the role → runner mapping).
+  `AgentRegistry()` self-initializes with the 7 defaults in its
+  constructor. It is a regular class — instantiate as many as you
+  need; the canonical instance lives at `ServiceRegistry.agent_registry`.
+
+### Cross-layer access
+
+Use the routing accessor when you need an `AgentRegistry` from a
+context where importing `supervisor/` directly is awkward (e.g. from
+`agents/` files):
+
+```python
+from config.routing import get_agent_registry
+
+reg = get_agent_registry()       # lazy, function-local import
+runner = reg.get("memory")
+```
+
+Use `ServiceRegistry` for the canonical instance during normal
+application flow:
+
+```python
+from config.registry import ServiceRegistry
+registry = ServiceRegistry()
+runner = registry.get("memory")   # delegates to registry.agent_registry
+```
 
 ---
 
@@ -333,9 +417,26 @@ exactly the logger you care about.
 | `agents/summarizer.py` | `goat2.agents.summarizer` | agent ready, execute start/done |
 | `agents/tool_caller.py` | `goat2.agents.tool_caller` | agent ready, execute start/done |
 | `agents/memory_agent.py` | `goat2.agents.memory` | agent ready, execute start/done |
-| `config/routing.py` | `goat2.routing` | get_* accessors, resolved FQN |
-| `config/registry.py` | `goat2.registry` | ServiceRegistry init, services loaded |
-| `supervisor/registry.py` | `goat2.supervisor` | runner registered / looked up |
+| `config/__init__.py` | `goat2.config` | (parent logger for subtree) |
+| `config/agent_models.py` | `goat2.config.agent_models` | model key resolution per role |
+| `config/agents.py` | `goat2.config.agents` | (constants) |
+| `config/api_keys.py` | `goat2.config.api_keys` | API key resolution (env / toml) |
+| `config/limits.py` | `goat2.config.limits` | (constants) |
+| `config/model_catalogue.py` | `goat2.config.model_catalogue` | unknown model lookup |
+| `config/model_selector.py` | `goat2.model_selector` | health-check failures, fallback |
+| `config/onboarding.py` | `goat2.config.onboarding` | (constants) |
+| `config/registry.py` | `goat2.config.registry` | `ServiceRegistry` step-by-step init, `get(role)` |
+| `config/roles.py` | `goat2.config.roles` | (constants) |
+| `config/routing.py` | `goat2.routing` | every `get_*` accessor + FQN on debug |
+| `config/settings.py` | `goat2.config.settings` | `_e()` resolution, `validate()` start/ok |
+| `config/supervisor.py` | `goat2.config.supervisor` | (constants) |
+| `config/tiers.py` | `goat2.config.tiers` | (constants) |
+| `config/timeouts.py` | `goat2.config.timeouts` | (constants) |
+| `config/tools.py` | `goat2.config.tools` | (constants) |
+| `config/toml_loader.py` | `goat2.config.toml_loader` | toml loaded / not found / parse error |
+| `config/memory.py` | `goat2.config.memory` | (re-export shim) |
+| `supervisor/registry.py` | `goat2.supervisor.registry` | runner registered / looked up, init summary |
+| `supervisor/pipeline/runners.py` | `goat2.runners` | tool selection per runner |
 
 Enable DEBUG globally:
 
@@ -372,6 +473,22 @@ GOAT 2.0 has exactly one module-level object: the **`ServiceRegistry`** in
 - **A class-level constant** — e.g. `ModelSpec.provider` enum value,
   `ToolDefinition` records in `FILE_TOOLS`.
 
+### The guarantee
+
+The system has **exactly one** module-level container: the
+`ServiceRegistry` defined in `config/registry.py`. The companion
+`AgentRegistry` (`supervisor/registry.py`) is **not** a singleton —
+it is a regular class, constructed freely via `AgentRegistry()`. The
+canonical instance lives at `ServiceRegistry.agent_registry`, but
+nothing prevents code from instantiating additional `AgentRegistry`
+objects (e.g. for testing or per-session registries).
+
+The `ServiceRegistry` itself is *not* a module-level instance — it is
+a class, instantiated once at application startup and passed
+explicitly through the call stack. The phrase "one module-level
+object" means "one module-level **class** that serves as the
+canonical DI container."
+
 ### What's NOT a singleton anymore
 
 Earlier versions of GOAT had:
@@ -401,3 +518,17 @@ assert loaded == [], f"agents/ leaked supervisor modules: {loaded}"
 This assertion passes because every supervisor-side dependency in
 `agents/` is hidden behind a `TYPE_CHECKING` guard or a lazy import
 inside a function body.
+
+To prove `config.registry` doesn't leak `supervisor/` at import time:
+
+```python
+import sys
+import config.registry
+leaked = [m for m in sys.modules if m.startswith('supervisor')]
+assert leaked == [], f"config/registry.py leaked supervisor modules at import: {leaked}"
+```
+
+This passes because the `from supervisor.registry import AgentRegistry`
+inside `config/registry.py` lives inside `ServiceRegistry.__init__`,
+not at module level. The `TYPE_CHECKING` block at the top only provides
+type hints and never runs.

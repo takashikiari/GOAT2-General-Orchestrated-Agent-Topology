@@ -3,6 +3,12 @@
 This module has been moved to memory.config.
 Import from there instead.
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.config.memory")
+
 from memory.config import (
     WORKING_BACKEND,
     EPISODIC_BACKEND,

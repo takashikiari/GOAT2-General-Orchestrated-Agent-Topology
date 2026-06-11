@@ -24,7 +24,10 @@ All files should import from this module instead of hardcoding role strings.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.agents")
 
 __all__ = [
     "AGENT_ROLES",

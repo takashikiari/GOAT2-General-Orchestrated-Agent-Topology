@@ -1,11 +1,14 @@
 """Per-agent model config — falls back to DEFAULT_MODEL and goat.toml if role env var is unset."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 
 from config.model_catalogue import ModelSpec, get_model
 from config.toml_loader import load_toml
+
+log = logging.getLogger("goat2.config.agent_models")
 
 __all__ = ["AgentModels"]
 
@@ -14,13 +17,15 @@ _toml = load_toml()
 
 def _key(env_var: str, toml_role: str, role_default: str) -> str:
     """Resolve model key: env var → DEFAULT_MODEL env → toml agent → toml default → role_default."""
-    return (
+    resolved = (
         os.environ.get(env_var)
         or os.environ.get("DEFAULT_MODEL")
         or _toml.agent(toml_role)
         or _toml.model("default")
         or role_default
     )
+    log.debug("AgentModels._key: env=%s role=%s resolved=%s", env_var, toml_role, resolved)
+    return resolved
 
 
 @dataclass
@@ -38,5 +43,8 @@ class AgentModels:
         """Return the ModelSpec for a named agent role; raises ValueError on unknown role."""
         key = getattr(self, role, None)
         if key is None:
+            log.debug("AgentModels.get: unknown role=%r", role)
             raise ValueError(f"Unknown agent role '{role}'.")
-        return get_model(key)
+        spec = get_model(key)
+        log.debug("AgentModels.get: role=%r key=%s spec=%s", role, key, spec)
+        return spec

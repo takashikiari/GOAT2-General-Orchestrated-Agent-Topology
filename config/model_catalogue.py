@@ -1,9 +1,12 @@
 """Model catalogue — Provider, ModelSpec with capability flags, MODELS registry, get_model."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
+
+log = logging.getLogger("goat2.config.model_catalogue")
 
 __all__ = ["Provider", "ModelSpec", "MODELS", "get_model"]
 
@@ -48,5 +51,6 @@ MODELS: Final[dict[str, ModelSpec]] = {
 def get_model(key: str) -> ModelSpec:
     """Look up a ModelSpec by catalogue key; raises ValueError on unknown keys. Pure."""
     if key not in MODELS:
+        log.debug("model_catalogue.get_model: unknown key=%r available=%s", key, list(MODELS))
         raise ValueError(f"Unknown model key '{key}'. Available: {list(MODELS)}")
     return MODELS[key]

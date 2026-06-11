@@ -1,9 +1,12 @@
 """Load config/goat.toml and expose typed section accessors. tomllib is stdlib in Python ≥3.11."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Final
+
+log = logging.getLogger("goat2.config.toml_loader")
 
 __all__ = ["TomlConfig", "load_toml"]
 
@@ -13,16 +16,21 @@ _PATH: Final[Path] = Path(__file__).parent / "goat.toml"
 def _load_raw() -> dict[str, Any]:
     """Read goat.toml; returns {} when absent or when no toml parser is available."""
     if not _PATH.exists():
+        log.debug("toml_loader: %s not found; returning empty config", _PATH)
         return {}
     try:
         if sys.version_info >= (3, 11):
             import tomllib
             with _PATH.open("rb") as f:
-                return tomllib.load(f)
-        import tomli  # type: ignore[import]
-        with _PATH.open("rb") as f:
-            return tomli.load(f)
-    except Exception:
+                data = tomllib.load(f)
+        else:
+            import tomli  # type: ignore[import]
+            with _PATH.open("rb") as f:
+                data = tomli.load(f)
+        log.debug("toml_loader: %s loaded (top-level keys=%s)", _PATH, list(data))
+        return data
+    except Exception as exc:
+        log.debug("toml_loader: %s parse error: %s; returning empty config", _PATH, exc)
         return {}
 
 

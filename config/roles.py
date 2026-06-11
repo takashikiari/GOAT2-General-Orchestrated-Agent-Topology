@@ -31,7 +31,10 @@ All files should import from this module instead of hardcoding role strings.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.roles")
 
 __all__ = ["GOAT_ROLE", "SESSION_ROLE", "DAG_PREFIX", "GOAT_PREFIX"]
 

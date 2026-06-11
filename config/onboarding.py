@@ -4,6 +4,10 @@ Central registry for onboarding-related constants.
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.config.onboarding")
+
 __all__ = [
     "GOAT_VERSION",
     "PROFILE_TTL_WORKING",

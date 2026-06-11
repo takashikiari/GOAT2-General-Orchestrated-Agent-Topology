@@ -28,7 +28,10 @@ All files should import from this module instead of hardcoding timeout values.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.timeouts")
 
 __all__ = ["TURN_TIMEOUT", "TOOL_TIMEOUT", "LETTA_TIMEOUT", "REDIS_TIMEOUT"]
 

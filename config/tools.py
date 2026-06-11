@@ -16,7 +16,10 @@ USAGE:
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.tools")
 
 # File operation limits
 MAX_FILE_SIZE: Final[int] = 1 << 20  # 1 MB default

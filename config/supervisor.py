@@ -12,7 +12,10 @@ for deterministic feedback and consistent output.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.supervisor")
 
 __all__ = [
     "MAX_WAVES",

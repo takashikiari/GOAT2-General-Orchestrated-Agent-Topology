@@ -155,6 +155,156 @@ Also: removed the unused `field` import from `dataclasses`.
 
 ---
 
+### Added
+
+#### ServiceRegistry ↔ AgentRegistry wiring (Phase 4 consolidation)
+
+**Problem:** `config/registry.py:ServiceRegistry` had a hacky lazy
+`get(role)` that instantiated an *empty* `AgentRegistry()` on demand —
+the runners were never registered, so `registry.get("researcher")`
+raised `KeyError` in production. The two registries also had
+inconsistent loggers (`goat2.registry` vs `goat2.supervisor`) and no
+`TYPE_CHECKING` guards. `config/` lacked per-module loggers.
+
+**Changes:**
+
+**`config/registry.py` (ServiceRegistry)**:
+- Logger renamed `goat2.registry` → `goat2.config.registry`.
+- `TYPE_CHECKING` block adds `from supervisor.registry import AgentRegistry`
+  (type hint only, never runs at import time).
+- `__slots__` extended with `agent_registry`.
+- `AgentRegistry()` is now constructed in `__init__` via a
+  **function-local** import of `supervisor.registry` — the only
+  cross-layer import in `config/`, and it never runs at module
+  import time.
+- `__init__` emits a DEBUG log for each initialization step (settings,
+  agent_models, working_memory, letta_client, memory_manager, tools,
+  agent_registry) plus an INFO summary.
+- `get(role)` is now a clean delegation to `self.agent_registry.get(role)`
+  and logs at DEBUG. The old "create-on-demand" hack is removed.
+
+**`supervisor/registry.py` (AgentRegistry)**:
+- Logger renamed `goat2.supervisor` → `goat2.supervisor.registry`.
+- `TYPE_CHECKING` block adds `from config.registry import Registry`
+  (for the `make_and_register` runner signature).
+- `__init__` now self-registers all 7 DAG runners via
+  `_register_defaults()`. The registry is no longer empty at
+  construction time.
+- All 7 agents registered: `planner`, `researcher`, `coder`, `critic`,
+  `summarizer`, `tool_caller`, **`memory`** (new).
+- `register()`, `get()`, `has()`, `roles()`, `make_and_register()` all
+  log at DEBUG with the runner name.
+- `_build_default_registry()` is preserved as a thin wrapper
+  (`return AgentRegistry()`) for backward compatibility.
+
+**`supervisor/pipeline/runners.py`** (new `_run_memory`, +38 lines):
+- New `_run_memory(task, dep_results, registry)` runner using the 4
+  DAG memory tools (`memory_recent`, `memory_get`, `memory_store`,
+  `memory_search`) with `tool_choice="required"`. Reuses the
+  `tool_caller` model spec.
+- `__all__` extended with `"_run_memory"`.
+- Removed unused `Final` import and unused `_dedupe_tools` helper.
+- Per-runner docstrings tightened.
+
+**`config/routing.py`** (new accessor):
+- `get_agent_registry()` — lazy accessor returning a freshly populated
+  `AgentRegistry` with all 7 defaults.
+- `TYPE_CHECKING` block imports `AgentRegistry` for the return-type
+  hint.
+- `__all__` extended with `"get_agent_registry"`.
+
+**Per-module debug loggers in `config/`**:
+- 17 `config/*.py` files now declare a logger under
+  `goat2.config.<module_name>` (or `goat2.routing` for `routing.py`).
+- Constants-only files (`agents.py`, `limits.py`, `onboarding.py`,
+  `roles.py`, `supervisor.py`, `tiers.py`, `timeouts.py`, `tools.py`,
+  `memory.py`) declare the logger for namespace consistency.
+- `agent_models.py` logs `_key()` resolutions and `get(role)` lookups.
+- `api_keys.py` logs API key resolution and `for_provider()` calls.
+- `model_catalogue.py` logs unknown model lookups.
+- `settings.py` logs `_e()` resolutions and `validate()` start/ok.
+- `toml_loader.py` logs toml loaded / not found / parse errors.
+- `config/__init__.py` declares a parent `goat2.config` logger so
+  DEBUG filters can match the whole subtree.
+
+#### Documentation updates
+
+**`config/README.md`** (+~250 lines, no line limit):
+- New "routing.py" section documenting every `get_*` accessor, the
+  routing debug toggle (env var + `[debug].routing` toml), and the
+  `get_agent_registry()` accessor with a runner-mapping table.
+- New "ServiceRegistry ↔ AgentRegistry Relationship" section with
+  the full ownership diagram and a walk-through of the cross-layer
+  import.
+- New "Debug Logger Pattern" section listing every
+  `goat2.config.<module>` logger, with examples for enabling DEBUG
+  globally and for the registry alone.
+- Updated directory structure tree (adds `agent_types.py`, `routing.py`,
+  `onboarding.py`, `supervisor.py`, `tools.py`, `memory.py`).
+- Updated `registry.py` section to mention `agent_registry` ownership
+  and the cross-layer import.
+
+**`docs/architecture.md`** (+~150 lines, no line limit):
+- "Dependency Management" expanded to 6 mechanisms: adds the
+  cross-wiring note (function-local import of `AgentRegistry` in
+  `ServiceRegistry.__init__`).
+- New "ServiceRegistry ↔ AgentRegistry Relationship" section with
+  the ASCII diagram of the 9 owned services + the 7-runner table.
+- "Debug & Observability" table expanded to include all new
+  `goat2.config.<module>` loggers.
+- "DAG Agent Roster" updated to note the constructor self-registration.
+- "Zero Singleton Architecture" expanded with an explicit guarantee
+  statement, the "not-a-singleton" rule for `AgentRegistry`, and a
+  second verification recipe proving `config/registry.py` does not
+  leak `supervisor/` at import time.
+
+### Validation
+
+- `python -c "from config.routing import (routing_debug_enabled, get_agent_registry, get_supervisor_result, get_agent_result, get_agent_task, get_file_tools, get_memory_tools, get_dag_memory_tools)"` — **PASS**, no ImportError.
+- `python -c "from config.registry import ServiceRegistry"` — **PASS**,
+  no ImportError. Module-level import does NOT pull in `supervisor/`.
+- AST verification: `config/registry.py` has zero `from supervisor import`
+  and zero `import supervisor` at module level (the only such import
+  is inside `ServiceRegistry.__init__`).
+- All 7 agents registered on `AgentRegistry()`:
+  `['critic', 'coder', 'memory', 'planner', 'researcher', 'summarizer', 'tool_caller']`.
+- `ServiceRegistry().get("memory")` returns the `_run_memory` callable
+  without `KeyError`.
+- `routing_debug_enabled()` reads `[debug].routing` from `goat.toml`.
+
+### Files modified
+
+- **modified**: `config/registry.py` (225 lines), `config/routing.py`
+  (208 lines), `config/__init__.py`, `config/agent_models.py`,
+  `config/agents.py`, `config/api_keys.py`, `config/limits.py`,
+  `config/model_catalogue.py`, `config/onboarding.py`, `config/roles.py`,
+  `config/settings.py`, `config/supervisor.py`, `config/tiers.py`,
+  `config/timeouts.py`, `config/toml_loader.py`, `config/tools.py`,
+  `config/memory.py`
+- **modified**: `supervisor/registry.py` (171 lines),
+  `supervisor/pipeline/runners.py` (251 lines)
+- **modified**: `config/README.md`, `docs/architecture.md`, `CHANGELOG.md`
+
+### Constraint compliance
+
+- ✅ `config/agent_types.py` — NOT modified.
+- ✅ No singletonuri added — `ServiceRegistry` is a class, instantiated
+  by callers; `AgentRegistry` is a class, instantiated freely. No
+  module-level registry assignments exist in `config/` or `supervisor/`.
+- ✅ `config/*.py` files NEVER import from `supervisor/` or `agents/`
+  at module level — the only cross-layer import in `config/registry.py`
+  lives inside `ServiceRegistry.__init__` (function-local).
+- ✅ All code files ≤ 260 lines except the pre-existing `settings.py`
+  (369 lines — was 361 before this work, +8 for the logger and 3
+  DEBUG-log statements; the file was already over 260 before this
+  change and was left untouched functionally).
+- ✅ `AgentRegistry` is NOT a singleton — it is a regular class; the
+  canonical instance lives at `ServiceRegistry.agent_registry`.
+- ✅ Logger namespace `goat2.config.<module>` used consistently across
+  all 17 touched `config/*.py` files.
+
+---
+
 ### Fixed
 
 #### Circular import between `agents/` and `supervisor/` (GOAT-circular-import)

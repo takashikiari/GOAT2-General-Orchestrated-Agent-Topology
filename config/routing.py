@@ -46,10 +46,14 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from supervisor.registry import AgentRegistry
+
 log = logging.getLogger("goat2.routing")
 
 __all__ = [
     "routing_debug_enabled",
+    "get_agent_registry",
     "get_supervisor_result",
     "get_agent_result",
     "get_agent_task",
@@ -98,6 +102,27 @@ def routing_debug_enabled() -> bool:
         return bool(raw.get("debug", {}).get("routing", False))
     except Exception:
         return False
+
+
+def get_agent_registry() -> "AgentRegistry":
+    """Lazy accessor: return a default AgentRegistry with all 7 DAG runners.
+
+    Each call constructs a fresh ``AgentRegistry()``; the constructor
+    self-registers all 7 built-in runners (researcher, coder, critic,
+    planner, summarizer, tool_caller, memory) from
+    ``supervisor/pipeline/runners.py``.
+
+    The import is performed inside the function body so this module
+    remains safe to import from any context, including ``agents/`` files.
+
+    Returns:
+        AgentRegistry: A populated registry with all 7 runners.
+    """
+    log.debug("routing: get_agent_registry requested")
+    from supervisor.registry import AgentRegistry
+    registry = AgentRegistry()
+    _emit(registry, "get_agent_registry")
+    return registry
 
 
 def get_supervisor_result() -> type:

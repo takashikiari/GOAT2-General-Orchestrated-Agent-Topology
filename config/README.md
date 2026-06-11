@@ -20,20 +20,30 @@ CI/CD pipelines and production deployments to override defaults without modifyin
 config/
 ├── __init__.py           # Re-exports public API: Settings, Provider, ModelSpec, get_model
 ├── agents.py             # Agent role registry (AGENT_ROLES, EXECUTION_ROLES, etc.)
+├── agent_models.py       # Per-role model configuration (AgentModels)
+├── agent_types.py        # Shared agent types (AgentTask, AgentResult, Plan) — leaf module
 ├── api_keys.py           # API credential management (APIKeys, PROVIDER_BASE_URLS)
 ├── goat.toml             # Primary configuration file (5 sections)
 ├── limits.py             # System limits and TTLs (MAX_RECALL_LIMIT, DAG_RESULT_TTL, etc.)
+├── memory.py             # Back-compat shim → memory.config
 ├── model_catalogue.py    # Model registry (Provider, ModelSpec, MODELS, get_model)
 ├── model_selector.py     # Dynamic model selection with fallback chains
-├── registry.py           # ServiceRegistry (dependency injection container)
-├── roles.py             # Memory namespace roles (GOAT_ROLE, SESSION_ROLE)
-├── settings.py         # Settings loader (Settings, LettaConfig, SupervisorConfig)
-├── tiers.py            # Memory tier constants (WORKING, EPISODIC, LONG_TERM, ANY)
-├── timeouts.py          # Timeout values (TURN_TIMEOUT, TOOL_TIMEOUT, etc.)
-├── toml_loader.py       # TOML loading utilities (TomlConfig, load_toml)
-├── agent_models.py     # Per-role model configuration
-├── README.md           # This file
+├── onboarding.py         # Onboarding constants (TTL, Redis keys, version)
+├── registry.py           # ServiceRegistry (DI container, owns AgentRegistry)
+├── roles.py              # Memory namespace roles (GOAT_ROLE, SESSION_ROLE)
+├── routing.py            # Cross-module lazy accessors + routing debug toggle
+├── settings.py           # Settings loader (Settings, LettaConfig, SupervisorConfig)
+├── supervisor.py         # Supervisor module constants (wave limits, timeouts)
+├── tiers.py              # Memory tier constants (WORKING, EPISODIC, LONG_TERM, ANY)
+├── timeouts.py           # Timeout values (TURN_TIMEOUT, TOOL_TIMEOUT, etc.)
+├── tools.py              # Tool-related constants (MAX_FILE_SIZE, etc.)
+├── toml_loader.py        # TOML loading utilities (TomlConfig, load_toml)
+├── README.md             # This file
 ```
+
+**Logger namespace:** every module in `config/` declares a logger
+under `goat2.config.<module_name>` (e.g. `goat2.config.registry`,
+`goat2.config.routing`). See the **Debug Logger Pattern** section below.
 
 ---
 
@@ -259,17 +269,34 @@ registry = ServiceRegistry(config_path="config/goat.toml")
 
 # Pass to components
 supervisor = GoatSupervisor(registry=registry)
+
+# Look up an agent runner by role (delegates to agent_registry)
+runner = registry.get("researcher")
 ```
 
 **Services Owned:**
-- `settings`: Settings configuration container
-- `working_memory`: WorkingMemoryLayer (Redis-backed)
-- `memory_manager`: MemoryManager coordinating all tiers
-- `file_tools`: List of file operation ToolDefinitions
-- `memory_tools`: List of memory operation ToolDefinitions
+- `settings`:        Settings configuration container
+- `working_memory`:  WorkingMemoryLayer (Redis-backed)
+- `memory_manager`:  MemoryManager coordinating all tiers
+- `file_tools`:      List of file operation ToolDefinitions
+- `memory_tools`:    List of memory operation ToolDefinitions
 - `dag_memory_tools`: Restricted tools for DAG agents
-- `agent_models`: AgentModels for per-role configuration
-- `letta_client`: Letta client for long-term memory
+- `agent_models`:    AgentModels for per-role configuration
+- `letta_client`:    Letta client for long-term memory
+- `agent_registry`:  `AgentRegistry` (from `supervisor/registry.py`)
+                     with all 7 DAG runners pre-registered
+
+**Cross-layer import:** the `supervisor.registry.AgentRegistry` import
+is performed inside `ServiceRegistry.__init__` (function-local), NOT
+at module level. `import config.registry` at startup therefore does
+not pull in `supervisor/`. The type hint is provided via a
+`TYPE_CHECKING` guard.
+
+**Methods:**
+- `get(role)`: Returns the agent runner registered for the role.
+  Delegates to `self.agent_registry.get(role)`.
+
+See also: **ServiceRegistry ↔ AgentRegistry Relationship** below.
 
 ---
 
@@ -511,3 +538,225 @@ settings.validate()  # Raises EnvironmentError with all missing credentials
 - `supervisor/dag_validator.py` — Uses EXECUTION_ROLES for validation
 - `agents/` — Agent implementations using model specs
 - `memory/` — Memory tiers using tier constants
+
+---
+
+## routing.py — Cross-Module Lazy Accessors + Debug Toggle
+
+`config/routing.py` is the central routing layer for the
+`routing + TYPE_CHECKING + Registry` dependency-management discipline.
+Every cross-module value that the leaf `config/` layer can supply is
+exposed as a lazy accessor function — the import is performed inside
+the function body so the dependency is only resolved when called.
+
+```python
+from config.routing import (
+    routing_debug_enabled,    # bool — toggle verbose routing logs
+    get_agent_registry,       # AgentRegistry — all 7 DAG runners
+    get_supervisor_result,    # SupervisorResult class
+    get_agent_result,         # AgentResult dataclass
+    get_agent_task,           # AgentTask dataclass
+    get_file_tools,           # tools.FILE_TOOLS list
+    get_memory_tools,         # tools.MEMORY_TOOLS list (GOAT full-tier)
+    get_dag_memory_tools,     # tools.DAG_MEMORY_TOOLS list (DAG working-tier)
+)
+```
+
+### `routing_debug_enabled() -> bool`
+
+Returns `True` when verbose routing traces should be emitted.
+Resolution order (highest priority first):
+
+1. `GOAT_ROUTING_DEBUG=1` environment variable
+2. `[debug] routing = true` in `config/goat.toml`
+
+```bash
+# Enable via env var
+GOAT_ROUTING_DEBUG=1 python -m goat
+
+# Or in goat.toml:
+[debug]
+routing = true
+```
+
+### `get_agent_registry() -> AgentRegistry`
+
+Lazy accessor for a freshly populated `AgentRegistry` with all 7
+built-in DAG runners pre-registered:
+
+| Role | Runner | Source |
+|---|---|---|
+| `planner` | `_run_planner` | `agents/planner_decompose.py` |
+| `researcher` | `_run_researcher` | `supervisor/pipeline/runners.py` |
+| `coder` | `_run_coder` | `supervisor/pipeline/runners.py` |
+| `critic` | `_run_critic` | `supervisor/pipeline/runners.py` |
+| `summarizer` | `_run_summarizer` | `supervisor/pipeline/runners.py` |
+| `tool_caller` | `_run_tool_caller` | `supervisor/pipeline/runners.py` |
+| `memory` | `_run_memory` | `supervisor/pipeline/runners.py` |
+
+Each call constructs a new `AgentRegistry()`; the constructor
+self-registers the 7 defaults.
+
+### `get_*` accessors
+
+| Function | Returns | Resolves via |
+|---|---|---|
+| `get_supervisor_result()` | `SupervisorResult` class | `supervisor.types` (lazy) |
+| `get_agent_result()` | `AgentResult` dataclass | `config.agent_types` (lazy) |
+| `get_agent_task()` | `AgentTask` dataclass | `config.agent_types` (lazy) |
+| `get_file_tools()` | `[ToolDefinition]` (file+web+shell) | `tools.FILE_TOOLS` (lazy) |
+| `get_memory_tools()` | `[ToolDefinition]` (16 GOAT tools) | `tools.MEMORY_TOOLS` (lazy) |
+| `get_dag_memory_tools()` | `[ToolDefinition]` (4 DAG tools) | `tools.DAG_MEMORY_TOOLS` (lazy) |
+
+Every `get_*` call logs at DEBUG. When `routing_debug_enabled()` is
+True, it additionally logs at INFO with the fully-qualified name of
+the resolved object.
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("goat2.routing").setLevel(logging.DEBUG)
+
+from config.routing import get_agent_registry, get_file_tools
+reg = get_agent_registry()       # DEBUG: "routing: get_agent_registry requested"
+                                 # INFO:  "routing: get_agent_registry resolved -> supervisor.registry.AgentRegistry"
+tools = get_file_tools()          # DEBUG: "routing: get_file_tools requested"
+```
+
+---
+
+## ServiceRegistry ↔ AgentRegistry Relationship
+
+`config/registry.py` defines `ServiceRegistry` — the **only** module-
+level DI container in GOAT 2.0. It owns an instance of
+`AgentRegistry` (from `supervisor/registry.py`) which holds the 7 DAG
+agent runners.
+
+```
+ServiceRegistry (config/registry.py)
+  ├── settings             Settings (env + toml)
+  ├── working_memory       WorkingMemoryLayer (Redis-backed)
+  ├── memory_manager       MemoryManager (working + long_term)
+  ├── letta_client         LettaClient (long-term memory)
+  ├── file_tools           [ToolDefinition] — file + web + shell
+  ├── memory_tools         [ToolDefinition] — 16 GOAT tools
+  ├── dag_memory_tools     [ToolDefinition] — 4 DAG tools
+  ├── agent_models         AgentModels (per-role model keys)
+  └── agent_registry  ──►  AgentRegistry (supervisor/registry.py)
+                              ├── researcher   → _run_researcher
+                              ├── coder        → _run_coder
+                              ├── critic       → _run_critic
+                              ├── planner      → _run_planner
+                              ├── summarizer   → _run_summarizer
+                              ├── tool_caller  → _run_tool_caller
+                              └── memory       → _run_memory
+```
+
+### ServiceRegistry
+
+```python
+from config.registry import ServiceRegistry
+
+registry = ServiceRegistry(config_path="config/goat.toml")
+runner = registry.get("researcher")  # delegates to agent_registry.get(...)
+```
+
+### AgentRegistry
+
+`AgentRegistry` is **not** a singleton. The canonical instance lives
+at `ServiceRegistry.agent_registry`; `AgentRegistry()` can be
+constructed freely — every instance self-registers the 7 defaults.
+
+```python
+from supervisor.registry import AgentRegistry
+
+reg = AgentRegistry()       # All 7 runners pre-registered
+reg.has("memory")            # True
+reg.roles()                  # ['critic', 'coder', 'memory', 'planner',
+                             #  'researcher', 'summarizer', 'tool_caller']
+reg.get("coder")             # Returns the _run_coder callable
+```
+
+### The cross-layer import
+
+`ServiceRegistry.__init__` performs a **function-local** import of
+`supervisor.registry.AgentRegistry` (and a similar one for
+`memory.letta_client`). This is the *only* cross-layer import in
+`config/`, and because it lives inside `__init__`, the file can be
+imported at startup without pulling in `supervisor/`, `agents/`, or
+`tools/`.
+
+```python
+# Inside ServiceRegistry.__init__ — NOT at module level
+from supervisor.registry import AgentRegistry
+self.agent_registry: AgentRegistry = AgentRegistry()
+```
+
+The `TYPE_CHECKING` block at the top of `config/registry.py` declares
+the type hint without triggering any runtime import:
+
+```python
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+    from supervisor.registry import AgentRegistry
+```
+
+---
+
+## Debug Logger Pattern (config/)
+
+Every `config/*.py` module declares a logger under
+`goat2.config.<module_name>` and emits a DEBUG log on initialization
+or on key operations:
+
+| File | Logger | DEBUG events |
+|---|---|---|
+| `__init__.py` | `goat2.config` | (parent logger) |
+| `agent_models.py` | `goat2.config.agent_models` | model key resolution per role |
+| `agents.py` | `goat2.config.agents` | (constant-only) |
+| `api_keys.py` | `goat2.config.api_keys` | API key resolution (env/toml) |
+| `limits.py` | `goat2.config.limits` | (constant-only) |
+| `model_catalogue.py` | `goat2.config.model_catalogue` | unknown model lookup |
+| `model_selector.py` | `goat2.model_selector` | health-check failures, fallback |
+| `onboarding.py` | `goat2.config.onboarding` | (constant-only) |
+| `registry.py` | `goat2.config.registry` | `ServiceRegistry` step-by-step init + `get(role)` |
+| `roles.py` | `goat2.config.roles` | (constant-only) |
+| `routing.py` | `goat2.routing` | every `get_*` accessor + FQN on debug |
+| `settings.py` | `goat2.config.settings` | `_e()` resolution, `validate()` start/ok |
+| `supervisor.py` | `goat2.config.supervisor` | (constant-only) |
+| `tiers.py` | `goat2.config.tiers` | (constant-only) |
+| `timeouts.py` | `goat2.config.timeouts` | (constant-only) |
+| `tools.py` | `goat2.config.tools` | (constant-only) |
+| `toml_loader.py` | `goat2.config.toml_loader` | toml loaded / not found / parse error |
+| `memory.py` | `goat2.config.memory` | (re-export shim) |
+
+### Enabling debug for config
+
+```bash
+# Whole config/ subtree
+LOG_LEVEL=DEBUG python -m goat
+
+# Or just the registry
+python -c "
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger('goat2.config.registry').setLevel(logging.DEBUG)
+from config.registry import ServiceRegistry
+r = ServiceRegistry()
+r.get('researcher')
+"
+```
+
+### Enabling routing debug specifically
+
+```bash
+# Env var
+GOAT_ROUTING_DEBUG=1 python -m goat
+
+# Or in goat.toml:
+[debug]
+routing = true
+```
+
+When enabled, `config.routing` logs at INFO with the fully-qualified
+name of every resolved object. With it disabled, logs stay at DEBUG.

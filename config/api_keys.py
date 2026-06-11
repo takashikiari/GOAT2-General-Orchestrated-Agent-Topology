@@ -1,12 +1,15 @@
 """API credentials and provider base URLs — env var takes precedence over goat.toml."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Final
 
 from config.model_catalogue import Provider
 from config.toml_loader import load_toml
+
+log = logging.getLogger("goat2.config.api_keys")
 
 __all__ = ["APIKeys", "PROVIDER_BASE_URLS"]
 
@@ -15,7 +18,12 @@ _toml = load_toml()
 
 def _api_key(env_var: str, toml_provider: str) -> str:
     """Resolve API key: env var → goat.toml [api_keys] → empty string. Pure."""
-    return os.environ.get(env_var) or _toml.api_key(toml_provider)
+    resolved = os.environ.get(env_var) or _toml.api_key(toml_provider)
+    log.debug(
+        "api_keys._api_key: env=%s provider=%s resolved=%s",
+        env_var, toml_provider, "***" if resolved else "(empty)",
+    )
+    return resolved
 
 
 PROVIDER_BASE_URLS: Final[dict[str, str]] = {
@@ -39,6 +47,7 @@ class APIKeys:
             Provider.DEEPSEEK: self.deepseek,
             Provider.GROQ:     self.groq,
         }[provider]
+        log.debug("api_keys.for_provider: provider=%s present=%s", provider.value, bool(key))
         if not key:
             raise EnvironmentError(
                 f"API key for provider '{provider.value}' is not set. "

@@ -69,6 +69,7 @@ All code must now use Registry for configuration access.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 
@@ -76,6 +77,8 @@ from config.agent_models import AgentModels
 from config.api_keys import APIKeys, PROVIDER_BASE_URLS
 from config.model_catalogue import ModelSpec, Provider, MODELS, get_model
 from config.toml_loader import load_toml
+
+log = logging.getLogger("goat2.config.settings")
 
 __all__ = [
     "Settings",
@@ -107,7 +110,9 @@ def _e(env_var: str, toml_val: str = "", default: str = "") -> str:
         # Returns os.environ["OPENAI_API_KEY"] if set,
         # else goat.toml [api_keys].openai, else ""
     """
-    return os.environ.get(env_var) or toml_val or default
+    resolved = os.environ.get(env_var) or toml_val or default
+    log.debug("settings._e: env=%s resolved=%s", env_var, resolved or "(empty)")
+    return resolved
 
 
 @dataclass
@@ -325,6 +330,7 @@ class Settings:
             EnvironmentError: If any validation check fails, with detailed
                              error messages for each failure
         """
+        log.debug("Settings.validate: starting")
         _ROLES = (
             "planner",
             "researcher",
@@ -356,6 +362,8 @@ class Settings:
                 f"valid: {[p.value for p in Provider]}"
             )
         if errors:
+            log.debug("Settings.validate: failed with %d errors", len(errors))
             raise EnvironmentError(
                 "GOAT 2.0 configuration errors:\n" + "\n".join(errors)
             )
+        log.debug("Settings.validate: ok")

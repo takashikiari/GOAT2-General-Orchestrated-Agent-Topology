@@ -1,23 +1,22 @@
 """Built-in agent runner implementations for GOAT 2.0.
 
-Each runner is an async callable (AgentTask, dep_results) -> str that sets
-task.source before returning so the workflow can propagate source provenance.
-Tool selection is now semantic — the LLM autonomously decides when to invoke
-tools based on task intent, not regex keyword matching.
+Each runner is an async callable (AgentTask, dep_results, registry) -> str
+that sets task.source before returning so the workflow can propagate source
+provenance. Tool selection is semantic — the LLM autonomously decides when
+to invoke tools based on task intent.
 
-CRITICAL REVIEW FALLBACK (Problema 5):
-======================================
-_run_critic() now returns a structured dict with verdict, severity, and assessment
-so WorkflowGraph can decide to re-execute upstream tasks when severity is CRITICAL.
+SEVERITY OUTPUT (_run_critic):
+_run_critic() returns a string starting with
+``SEVERITY: PASS|MINOR|MAJOR|CRITICAL`` so WorkflowGraph can decide to
+re-execute upstream tasks on critical verdicts.
 
 REGISTRY INJECTION (PHASE 4):
-=============================
-All runner functions now require `registry` parameter.
-Uses registry.settings.agents.get(role) and registry tools.
+All runner functions require the `registry` parameter and use
+``registry.settings.agents.get(role)``.
 """
 from __future__ import annotations
 import logging
-from typing import Final, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from supervisor.types import AgentTask, AgentResult
 from utils.llm_utils import _format_dep_context
 from tools.tool_runner import _call_with_tools
@@ -26,18 +25,14 @@ if TYPE_CHECKING:
     from config.registry import Registry
 
 log = logging.getLogger("goat2.runners")
-__all__ = ["_run_researcher", "_run_coder", "_run_critic", "_run_summarizer", "_run_tool_caller"]
-
-
-def _dedupe_tools(tools: list) -> list:
-    """Remove duplicate tools by name, keeping first occurrence. Pure helper."""
-    seen: set[str] = set()
-    result: list = []
-    for t in tools:
-        if t.name not in seen:
-            seen.add(t.name)
-            result.append(t)
-    return result
+__all__ = [
+    "_run_researcher",
+    "_run_coder",
+    "_run_critic",
+    "_run_summarizer",
+    "_run_tool_caller",
+    "_run_memory",
+]
 
 
 async def _run_researcher(
@@ -47,11 +42,8 @@ async def _run_researcher(
 ) -> str:
     """Deep research: web_search + memory_search (working tier only).
 
-    Tool invocation enforced via tool_choice='required'. source=generated triggers UNVERIFIED.
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("researcher").
+    Tool invocation enforced via tool_choice='required'.
+    source=generated triggers UNVERIFIED. Uses agents.get("researcher").
     """
     from tools import WEB_SEARCH, MEMORY_SEARCH_DAG
     _settings = registry.settings
@@ -86,10 +78,7 @@ async def _run_coder(
 ) -> str:
     """Code generation: file tools (8) + shell (read-only). No web_search.
 
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("coder").
-    """
+    Uses agents.get("coder")."""
     from tools import (
         FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST,
         FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, SHELL,
@@ -123,12 +112,8 @@ async def _run_critic(
     """Critical review: severity verdict + assessment. Read-only memory access.
 
     Tools: memory_recent, memory_get (working tier, read-only). tool_choice='auto'.
-    Output MUST start with SEVERITY: PASS/MINOR/MAJOR/CRITICAL for fallback parsing.
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("critic").
-    """
+    Output MUST start with SEVERITY: PASS/MINOR/MAJOR/CRITICAL for fallback.
+    Uses agents.get("critic")."""
     from tools import MEMORY_RECENT_DAG, MEMORY_GET_DAG
     _settings = registry.settings
     context = _format_dep_context(dep_results)
@@ -163,11 +148,7 @@ async def _run_summarizer(
 
     Tools: memory_recent (working tier, read-only). tool_choice='auto'.
     Skips LLM call entirely when all upstream outputs are empty.
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("summarizer").
-    """
+    Uses agents.get("summarizer")."""
     from tools import MEMORY_RECENT_DAG
     _settings = registry.settings
     if dep_results and all(not (r.output or "").strip() for r in dep_results.values()):
@@ -201,12 +182,7 @@ async def _run_tool_caller(
     """Tool orchestration: file tools (8) + DAG memory tools (working tier only).
 
     No web_search, no shell. Memory restricted to dag:* namespace (working tier).
-    tool_choice='required' enforces tool invocation.
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.
-    """
+    tool_choice='required' enforces tool invocation. Uses agents.get("tool_caller")."""
     from tools import (
         FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST,
         FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES,
@@ -234,6 +210,42 @@ async def _run_tool_caller(
         {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
     ]
     log.debug("tool_caller: tools=%s", [t.name for t in _tools])
+    r = await _call_with_tools(spec, msgs, _tools, tool_choice="required")
+    task.source = r.source
+    return r.content
+
+
+async def _run_memory(
+    task: AgentTask,
+    dep_results: dict[str, AgentResult],
+    registry: "Registry",
+) -> str:
+    """Working-memory persistence: 4 DAG memory tools (working tier only).
+
+    Restricted to dag:* namespace — no ChromaDB, no Letta. tool_choice='required'.
+    Reuses the ``tool_caller`` model spec (no dedicated memory model)."""
+    from tools import (
+        MEMORY_RECENT_DAG, MEMORY_GET_DAG, MEMORY_STORE_DAG, MEMORY_SEARCH_DAG,
+    )
+    _settings = registry.settings
+    spec = _settings.agents.get("tool_caller")
+    if not spec.tool_calling:
+        raise RuntimeError(
+            f"memory model '{spec.model_id}' has tool_calling=False; "
+            "memory reuses the tool_caller spec — use deepseek-chat/gpt-4o-mini."
+        )
+    _tools = [MEMORY_RECENT_DAG, MEMORY_GET_DAG, MEMORY_STORE_DAG, MEMORY_SEARCH_DAG]
+    ctx = _format_dep_context(dep_results)
+    msgs = [
+        {"role": "system", "content": (
+            "Working memory agent. Persist and retrieve DAG execution context. "
+            "Tools (working tier only, dag:* namespace): "
+            "memory_recent, memory_get, memory_store, memory_search. "
+            "Do not access ChromaDB or Letta. Report exactly what was stored."
+        )},
+        {"role": "user", "content": f"{ctx}\n\nTask: {task.prompt}".strip()},
+    ]
+    log.debug("memory: tools=%s", [t.name for t in _tools])
     r = await _call_with_tools(spec, msgs, _tools, tool_choice="required")
     task.source = r.source
     return r.content

@@ -40,7 +40,10 @@ All files should import from this module instead of hardcoding tier strings.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.config.tiers")
 
 __all__ = ["WORKING", "EPISODIC", "LONG_TERM", "ANY"]
 
