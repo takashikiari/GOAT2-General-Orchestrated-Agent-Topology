@@ -100,9 +100,14 @@ def build_app() -> Application:
 
 def main() -> None:
     """Entry point — start GOAT Telegram bot with long-polling."""
+    import os
+    os.makedirs("/home/lenovo/workspace/goat2/logs", exist_ok=True)
+    file_handler = logging.FileHandler("/home/lenovo/workspace/goat2/logs/goat2.log")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s  %(name)-24s  %(levelname)s  %(message)s"))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
+        handlers=[logging.StreamHandler(), file_handler],
     )
     log.info("GOAT 2.0 Telegram bot starting.")
     # ── FIX: Only poll for text messages, not tool calls or other update types ──

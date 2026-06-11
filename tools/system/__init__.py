@@ -19,7 +19,8 @@ import logging
 from tools.system.calculator import CALCULATOR
 from tools.system.shell_tool import SHELL
 from tools.system.think import THINK
+from tools.system.log_reader import READ_LOGS
 
 log = logging.getLogger("goat2.tools.system")
 
-__all__ = ["THINK", "CALCULATOR", "SHELL"]
+__all__ = ["THINK", "CALCULATOR", "SHELL", "READ_LOGS"]

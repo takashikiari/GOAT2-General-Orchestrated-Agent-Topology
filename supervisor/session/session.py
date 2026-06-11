@@ -129,7 +129,7 @@ async def store_goat_turn(
         "agent_role": SESSION_ROLE,
         "key": key,
         "content": content,
-        "metadata": {"type": "goat_turn", "session_id": session_id},
+        "metadata": {"type": "goat_turn", "session_id": session_id, "created_at_ts": now},
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "created_at_ts": now,
         "expires_at": now + GOAT_TURN_TTL,

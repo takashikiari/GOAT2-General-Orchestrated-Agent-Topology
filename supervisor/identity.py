@@ -217,6 +217,7 @@ async def direct_response(
     Requires registry parameter. Uses registry.settings and registry tools.
     """
     from tools import WEB_SEARCH
+    from tools.system import READ_LOGS
     _settings = registry.settings
     # GOAT conversational: 16 memory tools + web_search — NO file tools, NO shell
     _memory_tools = registry.memory_tools
@@ -236,7 +237,7 @@ async def direct_response(
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        _memory_tools + [WEB_SEARCH],
+        _memory_tools + [WEB_SEARCH, READ_LOGS],
         temperature=0.7,
         tool_choice="auto",
         memory_manager=_memory_manager,
