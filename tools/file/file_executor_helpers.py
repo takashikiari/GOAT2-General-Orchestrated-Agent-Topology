@@ -24,7 +24,7 @@ log = logging.getLogger("goat2.tools.file.executor_helpers")
 # ---------------------------------------------------------------------------
 
 _WS: Final[Path] = Path(
-    os.environ.get("GOAT_WORKSPACE") or Path(__file__).resolve().parent.parent
+    os.environ.get("GOAT_WORKSPACE") or Path(__file__).resolve().parent.parent.parent
 ).resolve()
 
 _ALLOW_OUTSIDE: Final[bool] = (

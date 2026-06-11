@@ -58,14 +58,16 @@ class GoatSupervisor:
         self._user_profile: str | None = None
         self._behavior_style: str = ""
         self._history: ConversationHistory | None = None
+        self._session_id: str = str(uuid.uuid4())
 
     async def _store_and_promote(self, turn_count: int, intent: str, summary: str) -> None:
         """Store turn in working memory, auto-save to episodic tier, schedule promotion."""
         if not self.memory_manager:
             return
         try:
-            from supervisor.session import store_turn
+            from supervisor.session import store_turn, store_goat_turn
             await store_turn(self.memory_manager, turn_count, intent, summary)
+            await store_goat_turn(self.memory_manager, self._session_id, intent, summary)
             try:
                 from memory.shared.hooks import auto_save_memory
                 await auto_save_memory(self.memory_manager, "user_session", intent, summary)
@@ -155,7 +157,7 @@ class GoatSupervisor:
             from agents.critique import critique_results, synthesize_results  # lazy: agents/ cross-layer
             verdict = await critique_results(plan_ctx, results, self.registry, lang)
             retry_count = 0
-            while verdict.needs_rerun and retry_count < _MAX_CRITIC_RETRIES:
+            while verdict.severity == "CRITICAL" and retry_count < _MAX_CRITIC_RETRIES:
                 retry_count += 1
                 log.info("Critic fallback attempt %d/%d: severity=%s",
                          retry_count, _MAX_CRITIC_RETRIES, verdict.severity)
@@ -164,9 +166,11 @@ class GoatSupervisor:
                     self.memory_manager, session_id, verdict,
                 )
                 verdict = await critique_results(plan_ctx, results, self.registry, lang)
-            if verdict.needs_rerun:
+            if verdict.severity == "CRITICAL":
                 log.warning("Critic fallback exhausted after %d retries (severity=%s).",
                             _MAX_CRITIC_RETRIES, verdict.severity)
+            elif verdict.severity == "MAJOR":
+                log.info("Critic severity MAJOR — including warnings in summary, proceeding without rerun.")
             critique_str = verdict.raw
             summary = await synthesize_results(
                 plan_ctx, results, critique_str, self.registry,

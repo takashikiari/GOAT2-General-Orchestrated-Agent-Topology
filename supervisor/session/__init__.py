@@ -16,7 +16,7 @@ import logging
 
 log = logging.getLogger("goat2.supervisor.session")
 
-from supervisor.session.session import store_turn, store_dag_result, retrieve_dag_result
+from supervisor.session.session import store_turn, store_dag_result, retrieve_dag_result, store_goat_turn
 from supervisor.session.history import ConversationHistory, load_session_summary
 from supervisor.session.session_init import init_session
 from supervisor.session.mem_inject import mem_turn, recall_context
@@ -25,6 +25,7 @@ __all__ = [
     "store_turn",
     "store_dag_result",
     "retrieve_dag_result",
+    "store_goat_turn",
     "ConversationHistory",
     "load_session_summary",
     "init_session",

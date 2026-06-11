@@ -26,11 +26,14 @@ from memory.working.working_record import RecordDict
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
 
-__all__ = ["store_turn", "store_dag_result", "retrieve_dag_result"]
+__all__ = ["store_turn", "store_dag_result", "retrieve_dag_result", "store_goat_turn"]
 
 # ── Size limits to prevent oversized Redis records ──
 _MAX_TURN_CHARS: Final[int] = 10000    # max chars for a single turn summary
 _MAX_DAG_CHARS: Final[int] = 50000     # max chars for a full DAG result
+
+# TTL for GOAT turn summaries (2 hours — longer than working memory default)
+GOAT_TURN_TTL: Final[int] = 7200
 
 
 def _truncate_for_storage(content: str, max_chars: int, label: str) -> str:
@@ -104,3 +107,31 @@ async def retrieve_dag_result(mm: MemoryManager, session_id: str) -> str | None:
     if record is None:
         return None
     return record.get("content")
+
+
+async def store_goat_turn(
+    mm: MemoryManager,
+    session_id: str,
+    intent: str,
+    summary: str,
+) -> None:
+    """Persist GOAT response to WORKING tier with goat:<session_id>:turn_<ts> key.
+
+    Key format: goat:<session_id>:turn_<timestamp>
+    TTL: GOAT_TURN_TTL (7200s — 2 hours)
+    """
+    content = f"User: {intent}\nAssistant: {summary}"
+    content = _truncate_for_storage(content, _MAX_TURN_CHARS, "goat_turn")
+    now = time.time()
+    key = f"goat:{session_id}:turn_{int(now)}"
+    record: RecordDict = {
+        "id": key,
+        "agent_role": SESSION_ROLE,
+        "key": key,
+        "content": content,
+        "metadata": {"type": "goat_turn", "session_id": session_id},
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "created_at_ts": now,
+        "expires_at": now + GOAT_TURN_TTL,
+    }
+    await mm.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])

@@ -7,6 +7,52 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-11
 
+### Fixed
+
+#### TASK 1 — DAG workspace path (`tools/file/file_executor_helpers.py`)
+
+- `_WS` fallback was `Path(__file__).resolve().parent.parent` which resolved to
+  `tools/` instead of the project root. Fixed to `.parent.parent.parent` so the
+  fallback is `/home/lenovo/workspace/goat2` when `GOAT_WORKSPACE` is unset.
+- `_ALLOW_OUTSIDE = false` confirmed correct (sandbox stays within workspace root).
+- Verified: `_WS == Path('/home/lenovo/workspace/goat2')` without `GOAT_WORKSPACE` set.
+
+#### TASK 2 — DAG per-task working memory write (`supervisor/pipeline/workflow.py`)
+
+- Added `_write_task_memory(memory_manager, session_id, tid, role, output)` module-level
+  helper that writes `dag:<session_id>:task:<task_id>` to Redis with TTL 3600s.
+- Called inside `_run()` closure after every successful task result, so intermediate
+  results are readable by downstream DAG agents via `memory_get` / `memory_search`.
+
+#### TASK 3 — Critic rerun threshold: MAJOR → no-rerun, CRITICAL → rerun
+
+- **`supervisor/pipeline/workflow.py`**: Changed inline critic fallback from
+  `if severity in ("CRITICAL", "MAJOR"):` → `if severity == "CRITICAL":`.
+  MAJOR severity no longer triggers upstream re-execution inside the DAG wave.
+- **`supervisor/supervisor.py`**: Changed supervisor-level critic loop from
+  `while verdict.needs_rerun` → `while verdict.severity == "CRITICAL"`.
+  Updated post-loop guard: CRITICAL logs a warning; MAJOR logs info and proceeds.
+  MAJOR verdict warnings are still included in `critique_str` / final summary.
+
+#### TASK 4 — DAG result TTL (verified, no change)
+
+- `config/limits.py`: `DAG_RESULT_TTL = 3600` already correct.
+- `supervisor/pipeline/dag_bridge.py`: `write_result()` uses `DAG_RESULT_TTL`. ✓
+- `supervisor/session/session.py`: `store_dag_result()` uses `DAG_RESULT_TTL`. ✓
+- No code change needed.
+
+#### TASK 5 — GOAT working memory auto-write after conversational responses
+
+- **`supervisor/session/session.py`**: Added `GOAT_TURN_TTL = 7200` constant and
+  `store_goat_turn(mm, session_id, intent, summary)` function. Writes with key
+  `goat:<session_id>:turn_<timestamp>` and TTL 7200s to Redis WORKING tier.
+- **`supervisor/session/__init__.py`**: Exported `store_goat_turn`.
+- **`supervisor/supervisor.py`**: Added `self._session_id = str(uuid.uuid4())` in
+  `__init__` (created once per `GoatSupervisor` instance). Extended
+  `_store_and_promote()` to call `store_goat_turn` after `store_turn`, so every
+  GOAT response (conversational, direct bypass, DAG) writes to
+  `goat:<session_id>:turn_<ts>` for cross-turn retrieval.
+
 ### Added
 
 #### utils/ — routing + TYPE_CHECKING + debug loggers

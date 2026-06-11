@@ -127,6 +127,34 @@ def _extract_critic_feedback(output: str) -> str:
     return cleaned.strip()
 
 
+async def _write_task_memory(
+    memory_manager: MemoryManager,
+    session_id: str,
+    tid: str,
+    role: str,
+    output: str,
+) -> None:
+    """Write one completed task result to Redis working memory.
+
+    Key format: dag:<session_id>:task:<task_id>  TTL: DAG_RESULT_TTL (3600s)
+    """
+    import time as _t
+    from config.limits import DAG_RESULT_TTL
+    from config.roles import SESSION_ROLE
+    from memory.working.working_record import RecordDict
+    key = f"dag:{session_id}:task:{tid}"
+    now = _t.time()
+    record: RecordDict = {
+        "id": key, "agent_role": SESSION_ROLE, "key": key,
+        "content": f"[{role}] {output[:1000]}",
+        "metadata": {"type": "dag_task_result", "task_id": tid, "session_id": session_id},
+        "created_at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(now)),
+        "created_at_ts": now,
+        "expires_at": now + DAG_RESULT_TTL,
+    }
+    await memory_manager.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])
+
+
 class WorkflowGraph:
     """
     Executes a plan's tasks as a DAG with wave-level concurrency.
@@ -625,6 +653,12 @@ class WorkflowGraph:
                             raw_output_hash=_raw_hash,
                             tool_called=True,
                         )
+                        if session_id and memory_manager:
+                            try:
+                                await _write_task_memory(memory_manager, session_id, tid, task.role, output)
+                                log.debug("dag:%s:task:%s written to Redis", session_id, tid)
+                            except Exception as _e:
+                                log.warning("Task memory write failed: %s", _e)
                         if verbose:
                             log.debug(
                                 "Completed task %s: %s",
@@ -632,10 +666,10 @@ class WorkflowGraph:
                                 output[:80] if output else "",
                             )
 
-                        # ── FIX (Problema 5): Critic fallback — re-execută upstream dacă severity e CRITICAL/MAJOR ──
+                        # ── Critic fallback — re-execută upstream doar dacă severity e CRITICAL ──
                         if task.role == "critic" and output:
                             severity, _ = _parse_critic_severity(output)
-                            if severity in ("CRITICAL", "MAJOR"):
+                            if severity == "CRITICAL":
                                 await self._re_execute_upstream_and_critic(
                                     tid=tid,
                                     task=task,
