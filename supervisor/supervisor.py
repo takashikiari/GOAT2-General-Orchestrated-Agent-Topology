@@ -8,18 +8,13 @@ import time
 from typing import TYPE_CHECKING
 
 from config.roles import SESSION_ROLE
-from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
-from supervisor.registry import AgentRegistry
-from supervisor.pipeline.workflow import WorkflowGraph
-from supervisor.pipeline.critic_rerun import STRICTER_SYSTEM_PROMPTS, _rerun_failed_tasks
+from supervisor.types import AgentRunner, Plan, SupervisorResult
 from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
 from supervisor.classification.classifier import classify_intent, IntentDepth
 from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
-from supervisor.pipeline.task_prep import prepare_tasks
-from supervisor.logging.auditor import run_auditor
 from supervisor.classification.request_classifier import classify_direct_request
 
 if TYPE_CHECKING:
@@ -39,8 +34,6 @@ _REASON_LABELS: dict[str, str] = {
     "net_error": "web search returned an error",
     "stale_memory": "memory query returned stale data",
 }
-
-_MAX_CRITIC_RETRIES: int = 2
 
 
 class GoatSupervisor:
@@ -118,85 +111,33 @@ class GoatSupervisor:
             return None
 
     async def _run_dag(self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str) -> SupervisorResult:
-        """Execute ANALYTICAL or COMPLEX DAG pipeline. See docs/supervisor.md."""
-        plan_ctx = self._history.as_plan_context(intent, self._user_profile or "", mem_ctx)
-        plan_ctx = f"[require_source: true]\n{plan_ctx}"
-        if depth == IntentDepth.ANALYTICAL:
-            plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
-        from agents.planner_decompose import decompose_plan  # lazy: agents/ cross-layer
-        plan = await decompose_plan(plan_ctx, self.registry)
-        lang = await prepare_tasks(plan.tasks, self.memory_manager, intent, self.registry)
-        session_id = str(uuid.uuid4())
-        results = await WorkflowGraph(plan.tasks).execute(
-            self.agent_registry, self._semaphore,
-            verbose=self._verbose, memory_manager=self.memory_manager, session_id=session_id,
-        )
-        dag_verified, dag_detail, validation_errors = False, "", []
-        if self.memory_manager:
-            try:
-                from supervisor.pipeline.dag_bridge import DagBridge
-                dag_result = await DagBridge(self.memory_manager).wait_for_result(session_id, timeout=120)
-                if dag_result:
-                    dag_detail = dag_result
-                    from supervisor.pipeline.goat_validator import validate_dag_result
-                    report = validate_dag_result(dag_detail, results)
-                    if report.passed:
-                        dag_verified = True
-                        log.info("GoatValidator: passed — dag_verified=True session=%s", session_id)
-                    else:
-                        validation_errors = report.errors
-                        log.warning("GoatValidator: failed — %s", report.errors)
-                else:
-                    log.warning("DagBridge: timeout session=%s — dag_verified=False", session_id)
-            except Exception as e:
-                log.warning("DagBridge/GoatValidator failed: %s", e)
-        if not dag_verified:
-            summary = ("Not available. " + "; ".join(validation_errors) + ".") if validation_errors else "UNVERIFIED"
-            critique_str = ""
-        else:
-            from agents.critique import critique_results, synthesize_results  # lazy: agents/ cross-layer
-            verdict = await critique_results(plan_ctx, results, self.registry, lang)
-            retry_count = 0
-            while verdict.severity == "CRITICAL" and retry_count < _MAX_CRITIC_RETRIES:
-                retry_count += 1
-                log.info("Critic fallback attempt %d/%d: severity=%s",
-                         retry_count, _MAX_CRITIC_RETRIES, verdict.severity)
-                results = await _rerun_failed_tasks(
-                    plan, results, self.registry, self._semaphore,
-                    self.memory_manager, session_id, verdict,
-                )
-                verdict = await critique_results(plan_ctx, results, self.registry, lang)
-            if verdict.severity == "CRITICAL":
-                log.warning("Critic fallback exhausted after %d retries (severity=%s).",
-                            _MAX_CRITIC_RETRIES, verdict.severity)
-            elif verdict.severity == "MAJOR":
-                log.info("Critic severity MAJOR — including warnings in summary, proceeding without rerun.")
-            critique_str = verdict.raw
-            summary = await synthesize_results(
-                plan_ctx, results, critique_str, self.registry,
-                self._user_profile or "", self._behavior_style, lang,
-                self._history.summary, dag_detail=dag_detail if dag_verified else "",
-            )
-            if not summary.strip():
-                tools_info = ", ".join(sorted({r.tool_name for r in results.values() if r.tool_name})) or "none"
-                summary = f"Not available. Tools called: {tools_info}. No output from synthesis."
-        audit = await run_auditor(results)
-        sources = {tid: r.source for tid, r in results.items()}
-        metadata = "; ".join(audit.anomalies) or "ok"
-        total = time.monotonic() - t0
-        log.info("Done in %.1fs — success=%s dag_verified=%s sources=%s",
-                 total, all(r.ok for r in results.values()), dag_verified, list(sources.values()))
-        r = SupervisorResult(
-            intent=intent, plan=plan, results=results, critique=critique_str if dag_verified else "",
-            summary=summary, total_duration_s=total, session_id=session_id,
-            sources=sources, metadata_summary=metadata, dag_verified=dag_verified, dag_detail=dag_detail,
-        )
-        self._history.add_assistant(r.summary)
-        await self._store_and_promote(len(self._history.messages), intent, r.summary)
-        return r
+        """Thin wrapper over the extracted pipeline module."""
+        from supervisor.pipeline.dag_execution import run_dag_pipeline
+        return await run_dag_pipeline(self, intent, t0, depth, mem_ctx)
+
+    async def _check_active_dags(self) -> list[dict]:
+        """Backward-compat wrapper over `dag_awareness.scan_active_dags`."""
+        from supervisor.pipeline.dag_awareness import scan_active_dags
+        return await scan_active_dags(self.registry)
+
+    async def _read_dag_progress(self, session_id: str) -> dict | None:
+        """Backward-compat wrapper over `dag_awareness.read_dag_progress`."""
+        from supervisor.pipeline.dag_awareness import read_dag_progress
+        return await read_dag_progress(self.registry, session_id)
 
     async def run(self, intent: str) -> SupervisorResult:
-        """Route intent to conversational, analytical, or complex DAG path. See docs/supervisor.md."""
+        """Route intent to conversational, analytical, or complex DAG path.
+
+        FLOW:
+        1. Initialize session (profile, history, behavior style) on first call.
+        2. Add user turn to history.
+        3. Run memory turn (recall + fact extraction).
+        4. Classify intent via LLM (with full context: history, active
+           DAGs, profile, override, prior corrections).
+        5. If a single-tool bypass applies, return direct result.
+        6. If CONVERSATIONAL, return direct LLM reply.
+        7. If ANALYTICAL or COMPLEX, run the DAG pipeline.
+        """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
         if self._history is None:
@@ -205,6 +146,12 @@ class GoatSupervisor:
             )
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
+        # DAG awareness + override persistence: a single helper that
+        # prepares all the context the classifier LLM needs.
+        from supervisor.pipeline.pre_classify import prepare_classification_context
+        await prepare_classification_context(
+            self.registry, self._history, intent, self._session_id,
+        )
         depth = await classify_intent(intent, self.registry)
         direct_result = await self._handle_direct_request(intent, t0)
         if direct_result:

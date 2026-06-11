@@ -7,6 +7,183 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-11
 
+### Changed
+
+#### Pure LLM intent classifier + DAG awareness + behavioral learning
+
+**TASK 1 — Pure LLM intent classifier** (`supervisor/classification/`):
+
+- Replaced all hardcoded patterns (`_HELP_PATTERNS`, `_VAGUE_FIRST_PATTERNS`,
+  greeting lists, length heuristics) with a single LLM-driven decision.
+- `classify_intent(intent, registry)` now sends the intent + full context
+  (what GOAT can do directly, what requires the DAG, conversation
+  history, active DAG sessions, user profile, override, prior
+  corrections) to the LLM. The model replies with exactly one word:
+  `conversational`, `analytical`, or `complex`.
+- **Zero hardcoded keywords** in the classifier. Every intent — including
+  "?", "salut", "help", and one-word messages — flows through the same
+  semantic LLM path.
+- Split into 3 modules to respect the file-size rule:
+  - `classifier.py` (170 lines) — entry point, IntentDepth enum,
+    classification + override-application + log-and-fallback.
+  - `classifier_prompt.py` (102 lines) — system prompt + prompt
+    builder + formatters (history, active DAGs, hints).
+  - `classifier_context.py` (103 lines) — `detect_override`,
+    `gather_active_dags`, `gather_user_profile`, `gather_hints`
+    (LLM-driven, best-effort).
+- `IntentDepth` enum preserved exactly: `CONVERSATIONAL`,
+  `ANALYTICAL`, `COMPLEX`. Callers and validators unaffected.
+- Fallback on parse failure: `CONVERSATIONAL` (safe default — never
+  escalate to a full DAG on uncertainty).
+
+**TASK 2 — DAG awareness in GOAT** (`supervisor/supervisor.py` +
+`supervisor/pipeline/dag_awareness.py`):
+
+- New `dag_awareness.py` module (190 lines) with canonical read
+  primitives for GOAT:
+  - `scan_active_dags(registry)` — scan working memory for
+    `dag:*:progress` keys and return active sessions.
+  - `read_dag_progress(registry, session_id)` — read the current
+    progress record for a specific DAG.
+  - `read_override(registry, session_id)` / `write_override(...)` —
+    read/persist the user's routing override for the session.
+  - `persist_session_override(registry, intent, session_id)` —
+    detect (semantically) and persist the override in one call.
+- `GoatSupervisor.run()` now:
+  1. Calls `prepare_classification_context(...)` before classifying
+     — that helper attaches the conversation history to the
+     registry, scans working memory for active DAGs, and persists
+     any user override.
+  2. The classifier LLM sees the active-DAG summary and can prefer
+     CONVERSATIONAL for follow-ups about in-flight work.
+- Backward-compat: `_check_active_dags()` and `_read_dag_progress()`
+  instance methods on `GoatSupervisor` are preserved as thin
+  wrappers over the new module.
+
+**TASK 3 — DAG progress reporting** (`supervisor/pipeline/workflow.py` +
+`supervisor/pipeline/dag_progress.py`):
+
+- New `dag_progress.py` module (108 lines) with two write primitives:
+  - `write_wave_progress(memory_manager, session_id, wave,
+    total_waves, completed)` — called after every wave finishes.
+  - `write_final_progress(memory_manager, session_id, total_waves,
+    completed)` — called once at the end, marks the progress key
+    as `status="complete"`.
+- Key format: `dag:<session_id>:progress`, TTL 3600s, payload
+  `{session_id, wave, total_waves, completed_tasks, status, ts}`.
+- `WorkflowGraph.execute()` writes progress after every wave and
+  marks the final wave as `complete` before writing the final
+  result. GOAT reads the same key on demand via
+  `query_dag_status` / `memory_get`.
+
+**TASK 4 — Explicit user control** (semantic override):
+
+- Override detection is **purely LLM-driven**: the override prompt
+  describes in prose what an override looks like, the model
+  extracts it semantically (no keyword list).
+- The override (`conversational` / `complex`) is stored in working
+  memory under `goat:<session_id>:override`, TTL 3600s.
+- Override always wins over the classifier's normal decision.
+
+**TASK 5 — Behavioral learning via episodic memory**
+(`supervisor/pipeline/behavioral_learning.py`):
+
+- New `behavioral_learning.py` module (137 lines) with two primitives:
+  - `store_correction(registry, intent, goat_routed, user_wanted,
+    note)` — persist a labeled example to **episodic memory** (ChromaDB).
+  - `recall_corrections(registry, limit)` — semantic search of
+    past corrections.
+- **Zero hardcoded examples, zero ChromaDB seeding, zero regex rules.**
+  The classifier queries episodic memory for past corrections whose
+  `intent` is semantically close and shows them to the LLM as soft
+  hints. The LLM weighs the corrections alongside everything else
+  in the prompt.
+
+**TASK 6 — `supervisor/classification/README.md`** (new, ~340 lines, no limit):
+
+- Documents the LLM-based classifier, the `IntentDepth` enum, the
+  no-keywords invariant, working memory as the GOAT↔DAG channel,
+  DAG progress reporting, explicit user control, behavioral
+  learning, and the strict memory separation rules.
+
+**TASK 7 — `docs/architecture.md`** (rewritten "Intent Classification"
+section + 2 new sections):
+
+- New "Intent Classification" section: classifier flow, what the
+  LLM sees, no-keywords invariant, explicit user control,
+  behavioral learning.
+- New "DAG as GOAT's Internal Thought Process" section: the
+  two-layer model, progress reporting, awareness, key namespaces.
+- New "Working Memory as the Nervous System" section: what GOAT
+  and the DAG write/read, pollution guard.
+
+**Code organization** (file-size rule respected, no module-level singletons):
+
+- `supervisor/supervisor.py` shrunk from 241 → 187 lines by
+  extracting orchestration helpers to dedicated modules.
+- `_run_dag` body extracted to `supervisor/pipeline/dag_execution.py`
+  (151 lines). `_run_dag` is now a 4-line wrapper.
+- Pre-classify orchestration extracted to
+  `supervisor/pipeline/pre_classify.py` (73 lines).
+
+### Files added
+
+- `supervisor/classification/README.md` — full classifier docs
+- `supervisor/classification/classifier_prompt.py` — prompt builder
+- `supervisor/classification/classifier_context.py` — context gatherers
+- `supervisor/pipeline/dag_awareness.py` — DAG awareness primitives
+- `supervisor/pipeline/dag_progress.py` — wave progress writer
+- `supervisor/pipeline/behavioral_learning.py` — episodic corrections
+- `supervisor/pipeline/pre_classify.py` — pre-classify orchestration
+- `supervisor/pipeline/dag_execution.py` — full DAG pipeline
+
+### Files modified
+
+- `supervisor/classification/classifier.py` — pure LLM, split into 3 files
+- `supervisor/supervisor.py` — uses new orchestration modules
+- `supervisor/pipeline/workflow.py` — calls `write_wave_progress` /
+  `write_final_progress` after every wave
+- `docs/architecture.md` — 3 new sections documenting the new model
+- `CHANGELOG.md` — this entry
+
+### Validation
+
+- `python3 -c "from supervisor.classification.classifier import classify_intent; print('ok')"` — **PASS**.
+- AST check across all classifier modules: **zero** `re.compile`,
+  `re.match`, `re.search`, `re.findall`, `re.sub` calls.
+- All 8 new modules import cleanly under the existing `supervisor/`
+  routing pattern.
+- `GoatSupervisor._run_dag` still works through the extracted
+  `run_dag_pipeline` module.
+- No module-level singletons introduced — the only DI container
+  remains `ServiceRegistry`.
+- All code files ≤ 260 lines except pre-existing
+  `supervisor/pipeline/workflow.py` (770, was 740 before this
+  work) and other pre-existing over-260 files which are out of
+  scope for this change.
+
+### Constraint compliance
+
+- ✅ Zero hardcoded keywords in the classifier.
+- ✅ Zero ChromaDB seeding with examples.
+- ✅ `IntentDepth` enum preserved exactly (3 values, same names).
+- ✅ `DagBridge` and `GoatValidator` untouched.
+- ✅ Zero singletonuri introduced.
+- ✅ All code files ≤ 260 lines except the pre-existing
+  workflow.py (770, was 740 — +30 lines for progress writes,
+  but the writes themselves live in `dag_progress.py`).
+- ✅ LLM prompt mentions: GOAT capabilities, what requires DAG,
+  conversation history, user profile, active DAGs, override,
+  prior corrections.
+- ✅ Decisions logged at DEBUG level (`classify_intent: intent=…
+  override=… llm_token=…`).
+
+---
+
+### Fixed
+
+#### TASK 1 — DAG workspace path (`tools/file/file_executor_helpers.py`)
+
 ### Fixed
 
 #### TASK 1 — DAG workspace path (`tools/file/file_executor_helpers.py`)

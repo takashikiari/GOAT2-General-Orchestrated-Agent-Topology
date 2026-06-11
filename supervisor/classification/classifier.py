@@ -1,41 +1,45 @@
-"""Intent depth classifier — routes intents to conversational, analytical, or complex handling.
+"""Intent depth classifier — pure LLM reasoning, no hardcoded keywords.
 
-All classification is LLM-driven with no keyword short-circuits. The model
-semantically evaluates intent depth regardless of message formatting or prefixes.
-Memory queries are routed through the same semantic path — if a user asks about
-memory, the LLM may classify it as analytical or complex if it requires DAG tools.
+The classifier is the gatekeeper that decides whether a user message
+should be answered directly (CONVERSATIONAL), run through a small DAG
+(ANALYTICAL), or trigger a full multi-agent pipeline (COMPLEX).
 
-FALLBACK SAFEGUARD (FIX):
-=========================
-If the LLM returns empty or unparseable output, we fall back to ANALYTICAL
-(a lightweight DAG with ≤2 tasks) instead of COMPLEX (full DAG). This prevents
-token waste on unnecessary full DAG execution when the classifier fails.
+CORE INVARIANT — NO HARDCODED KEYWORDS:
+======================================
+There are zero `re.compile(...)` patterns, zero `if "?" in text`
+checks, zero greeting lists, zero help detection, and zero first-
+message length heuristics. Every intent — including "?", "salut",
+"help", and one-word messages — flows through the same semantic
+LLM path. The model receives the intent plus full context (what
+GOAT can do, what requires the DAG, conversation history, user
+profile, active DAG sessions, user override, behavioral hints)
+and decides on its own.
 
-REGISTRY INJECTION (PHASE 4):
-=============================
-classify_intent() now requires `registry` parameter.
-Uses registry.settings.agents.get("memory") for classification.
+CORE INVARIANT — INTENTDEPTH ENUM:
+==================================
+`IntentDepth` is a 3-value enum:
+  CONVERSATIONAL — GOAT answers directly with memory + web_search
+  ANALYTICAL     — lightweight DAG (≤2 tasks)
+  COMPLEX        — full DAG with planner, researcher, critic
+Callers that import `IntentDepth` are unaffected. The classifier
+returns the enum directly.
 
-HELP DETECTION (ONBOARDING STEP 3):
-====================================
-Before LLM classification, we check for help-related keywords (help, ?, ajutor,
-ce poți face, capabilities, commands). If detected, we force CONVERSATIONAL mode
-so the user gets a friendly introduction instead of being routed to a DAG.
+FALLBACK SAFEGUARD:
+===================
+If the LLM returns empty or unparseable output, the classifier
+falls back to CONVERSATIONAL. This is a safe default — never
+escalate to a full DAG on uncertainty.
 
-FIRST-MESSAGE GUARD (ONBOARDING STEP 3):
-=========================================
-If `is_first_message=True` and the intent is vague (short, no clear action verb),
-we force CONVERSATIONAL mode. This prevents new users from being thrown into a
-DAG on their very first interaction before they understand what GOAT can do.
+REGISTRY INJECTION:
+===================
+classify_intent() requires `registry` parameter. Uses
+registry.settings.agents.get("memory") for classification.
 """
 from __future__ import annotations
 
 import logging
-import re
 from enum import Enum
-from typing import Final, TYPE_CHECKING
-
-from utils.llm_utils import _call_llm
+from typing import TYPE_CHECKING
 
 log = logging.getLogger("goat2.supervisor.classification")
 
@@ -43,79 +47,6 @@ if TYPE_CHECKING:
     from config.registry import Registry
 
 __all__ = ["IntentDepth", "classify_intent"]
-
-_CLASSIFIER_SYSTEM: Final[str] = (
-    "Classify the user intent into exactly one depth level. Be conservative:\n"
-    "  conversational — questions, explanations, discussions, definitions, chitchat, help requests\n"
-    "  analytical     — comparisons, light coding, structured analysis, multi-part answers\n"
-    "  complex        — full implementation, multi-step research, architecture, system checks\n"
-    "When in doubt between conversational and analytical, choose conversational.\n"
-    "Reply with ONLY the single word: conversational, analytical, or complex."
-)
-
-# ── Help detection patterns (ONBOARDING STEP 3) ──
-# These catch help/onboarding queries before LLM classification,
-# forcing CONVERSATIONAL mode so the user gets a friendly introduction.
-_HELP_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^\?\s*$", re.IGNORECASE),                          # just "?"
-    re.compile(r"\bhelp\b", re.IGNORECASE),                          # "help", "help me"
-    re.compile(r"\bajut[oai]r\b", re.IGNORECASE),                    # "ajutor", "ajută", "ajutor!"
-    re.compile(r"\bce\s+po[iț]i?\s+(face|faci)\b", re.IGNORECASE),  # "ce poți face", "ce poți să faci"
-    re.compile(r"\bce\s+știi\s+să\s+(faci|fac)\b", re.IGNORECASE),  # "ce știi să faci"
-    re.compile(r"\bcapabilities\b", re.IGNORECASE),                  # "capabilities"
-    re.compile(r"\bcommands?\b", re.IGNORECASE),                     # "command", "commands"
-    re.compile(r"\b(what\s+)?(can\s+you\s+do|are\s+you\s+capable\s+of)\b", re.IGNORECASE),  # "what can you do"
-    re.compile(r"\b(arată|show)\s+(ce|what)\s+(poți|can)\b", re.IGNORECASE),  # "arată ce poți"
-    re.compile(r"\b(how\s+to|how\s+do\s+i|cum\s+să)\s+(use|folosesc|utilizez)\b", re.IGNORECASE),  # "how to use"
-]
-
-# ── Vague first-message patterns (ONBOARDING STEP 3) ──
-# If the user's very first message matches these, it's likely exploratory
-# and should stay conversational rather than triggering a DAG.
-_VAGUE_FIRST_PATTERNS: list[re.Pattern] = [
-    re.compile(r"^(salut|bună|buna|hello|hi|hey|bun venit|noroc|servus)\b", re.IGNORECASE),
-    re.compile(r"^(scuze|scuză|pardon|sorry)\b", re.IGNORECASE),
-    re.compile(r"^(test|testing|încerc|incerc)\b", re.IGNORECASE),
-    re.compile(r"^(da|nu|yes|no|ok|okay|bine)\s*$", re.IGNORECASE),
-    re.compile(r"^(cine\s+ești|cine\s+sunt|who\s+are\s+you)\b", re.IGNORECASE),
-    re.compile(r"^(ce\s+este|ce-i|what\s+is)\s+(asta|this|goat)\b", re.IGNORECASE),
-    re.compile(r"^[.!?]{1,3}$"),  # just punctuation
-    re.compile(r"^\s*$"),  # empty/whitespace only
-]
-
-
-def _is_help_query(intent: str) -> bool:
-    """Check if the intent is a help/onboarding query using pattern matching.
-
-    Returns True if the user is asking for help, capabilities, or what GOAT can do.
-    This forces CONVERSATIONAL mode so the user gets a friendly introduction
-    instead of being routed to a DAG.
-    """
-    text = intent.strip()
-    if not text:
-        return False
-    for pattern in _HELP_PATTERNS:
-        if pattern.search(text):
-            return True
-    return False
-
-
-def _is_vague_first_message(intent: str) -> bool:
-    """Check if the intent is a vague first message that should stay conversational.
-
-    Returns True if the message looks like a greeting, test, or exploratory query
-    that doesn't warrant DAG execution.
-    """
-    text = intent.strip()
-    if not text:
-        return True
-    # Short messages (≤3 words) that aren't clear commands
-    words = text.split()
-    if len(words) <= 3:
-        for pattern in _VAGUE_FIRST_PATTERNS:
-            if pattern.search(text):
-                return True
-    return False
 
 
 class IntentDepth(str, Enum):
@@ -129,64 +60,111 @@ class IntentDepth(str, Enum):
 async def classify_intent(
     intent: str,
     registry: "Registry",
-    is_first_message: bool = False,
+    is_first_message: bool = False,  # kept for API compatibility, not used
 ) -> IntentDepth:
-    """Classify intent via LLM — with help detection and first-message guard.
+    """Classify intent via LLM reasoning — pure semantic, no keywords.
 
-    The model evaluates true intent depth regardless of message formatting,
-    prefixes, or structural triggers. Memory queries are routed through the
-    same semantic path, allowing the LLM to determine if they need DAG tools.
+    The LLM receives a single prompt containing:
+      - GOAT's direct capabilities (memory + web_search)
+      - What requires the DAG (multi-step research, code, deep analysis)
+      - Current conversation history (recent user turns)
+      - Active DAG sessions (wave/total/status)
+      - User profile (semantic summary from long-term)
+      - User override (if any — "force conversational" or "force complex")
+      - Prior corrections (soft semantic hints from episodic memory)
 
-    HELP DETECTION (ONBOARDING STEP 3):
-    ===================================
-    Before LLM classification, we check for help-related keywords (help, ?,
-    ajutor, ce poți face, capabilities, commands). If detected, we force
-    CONVERSATIONAL mode so the user gets a friendly introduction instead of
-    being routed to a DAG.
+    The model replies with exactly one word: conversational, analytical,
+    or complex. On parse failure → CONVERSATIONAL (safe fallback).
 
-    FIRST-MESSAGE GUARD (ONBOARDING STEP 3):
-    =========================================
-    If `is_first_message=True` and the intent is vague (short greeting, test,
-    exploratory query), we force CONVERSATIONAL mode. This prevents new users
-    from being thrown into a DAG on their very first interaction before they
-    understand what GOAT can do.
+    Args:
+        intent: The raw user message text.
+        registry: ServiceRegistry for settings and memory access.
+        is_first_message: Kept for API compatibility. Not consulted
+                          by the LLM — the model reasons about the
+                          content of the message on its own merits.
 
-    FALLBACK SAFEGUARD:
-    ===================
-    If the LLM returns empty or unparseable output, we fall back to ANALYTICAL
-    (lightweight DAG) instead of COMPLEX (full DAG). This prevents token waste
-    on unnecessary full DAG execution when the classifier fails.
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("memory").
+    Returns:
+        IntentDepth.CONVERSATIONAL | ANALYTICAL | COMPLEX
     """
-    # ── ONBOARDING STEP 3: Help detection ──
-    # If the user is asking for help/capabilities, force CONVERSATIONAL
-    # so they get a friendly introduction with capabilities listed.
-    if _is_help_query(intent):
-        return IntentDepth.CONVERSATIONAL
-
-    # ── ONBOARDING STEP 3: First-message guard ──
-    # If this is the user's very first message and it's vague/exploratory,
-    # keep it conversational — don't throw them into a DAG.
-    if is_first_message and _is_vague_first_message(intent):
-        return IntentDepth.CONVERSATIONAL
-
-    # ── Standard LLM-based classification ──
-    _settings = registry.settings
-    raw = await _call_llm(
-        _settings.agents.get("memory"),  # gpt-4o-mini — fast, cheap
-        [
-            {"role": "system", "content": _CLASSIFIER_SYSTEM},
-            {"role": "user",   "content": intent},
-        ],
+    # Lazy imports keep this module's runtime cost minimal and avoid
+    # any chance of a circular import via the supervisor/ package.
+    from supervisor.classification.classifier_prompt import (
+        build_classifier_prompt,
+        _CLASSIFIER_SYSTEM,
     )
-    token = raw.strip().lower().split()[0] if raw.strip() else ""
+    from supervisor.classification.classifier_context import (
+        detect_override,
+        gather_active_dags,
+        gather_user_profile,
+        gather_hints,
+    )
+    from utils.llm_utils import _call_llm
+
+    # ── Step 1: detect explicit user override (semantic) ──
+    override = await detect_override(intent, registry)
+
+    # ── Step 2: gather context for the LLM prompt ──
+    history_text, active_dags, user_profile, hints = await _gather_all(registry)
+
+    # ── Step 3: build the user prompt with all context ──
+    user_prompt = build_classifier_prompt(
+        intent=intent,
+        history_text=history_text,
+        active_dags=active_dags,
+        user_profile=user_profile,
+        override=override,
+        hints=hints,
+    )
+
+    # ── Step 4: call the LLM ──
+    settings = registry.settings
     try:
-        depth = IntentDepth(token)
+        raw = await _call_llm(
+            settings.agents.get("memory"),
+            [
+                {"role": "system", "content": _CLASSIFIER_SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception as e:
+        log.warning("classify_intent LLM call failed, falling back to CONVERSATIONAL: %s", e)
+        return IntentDepth.CONVERSATIONAL
+
+    # ── Step 5: parse + apply override (override always wins) ──
+    token = raw.strip().lower().split()[0] if raw.strip() else ""
+    log.debug(
+        "classify_intent: intent=%.80s override=%s llm_token=%r",
+        intent, override, token,
+    )
+
+    if override == "conversational":
+        return IntentDepth.CONVERSATIONAL
+    if override == "complex":
+        return IntentDepth.COMPLEX
+
+    try:
+        return IntentDepth(token)
     except ValueError:
-        # FIX: Fall back to ANALYTICAL (lightweight) instead of COMPLEX (full DAG)
-        # This prevents token waste when the classifier fails
-        depth = IntentDepth.CONVERSATIONAL
-    return depth
+        # LLM returned garbage — fall back to CONVERSATIONAL
+        return IntentDepth.CONVERSATIONAL
+
+
+async def _gather_all(registry: "Registry") -> tuple[str, list[dict], str, list[str]]:
+    """Gather all context fields needed for the classifier prompt."""
+    from supervisor.classification.classifier_context import (
+        gather_active_dags,
+        gather_user_profile,
+        gather_hints,
+    )
+    from supervisor.classification.classifier_prompt import format_history
+    try:
+        from supervisor.session.history import ConversationHistory
+        hist = getattr(registry, "_history", None) or ConversationHistory()
+        history_text = format_history(hist.messages)
+    except Exception:
+        history_text = "(no prior conversation)"
+
+    active_dags = await gather_active_dags(registry)
+    user_profile = await gather_user_profile(registry)
+    hints = await gather_hints(registry)
+    return history_text, active_dags, user_profile, hints

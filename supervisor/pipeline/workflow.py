@@ -702,10 +702,41 @@ class WorkflowGraph:
             # Execute all tasks in this wave concurrently
             await asyncio.gather(*[_run(tid) for tid in filtered_wave])
 
+            # ── DAG PROGRESS REPORTING (TASK 3) ──
+            # After each wave completes, write a progress record to
+            # working memory at `dag:<session_id>:progress` with the
+            # current wave number, total waves, completed task IDs,
+            # and status. GOAT reads this on demand via the
+            # `query_dag_status` tool or `memory_get` with the same
+            # key. The progress key is overwritten in place — no
+            # append-only log, no versioning.
+            if session_id and memory_manager:
+                completed_now = sorted(
+                    tid for tid, r in results.items() if r.error is None
+                )
+                from supervisor.pipeline.dag_progress import write_wave_progress
+                await write_wave_progress(
+                    memory_manager, session_id,
+                    wave=wave_idx + 1, total_waves=len(waves),
+                    completed=completed_now,
+                )
+
         if verbose:
             log.info("WorkflowGraph: all %d waves complete", len(waves))
             if failed_ids:
                 log.info("Failed/skipped tasks: %s", failed_ids)
+
+        # Final progress update — mark complete before writing the
+        # final result so GOAT sees a coherent terminal state.
+        if session_id and memory_manager:
+            completed_final = sorted(
+                tid for tid, r in results.items() if r.error is None
+            )
+            from supervisor.pipeline.dag_progress import write_final_progress
+            await write_final_progress(
+                memory_manager, session_id,
+                total_waves=len(waves), completed=completed_final,
+            )
 
         if session_id and memory_manager:
             try:

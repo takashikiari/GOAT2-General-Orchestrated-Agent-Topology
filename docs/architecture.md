@@ -11,6 +11,231 @@ persistent memory, intelligent intent routing, and a full tool-calling system.
 2. **Agent Isolation** — DAG agents have limited scope; GOAT supervises all
 3. **Anti-Hallucination** — Data flows only through verified paths
 4. **Source Provenance** — Every output tagged with its origin
+5. **Pure LLM Routing** — Zero hardcoded keywords; the model decides
+6. **DAG as Internal Thought** — Deep reasoning runs async; GOAT monitors from outside
+7. **Working Memory as Nervous System** — GOAT↔DAG communicate only through Redis
+
+---
+
+## Intent Classification
+
+GOAT 2.0 routes every user message through a **pure LLM classifier** —
+no hardcoded keywords, no regex short-circuits, no greeting lists.
+The classifier is the single decision point for whether a request
+should be answered directly (CONVERSATIONAL), run through a small DAG
+(ANALYTICAL), or trigger a full multi-agent pipeline (COMPLEX).
+
+### `IntentDepth` — three routing depths
+
+| Depth | Meaning | Path |
+|---|---|---|
+| `CONVERSATIONAL` | GOAT can answer directly | single LLM call with memory + web_search |
+| `ANALYTICAL` | Lightweight DAG (≤2 tasks) | small DAG, no critic re-run |
+| `COMPLEX` | Full DAG | planner → researcher/coder/critic → summarizer |
+
+The enum is preserved exactly across all GOAT versions — callers and
+validators that import `IntentDepth` are unaffected. The classifier
+returns the enum directly.
+
+### What the classifier LLM sees
+
+The classifier is given a single prompt containing:
+
+- **GOAT's direct capabilities** — what it can do without spawning
+  the DAG (memory + web_search).
+- **What requires the DAG** — multi-step research, code generation
+  across multiple files, deep analysis, system configuration,
+  architecture decisions.
+- **Conversation history** — the last six user turns.
+- **Active DAG sessions** — what's already in flight in working
+  memory (so the LLM can prefer CONVERSATIONAL for follow-ups
+  about in-flight work).
+- **User profile** — the semantic summary from long-term memory
+  (preferences, style, projects).
+- **User override** — if the user explicitly asked for a specific
+  routing mode (e.g. "answer directly" / "think deeply"), the
+  override is applied unconditionally.
+- **Prior corrections** — soft semantic hints from episodic memory:
+  past corrections the user has made about similar intents.
+
+The model replies with exactly one word: `conversational`,
+`analytical`, or `complex`. On parse failure the classifier falls
+back to CONVERSATIONAL (safe default — never escalate to a full
+DAG on uncertainty).
+
+### No hardcoded keywords
+
+The classifier is **purely LLM-driven**. There are:
+
+- ❌ no `re.compile(...)` patterns
+- ❌ no `if "?" in text` checks
+- ❌ no greeting lists
+- ❌ no `help` detection
+- ❌ no first-message length heuristics
+
+If the user says "?", the LLM decides whether it's an inquiry or a
+typo. If the user says "salut", the LLM decides whether it's a
+greeting or a misspelled word in context. Every intent flows
+through the same semantic path.
+
+### Explicit user control
+
+Users can route their message without typing "DAG" as a keyword:
+
+- "Just answer me directly" / "nu rula DAG" / "tu singur" → force CONVERSATIONAL
+- "Think about this deeply" / "pornește DAG" / "gândește profund" → force COMPLEX
+
+Detection is **semantic**, not keyword-based. The override prompt
+section describes in prose what an override looks like; the LLM
+extracts the override semantically. The override is then stored in
+working memory (`goat:<session_id>:override`, TTL = session
+duration) so subsequent turns in the same session can re-use it
+without re-asking the LLM.
+
+### Behavioral learning via episodic memory
+
+GOAT 2.0 learns **semantically** from the user's corrections. There
+are zero hardcoded examples, zero ChromaDB seeding, and zero
+"if the user said X, do Y" rules.
+
+The learning loop:
+
+1. **Detection** — when the user disagrees with GOAT's routing,
+   the disagreement is detected semantically by the LLM (no
+   keywords, no phrase matching).
+2. **Storage** — the correction is written to **episodic memory**
+   (ChromaDB) as a labeled example: original intent, what GOAT
+   did, what the user wanted.
+3. **Retrieval** — on the next similar intent, the classifier
+   queries episodic memory for past corrections whose `intent` is
+   semantically close. The LLM sees them as soft context.
+4. **Adaptation** — the LLM uses the corrections as soft signals.
+   Adaptability comes from semantic understanding, not pattern
+   matching.
+
+The user profile in long-term memory is a **semantic summary**
+of the user, written by an LLM and updated as new signals arrive.
+It is consulted by the classifier as plain prose.
+
+---
+
+## DAG as GOAT's Internal Thought Process
+
+GOAT 2.0 is a two-layer system:
+
+- **GOAT (supervisor)** — the interface with the user. It carries
+  the conversation, holds the user profile, monitors background
+  work, and synthesizes results. It has full access to all three
+  memory tiers.
+
+- **DAG (deep thinking)** — a multi-agent task pipeline that GOAT
+  spawns in the background when the user's request is too complex
+  for direct conversational handling. The DAG writes its progress
+  and results to **working memory**; GOAT reads from there and
+  never blocks on the DAG.
+
+**The DAG is GOAT's internal thought process** — it runs
+asynchronously, sends progress to a shared scratchpad (working
+memory), and finishes by writing a final result. GOAT decides
+**when** to think deeply; the LLM that powers GOAT makes this
+decision based on the user's intent and what GOAT is currently
+capable of doing directly.
+
+### DAG progress reporting
+
+`WorkflowGraph` writes a progress record to working memory after
+every wave completes:
+
+```python
+key   = f"dag:{session_id}:progress"
+value = {
+  "wave": 3,
+  "total_waves": 5,
+  "completed_tasks": ["t1", "t2", "t4"],
+  "status": "running",   # or "complete" on final wave
+  "ts": <wall-clock>
+}
+ttl   = 3600
+```
+
+GOAT reads this on demand via the `query_dag_status` tool or
+`memory_get` with the progress key. The progress key is
+overwritten in place after each wave — no append-only log, no
+versioning.
+
+When the final wave finishes, the `status` is set to `"complete"`
+and the same key is updated one last time before the final result
+is written to `dag:<session_id>:result`.
+
+### DAG awareness in GOAT
+
+Before classifying a new intent, GOAT scans working memory for
+active DAG sessions. The classifier LLM is given a summary of
+what is in flight and is biased to prefer CONVERSATIONAL for
+follow-up questions about in-flight work — so the user gets a
+real-time progress report instead of a fresh DAG.
+
+GOAT never runs tasks in parallel with the DAG. It monitors from
+the outside, reads progress on demand, and synthesizes the final
+result when the DAG finishes.
+
+### Key namespaces
+
+| Key pattern | Owner | Meaning |
+|---|---|---|
+| `goat:<session_id>:turn_<ts>` | GOAT | every turn (user + assistant summary) |
+| `dag:<session_id>:progress`   | DAG  | current wave / total waves / status |
+| `dag:<session_id>:result`     | DAG  | final result after all waves |
+| `dag:<session_id>:task:<tid>` | DAG  | per-task intermediate output |
+| `goat:<session_id>:override`  | GOAT | user override flag (force_conv / force_cplx) |
+
+All keys are TTL-bound (default 3600s for DAG, 7200s for GOAT
+turns). The nervous system is volatile by design.
+
+---
+
+## Working Memory as the Nervous System
+
+Working memory (Redis) is the **nervous system** of GOAT 2.0. It
+is the only channel through which GOAT and the DAG communicate.
+
+### What GOAT writes
+
+- `goat:<session_id>:turn_<ts>` — every turn (user + assistant summary), TTL 7200s.
+- `goat:<session_id>:override` — explicit user override (force
+  CONVERSATIONAL or COMPLEX), TTL 3600s.
+- Intentions / task instructions to the DAG (read by DAG agents
+  via the `dag:*:task:<tid>` namespace).
+
+### What the DAG writes
+
+- `dag:<session_id>:progress` — current wave / total / status,
+  updated after every wave. TTL 3600s.
+- `dag:<session_id>:task:<tid>` — per-task intermediate output,
+  readable by downstream DAG agents via `memory_get`. TTL 3600s.
+- `dag:<session_id>:result` — final result after all waves.
+  TTL 3600s.
+
+### What GOAT reads
+
+- `dag:*:progress` — to report progress to the user and to feed
+  the classifier LLM with "what is in flight" context.
+- `dag:*:result` — to validate and synthesize the final answer.
+- `dag:*:task:<tid>` — only via `validate_dag_result` in
+  `goat_validator.py`, never as a tool call.
+
+### What the DAG has zero access to
+
+- ❌ Episodic (ChromaDB) — supervisor-only
+- ❌ Long-term (Letta) — supervisor-only
+- ❌ `goat:*` namespace — GOAT-owned, never written by the DAG
+
+### Pollution guard
+
+DAG execution data never pollutes episodic or long-term memory.
+Progress reports, intermediate outputs, and final results stay
+in working memory and expire with their TTL. The supervisor is
+the only writer to episodic and long-term.
 
 ---
 

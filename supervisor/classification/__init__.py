@@ -2,7 +2,7 @@
 
 Exports:
     - IntentDepth: Enum for conversational/analytical/complex routing
-    - classify_intent: LLM-driven intent depth classification
+    - classify_intent: Pure LLM-driven intent depth classification
     - DirectRequest, DirectTool: Lightweight direct-request classification
     - classify_direct_request: Rule-based single-tool bypass detection
     - detect_language: LLM-driven language detection
