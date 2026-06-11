@@ -14,6 +14,7 @@ from typing import Any
 
 __all__ = ["log_tool_call"]
 
+log = logging.getLogger("goat2.supervisor.logging")
 _struct_log = logging.getLogger("goat2.tool_calls.structured")
 
 

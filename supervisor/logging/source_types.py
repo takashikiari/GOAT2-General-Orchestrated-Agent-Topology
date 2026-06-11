@@ -5,8 +5,11 @@ propagating data provenance from tool calls through the DAG to supervisor output
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Final, Literal
+
+log = logging.getLogger("goat2.supervisor.logging")
 
 __all__ = ["SourceTag", "TaggedResult", "TOOL_SOURCE_MAP", "infer_source"]
 

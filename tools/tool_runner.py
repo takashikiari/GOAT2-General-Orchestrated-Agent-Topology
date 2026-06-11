@@ -1,4 +1,17 @@
-"""Agentic tool-calling loop for function-based runners."""
+"""Agentic tool-calling loop for function-based runners.
+
+ARCHITECTURE (routing + TYPE_CHECKING + Registry):
+==================================================
+This module sits at the boundary between supervisor/ (orchestration) and
+tools/ (definitions) + agents/ (ToolDefinition type). It is the only
+module under tools/ that legitimately needs supervisor/ types at
+runtime (TaggedResult, infer_source, log_tool_call).
+
+To avoid the cycle tools -> supervisor -> tools, the supervisor.logging
+imports live inside the function body of ``_call_with_tools`` (lazy),
+not at module level. Only leaf modules — config.settings, config.timeouts,
+utils.llm_utils — are imported at the top.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,14 +24,13 @@ from config.settings import ModelSpec
 from config.timeouts import TOOL_TIMEOUT
 
 from utils.llm_utils import _call_llm, _get_client
-from supervisor.logging.source_types import TaggedResult, TOOL_SOURCE_MAP, infer_source
-from supervisor.logging.structured_logger import log_tool_call
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
     from memory.shared import MemoryManager
+    from supervisor.logging.source_types import TaggedResult
 
-log = logging.getLogger("goat2.tool_runner")
+log = logging.getLogger("goat2.tools.tool_runner")
 __all__ = ["_call_with_tools"]
 
 _MAX_ROUNDS: Final[int] = 8
@@ -114,7 +126,7 @@ async def _call_with_tools(
     temperature: float = 0.2,
     tool_choice: ToolChoice = "auto",
     memory_manager: "MemoryManager | None" = None,
-) -> TaggedResult:
+) -> "TaggedResult":
     """Tool-calling LLM loop; falls back to _call_llm when tools is empty or unsupported.
 
     Arguments are validated and defaults applied via _prepare_args() before dispatch.
@@ -130,6 +142,15 @@ async def _call_with_tools(
     Returns:
         TaggedResult with content, inferred source tag, and list of called tool names.
     """
+    # Lazy imports — break tools -> supervisor -> tools cycle.
+    # These run only when _call_with_tools is actually called, not at import time.
+    from supervisor.logging.source_types import (
+        TaggedResult,
+        TOOL_SOURCE_MAP,
+        infer_source,
+    )
+    from supervisor.logging.structured_logger import log_tool_call
+
     if not tools or not spec.tool_calling:
         log.debug("tool_runner bypass: model=%s tools=%d tool_calling=%s",
                   spec.model_id, len(tools), spec.tool_calling)

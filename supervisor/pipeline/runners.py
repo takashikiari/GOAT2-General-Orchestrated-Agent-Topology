@@ -24,7 +24,7 @@ from tools.tool_runner import _call_with_tools
 if TYPE_CHECKING:
     from config.registry import Registry
 
-log = logging.getLogger("goat2.runners")
+log = logging.getLogger("goat2.supervisor.pipeline")
 __all__ = [
     "_run_researcher",
     "_run_coder",

@@ -14,8 +14,12 @@ TOOL EXPORTS:
 
 from __future__ import annotations
 
+import logging
+
 from tools.system.calculator import CALCULATOR
 from tools.system.shell_tool import SHELL
 from tools.system.think import THINK
+
+log = logging.getLogger("goat2.tools.system")
 
 __all__ = ["THINK", "CALCULATOR", "SHELL"]

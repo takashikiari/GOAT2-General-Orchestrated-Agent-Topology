@@ -9,6 +9,12 @@ Exports:
     - prepare_tasks: Inject memory_manager and language into tasks
     - _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller: Agent runners
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor.pipeline")
+
 from supervisor.pipeline.workflow import WorkflowGraph
 from supervisor.pipeline.dag import DAGraph, DAGNode, DAGEdge, TaskStatus
 from supervisor.pipeline.plan_validator import validate_plan

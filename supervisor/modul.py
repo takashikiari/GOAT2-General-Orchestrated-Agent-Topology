@@ -1,12 +1,10 @@
-"""
-modul — Reusable agent module definitions for GOAT 2.0 supervisor.
+"""modul — Reusable agent module definitions for GOAT 2.0 supervisor.
 
 Provides abstract base classes and concrete implementations for agent
 modules that can be plugged into the DAG pipeline. Each module wraps a
 specific capability (research, coding, critique, summarization, etc.)
 and conforms to the AgentRunner protocol.
 """
-
 from __future__ import annotations
 
 import abc
@@ -14,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-log = logging.getLogger("goat2.modul")
+log = logging.getLogger("goat2.supervisor.modul")
 
 __all__ = [
     "AgentModule",

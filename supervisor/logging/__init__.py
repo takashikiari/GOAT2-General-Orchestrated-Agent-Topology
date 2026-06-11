@@ -6,6 +6,12 @@ Exports:
     - SourceTag, TaggedResult: Data provenance types
     - TOOL_SOURCE_MAP, infer_source: Tool-to-source mapping
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor.logging")
+
 from supervisor.logging.auditor import AuditReport, run_auditor
 from supervisor.logging.structured_logger import log_tool_call
 from supervisor.logging.source_types import SourceTag, TaggedResult, TOOL_SOURCE_MAP, infer_source

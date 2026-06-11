@@ -9,8 +9,16 @@ Supports:
 """
 from __future__ import annotations
 
-from agents.base_agent import ToolDefinition
+import logging
+from typing import TYPE_CHECKING
+
+from tools._make_tool import make_tool
 from tools.file.file_executor import EXECUTOR, MAX_READ
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.file.read")
 
 __all__ = ["FILE_READ"]
 
@@ -61,10 +69,11 @@ async def _handler(
     format_aware: bool = True,
 ) -> str:
     """Read a file; return UTF-8 text or ERROR: <reason>. If unavailable: 'tool not connected'."""
+    log.debug("file_read: path=%r offset=%d limit=%s format_aware=%s", path, offset, limit, format_aware)
     return EXECUTOR.read(path, offset=offset, limit=limit, format_aware=format_aware)
 
 
-FILE_READ = ToolDefinition(
+FILE_READ = make_tool(
     name="file_read",
     description=(
         "Read a file and return its UTF-8 contents. "

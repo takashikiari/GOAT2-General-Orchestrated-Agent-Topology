@@ -37,7 +37,7 @@ from tools.file.file_executor_helpers import (
     timeout_context,
 )
 
-log = logging.getLogger("goat2.file_executor")
+log = logging.getLogger("goat2.tools.file.executor")
 
 __all__ = [
     "FileToolExecutor", "EXECUTOR",

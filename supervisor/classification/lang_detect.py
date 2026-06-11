@@ -7,9 +7,12 @@ Uses registry.settings.agents.get() for model access.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Final
 
 from utils.llm_utils import _call_llm
+
+log = logging.getLogger("goat2.supervisor.classification")
 
 if TYPE_CHECKING:
     from config.registry import Registry

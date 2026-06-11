@@ -33,7 +33,7 @@ from config.roles import SESSION_ROLE
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
 
-log = logging.getLogger("goat2.dag_bridge")
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 __all__ = ["DagBridge", "DAG_KEY_PREFIX", "DAG_NAMESPACE"]
 

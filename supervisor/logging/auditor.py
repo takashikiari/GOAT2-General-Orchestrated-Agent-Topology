@@ -25,7 +25,7 @@ from supervisor.types import AgentResult
 
 __all__ = ["AuditReport", "run_auditor"]
 
-log = logging.getLogger("goat2.auditor")
+log = logging.getLogger("goat2.supervisor.logging")
 
 
 @dataclass

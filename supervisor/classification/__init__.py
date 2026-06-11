@@ -7,6 +7,12 @@ Exports:
     - classify_direct_request: Rule-based single-tool bypass detection
     - detect_language: LLM-driven language detection
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor.classification")
+
 from supervisor.classification.classifier import IntentDepth, classify_intent
 from supervisor.classification.request_classifier import DirectRequest, DirectTool, classify_direct_request
 from supervisor.classification.lang_detect import detect_language

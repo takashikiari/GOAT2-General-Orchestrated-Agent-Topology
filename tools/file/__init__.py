@@ -29,6 +29,8 @@ EXPORTS ALSO:
 
 from __future__ import annotations
 
+import logging
+
 from tools.file.file_create import FILE_CREATE
 from tools.file.file_executor import EXECUTOR, FileToolExecutor
 from tools.file.file_executor import MAX_READ, MAX_WRITE, MAX_LIST
@@ -41,6 +43,8 @@ from tools.file.file_read_lines import FILE_READ_LINES
 from tools.file.file_search import FILE_SEARCH
 from tools.file.file_write import FILE_WRITE
 from tools.file.file_op_response import file_op_result
+
+log = logging.getLogger("goat2.tools.file")
 
 __all__ = [
     # Tool definitions

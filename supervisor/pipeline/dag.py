@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-log = logging.getLogger("goat2.dag")
+log = logging.getLogger("goat2.supervisor.pipeline.dag")
 
 __all__ = [
     "TaskStatus",

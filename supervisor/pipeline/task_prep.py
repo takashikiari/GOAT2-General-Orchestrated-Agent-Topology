@@ -7,7 +7,10 @@ Passed to detect_language() for settings access.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Final
+
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager

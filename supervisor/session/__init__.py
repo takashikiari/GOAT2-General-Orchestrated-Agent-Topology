@@ -10,6 +10,12 @@ Exports:
     - mem_turn: Fan-out memory recall and fact extraction per turn
     - recall_context: Cross-tier memory recall
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor.session")
+
 from supervisor.session.session import store_turn, store_dag_result, retrieve_dag_result
 from supervisor.session.history import ConversationHistory, load_session_summary
 from supervisor.session.session_init import init_session

@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
+from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
+from tools._make_tool import make_tool
 from tools.file.file_executor import EXECUTOR
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.file.search")
 
 __all__ = ["FILE_SEARCH"]
 
@@ -32,10 +39,13 @@ _SCHEMA = {
 
 async def _handler(pattern: str, path: str = ".", limit: int = MAX_SEARCH_RESULTS) -> str:
     """Find files matching pattern; return relative paths or ERROR: <reason>."""
+    log.debug("file_search: pattern=%r path=%r limit=%d", pattern, path, limit)
     root = EXECUTOR._resolve(path)
     if isinstance(root, str):
+        log.warning("file_search: resolve failed for path=%r: %s", path, root)
         return root
     if not root.is_dir():
+        log.warning("file_search: not a directory: %r", path)
         return f"ERROR: not a directory: {path!r}"
 
     matches: list[str] = []
@@ -57,7 +67,7 @@ async def _handler(pattern: str, path: str = ".", limit: int = MAX_SEARCH_RESULT
     return result
 
 
-FILE_SEARCH = ToolDefinition(
+FILE_SEARCH = make_tool(
     name="file_search",
     description=(
         "Search for files by name pattern (glob) within the workspace. "

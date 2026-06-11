@@ -108,8 +108,6 @@ from config.roles import SESSION_ROLE
 from supervisor.types import AgentRunner, AgentResult, Plan, SupervisorResult
 from supervisor.registry import AgentRegistry
 from supervisor.pipeline.workflow import WorkflowGraph
-from agents.planner_decompose import decompose_plan
-from agents.critique import critique_results, synthesize_results, CriticVerdict
 from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
 from supervisor.classification.classifier import classify_intent, IntentDepth
@@ -123,6 +121,7 @@ from supervisor.classification.request_classifier import classify_direct_request
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
+    from agents.critique import CriticVerdict
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -739,6 +738,7 @@ class GoatSupervisor:
             plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
 
         # Phase 4: Pass registry to decompose_plan
+        from agents.planner_decompose import decompose_plan  # lazy: agents/ cross-layer
         plan = await decompose_plan(plan_ctx, self.registry)
         lang = await prepare_tasks(plan.tasks, self.memory_manager, intent, self.registry)
 
@@ -797,6 +797,7 @@ class GoatSupervisor:
             critique_str = ""
         else:
             # ── FIX (Problema 5): Critic with fallback loop ──
+            from agents.critique import critique_results, synthesize_results  # lazy: agents/ cross-layer
             verdict = await critique_results(plan_ctx, results, self.registry, lang)
             retry_count = 0
 

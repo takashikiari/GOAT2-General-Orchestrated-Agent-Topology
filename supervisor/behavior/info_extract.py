@@ -11,8 +11,11 @@ Uses registry.settings.agents.get() for model access.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Final
+
+log = logging.getLogger("goat2.supervisor.behavior")
 
 from config.roles import GOAT_ROLE
 

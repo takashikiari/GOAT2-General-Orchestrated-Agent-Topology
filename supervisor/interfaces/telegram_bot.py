@@ -17,7 +17,7 @@ from config.toml_loader import load_toml
 from supervisor.supervisor import GoatSupervisor
 from supervisor.interfaces.content_filter import mask_sensitive
 
-log = logging.getLogger("goat2.telegram")
+log = logging.getLogger("goat2.supervisor.interfaces")
 
 _TOKEN: Final[str] = os.environ.get("TELEGRAM_TOKEN") or load_toml().channel_str("telegram_token")
 

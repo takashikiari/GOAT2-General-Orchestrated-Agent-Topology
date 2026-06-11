@@ -10,6 +10,12 @@ Exports:
     - maybe_store_info: Extract facts from user messages
     - ScoredFact, INFERRED_TTL: Fact confidence types
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor.behavior")
+
 from supervisor.behavior.behavior_analyzer import analyze_style
 from supervisor.behavior.behavior_mirror import mirror_instruction
 from supervisor.behavior.behavior_profile import BehaviorProfile, serialize, deserialize, empty_profile

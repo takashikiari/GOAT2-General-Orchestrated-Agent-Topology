@@ -38,6 +38,9 @@ tools/
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 # Re-export from file/ subdirectory
 from tools.file import (
     FILE_CREATE,
@@ -86,8 +89,14 @@ from tools.web import WEB_SEARCH
 # Re-export from system/ subdirectory
 from tools.system import CALCULATOR, SHELL, THINK
 
-from agents.base_agent import ToolDefinition
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+# Lazy import to keep tools importable from any context (including agents/).
+# _call_with_tools re-exports a function pointer used by tool runners.
 from tools.tool_runner import _call_with_tools
+
+log = logging.getLogger("goat2.tools")
 
 __all__ = [
     # Individual tools

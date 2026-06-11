@@ -8,10 +8,16 @@ code execution. Exponentiation is capped to avoid resource exhaustion.
 from __future__ import annotations
 
 import ast
+import logging
 import operator
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from agents.base_agent import ToolDefinition
+from tools._make_tool import make_tool
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.system.calculator")
 
 __all__ = ["CALCULATOR"]
 
@@ -65,17 +71,22 @@ def _eval_node(node: ast.expr) -> float:
 
 async def _handler(expression: str) -> str:
     """Evaluate expression; return numeric result or ERROR: <reason> on failure."""
+    log.debug("calculator: expression=%r", expression)
     try:
         tree   = ast.parse(expression.strip(), mode="eval")
         result = _eval_node(tree.body)
-        return str(int(result)) if isinstance(result, float) and result.is_integer() else str(result)
+        out = str(int(result)) if isinstance(result, float) and result.is_integer() else str(result)
+        log.debug("calculator: expression=%r -> %s", expression, out)
+        return out
     except ZeroDivisionError:
+        log.warning("calculator: division by zero: %r", expression)
         return "ERROR: division by zero"
     except Exception as exc:
+        log.warning("calculator: failed for %r: %s", expression, exc)
         return f"ERROR: {exc}"
 
 
-CALCULATOR = ToolDefinition(
+CALCULATOR = make_tool(
     name="calculator",
     description="Safely evaluate a math expression. Supports +, -, *, /, //, %, ** (no code execution).",
     parameters=_SCHEMA,

@@ -31,7 +31,7 @@ from typing import Final
 
 from config.agents import AGENT_ROLES, EXECUTION_ROLES
 
-log = logging.getLogger("goat2.goat_validator")
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 __all__ = ["ValidationReport", "validate_dag_result", "validate_dag_result_simple"]
 

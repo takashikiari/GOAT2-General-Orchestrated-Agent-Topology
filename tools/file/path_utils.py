@@ -5,16 +5,20 @@ need them; new code should use tools.file.file_executor.EXECUTOR directly.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from tools.file.file_executor import EXECUTOR
 from tools.file.file_executor import _WS as WORKSPACE
 from tools.file.file_executor import _ALLOW_OUTSIDE as ALLOW_OUTSIDE
 
+log = logging.getLogger("goat2.tools.file.path_utils")
+
 __all__ = ["WORKSPACE", "ALLOW_OUTSIDE", "safe_path"]
 
 
 def safe_path(raw: str) -> Path | None:
     """Resolve raw path through the executor; return Path or None on error."""
+    log.debug("safe_path: raw=%r", raw)
     result = EXECUTOR._resolve(raw)
     return result if isinstance(result, Path) else None

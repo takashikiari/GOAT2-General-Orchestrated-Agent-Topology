@@ -7,7 +7,15 @@ pass-through with no I/O side effects.
 
 from __future__ import annotations
 
-from agents.base_agent import ToolDefinition
+import logging
+from typing import TYPE_CHECKING
+
+from tools._make_tool import make_tool
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.system.think")
 
 __all__ = ["THINK"]
 
@@ -25,10 +33,11 @@ _SCHEMA = {
 
 async def _handler(thought: str) -> str:
     # Pure — no I/O. Returned string appears in tool-call history for the next LLM turn.
+    log.debug("think: %d chars", len(thought))
     return thought
 
 
-THINK = ToolDefinition(
+THINK = make_tool(
     name="think",
     description=(
         "Record a private reasoning step before acting. "

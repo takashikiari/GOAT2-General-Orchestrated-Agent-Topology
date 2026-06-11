@@ -16,6 +16,7 @@ A persistent flag `onboarding_done` in working memory prevents repeated welcome.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Final
 
@@ -24,6 +25,8 @@ from config.roles import GOAT_ROLE
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import Registry
+
+log = logging.getLogger("goat2.supervisor.identity")
 
 from supervisor.logging.source_types import TaggedResult
 from tools.tool_runner import _call_with_tools

@@ -8,8 +8,16 @@ Supports:
 """
 from __future__ import annotations
 
-from agents.base_agent import ToolDefinition
+import logging
+from typing import TYPE_CHECKING
+
+from tools._make_tool import make_tool
 from tools.file.file_executor import EXECUTOR, MAX_WRITE
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.file.write")
 
 __all__ = ["FILE_WRITE"]
 
@@ -43,10 +51,11 @@ _SCHEMA = {
 
 async def _handler(path: str, content: str, mode: str = "overwrite") -> str:
     """Write file atomically; return 'OK: wrote N bytes' or ERROR: <reason>."""
+    log.debug("file_write: path=%r mode=%s len(content)=%d", path, mode, len(content))
     return EXECUTOR.write(path, content, mode=mode)
 
 
-FILE_WRITE = ToolDefinition(
+FILE_WRITE = make_tool(
     name="file_write",
     description=(
         "Write text to a file atomically (tempfile + os.replace). "

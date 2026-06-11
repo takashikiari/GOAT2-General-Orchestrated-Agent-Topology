@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, Iterator
 
-log = logging.getLogger("goat2.file_executor_helpers")
+log = logging.getLogger("goat2.tools.file.executor_helpers")
 
 # ---------------------------------------------------------------------------
 # Environment-based configuration

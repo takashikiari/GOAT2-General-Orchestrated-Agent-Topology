@@ -4,17 +4,29 @@ REGISTRY INJECTION (PHASE 4):
 =============================
 file_op_result() now requires `registry` parameter.
 Uses registry.settings.agents.get() for model access.
+
+ARCHITECTURE (routing + TYPE_CHECKING + Registry):
+==================================================
+This module is the *only* file in tools/ that legitimately touches
+supervisor/ at all, because it is the conversational bridge into the
+orchestrator. To break the tools -> supervisor -> tools cycle, all
+supervisor.* imports (and the tools.FILE_TOOLS re-export) are performed
+lazily inside ``file_op_result()``. Only ``tools.tool_runner`` is
+imported at module level — it is a leaf of the tools/ subtree.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Final
 
 from tools.tool_runner import _call_with_tools
-from supervisor.types import Plan, SupervisorResult
 
 if TYPE_CHECKING:
-    from config.registry import Registry
+    from config.registry import ServiceRegistry
+    from supervisor.types import Plan, SupervisorResult
+
+log = logging.getLogger("goat2.tools.file.op_response")
 
 __all__ = ["file_op_result"]
 
@@ -35,18 +47,38 @@ async def file_op_result(
     summary: str,
     mem_ctx: str,
     t0: float,
-    registry: "Registry",
+    registry: "ServiceRegistry",
     style: str = "",
-) -> SupervisorResult:
+) -> "SupervisorResult":
     """
     Run tool_caller for a conversational file-operation request.
 
     REGISTRY INJECTION (PHASE 4):
     =============================
     Requires registry parameter. Uses registry.settings.agents.get() for model access.
+
+    Args:
+        intent:    User intent (used only as SupervisorResult.intent).
+        messages:  Conversation messages to send to the model.
+        profile:   User profile string (system context).
+        summary:   Previous-session summary string (system context).
+        mem_ctx:   Memory context string (system context).
+        t0:        Monotonic start time (used to compute total_duration_s).
+        registry:  The application ServiceRegistry (DI container).
+        style:     Optional style/mirror instruction.
+
+    Returns:
+        SupervisorResult wrapping the tool_caller reply.
     """
+    # Lazy imports — break tools -> supervisor -> tools cycle.
     from tools import FILE_TOOLS
-    from supervisor.behavior_mirror import mirror_instruction
+    from supervisor.types import Plan, SupervisorResult
+    from supervisor.behavior.behavior_mirror import mirror_instruction
+
+    log.debug(
+        "file_op_result: intent=%r messages=%d profile=%dB summary=%dB mem_ctx=%dB style=%dB",
+        intent[:60], len(messages), len(profile), len(summary), len(mem_ctx), len(style),
+    )
 
     parts = [_SYSTEM]
     if style:

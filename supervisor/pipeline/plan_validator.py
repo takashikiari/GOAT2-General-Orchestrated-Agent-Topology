@@ -10,7 +10,7 @@ from typing import Final
 
 from supervisor.types import Plan
 
-log = logging.getLogger("goat2.supervisor")
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 # ── Valid agent roles (must match AgentModels fields and PLANNER_SYSTEM) ──
 VALID_ROLES: Final[frozenset[str]] = frozenset({

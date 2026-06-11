@@ -6,6 +6,7 @@ chain through supervisor/__init__.py.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from config.agent_types import (
@@ -15,6 +16,8 @@ from config.agent_types import (
     AgentResult,
     Plan,
 )
+
+log = logging.getLogger("goat2.supervisor.types")
 
 __all__ = [
     "AgentRunner", "TaskStatus", "AgentTask",

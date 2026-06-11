@@ -12,10 +12,16 @@ SECURITY:
 """
 from __future__ import annotations
 
+import logging
 import subprocess
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from agents.base_agent import ToolDefinition
+from tools._make_tool import make_tool
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.system.shell")
 
 __all__ = ["SHELL"]
 
@@ -86,8 +92,10 @@ async def _shell_handler(
         Command output or error message.
     """
     # Parse command (simple split, no shell features)
+    log.debug("shell: command=%r timeout=%d", command[:80], timeout)
     parts = command.strip().split()
     if not parts:
+        log.warning("shell: empty command")
         return "ERROR: empty command"
 
     cmd = parts[0]
@@ -96,6 +104,7 @@ async def _shell_handler(
     # Validate
     error = _validate_command(cmd, args)
     if error:
+        log.warning("shell: validation failed for %r: %s", command[:80], error)
         return error
 
     # Build safe command
@@ -117,14 +126,17 @@ async def _shell_handler(
             output += f"[stderr]: {result.stderr}"
         return output.strip() if output else f"{cmd}: no output"
     except subprocess.TimeoutExpired:
+        log.warning("shell: command timed out after %ds: %r", timeout, command[:80])
         return f"ERROR: command timed out after {timeout}s"
     except FileNotFoundError:
+        log.warning("shell: command not found: %r", cmd)
         return f"ERROR: command not found: {cmd}"
     except Exception as exc:
+        log.exception("shell: unexpected error: %r", command[:80])
         return f"ERROR: {exc}"
 
 
-SHELL = ToolDefinition(
+SHELL = make_tool(
     name="shell",
     description="Execute basic read-only shell commands (ls, pwd, cat, head, tail, grep, echo, find, etc.). "
                 "DAG agents only - no file modification, no dangerous ops, no pipes/shell features.",

@@ -9,6 +9,70 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### supervisor/ — routing + TYPE_CHECKING + debug loggers
+
+**Goal:** Complete the `routing + TYPE_CHECKING + Registry` pattern across all `supervisor/` files,
+matching the style already applied to `agents/`, `config/`, `memory/`, and `tools/`.
+
+**Debug logger namespaces** (`import logging; log = logging.getLogger(...)`) added to every file
+in `supervisor/`, following the `goat2.supervisor.<submodule>` hierarchy:
+- `goat2.supervisor` — `supervisor.py`, `__init__.py`
+- `goat2.supervisor.types` — `types.py`
+- `goat2.supervisor.registry` — `registry.py`
+- `goat2.supervisor.identity` — `identity.py`
+- `goat2.supervisor.modul` — `modul.py`
+- `goat2.supervisor.pipeline` — all `pipeline/` files (workflow, runners, dag_validator, plan_validator, dag_bridge, goat_validator, task_prep, `__init__.py`)
+- `goat2.supervisor.pipeline.dag` — `pipeline/dag.py` (specific for cycle detection)
+- `goat2.supervisor.session` — all `session/` files
+- `goat2.supervisor.classification` — all `classification/` files
+- `goat2.supervisor.logging` — all `logging/` files
+- `goat2.supervisor.behavior` — all `behavior/` files
+- `goat2.supervisor.interfaces` — all `interfaces/` files
+
+**Corrected logger names** (old → new):
+- `goat2.workflow` → `goat2.supervisor.pipeline` (`workflow.py`)
+- `goat2.runners` → `goat2.supervisor.pipeline` (`runners.py`)
+- `goat2.dag` → `goat2.supervisor.pipeline.dag` (`dag.py`)
+- `goat2.dag_validator` → `goat2.supervisor.pipeline` (`dag_validator.py`)
+- `goat2.dag_bridge` → `goat2.supervisor.pipeline` (`dag_bridge.py`)
+- `goat2.goat_validator` → `goat2.supervisor.pipeline` (`goat_validator.py`)
+- `goat2.mem_inject` → `goat2.supervisor.session` (`mem_inject.py`)
+- `goat2.auditor` → `goat2.supervisor.logging` (`auditor.py`)
+- `goat2.telegram` → `goat2.supervisor.interfaces` (`telegram_bot.py`)
+- `goat2.modul` → `goat2.supervisor.modul` (`modul.py`)
+
+**`from __future__ import annotations`** added to all `__init__.py` files and `modul.py` that were missing it.
+
+**`supervisor/README.md` updated** with:
+- Routing pattern documentation (lazy imports + TYPE_CHECKING rule)
+- Full debug logger namespace table
+- Zero singleton guarantee section
+- `config/agent_types.py` contract documentation
+- Pipeline architecture (3 pipelines: conversational / analytical / complex)
+
+**`docs/architecture.md` updated** with:
+- Corrected supervisor debug logger table
+- Circular import resolution strategy section
+
+### Fixed
+
+#### Circular import fixes
+
+- **`supervisor/supervisor.py`**: Removed module-level `from agents.planner_decompose import decompose_plan`
+  and `from agents.critique import critique_results, synthesize_results` — moved to lazy imports inside
+  `run()`. `CriticVerdict` moved to `TYPE_CHECKING` block. Fixes the `supervisor/ → agents/` cross-layer
+  module-level import violation.
+
+- **`supervisor/registry.py`**: Removed module-level `from agents.planner_decompose import _run_planner` —
+  moved to lazy import inside `_register_defaults()`. Fixes the `supervisor/ → agents/` violation in registry.
+
+- **`tools/file/file_op_response.py`**: Removed module-level `from supervisor.types import Plan, SupervisorResult` —
+  moved inside `file_op_result()` function body (lazy). Fixed wrong import path
+  `from supervisor.behavior_mirror import mirror_instruction` → `from supervisor.behavior.behavior_mirror import mirror_instruction`
+  (the path `supervisor.behavior_mirror` does not exist; correct path is `supervisor.behavior.behavior_mirror`).
+
+---
+
 #### Central routing layer — `config/routing.py`
 
 **Goal:** Give agents/ and any other module a single, safe way to reach

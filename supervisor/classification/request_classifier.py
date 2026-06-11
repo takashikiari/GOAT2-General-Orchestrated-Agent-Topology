@@ -17,8 +17,12 @@ SAFETY CONSTRAINTS:
 - All patterns are case-insensitive and support Romanian/English
 """
 from __future__ import annotations
+
+import logging
 import re
 from typing import Literal
+
+log = logging.getLogger("goat2.supervisor.classification")
 
 __all__ = ["DirectRequest", "classify_direct_request"]
 

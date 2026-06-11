@@ -11,6 +11,12 @@ Directory structure:
     supervisor/logging/    — Structured logging: audit, provenance, tool call tracing
     supervisor/interfaces/   — External interfaces (telegram_bot, content_filter)
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.supervisor")
+
 from supervisor.types import (
     AgentRunner,
     TaskStatus,

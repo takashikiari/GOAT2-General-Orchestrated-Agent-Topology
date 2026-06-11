@@ -21,9 +21,12 @@ import os
 import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import TYPE_CHECKING, BinaryIO
 
-log = logging.getLogger("goat2.file_storage")
+if TYPE_CHECKING:
+    pass  # FileStorageService is defined below; no cross-layer deps.
+
+log = logging.getLogger("goat2.tools.file.storage")
 
 # ---------------------------------------------------------------------------
 # Abstract base

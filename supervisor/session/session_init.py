@@ -12,7 +12,10 @@ ONBOARDING (PHASE 5):
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
+
+log = logging.getLogger("goat2.supervisor.session")
 
 from supervisor.session.history import ConversationHistory, load_session_summary
 from supervisor.identity import load_user_profile, check_onboarding_done

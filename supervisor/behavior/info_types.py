@@ -1,7 +1,10 @@
 """Fact confidence types for info_extract — Rust-ready, single source of truth."""
 from __future__ import annotations
 
+import logging
 from typing import Final, Literal, TypedDict
+
+log = logging.getLogger("goat2.supervisor.behavior")
 
 __all__ = ["FactKind", "ScoredFact", "INFERRED_TTL"]
 

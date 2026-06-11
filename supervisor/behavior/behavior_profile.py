@@ -1,7 +1,10 @@
 """BehaviorProfile TypedDict and pure serialization helpers for style persistence."""
 from __future__ import annotations
 
+import logging
 from typing import Final, TypedDict
+
+log = logging.getLogger("goat2.supervisor.behavior")
 
 __all__ = ["BehaviorProfile", "serialize", "deserialize", "empty_profile"]
 

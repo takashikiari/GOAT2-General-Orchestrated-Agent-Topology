@@ -26,7 +26,7 @@ from supervisor.types import AgentResult
 
 __all__ = ["ValidationStatus", "validate_results"]
 
-log = logging.getLogger("goat2.dag_validator")
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 # Roles that must invoke a real tool — generated output is never acceptable.
 # IMPORTED from config/agents.py — DO NOT hardcode

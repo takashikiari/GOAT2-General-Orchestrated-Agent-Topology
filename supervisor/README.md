@@ -262,3 +262,137 @@ Constants in `config/supervisor.py`:
 - MAX_TASKS_PER_WAVE: 5 — tasks per wave
 - SYNTHESIS_TEMPERATURE: 0.3 — critique/synthesis temp
 - DEFAULT_TIMEOUT_SECONDS: 300 — task timeout
+
+---
+
+## Dependency Management (routing + TYPE_CHECKING + Registry)
+
+This follows the same pattern as `agents/` — see `agents/README.md` for the full rationale.
+
+### Rule: supervisor/ may import from agents/ and tools/ ONLY via lazy imports or TYPE_CHECKING
+
+Every cross-layer import from `agents/` or `tools/` in `supervisor/` must be:
+
+1. **Lazy (function-local)** when the value is used at runtime:
+   ```python
+   async def run(self, intent: str) -> SupervisorResult:
+       from agents.planner_decompose import decompose_plan  # lazy: agents/ cross-layer
+       plan = await decompose_plan(plan_ctx, self.registry)
+   ```
+
+2. **TYPE_CHECKING guard** when used only as a type hint:
+   ```python
+   if TYPE_CHECKING:
+       from agents.critique import CriticVerdict
+   ```
+
+Files that follow this pattern:
+- `supervisor/supervisor.py` — agents imports lazy inside `run()`, CriticVerdict under TYPE_CHECKING
+- `supervisor/registry.py` — `_run_planner` lazy inside `_register_defaults()`
+- `tools/file/file_op_response.py` — supervisor.types lazy inside `file_op_result()`
+
+### Zero Singleton Guarantee
+
+`AgentRegistry` is **not** a singleton — construct as many instances as needed.
+The canonical instance lives at `ServiceRegistry.agent_registry` (dependency injection).
+No module-level instances exist in supervisor/ except in application entry points
+(`interfaces/telegram_bot.py` initialises `_registry` at startup — this is intentional).
+
+### config/agent_types.py Contract
+
+`config/agent_types.py` contains **pure dataclasses only**: `AgentRunner`, `TaskStatus`,
+`AgentTask`, `AgentResult`, `Plan`. No logic, no methods that call external services,
+no side effects. Any method that does something useful goes in `supervisor/types.py` or a
+separate validator module. This separation allows `agents/` and `tools/` to import these
+types without triggering the supervisor import chain.
+
+---
+
+## Debug Logger Namespace Tree
+
+Every supervisor/ file declares a logger under `goat2.supervisor.*`:
+
+| Module | Logger name |
+|---|---|
+| `supervisor/__init__.py` | `goat2.supervisor` |
+| `supervisor/supervisor.py` | `goat2.supervisor` |
+| `supervisor/types.py` | `goat2.supervisor.types` |
+| `supervisor/registry.py` | `goat2.supervisor.registry` |
+| `supervisor/identity.py` | `goat2.supervisor.identity` |
+| `supervisor/modul.py` | `goat2.supervisor.modul` |
+| `supervisor/pipeline/__init__.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/workflow.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/runners.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/dag.py` | `goat2.supervisor.pipeline.dag` |
+| `supervisor/pipeline/dag_validator.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/plan_validator.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/dag_bridge.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/goat_validator.py` | `goat2.supervisor.pipeline` |
+| `supervisor/pipeline/task_prep.py` | `goat2.supervisor.pipeline` |
+| `supervisor/session/__init__.py` | `goat2.supervisor.session` |
+| `supervisor/session/session.py` | `goat2.supervisor.session` |
+| `supervisor/session/history.py` | `goat2.supervisor.session` |
+| `supervisor/session/mem_inject.py` | `goat2.supervisor.session` |
+| `supervisor/session/session_init.py` | `goat2.supervisor.session` |
+| `supervisor/classification/__init__.py` | `goat2.supervisor.classification` |
+| `supervisor/classification/classifier.py` | `goat2.supervisor.classification` |
+| `supervisor/classification/lang_detect.py` | `goat2.supervisor.classification` |
+| `supervisor/classification/request_classifier.py` | `goat2.supervisor.classification` |
+| `supervisor/logging/__init__.py` | `goat2.supervisor.logging` |
+| `supervisor/logging/auditor.py` | `goat2.supervisor.logging` |
+| `supervisor/logging/structured_logger.py` | `goat2.supervisor.logging` |
+| `supervisor/logging/source_types.py` | `goat2.supervisor.logging` |
+| `supervisor/behavior/__init__.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/behavior_analyzer.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/behavior_mirror.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/behavior_profile.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/behavior_session.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/behavior_store.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/info_extract.py` | `goat2.supervisor.behavior` |
+| `supervisor/behavior/info_types.py` | `goat2.supervisor.behavior` |
+| `supervisor/interfaces/__init__.py` | `goat2.supervisor.interfaces` |
+| `supervisor/interfaces/content_filter.py` | `goat2.supervisor.interfaces` |
+| `supervisor/interfaces/telegram_bot.py` | `goat2.supervisor.interfaces` |
+
+Enable DEBUG for a single submodule:
+
+```python
+import logging
+logging.getLogger("goat2.supervisor.pipeline").setLevel(logging.DEBUG)
+# or globally:
+logging.getLogger("goat2.supervisor").setLevel(logging.DEBUG)
+```
+
+Log levels by event type:
+- `DEBUG` — all major operations (task execution, registry lookups, style analysis)
+- `INFO` — pipeline events (DAG start, wave execution, validation, synthesis)
+- `WARNING` — errors, fallbacks, missing data, truncations
+
+---
+
+## Pipeline Architecture
+
+Three execution pipelines, selected by `classify_intent()`:
+
+### Pipeline 1: Conversational (no DAG)
+```
+intent → classify_intent → CONVERSATIONAL → conv_result (direct_response)
+```
+- Temperature 0.7 for natural conversation
+- CORE_TOOLS (MEMORY_TOOLS + WEB_SEARCH) always available
+
+### Pipeline 2: Analytical (lightweight DAG, ≤2 tasks)
+```
+intent → classify_intent → ANALYTICAL → decompose_plan (lightweight)
+    → WorkflowGraph (≤2 tasks) → synthesize
+```
+
+### Pipeline 3: Complex (full DAG)
+```
+intent → classify_intent → COMPLEX → decompose_plan
+    → WorkflowGraph → GoatValidator → critique_results → synthesize_results
+    → run_auditor
+```
+- Full topological wave execution
+- Critic fallback: MAJOR/CRITICAL → re-execute upstream tasks with stricter prompts
+- DagBridge: polls Redis for `dag:{session_id}:result` written by workflow

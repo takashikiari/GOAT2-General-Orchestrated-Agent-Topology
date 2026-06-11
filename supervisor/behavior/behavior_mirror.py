@@ -1,7 +1,10 @@
 """Format a stored behavior-style profile into a system-prompt mirroring directive."""
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.supervisor.behavior")
 
 __all__ = ["mirror_instruction"]
 

@@ -30,11 +30,14 @@ DAG on their very first interaction before they understand what GOAT can do.
 """
 from __future__ import annotations
 
+import logging
 import re
 from enum import Enum
 from typing import Final, TYPE_CHECKING
 
 from utils.llm_utils import _call_llm
+
+log = logging.getLogger("goat2.supervisor.classification")
 
 if TYPE_CHECKING:
     from config.registry import Registry

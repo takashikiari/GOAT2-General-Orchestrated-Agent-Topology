@@ -15,6 +15,10 @@ TOOL EXPORTS:
 
 from __future__ import annotations
 
+import logging
+
 from tools.web.web_search import WEB_SEARCH
+
+log = logging.getLogger("goat2.tools.web")
 
 __all__ = ["WEB_SEARCH"]

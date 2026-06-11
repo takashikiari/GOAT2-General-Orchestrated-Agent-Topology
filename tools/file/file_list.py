@@ -1,8 +1,16 @@
 """List directory contents within the workspace."""
 from __future__ import annotations
 
-from agents.base_agent import ToolDefinition
+import logging
+from typing import TYPE_CHECKING
+
+from tools._make_tool import make_tool
 from tools.file.file_executor import EXECUTOR, MAX_LIST
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.file.list")
 
 __all__ = ["FILE_LIST"]
 
@@ -27,10 +35,11 @@ _SCHEMA = {
 
 async def _handler(path: str, limit: int = MAX_LIST) -> str:
     """List directory; return 'f name' / 'd name' lines or ERROR: <reason>."""
+    log.debug("file_list: path=%r limit=%d", path, limit)
     return EXECUTOR.list_dir(path, limit=limit)
 
 
-FILE_LIST = ToolDefinition(
+FILE_LIST = make_tool(
     name="file_list",
     description=(
         "List files and directories inside a workspace directory. "

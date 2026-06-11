@@ -5,8 +5,11 @@ Two-stage: env-file dump detection first, then credential key-name targeting.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Final
+
+log = logging.getLogger("goat2.supervisor.interfaces")
 
 __all__ = ["mask_sensitive"]
 

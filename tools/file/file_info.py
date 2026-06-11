@@ -1,8 +1,16 @@
 """Get metadata about a file or directory (size, type, permissions, timestamps)."""
 from __future__ import annotations
 
-from agents.base_agent import ToolDefinition
+import logging
+from typing import TYPE_CHECKING
+
+from tools._make_tool import make_tool
 from tools.file.file_executor import EXECUTOR
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.file.info")
 
 __all__ = ["FILE_INFO"]
 
@@ -23,10 +31,11 @@ _SCHEMA = {
 
 async def _handler(path: str) -> str:
     """Return file/directory metadata or ERROR: <reason>."""
+    log.debug("file_info: path=%r", path)
     return EXECUTOR.info(path)
 
 
-FILE_INFO = ToolDefinition(
+FILE_INFO = make_tool(
     name="file_info",
     description=(
         "Get metadata about a file or directory: name, path, type (file/directory), "

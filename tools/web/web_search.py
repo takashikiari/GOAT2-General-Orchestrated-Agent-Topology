@@ -13,15 +13,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import httpx
 
-from agents.base_agent import ToolDefinition
+from tools._make_tool import make_tool
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.tools.web.search")
 
 __all__ = ["WEB_SEARCH"]
-
-log = logging.getLogger("goat2.web_search")
 
 _DEFAULT_URL: Final[str] = "http://localhost:7777"
 _TIMEOUT: Final[float] = 10.0
@@ -64,6 +67,7 @@ def _parse_searxng(data: dict, num_results: int) -> list[str]:
 
 async def _handler(query: str, num_results: int = _DEFAULT_N) -> str:
     """Query local SearXNG instance; return formatted snippets."""
+    log.debug("web_search: query=%r num_results=%d", query, num_results)
     base_url = os.environ.get("SEARXNG_URL", _DEFAULT_URL).rstrip("/")
     url = f"{base_url}/search"
 
@@ -93,10 +97,11 @@ async def _handler(query: str, num_results: int = _DEFAULT_N) -> str:
         return f"ERROR: search request failed: {exc}"
 
     lines = _parse_searxng(data, num_results)
+    log.debug("web_search: results=%d (capped at %d)", len(lines) // 2, num_results)
     return "\n".join(lines) if lines else f"No results found for: {query!r}"
 
 
-WEB_SEARCH = ToolDefinition(
+WEB_SEARCH = make_tool(
     name="web_search",
     description=(
         "Search the web via local SearXNG instance and return text snippets. "

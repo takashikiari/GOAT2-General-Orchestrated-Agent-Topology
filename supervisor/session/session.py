@@ -12,8 +12,11 @@ Content stored to Redis is truncated to prevent oversized records:
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Final
+
+log = logging.getLogger("goat2.supervisor.session")
 
 from config.limits import DAG_RESULT_TTL
 from config.roles import SESSION_ROLE
@@ -43,8 +46,6 @@ def _truncate_for_storage(content: str, max_chars: int, label: str) -> str:
     """
     if not content or len(content) <= max_chars:
         return content
-    import logging
-    log = logging.getLogger("goat2.session")
     log.warning(
         "%s truncated from %d to %d chars for storage",
         label, len(content), max_chars,

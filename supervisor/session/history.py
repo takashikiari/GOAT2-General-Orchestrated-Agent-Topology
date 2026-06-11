@@ -1,8 +1,11 @@
 """In-session conversation history and cross-session summary for GoatSupervisor."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING
+
+log = logging.getLogger("goat2.supervisor.session")
 
 from config.roles import SESSION_ROLE
 

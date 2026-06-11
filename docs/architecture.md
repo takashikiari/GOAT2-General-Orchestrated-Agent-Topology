@@ -435,8 +435,18 @@ exactly the logger you care about.
 | `config/tools.py` | `goat2.config.tools` | (constants) |
 | `config/toml_loader.py` | `goat2.config.toml_loader` | toml loaded / not found / parse error |
 | `config/memory.py` | `goat2.config.memory` | (re-export shim) |
+| `supervisor/supervisor.py` | `goat2.supervisor` | intent routing, DAG execution, critic fallback |
 | `supervisor/registry.py` | `goat2.supervisor.registry` | runner registered / looked up, init summary |
-| `supervisor/pipeline/runners.py` | `goat2.runners` | tool selection per runner |
+| `supervisor/identity.py` | `goat2.supervisor.identity` | profile load, direct response, onboarding |
+| `supervisor/types.py` | `goat2.supervisor.types` | (type re-exports) |
+| `supervisor/modul.py` | `goat2.supervisor.modul` | module registry operations |
+| `supervisor/pipeline/*` | `goat2.supervisor.pipeline` | workflow waves, runner execution, validation |
+| `supervisor/pipeline/dag.py` | `goat2.supervisor.pipeline.dag` | DAG cycle detection, topological sort |
+| `supervisor/session/*` | `goat2.supervisor.session` | turn storage, history, memory injection |
+| `supervisor/classification/*` | `goat2.supervisor.classification` | intent depth, language detect, direct bypass |
+| `supervisor/logging/*` | `goat2.supervisor.logging` | audit, source types, structured logging |
+| `supervisor/behavior/*` | `goat2.supervisor.behavior` | style analysis, mirroring, fact extraction |
+| `supervisor/interfaces/*` | `goat2.supervisor.interfaces` | Telegram bot, content filter |
 
 Enable DEBUG globally:
 
@@ -661,6 +671,56 @@ assert not forbidden, f"memory/ leaked: {forbidden}"
 
 This passes because every cross-module dependency in `memory/` is hidden
 behind a `TYPE_CHECKING` guard or a lazy import inside a function body.
+
+---
+
+## Circular Import Resolution Strategy
+
+GOAT 2.0 has three import layers that must not import each other at module level:
+`agents/`, `supervisor/`, `tools/`. Known cross-layer dependencies and their resolutions:
+
+### supervisor/ → agents/ (resolved: lazy imports)
+
+| File | Import | Resolution |
+|---|---|---|
+| `supervisor/supervisor.py` | `decompose_plan`, `critique_results`, `synthesize_results` | Lazy inside `run()` |
+| `supervisor/supervisor.py` | `CriticVerdict` | `TYPE_CHECKING` block |
+| `supervisor/registry.py` | `_run_planner` | Lazy inside `_register_defaults()` |
+| `supervisor/__init__.py` | `critique_results`, `decompose_plan`, etc. | Backward-compat re-exports (allowed) |
+
+### tools/ → supervisor/ (pre-existing, tolerated)
+
+`tools/tool_runner.py` imports `supervisor.logging.source_types` at module level.
+This works because `supervisor.logging.source_types` is a leaf module with no
+transitive supervisor imports. The import is safe as long as `supervisor` is
+initialized before `tools.file.file_op_response` is imported directly (which is
+always the case in production: `from supervisor import ...` triggers initialization
+of the full import chain first).
+
+`tools/file/file_op_response.py` previously imported `supervisor.types` at module
+level — this was fixed: `supervisor.types` and `supervisor.behavior.behavior_mirror`
+are now lazy imports inside `file_op_result()`. Also fixed: the import path was
+`supervisor.behavior_mirror` (wrong) → `supervisor.behavior.behavior_mirror` (correct).
+
+### Verification
+
+```python
+import supervisor  # must initialize first in the app startup path
+print('OK — no circular imports')
+
+# Verify no module-level agents/ imports in supervisor/ (except __init__ compat re-exports)
+import ast, pathlib
+for f in pathlib.Path('supervisor').rglob('*.py'):
+    if '__init__' in f.name:
+        continue
+    src = f.read_text()
+    for node in ast.parse(src).body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in getattr(node, 'names', [])]
+            mod = getattr(node, 'module', '') or ''
+            if mod.startswith('agents.') or any(n.startswith('agents.') for n in names):
+                print(f'VIOLATION: {f}: module-level agents/ import')
+```
 
 ### Tool Imports — Important
 

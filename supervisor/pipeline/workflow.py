@@ -95,7 +95,7 @@ if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import Registry
 
-log = logging.getLogger("goat2.workflow")
+log = logging.getLogger("goat2.supervisor.pipeline")
 
 __all__ = ["WorkflowGraph"]
 

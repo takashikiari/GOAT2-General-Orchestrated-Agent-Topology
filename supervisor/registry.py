@@ -37,7 +37,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from supervisor.types import AgentRunner
-from agents.planner_decompose import _run_planner
 from supervisor.pipeline.runners import (
     _run_researcher,
     _run_coder,
@@ -80,6 +79,7 @@ class AgentRegistry:
 
     def _register_defaults(self) -> None:
         """Register the 7 built-in DAG runners from supervisor/pipeline/runners.py."""
+        from agents.planner_decompose import _run_planner  # lazy: agents/ cross-layer
         self.register("planner",     _run_planner)
         self.register("researcher",  _run_researcher)
         self.register("coder",       _run_coder)

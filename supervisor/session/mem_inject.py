@@ -22,7 +22,7 @@ from supervisor.behavior.info_extract import maybe_store_info
 __all__ = ["mem_turn", "recall_context"]
 
 _LIMIT: Final[int] = 5
-log = logging.getLogger("goat2.mem_inject")
+log = logging.getLogger("goat2.supervisor.session")
 
 
 async def recall_context(mm: MemoryManager | None, query: str) -> str:
