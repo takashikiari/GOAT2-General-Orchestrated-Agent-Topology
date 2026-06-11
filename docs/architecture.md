@@ -113,12 +113,166 @@ User Input → GOAT (intent routing)
 
 | Category | Count | Access |
 |----------|-------|--------|
-| File Tools | 9 | All agents |
+| File Tools | 8 | All agents (with shell restricted to DAG) |
 | Web Search | 1 | All agents |
-| Shell | 1 | DAG only |
+| Shell | 1 | DAG only (read-only) |
+| System (think, calculator) | 2 | All agents |
 | Memory Tools (GOAT) | 16 | GOAT only (full tier) |
 | Memory Tools (DAG) | 4 | DAG only (working tier) |
-| **Total** | **26** | |
+| **Total** | **26 (in `ALL_TOOLS`)** | |
+
+### Tool Distribution per Agent Role
+
+The tool list per agent role is wired in `supervisor/pipeline/runners.py`
+(per-DAG-agent) and `supervisor/identity.py` (GOAT conversational).
+The table below mirrors the code exactly.
+
+| Agent / Caller | File | Tools | Notes |
+|---|---|---|---|
+| **GOAT CONVERSATIONAL** | `supervisor/identity.py` | 16 memory + `WEB_SEARCH` | No file tools, no shell. Uses `registry.memory_tools`. |
+| **file_op_result** (conversational file op) | `tools/file/file_op_response.py` | 10 `FILE_TOOLS` | Routes direct file requests through `tool_caller` model. |
+| **DAG tool_caller** | `runners.py::_run_tool_caller` | 8 file + 4 DAG memory (12 total) | `tool_choice='required'` enforces tool invocation. |
+| **DAG researcher** | `runners.py::_run_researcher` | `WEB_SEARCH, MEMORY_SEARCH_DAG` (2 total) | `tool_choice='required'`. Working tier only. |
+| **DAG coder** | `runners.py::_run_coder` | 8 file + `SHELL` (9 total) | No web_search, no memory. Shell is read-only. |
+| **DAG critic** | `runners.py::_run_critic` | `MEMORY_RECENT_DAG, MEMORY_GET_DAG` (2 total) | Working tier, read-only. |
+| **DAG summarizer** | `runners.py::_run_summarizer` | `MEMORY_RECENT_DAG` (1 total) | Working tier, read-only. |
+| **DAG memory** | `runners.py::_run_memory` | 4 DAG memory (4 total) | Working tier, restricted to `dag:*` namespace. |
+| **DAG planner** | (no tools) | — | Pure LLM reasoning. |
+
+**Working tier namespacing:**
+
+- `dag:*` — DAG agents (`MEMORY_*_DAG` tools + `DAG_NAMESPACE`)
+- `goat:*` — GOAT conversational (`MEMORY_TOOLS` + `GOAT_NAMESPACE`)
+- `validator:*` — GOAT Validator (direct `memory_manager` access, no tool call)
+- `promoter:*` — Memory Promoter (direct `memory_manager.promote()`, no tool call)
+
+### routing + TYPE_CHECKING + Registry Applied to tools/
+
+Every file in `tools/` follows the same architectural rules as `agents/`,
+`supervisor/`, and `memory/`:
+
+1. **`from __future__ import annotations`** at the top of every file
+2. **`from typing import TYPE_CHECKING`** + `if TYPE_CHECKING:` for
+   cross-module type hints (e.g. `ToolDefinition`, `MemoryManager`,
+   `TaggedResult`)
+3. **Lazy imports** inside function bodies for cross-module
+   instantiation. The notable case is `tools/_make_tool.py::make_tool`
+   which hides `from agents.base_agent import ToolDefinition` inside a
+   function so the cross-layer import never appears in any tool
+   module's top-level imports.
+4. **No module-level singletons** — the file executor and web search
+   are exposed as module-level `EXECUTOR` / `WEB_SEARCH` constants but
+   are pure value objects, not stateful containers.
+5. **Debug loggers** at namespace `goat2.tools.<submodule>` in every
+   file, logging initialization + tool calls/params/results at DEBUG
+   and errors / blocked ops / invalid params at WARNING.
+
+### Debug Logger Namespace Tree (tools/)
+
+```
+goat2.tools                              — tools/__init__.py (top-level)
+goat2.tools.make_tool                    — _make_tool.py
+goat2.tools.tool_runner                  — tool_runner.py
+goat2.tools.registry_accessor            — registry_accessor.py
+
+goat2.tools.file                         — tools/file/__init__.py
+goat2.tools.file.create                  — file_create.py
+goat2.tools.file.grep                    — file_grep.py
+goat2.tools.file.info                    — file_info.py
+goat2.tools.file.list                    — file_list.py
+goat2.tools.file.read                    — file_read.py
+goat2.tools.file.read_lines              — file_read_lines.py
+goat2.tools.file.search                  — file_search.py
+goat2.tools.file.write                   — file_write.py
+goat2.tools.file.op_response             — file_op_response.py
+goat2.tools.file.executor                — file_executor.py
+goat2.tools.file.executor_helpers        — file_executor_helpers.py
+goat2.tools.file.storage                 — file_storage_service.py
+goat2.tools.file.storage_helpers         — file_storage_helpers.py
+goat2.tools.file.path_utils              — path_utils.py
+
+goat2.tools.web                          — tools/web/__init__.py
+goat2.tools.web.search                   — web_search.py
+
+goat2.tools.system                       — tools/system/__init__.py
+goat2.tools.system.calculator            — calculator.py
+goat2.tools.system.think                 — think.py
+goat2.tools.system.shell                 — shell_tool.py
+```
+
+**Log levels:**
+
+- `DEBUG` — tool calls, parameters, results, search hits, dispatch info
+- `INFO`  — successful file ops, list/read/write summaries
+- `WARNING` — errors, blocked operations, invalid parameters, timeouts
+
+**Enable verbose logging:**
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("goat2.tools").setLevel(logging.DEBUG)
+```
+
+### Circular-Import Fixes in tools/
+
+Two pre-existing circular chains have been broken in tools/:
+
+1. **`tools/file/file_op_response.py`** — imported
+   `supervisor.types.Plan, SupervisorResult` at module level. Fixed by
+   moving the import inside `file_op_result()` (lazy) and correcting
+   the forward reference from the legacy `Registry` alias to the real
+   class `ServiceRegistry`.
+
+2. **`tools/tool_runner.py`** — imported
+   `supervisor.logging.source_types` and
+   `supervisor.logging.structured_logger` at module level, which
+   transitively reached `supervisor.registry` →
+   `supervisor.pipeline.runners` → back into `tools.tool_runner`.
+   Fixed by moving the imports inside the body of `_call_with_tools()`
+   (lazy). `TaggedResult` is still referenced in the return-type
+   annotation, but it is a string under `from __future__ import
+   annotations` and the real class is only resolved at call time.
+
+The companion chain through `supervisor/pipeline/runners.py` (which
+imports `from tools.tool_runner import _call_with_tools` at module
+level) is the supervisor/ side of the same cycle; it is not modified
+by this refactor because the tools/ side is now safe — importing
+`tools/` does not pull in `supervisor/`.
+
+### Verification
+
+To prove the tools module is importable in isolation:
+
+```python
+import sys
+import tools
+# tools/ import must NOT pull in supervisor/ at module level
+# (agents/ is pulled in via make_tool's function-local import — that is
+#  the intended exception and is documented in tools/_make_tool.py)
+print("ALL_TOOLS:", len(tools.ALL_TOOLS))                  # 26
+print("FILE_TOOLS:", len(tools.FILE_TOOLS))                # 10
+print("MEMORY_TOOLS:", len(tools.MEMORY_TOOLS))            # 16
+print("DAG_MEMORY_TOOLS:", len(tools.DAG_MEMORY_TOOLS))    # 4
+
+for t in tools.ALL_TOOLS:
+    assert callable(t.handler), f"handler not callable: {t.name}"
+    assert t.name, "missing name"
+    assert t.description, "missing description"
+    assert t.parameters, "missing parameters"
+print("all 26 tools pass sanity check")
+```
+
+This passes because every cross-module dependency in `tools/` is
+hidden behind a `TYPE_CHECKING` guard or a lazy import inside a
+function body — the architectural rule "no agents/ or supervisor/
+imports at module level in tools/" is enforced.
+
+### Detailed Tool Reference
+
+For the full per-tool description, parameter schema, and source file
+of every `ToolDefinition`, see `tools/README.md` ("Tools Overview"
+section). The bullet lists below summarise the catalog by tier.
 
 ### GOAT Memory Tools (16)
 
