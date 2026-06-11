@@ -46,15 +46,20 @@ import inspect
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable
 
 from openai import AsyncOpenAI
 
 from config.settings import ModelSpec, Provider, PROVIDER_BASE_URLS, Settings
-from config.agent_types import AgentResult, AgentTask
 
-log = logging.getLogger("goat2.agent")
+if TYPE_CHECKING:
+    # Cross-module type hints only — keeps agents/ decoupled at runtime.
+    # No module-level import from config.agent_types to avoid pulling in
+    # any transitive cycle through supervisor/.
+    from config.agent_types import AgentResult, AgentTask
+
+log = logging.getLogger("goat2.agents.base")
 
 __all__ = ["BaseAgent", "ToolDefinition", "tool"]
 
@@ -385,6 +390,7 @@ class BaseAgent(ABC):
         Invoke a tool handler by name. Handles both async and sync callables.
         Returns an error string on failure so the model can recover gracefully.
         """
+        log.debug("tool dispatched: %s args_keys=%s", name, list(args))
         if name not in tool_map:
             msg = f"Unknown tool '{name}'. Available: {list(tool_map)}"
             log.error("%r: %s", self, msg)

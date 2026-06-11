@@ -32,7 +32,7 @@ from utils.llm_utils import _call_llm, _format_dep_context
 if TYPE_CHECKING:
     from config.registry import Registry
 
-log = logging.getLogger("goat2.critique")
+log = logging.getLogger("goat2.agents.critique")
 
 __all__ = ["critique_results", "synthesize_results", "CriticVerdict", "parse_verdict"]
 
@@ -169,6 +169,7 @@ async def critique_results(
     _settings = registry.settings
     context = _format_dep_context(results)
     lang_pfx = f"Respond in {lang}. " if lang and lang.lower() != "english" else ""
+    log.debug("critique_results: n=%d lang=%s", len(results), lang)
     try:
         raw = await asyncio.wait_for(
             _call_llm(
@@ -236,7 +237,7 @@ async def synthesize_results(
     context = _format_dep_context(results)
     sys_base = _system_with_profile(profile, session_summary, style)
     lang_sfx = f"\nRespond in {lang}." if lang and lang.lower() != "english" else ""
-
+    log.debug("synthesize_results: results=%d lang=%s dag=%d", len(results), lang, len(dag_detail))
     # Prepend DAG execution result to context when available
     if dag_detail:
         context = f"[DAG Execution Result]\n{dag_detail}\n\n{context}"

@@ -8,10 +8,17 @@ for strong instruction-following and structured output.
 
 from __future__ import annotations
 
-from config.settings import ModelSpec, Settings
-from config.agent_types import AgentResult, AgentTask
+import logging
+from typing import TYPE_CHECKING
 
+from config.settings import ModelSpec, Settings
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    # Cross-module type hints only — keeps agents/ decoupled at runtime.
+    from config.agent_types import AgentResult, AgentTask
+
+log = logging.getLogger("goat2.agents.planner")
 
 __all__ = ["PlannerAgent"]
 
@@ -82,6 +89,7 @@ class PlannerAgent(BaseAgent):
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.3,  # low: plans should be precise, not creative
         )
+        log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
     async def execute(
         self,
@@ -94,6 +102,9 @@ class PlannerAgent(BaseAgent):
         Any upstream context (e.g. a prior memory retrieval) is included so
         the planner can incorporate known constraints into the plan.
         """
+        log.debug("%s.execute start task_id=%s prompt_len=%d", self.__class__.__name__, task.id, len(task.prompt))
         messages = self._build_messages(task, context)
         # Tools not needed for planning — pure reasoning task.
-        return await self._chat(messages, tools=[])
+        output = await self._chat(messages, tools=[])
+        log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
+        return output

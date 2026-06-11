@@ -7,10 +7,17 @@ critique. Defaults to llama-3.3-70b on Groq for fast, high-quality review.
 
 from __future__ import annotations
 
-from config.settings import ModelSpec, Settings
-from config.agent_types import AgentResult, AgentTask
+import logging
+from typing import TYPE_CHECKING
 
+from config.settings import ModelSpec, Settings
 from .base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    # Cross-module type hints only — keeps agents/ decoupled at runtime.
+    from config.agent_types import AgentResult, AgentTask
+
+log = logging.getLogger("goat2.agents.critic")
 
 __all__ = ["CriticAgent"]
 
@@ -89,6 +96,7 @@ class CriticAgent(BaseAgent):
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.3,  # low: reviews should be consistent, not creative
         )
+        log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
     async def execute(
         self,
@@ -102,6 +110,7 @@ class CriticAgent(BaseAgent):
         criteria. All prior agent outputs are included as context so the
         critic has the full picture.
         """
+        log.debug("%s.execute start task_id=%s prompt_len=%d", self.__class__.__name__, task.id, len(task.prompt))
         messages = self._build_messages(
             task,
             context,
@@ -112,7 +121,9 @@ class CriticAgent(BaseAgent):
             ),
         )
         # Tools not needed — critic works purely from the text in context.
-        return await self._chat(messages, tools=[])
+        output = await self._chat(messages, tools=[])
+        log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
+        return output
 
     # ------------------------------------------------------------------
     # Helpers

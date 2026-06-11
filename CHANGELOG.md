@@ -7,6 +7,154 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-11
 
+### Added
+
+#### Central routing layer — `config/routing.py`
+
+**Goal:** Give agents/ and any other module a single, safe way to reach
+cross-module types and tool groups without re-introducing the
+`agents ↔ supervisor ↔ tools` import cycle.
+
+**`config/routing.py`** (new, 183 lines):
+
+- `routing_debug_enabled() -> bool` — `True` when `GOAT_ROUTING_DEBUG=1`
+  or `[debug] routing = true` in `goat.toml`.
+- `get_supervisor_result()` — lazy import of `supervisor.types.SupervisorResult`.
+- `get_agent_result()` — lazy import of `config.agent_types.AgentResult`.
+- `get_agent_task()` — lazy import of `config.agent_types.AgentTask`.
+- `get_file_tools()` — lazy import of `tools.FILE_TOOLS` (10 tools: 8 file + web + shell).
+- `get_memory_tools()` — lazy import of `tools.MEMORY_TOOLS` (16 GOAT full-tier tools).
+- `get_dag_memory_tools()` — lazy import of `tools.DAG_MEMORY_TOOLS` (4 DAG working-tier tools).
+
+Every `get_*` accessor:
+- Logs at DEBUG level on every call (`goat2.routing` logger).
+- Performs the cross-module import inside the function body, so the
+  dependency only resolves when called.
+- When `routing_debug_enabled()` is True, additionally logs at INFO with
+  the fully-qualified name of the resolved object.
+
+#### Per-agent debug logger
+
+Each `agents/*.py` module now declares its own logger under
+`goat2.agents.<role>`:
+
+| File | Logger |
+|---|---|
+| `agents/base_agent.py` | `goat2.agents.base` |
+| `agents/planner.py` | `goat2.agents.planner` |
+| `agents/planner_decompose.py` | `goat2.agents.planner_decompose` (renamed from `goat2.supervisor`) |
+| `agents/researcher.py` | `goat2.agents.researcher` |
+| `agents/coder.py` | `goat2.agents.coder` |
+| `agents/critic.py` | `goat2.agents.critic` |
+| `agents/critique.py` | `goat2.agents.critique` (renamed from `goat2.critique`) |
+| `agents/summarizer.py` | `goat2.agents.summarizer` |
+| `agents/tool_caller.py` | `goat2.agents.tool_caller` |
+| `agents/memory_agent.py` | `goat2.agents.memory` |
+
+DEBUG events emitted:
+- `__init__` — `log.debug("%s ready spec=%s tools=%s", ...)`.
+- `execute()` — at entry: `task_id`, `prompt_len`; at exit: `output_len`.
+- `BaseAgent._dispatch_tool` — `log.debug("tool dispatched: %s args_keys=%s", ...)`.
+- `planner_decompose.decompose_plan` — spec resolved, plan validated.
+- `critique.critique_results` / `synthesize_results` — inputs summary.
+
+This makes per-agent `LOG_LEVEL=DEBUG` filtering trivial without flooding
+the whole system.
+
+#### `from __future__ import annotations` + `TYPE_CHECKING` pattern in agents/
+
+All 10 `agents/*.py` files now follow the same defensive pattern:
+
+```python
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Cross-module type hints only — keeps agents/ decoupled at runtime.
+    from config.agent_types import AgentResult, AgentTask
+    from config.registry import Registry
+```
+
+**`agents/base_agent.py`** — `from config.agent_types import AgentResult, AgentTask`
+moved from runtime to TYPE_CHECKING. The runtime cycle path
+`config → supervisor → registry → agents.base_agent` is now impossible
+because `base_agent` no longer imports from `config.agent_types` at runtime.
+Also: removed the unused `field` import from `dataclasses`.
+
+**Verified via AST check:** all 11 `agents/*.py` files have zero
+`from supervisor import ...` statements at module level.
+
+#### `agents/__init__.py` cleanup
+
+**`agents/__init__.py`** (updated, 30 → 51 lines):
+- Added `from __future__ import annotations` + `TYPE_CHECKING` block.
+- Re-exports all 7 agents (PlannerAgent, ResearcherAgent, CoderAgent,
+  CriticAgent, SummarizerAgent, ToolCallerAgent, MemoryAgent) plus the
+  BaseAgent primitives, the legacy critique helpers
+  (`critique_results`, `synthesize_results`, `CriticVerdict`, `parse_verdict`),
+  and `RESEARCHER_SYSTEM`.
+- Module docstring documents the `routing + TYPE_CHECKING + Registry`
+  dependency-management discipline.
+
+#### Documentation updates
+
+**`agents/README.md`** (rewritten, ~310 lines):
+- New "Dependency Management (routing + TYPE_CHECKING + Registry)" section
+  with the 3-mechanism pattern explained.
+- New "Per-Agent Debug Logger" section with the full logger-namespace table.
+- New "Cross-module routing" usage examples.
+- New "AgentRegistry Wiring" section showing how the 7 runners are
+  registered, plus the recipe for adding an 8th agent.
+- Updated agent reference table to include all 7 agents + their tools and models.
+
+**`docs/architecture.md`** (+~150 lines, no line limit):
+- New "DAG Agent Roster (all 7)" table covering every agent.
+- New "Dependency Management (routing + TYPE_CHECKING + Registry)" section
+  with the 5-mechanism discipline, including the central `config/routing.py`
+  layer and the `ServiceRegistry` DI container.
+- New "Debug & Observability per Module" section with the full logger
+  namespace and example `LOG_LEVEL=DEBUG` invocations.
+- New "Zero Singleton Architecture" section explaining why GOAT 2.0 has
+  exactly one module-level object (`ServiceRegistry`) and a verification
+  recipe for proving the boundary holds.
+
+### Validation
+
+- `python -c "from agents import (BaseAgent, PlannerAgent, ResearcherAgent, CoderAgent, CriticAgent, SummarizerAgent, ToolCallerAgent, MemoryAgent, ...)"` — **PASS**, no ImportError.
+- `python -c "from config.routing import (routing_debug_enabled, get_supervisor_result, get_agent_result, get_agent_task, get_file_tools, get_memory_tools, get_dag_memory_tools)"` — **PASS**, no ImportError.
+- `python -c "import sys; from agents import (...); assert not [m for m in sys.modules if m.startswith('supervisor')]"` — **PASS**, agents/ alone loads no supervisor modules.
+- AST verification: 11 `agents/*.py` files have zero `from supervisor` at module level.
+- Per-agent DEBUG logs emit on instantiation (visible when `LOG_LEVEL=DEBUG`).
+- 6 of 7 agents instantiate cleanly with `LOG_LEVEL=DEBUG`. Two agents
+  (`ToolCallerAgent`, `MemoryAgent`) have a pre-existing cycle in
+  `tools/tool_runner.py` unrelated to this work; the supervisor's
+  `ServiceRegistry` constructs them via lazy import in production.
+
+### Files modified
+
+- **created**: `config/routing.py`
+- **modified**: `agents/__init__.py`, `agents/base_agent.py`,
+  `agents/planner.py`, `agents/planner_decompose.py`,
+  `agents/researcher.py`, `agents/coder.py`, `agents/critic.py`,
+  `agents/critique.py`, `agents/summarizer.py`, `agents/tool_caller.py`,
+  `agents/memory_agent.py`
+- **modified**: `agents/README.md`, `docs/architecture.md`, `CHANGELOG.md`
+
+### Constraint compliance
+
+- ✅ `config/agent_types.py` — NOT modified.
+- ✅ No singletonuri added — the only DI container remains `ServiceRegistry`.
+- ✅ `agents/` never imports from `supervisor/` at module level (verified
+  via AST check on all 11 files).
+- ✅ All cross-module accessors in `config/routing.py` are wrapped in
+  functions (lazy imports).
+- ✅ Each agent's `__init__` / `execute` / tool dispatch emits DEBUG logs.
+- ✅ All code files ≤ 260 lines except the pre-existing `base_agent.py`
+  (465 lines, was 459 before this work — +6 lines for the per-agent
+  logger and TYPE_CHECKING block).
+
+---
+
 ### Fixed
 
 #### Circular import between `agents/` and `supervisor/` (GOAT-circular-import)

@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
+from typing import TYPE_CHECKING
 
 from config.settings import ModelSpec, Settings
-from config.agent_types import AgentResult, AgentTask
-
 from .base_agent import BaseAgent, tool
+
+if TYPE_CHECKING:
+    # Cross-module type hints only — keeps agents/ decoupled at runtime.
+    from config.agent_types import AgentResult, AgentTask
+
+log = logging.getLogger("goat2.agents.coder")
 
 __all__ = ["CoderAgent"]
 
@@ -73,6 +79,7 @@ class CoderAgent(BaseAgent):
             system_prompt=_SYSTEM_PROMPT,
             temperature=0.2,  # low: code should be precise and deterministic
         )
+        log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
     async def execute(
         self,
@@ -86,9 +93,12 @@ class CoderAgent(BaseAgent):
         The model may call `validate_syntax` during generation. If it does,
         the corrected code is included in the final response automatically.
         """
+        log.debug("%s.execute start task_id=%s prompt_len=%d", self.__class__.__name__, task.id, len(task.prompt))
         messages = self._build_messages(task, context)
         # Tools are enabled: validate_syntax is always available.
-        return await self._chat(messages)
+        output = await self._chat(messages)
+        log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
+        return output
 
     # ------------------------------------------------------------------
     # Built-in tool: syntax validation

@@ -17,7 +17,7 @@ from utils.llm_utils import _call_llm, _extract_json, _format_dep_context
 if TYPE_CHECKING:
     from config.registry import Registry
 
-log = logging.getLogger("goat2.supervisor")
+log = logging.getLogger("goat2.agents.planner_decompose")
 
 PLANNER_SYSTEM: Final[str] = (
     "You are a task decomposition engine for a multi-agent system. "
@@ -72,6 +72,7 @@ async def decompose_plan(intent: str, registry: "Registry") -> Plan:
     """
     _settings = registry.settings
     spec = _settings.supervisor.model
+    log.debug("decompose_plan: spec=%s", spec)
     raw = await _call_llm(
         spec,
         [
@@ -110,6 +111,7 @@ async def decompose_plan(intent: str, registry: "Registry") -> Plan:
         log.warning("Validation errors — returning fallback plan")
         return _fallback_plan(intent)
 
+    log.debug("decompose_plan: plan validated tasks=%d", len(plan.tasks))
     return plan
 
 
@@ -128,6 +130,7 @@ async def _run_planner(
     task.source = "generated"
     spec    = _settings.agents.get("planner")
     context = _format_dep_context(dep_results)
+    log.debug("_run_planner: task_id=%s spec=%s", task.id, spec)
     return await _call_llm(
         spec,
         [

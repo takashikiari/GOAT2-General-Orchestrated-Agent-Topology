@@ -190,3 +190,214 @@ If any parameter is missing, task is marked `validated=False` and synthesis is s
 - Blocks: dotdot traversal, symlink escape, sensitive files (`.env`, `id_rsa`, `.pem`, etc.)
 - Atomic writes via `tempfile.NamedTemporaryFile` + `os.replace`
 - `GOAT_ALLOW_OUTSIDE_WORKSPACE=true` + `GOAT_ALLOWED_PATHS` allowlist
+
+---
+
+## DAG Agent Roster (all 7)
+
+The supervisor registry (`supervisor/registry.py:_build_default_registry`)
+wires all 7 built-in agents into the DAG. Each has its own logger under
+`goat2.agents.<role>` for per-agent observability.
+
+| Role | Class | Default model | Temp | Tools |
+|---|---|---|---|---|
+| `planner` | `PlannerAgent` | gpt-4o | 0.3 | none |
+| `researcher` | `ResearcherAgent` | deepseek-r1 | 0.3 | suppressed when R1 |
+| `coder` | `CoderAgent` | deepseek-coder | 0.2 | `validate_syntax` |
+| `critic` | `CriticAgent` | llama-3.3-70b | 0.3 | none |
+| `summarizer` | `SummarizerAgent` | llama-3.1-8b | 0.3 | none |
+| `tool_caller` | `ToolCallerAgent` | deepseek-chat | 0.1 | 8 file + 4 DAG memory |
+| `memory` | `MemoryAgent` | (reuses tool_caller) | 0.1 | 4 DAG memory |
+
+Each class lives in its own `agents/*.py` file. The package re-exports all
+7 from `agents/__init__.py` so the typical import is:
+
+```python
+from agents import (
+    PlannerAgent, ResearcherAgent, CoderAgent, CriticAgent,
+    SummarizerAgent, ToolCallerAgent, MemoryAgent,
+)
+```
+
+---
+
+## Dependency Management (routing + TYPE_CHECKING + Registry)
+
+GOAT 2.0 is split into three layers that must not import each other at
+module level: `agents/`, `supervisor/`, and `tools/`. A naive cross-module
+import risks a circular chain through the `ServiceRegistry` initialization.
+Three mechanisms together enforce the boundary:
+
+### 1. `from __future__ import annotations`
+
+Every file in `agents/` starts with this directive. All type hints become
+strings, so the actual classes are looked up lazily and the import that
+would be needed to resolve them never runs at import time.
+
+### 2. `if TYPE_CHECKING:` blocks
+
+Every `agents/*.py` file declares its cross-module type names
+(`AgentResult`, `AgentTask`, `Registry`) inside a TYPE_CHECKING block. These
+are visible to type checkers (mypy, pyright) but invisible to the runtime
+importer — so the cycle is broken even when the type is referenced.
+
+```python
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from config.agent_types import AgentResult, AgentTask
+    from config.registry import Registry
+```
+
+### 3. Lazy / function-local imports
+
+For values that must be instantiated at runtime (not just hinted at),
+agents/ uses lazy imports inside the function body:
+
+```python
+# agents/planner_decompose.py
+async def decompose_plan(intent: str, registry: "Registry") -> Plan:
+    # Lazy import — only resolved when decompose_plan is called
+    from supervisor.pipeline.plan_validator import validate_plan
+    ...
+```
+
+```python
+# agents/tool_caller.py
+def __init__(self, spec):
+    # Lazy import — breaks tools -> agents -> tools cycle
+    from tools import FILE_READ, MEMORY_RECENT_DAG, ...
+    ...
+```
+
+### 4. Central routing layer — `config/routing.py`
+
+For cross-module *values* the lazy pattern is awkward (you'd repeat the
+import in many call sites). `config/routing.py` centralises them:
+
+```python
+from config.routing import (
+    get_supervisor_result,    # SupervisorResult class
+    get_agent_result,         # AgentResult class
+    get_agent_task,           # AgentTask class
+    get_file_tools,           # tools.FILE_TOOLS list
+    get_memory_tools,         # tools.MEMORY_TOOLS list (GOAT full-tier)
+    get_dag_memory_tools,     # tools.DAG_MEMORY_TOOLS list (DAG working-tier)
+    routing_debug_enabled,    # bool — toggle verbose routing logs
+)
+```
+
+Each accessor logs at DEBUG level on every call (`goat2.routing` logger).
+When `routing_debug_enabled()` is true, additionally logs at INFO with the
+fully-qualified name of the resolved object. Toggle via:
+
+- `GOAT_ROUTING_DEBUG=1` environment variable, or
+- `[debug] routing = true` in `config/goat.toml`.
+
+### 5. The single DI container — `config/registry.py`
+
+`ServiceRegistry` is the **only** module-level container in the system.
+Components receive a `registry` parameter explicitly; nothing else is a
+singleton.
+
+```python
+from config.registry import ServiceRegistry
+
+registry = ServiceRegistry()
+supervisor = GoatSupervisor(registry=registry)
+result = await supervisor.run("Build a REST API")
+```
+
+The registry is constructed once at application startup and passed to every
+component. The cycle risk is contained to registry initialization
+(`_build_default_registry` runs lazy imports).
+
+---
+
+## Debug & Observability per Module
+
+Every module declares a logger under the `goat2.<layer>.<role>` namespace.
+This makes per-agent, per-subsystem debugging trivial — set the level on
+exactly the logger you care about.
+
+| Module | Logger | DEBUG events |
+|---|---|---|
+| `agents/base_agent.py` | `goat2.agents.base` | tool dispatched, tool errors |
+| `agents/planner.py` | `goat2.agents.planner` | agent ready, execute start/done |
+| `agents/planner_decompose.py` | `goat2.agents.planner_decompose` | spec resolved, plan validated |
+| `agents/researcher.py` | `goat2.agents.researcher` | agent ready, execute start/done |
+| `agents/coder.py` | `goat2.agents.coder` | agent ready, execute start/done |
+| `agents/critic.py` | `goat2.agents.critic` | agent ready, execute start/done |
+| `agents/critique.py` | `goat2.agents.critique` | critique_results, synthesize_results |
+| `agents/summarizer.py` | `goat2.agents.summarizer` | agent ready, execute start/done |
+| `agents/tool_caller.py` | `goat2.agents.tool_caller` | agent ready, execute start/done |
+| `agents/memory_agent.py` | `goat2.agents.memory` | agent ready, execute start/done |
+| `config/routing.py` | `goat2.routing` | get_* accessors, resolved FQN |
+| `config/registry.py` | `goat2.registry` | ServiceRegistry init, services loaded |
+| `supervisor/registry.py` | `goat2.supervisor` | runner registered / looked up |
+
+Enable DEBUG globally:
+
+```bash
+LOG_LEVEL=DEBUG python -m goat
+```
+
+Enable DEBUG for a single agent:
+
+```python
+import logging
+logging.getLogger("goat2.agents.coder").setLevel(logging.DEBUG)
+```
+
+Enable verbose routing traces:
+
+```bash
+GOAT_ROUTING_DEBUG=1 python -m goat
+# or in goat.toml:
+# [debug]
+# routing = true
+```
+
+---
+
+## Zero Singleton Architecture
+
+GOAT 2.0 has exactly one module-level object: the **`ServiceRegistry`** in
+`config/registry.py`. Everything else is either:
+
+- **A pure function** (no state) — e.g. `parse_verdict`, `extract_json`.
+- **An instance passed explicitly** as a parameter — e.g.
+  `GoatSupervisor(registry=registry)`, `PlannerAgent(spec=...)`.
+- **A class-level constant** — e.g. `ModelSpec.provider` enum value,
+  `ToolDefinition` records in `FILE_TOOLS`.
+
+### What's NOT a singleton anymore
+
+Earlier versions of GOAT had:
+
+- `from config.settings import settings` (a module-level `Settings()` instance) — **REMOVED in Phase 4**.
+- `from memory import memory_manager` (a global `MemoryManager`) — **REMOVED in Phase 4**.
+- `from tools import registry_accessor.get_registry()` (a global registry accessor) — **REMOVED in Phase 4**.
+
+All callers must now go through `ServiceRegistry` and pass it down the
+call stack explicitly. This makes the system testable, hermetic, and free
+of "where did this state come from?" surprises.
+
+### Verification
+
+To prove the system has no hidden singletons, run `agents` in isolation:
+
+```python
+import sys
+from agents import (
+    BaseAgent, PlannerAgent, ResearcherAgent, CoderAgent, CriticAgent,
+    SummarizerAgent, ToolCallerAgent, MemoryAgent,
+)
+loaded = [m for m in sys.modules if m.startswith('supervisor')]
+assert loaded == [], f"agents/ leaked supervisor modules: {loaded}"
+```
+
+This assertion passes because every supervisor-side dependency in
+`agents/` is hidden behind a `TYPE_CHECKING` guard or a lazy import
+inside a function body.
