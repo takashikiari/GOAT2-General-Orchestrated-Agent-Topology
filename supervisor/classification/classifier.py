@@ -34,17 +34,25 @@ REGISTRY INJECTION:
 ===================
 classify_intent() requires `registry` parameter. Uses
 registry.settings.agents.get("memory") for classification.
+
+PER-REQUEST STATE:
+==================
+The conversation history is passed as an explicit `history`
+parameter (a `ConversationHistory` instance or None). The
+registry is never mutated with per-request state — `ServiceRegistry`
+uses `__slots__` and would reject dynamic attribute assignment.
 """
 from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-log = logging.getLogger("goat2.supervisor.classification")
+log = logging.getLogger("goat2.supervisor.classification.classifier")
 
 if TYPE_CHECKING:
     from config.registry import Registry
+    from supervisor.session.history import ConversationHistory
 
 __all__ = ["IntentDepth", "classify_intent"]
 
@@ -60,6 +68,7 @@ class IntentDepth(str, Enum):
 async def classify_intent(
     intent: str,
     registry: "Registry",
+    history: "ConversationHistory | None" = None,
     is_first_message: bool = False,  # kept for API compatibility, not used
 ) -> IntentDepth:
     """Classify intent via LLM reasoning — pure semantic, no keywords.
@@ -79,6 +88,11 @@ async def classify_intent(
     Args:
         intent: The raw user message text.
         registry: ServiceRegistry for settings and memory access.
+        history: The current ConversationHistory instance. Passed
+                 explicitly so the registry stays stateless (it
+                 uses __slots__ and cannot accept dynamic attrs).
+                 May be None — the classifier then uses a fresh
+                 empty history.
         is_first_message: Kept for API compatibility. Not consulted
                           by the LLM — the model reasons about the
                           content of the message on its own merits.
@@ -104,7 +118,9 @@ async def classify_intent(
     override = await detect_override(intent, registry)
 
     # ── Step 2: gather context for the LLM prompt ──
-    history_text, active_dags, user_profile, hints = await _gather_all(registry)
+    history_text, active_dags, user_profile, hints = await _gather_all(
+        registry, history,
+    )
 
     # ── Step 3: build the user prompt with all context ──
     user_prompt = build_classifier_prompt(
@@ -149,8 +165,20 @@ async def classify_intent(
         return IntentDepth.CONVERSATIONAL
 
 
-async def _gather_all(registry: "Registry") -> tuple[str, list[dict], str, list[str]]:
-    """Gather all context fields needed for the classifier prompt."""
+async def _gather_all(
+    registry: "Registry",
+    history: "ConversationHistory | None",
+) -> tuple[str, list[dict[str, Any]], str, list[str]]:
+    """Gather all context fields needed for the classifier prompt.
+
+    Args:
+        registry: ServiceRegistry for memory access.
+        history: ConversationHistory passed explicitly by the caller.
+                 A fresh empty history is used if None is supplied.
+
+    Returns:
+        (history_text, active_dags, user_profile, hints)
+    """
     from supervisor.classification.classifier_context import (
         gather_active_dags,
         gather_user_profile,
@@ -158,9 +186,10 @@ async def _gather_all(registry: "Registry") -> tuple[str, list[dict], str, list[
     )
     from supervisor.classification.classifier_prompt import format_history
     try:
-        from supervisor.session.history import ConversationHistory
-        hist = getattr(registry, "_history", None) or ConversationHistory()
-        history_text = format_history(hist.messages)
+        if history is None:
+            from supervisor.session.history import ConversationHistory
+            history = ConversationHistory()
+        history_text = format_history(history.messages)
     except Exception:
         history_text = "(no prior conversation)"
 

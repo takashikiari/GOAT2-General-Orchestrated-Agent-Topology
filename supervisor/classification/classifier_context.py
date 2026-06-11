@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from utils.llm_utils import _call_llm
 
-log = logging.getLogger("goat2.supervisor.classification")
+log = logging.getLogger("goat2.supervisor.classification.classifier_context")
 
 if TYPE_CHECKING:
     from config.registry import Registry

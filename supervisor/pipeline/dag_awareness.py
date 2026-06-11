@@ -18,7 +18,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-log = logging.getLogger("goat2.supervisor.pipeline")
+log = logging.getLogger("goat2.supervisor.classification.dag_awareness")
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry

@@ -21,7 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-log = logging.getLogger("goat2.supervisor.pipeline")
+log = logging.getLogger("goat2.supervisor.classification.behavioral_learning")
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry

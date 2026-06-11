@@ -8,7 +8,10 @@ returns exactly one word: conversational, analytical, or complex.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
+
+log = logging.getLogger("goat2.supervisor.classification.classifier_prompt")
 
 __all__ = ["build_classifier_prompt", "format_active_dags", "format_hints", "format_history"]
 

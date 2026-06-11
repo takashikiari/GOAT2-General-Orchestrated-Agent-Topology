@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
 
-log = logging.getLogger("goat2.supervisor.pipeline")
+log = logging.getLogger("goat2.supervisor.classification.dag_progress")
 
 __all__ = ["write_wave_progress", "write_final_progress"]
 

@@ -152,7 +152,9 @@ class GoatSupervisor:
         await prepare_classification_context(
             self.registry, self._history, intent, self._session_id,
         )
-        depth = await classify_intent(intent, self.registry)
+        # History is passed explicitly to the classifier — the
+        # registry uses __slots__ and rejects dynamic attrs.
+        depth = await classify_intent(intent, self.registry, history=self._history)
         direct_result = await self._handle_direct_request(intent, t0)
         if direct_result:
             self._history.add_assistant(direct_result.summary)

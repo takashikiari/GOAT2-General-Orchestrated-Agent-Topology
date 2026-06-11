@@ -178,6 +178,80 @@ section + 2 new sections):
 - ✅ Decisions logged at DEBUG level (`classify_intent: intent=…
   override=… llm_token=…`).
 
+### Fixed
+
+#### `AttributeError: 'ServiceRegistry' object attribute '_history' is read-only`
+
+**Problem:** `pre_classify.py` tried to attach the conversation
+history to the registry via `registry._history = history`. This
+failed because `ServiceRegistry` uses `__slots__` and rejects
+dynamic attribute assignment.
+
+**Fix applied:**
+
+**`supervisor/classification/classifier.py`** — added an explicit
+`history: ConversationHistory | None = None` parameter to
+`classify_intent()`. The registry is no longer mutated with
+per-request state.
+
+**`supervisor/pipeline/pre_classify.py`** — removed the
+`registry._history = history` assignment entirely. The
+`prepare_classification_context` helper now just scans DAGs and
+persists overrides; the history flows through the call chain
+explicitly.
+
+**`supervisor/supervisor.py`** — passes `self._history` to
+`classify_intent(...)` via the new `history=` keyword argument.
+`_handle_direct_request` and the rest of the supervisor are
+unaffected.
+
+#### Debug loggers for all new files
+
+Added module-specific debug loggers under the
+`goat2.supervisor.classification.<module>` namespace per the
+explicit format requirement:
+
+| File | Logger |
+|---|---|
+| `supervisor/classification/classifier.py` | `goat2.supervisor.classification.classifier` |
+| `supervisor/classification/classifier_prompt.py` | `goat2.supervisor.classification.classifier_prompt` |
+| `supervisor/classification/classifier_context.py` | `goat2.supervisor.classification.classifier_context` |
+| `supervisor/pipeline/pre_classify.py` | `goat2.supervisor.classification.pre_classify` |
+| `supervisor/pipeline/dag_awareness.py` | `goat2.supervisor.classification.dag_awareness` |
+| `supervisor/pipeline/dag_progress.py` | `goat2.supervisor.classification.dag_progress` |
+| `supervisor/pipeline/behavioral_learning.py` | `goat2.supervisor.classification.behavioral_learning` |
+
+Enabling DEBUG for the whole subsystem:
+
+```python
+import logging
+logging.getLogger("goat2.supervisor.classification").setLevel(logging.DEBUG)
+```
+
+### Files modified
+
+- `supervisor/classification/classifier.py` — `history=` parameter
+- `supervisor/classification/classifier_prompt.py` — module logger
+- `supervisor/classification/classifier_context.py` — module logger
+- `supervisor/pipeline/pre_classify.py` — no longer mutates
+  registry; module logger
+- `supervisor/pipeline/dag_awareness.py` — module logger
+- `supervisor/pipeline/dag_progress.py` — module logger
+- `supervisor/pipeline/behavioral_learning.py` — module logger
+- `supervisor/supervisor.py` — passes history explicitly
+
+### Validation
+
+- `python3 -c "from supervisor.classification.classifier import classify_intent; print('ok')"` — **PASS**.
+- `classify_intent(intent, registry, history=hist)` — works without
+  touching `registry._history`. Backward-compat: `history` defaults
+  to `None`, the classifier uses a fresh empty `ConversationHistory`
+  in that case.
+- `classify_intent(intent, registry)` (no history) — still works.
+- All 7 module loggers under `goat2.supervisor.classification.<module>`
+  resolve and emit at DEBUG.
+- All code files ≤ 260 lines (largest is `dag_awareness.py` at 190).
+
 ---
 
 ### Fixed
