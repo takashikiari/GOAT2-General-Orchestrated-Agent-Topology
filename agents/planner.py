@@ -9,7 +9,7 @@ for strong instruction-following and structured output.
 from __future__ import annotations
 
 from config.settings import ModelSpec, Settings
-from supervisor import AgentResult, AgentTask
+from config.agent_types import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
 

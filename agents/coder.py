@@ -13,7 +13,7 @@ import json
 import re
 
 from config.settings import ModelSpec, Settings
-from supervisor import AgentResult, AgentTask
+from config.agent_types import AgentResult, AgentTask
 
 from .base_agent import BaseAgent, tool
 

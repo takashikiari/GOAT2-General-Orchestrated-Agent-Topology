@@ -7,6 +7,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-11
 
+### Fixed
+
+#### Circular import between `agents/` and `supervisor/` (GOAT-circular-import)
+
+**Problem:**
+`agents/base_agent.py` imported `AgentResult, AgentTask` from `supervisor` (top-level), which
+triggered `supervisor/__init__.py` → `supervisor/registry.py` → `agents.planner_decompose` →
+`supervisor/pipeline` → `tools/` → `agents/base_agent.ToolDefinition` (partially initialized).
+Two additional cycles: `planner_decompose` → `supervisor.pipeline.plan_validator` → `supervisor`
+→ `registry` → `planner_decompose`; and `agents/critique.py` → `supervisor.identity` →
+`supervisor` → `supervisor/supervisor.py` → `agents.critique` (partially initialized).
+
+**Fix applied:**
+
+**`config/agent_types.py`** (new, ~80 lines):
+- Moved `AgentRunner`, `TaskStatus`, `AgentTask`, `AgentResult`, `Plan` here from `supervisor/types.py`
+- Zero imports from `agents/` or `supervisor/` at runtime — safe as a shared leaf module
+- TYPE_CHECKING guards for `MemoryManager` and `ToolDefinition` (no runtime cycle)
+
+**`supervisor/types.py`** (rewritten, ~70 lines):
+- Now re-exports all types from `config.agent_types` for full backward compatibility
+- Defines `SupervisorResult` (supervisor-specific, stays here)
+- All existing `from supervisor.types import X` callers unaffected
+
+**`agents/base_agent.py`, `coder.py`, `critic.py`, `planner.py`, `researcher.py`**:
+- Changed `from supervisor import AgentResult, AgentTask` → `from config.agent_types import AgentResult, AgentTask`
+
+**`agents/planner_decompose.py`**:
+- Changed `from supervisor.types import AgentTask, AgentResult, Plan` → `from config.agent_types import`
+- Moved `from supervisor.pipeline.plan_validator import validate_plan` to lazy import inside `decompose_plan()` — breaks `planner_decompose → supervisor → registry → planner_decompose` cycle
+
+**`agents/critique.py`**:
+- Changed `from supervisor.types import AgentResult` → `from config.agent_types import AgentResult`
+- Moved `from supervisor.identity import _system_with_profile` to lazy import inside `synthesize_results()` — breaks `critique → supervisor → supervisor.py → critique` cycle
+
+**Validation:**
+- `from agents.base_agent import BaseAgent` — no ImportError
+- `from agents import BaseAgent, PlannerAgent, ResearcherAgent, CoderAgent, CriticAgent` — no ImportError
+- `from supervisor import AgentResult, AgentTask, Plan, SupervisorResult, AgentRegistry` — no ImportError
+- `supervisor.types.AgentTask is config.agent_types.AgentTask` — True (single definition, re-exported)
+- All 17 tests pass. No functionality changed.
+
 ### Added
 
 #### DagBridge + GoatValidator integration (TASKS 1, 2, 5)

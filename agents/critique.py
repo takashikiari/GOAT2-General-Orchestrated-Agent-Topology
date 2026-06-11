@@ -26,9 +26,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from config.timeouts import TURN_TIMEOUT
-from supervisor.types import AgentResult
+from config.agent_types import AgentResult
 from utils.llm_utils import _call_llm, _format_dep_context
-from supervisor.identity import _system_with_profile
 
 if TYPE_CHECKING:
     from config.registry import Registry
@@ -232,6 +231,7 @@ async def synthesize_results(
     =============================
     Requires registry parameter. Uses registry.settings.agents.get("planner").
     """
+    from supervisor.identity import _system_with_profile  # lazy — breaks agents ↔ supervisor cycle
     _settings = registry.settings
     context = _format_dep_context(results)
     sys_base = _system_with_profile(profile, session_summary, style)

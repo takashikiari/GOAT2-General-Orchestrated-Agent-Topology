@@ -52,7 +52,7 @@ from typing import Any, Callable
 from openai import AsyncOpenAI
 
 from config.settings import ModelSpec, Provider, PROVIDER_BASE_URLS, Settings
-from supervisor import AgentResult, AgentTask
+from config.agent_types import AgentResult, AgentTask
 
 log = logging.getLogger("goat2.agent")
 

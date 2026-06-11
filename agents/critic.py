@@ -8,7 +8,7 @@ critique. Defaults to llama-3.3-70b on Groq for fast, high-quality review.
 from __future__ import annotations
 
 from config.settings import ModelSpec, Settings
-from supervisor import AgentResult, AgentTask
+from config.agent_types import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
 

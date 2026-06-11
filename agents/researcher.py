@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from config.settings import ModelSpec, Settings
-from supervisor import AgentResult, AgentTask
+from config.agent_types import AgentResult, AgentTask
 
 from .base_agent import BaseAgent
 from .prompts.researcher_prompt import _SYSTEM_PROMPT

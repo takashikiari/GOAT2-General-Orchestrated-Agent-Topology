@@ -11,9 +11,8 @@ import logging
 from typing import Final, TYPE_CHECKING
 
 from config.settings import Provider
-from supervisor.types import AgentTask, AgentResult, Plan
+from config.agent_types import AgentTask, AgentResult, Plan
 from utils.llm_utils import _call_llm, _extract_json, _format_dep_context
-from supervisor.pipeline.plan_validator import validate_plan
 
 if TYPE_CHECKING:
     from config.registry import Registry
@@ -97,6 +96,8 @@ async def decompose_plan(intent: str, registry: "Registry") -> Plan:
     plan = Plan(tasks=tasks)
 
     # ── Validate the plan before returning ──────────────────────────────
+    # Lazy import breaks the circular chain: planner_decompose → supervisor
+    from supervisor.pipeline.plan_validator import validate_plan  # noqa: PLC0415
     is_valid, errors, warnings = validate_plan(plan)
 
     if warnings:

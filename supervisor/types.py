@@ -1,103 +1,30 @@
-"""Core types for GOAT 2.0 supervisor — tasks, results, and execution metadata.
+"""Core types for GOAT 2.0 supervisor — backward-compatible re-exports + SupervisorResult.
 
-All types are Rust-ready with explicit type hints and dataclasses.
-AgentResult includes tool parameter tracking for validation.
+AgentRunner, TaskStatus, AgentTask, AgentResult, Plan live in config.agent_types
+so they can be imported by agents/ and tools/ without triggering the circular-import
+chain through supervisor/__init__.py.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Awaitable, Callable
 
-if TYPE_CHECKING:
-    from memory.shared import MemoryManager
-    from agents.base_agent import ToolDefinition
+from config.agent_types import (
+    AgentRunner,
+    TaskStatus,
+    AgentTask,
+    AgentResult,
+    Plan,
+)
 
 __all__ = [
     "AgentRunner", "TaskStatus", "AgentTask",
     "AgentResult", "Plan", "SupervisorResult",
 ]
 
-# Rust equivalent: type AgentRunner = Box<dyn Fn(AgentTask, HashMap<_, AgentResult>) -> Future>
-AgentRunner = Callable[["AgentTask", dict[str, "AgentResult"]], Awaitable[str]]
-
-
-class TaskStatus(str, Enum):
-    """Task execution state in the workflow DAG."""
-    PENDING = "pending"
-    RUNNING = "running"
-    DONE    = "done"
-    FAILED  = "failed"
-
-
-@dataclass
-class AgentTask:
-    """One node in the workflow DAG. memory_manager and tools are injected by GoatSupervisor before execution.
-
-    DAG agents access tools but are restricted to working memory (Redis) with role="user_session".
-    GOAT supervisor manages memory read/write directly across all three tiers.
-    """
-
-    id:             str
-    role:           str
-    prompt:         str
-    depends_on:     list[str]            = field(default_factory=list)
-    status:         TaskStatus           = field(default=TaskStatus.PENDING, compare=False)
-    memory_manager: MemoryManager | None = field(default=None, repr=False)
-    tools:          list[ToolDefinition] = field(default_factory=list, repr=False)
-    source:         str                  = ""  # set by runner: net | memory | file | generated
-
-
-@dataclass
-class AgentResult:
-    """Output of one AgentTask, including timing, model used, and tool parameter validation.
-
-    GOAT supervisor validates tool_called, tool_name, and raw_output_hash before
-    marking a task as successful. Cannot report validated without parameter verification.
-    """
-
-    task_id:         str
-    role:            str
-    output:          str
-    model:           str
-    duration_s:      float
-    error:           str | None = None
-    source:          str  = ""     # net | memory | file | generated
-    tool_called:     bool = False  # True when ≥1 tool was invoked with valid parameters
-    tool_name:       str  = ""     # primary tool called, inferred from source
-    raw_output_hash: str  = ""     # SHA-256 16-char prefix of output (validates execution)
-
-    @property
-    def ok(self) -> bool:
-        """True when the task completed without an error."""
-        return self.error is None
-
-    @property
-    def validated(self) -> bool:
-        """True when task completed AND tool parameters can be verified.
-
-        GOAT supervisor cannot report task validated without checking:
-        - tool_called is True
-        - tool_name is non-empty
-        - raw_output_hash is non-empty (proves tool execution)
-        """
-        return self.ok and self.tool_called and bool(self.tool_name) and bool(self.raw_output_hash)
-
-
-@dataclass
-class Plan:
-    """Ordered list of AgentTask instances forming the execution DAG."""
-
-    tasks: list[AgentTask]
-
 
 @dataclass
 class SupervisorResult:
-    """Full output of a GoatSupervisor.run() call.
-
-    GOAT supervisor manages memory read/write directly. DAG agents access
-    tools but are restricted to working memory (Redis) with role="user_session".
-    """
+    """Full output of a GoatSupervisor.run() call."""
 
     intent:           str
     plan:             Plan
@@ -106,10 +33,10 @@ class SupervisorResult:
     summary:          str
     total_duration_s: float
     session_id:       str            = ""
-    sources:          dict[str, str] = field(default_factory=dict)  # task_id -> SourceTag
-    metadata_summary: str            = ""  # structured DAG execution metadata
-    dag_verified:     bool           = False  # True when dag_result retrieved from Redis
-    dag_detail:       str            = ""  # Full DAG execution detail for synthesis
+    sources:          dict[str, str] = field(default_factory=dict)
+    metadata_summary: str            = ""
+    dag_verified:     bool           = False
+    dag_detail:       str            = ""
 
     @property
     def success(self) -> bool:
@@ -118,11 +45,7 @@ class SupervisorResult:
 
     @property
     def validated(self) -> bool:
-        """True when all tasks completed AND tool parameters verified AND dag_result retrieved.
-
-        GOAT supervisor cannot report success without parameter validation.
-        dag_verified must be True — ensures LLM synthesizes from real DAG output.
-        """
+        """True when dag_result was retrieved from Redis (proves real DAG execution)."""
         return self.dag_verified
 
     def to_dict(self) -> dict:
