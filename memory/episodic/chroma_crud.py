@@ -69,7 +69,6 @@ class ChromaCrudMixin(ChromaBase):
     
     async def list(self, agent_role: str, limit: int = 50) -> list:
         """Return up to `limit` most recent entries for agent_role from ChromaDB."""
-        from memory.shared.types import MemoryEntry
         try:
             collection = self._get_collection(agent_role)
             # ChromaDB nu are "list all" direct; folosim get() cu ids
@@ -78,7 +77,6 @@ class ChromaCrudMixin(ChromaBase):
                 return []
             entries = []
             for i, doc_id in enumerate(results["ids"][-limit:]):
-                idx = -limit + i if i >= len(results["ids"]) - limit else i
                 entries.append(MemoryEntry(
                     id=doc_id,
                     agent_role=agent_role,
@@ -88,10 +86,9 @@ class ChromaCrudMixin(ChromaBase):
                     created_at=results["metadatas"][i].get("created_at", "") if results.get("metadatas") else "",
                     source="chromadb",
                 ))
+            log.debug("chroma.list: role=%r → %d entries", agent_role, len(entries))
             return entries
         except Exception as exc:
-            import logging
-            log = logging.getLogger("goat2.memory.chroma")
             log.warning("ChromaDB list() error: %s", exc)
             return []
 
@@ -102,7 +99,7 @@ class ChromaCrudMixin(ChromaBase):
         the main ChromaDB write. Silent failure on Redis errors.
         """
         try:
-            from memory.redis_backend import RedisBackend
+            from memory.working.redis_backend import RedisBackend
             redis = RedisBackend()
             r = await redis._get_redis()
             iso_now = datetime.now(timezone.utc).isoformat()

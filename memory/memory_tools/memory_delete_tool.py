@@ -10,15 +10,17 @@ MEMORY ACCESS ARCHITECTURE:
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
-from memory.memory_tools.memory_helpers import format_memory_error, validate_tier, ALL_TIERS
-from tools.registry_accessor import get_registry
+from memory.memory_tools.memory_helpers import format_memory_error, validate_tier, ALL_TIERS, make_tool
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_DELETE"]
 
@@ -53,6 +55,7 @@ async def _delete_handler(
         return error
 
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -67,7 +70,7 @@ async def _delete_handler(
         return format_memory_error("memory_delete", exc)
 
 
-MEMORY_DELETE = ToolDefinition(
+MEMORY_DELETE = make_tool(
     name="memory_delete",
     description="Delete a memory entry by exact key from a specified tier.",
     parameters={

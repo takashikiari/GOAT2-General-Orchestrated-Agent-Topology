@@ -17,8 +17,27 @@ SUBDIRECTORIES:
 - router/: Memory routing and classification
 - memory_tools/: Tool definitions
 - memory_metrics/: Health metrics and monitoring
+- memory_promoter.py: Automatic tier promotion
 - config.py: Memory-specific constants
+
+DEBUG LOGGER NAMESPACES:
+=======================
+- goat2.memory.shared      — types, enums, manager, hooks, validation
+- goat2.memory.working     — Redis/Dict backends, sweep, query, crud
+- goat2.memory.chroma      — ChromaDB client, CRUD, query, parsers
+- goat2.memory.letta       — Letta client, ops, registry, fallback
+- goat2.memory.temporal    — time parser, filter, list, search
+- goat2.memory.router      — classifier, cache, decision, executor
+- goat2.memory.tools       — all 16 ToolDefinitions
+- goat2.memory.metrics     — health counts
+- goat2.memory.promoter    — turn-based promotion
 """
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger("goat2.memory")
+
 # Re-export from subdirectories for backward compatibility
 from memory.shared.types import (
     MemoryEntry,
@@ -39,6 +58,7 @@ from memory.working.redis_backend import RedisBackend
 from memory.working.working_record import RecordDict
 from memory.shared.memory_manager import MemoryManager
 from memory.shared.hooks import auto_save_memory
+from memory.router.router import MemoryRouter
 
 
 # Re-export from memory_metrics
@@ -58,6 +78,11 @@ from memory.config import (
     PROMOTION_TURN_LONG_TERM,
     POLLUTION_GUARD_MIN_LENGTH,
 )
+
+# NOTE: MEMORY_* tool definitions are NOT re-exported here on purpose.
+# They live in `memory.memory_tools` and importing them transitively
+# pulls `tools → supervisor → tools` which causes a circular import.
+# Use `from memory.memory_tools import MEMORY_SEARCH` explicitly.
 
 __all__ = [
     # Shared types
@@ -84,25 +109,9 @@ __all__ = [
     "RecordDict",
     # Manager
     "MemoryManager",
+    "MemoryRouter",
     # Hooks
     "auto_save_memory",
-    # Tools
-    "MEMORY_SEARCH",
-    "MEMORY_GET",
-    "MEMORY_STORE",
-    "MEMORY_DELETE",
-    "MEMORY_UPDATE",
-    "MEMORY_TIMELINE",
-    "MEMORY_RECENT",
-    "MEMORY_DEBUG_TRACE",
-    "MEMORY_DIRECT_QUERY",
-    "MEMORY_LAST_WRITE",
-    "MEMORY_COUNT",
-    "MEMORY_TTL",
-    "MEMORY_EMBEDDING",
-    "MEMORY_EXPORT",
-    "MEMORY_PROMOTE",
-    "MEMORY_AUTO_PROMOTE",
     # Metrics
     "count_working_entries",
     "count_episodic_entries",

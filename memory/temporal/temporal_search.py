@@ -6,10 +6,13 @@ all memory tiers.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from memory.temporal.temporal_filter import filter_by_time, resolve_range
 from memory.temporal.temporal_list import gather_tier_list
-from memory.shared.types import MemoryEntry
+
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry
 
 __all__ = ["TemporalSearchMixin"]
 
@@ -53,6 +56,10 @@ class TemporalSearchMixin:
         filtered = sorted(
             filter_by_time(raw, start_ts, end_ts), key=_TS_KEY, reverse=True
         )
+        log.debug(
+            "timeline: role=%r tier=%s → %d entries",
+            agent_role, tier, len(filtered),
+        )
         return filtered[:limit]
 
     async def recent(
@@ -71,7 +78,9 @@ class TemporalSearchMixin:
         entries = await gather_tier_list(
             self._layers, agent_role, tier, limit=limit * 3
         )
-        return sorted(entries, key=_TS_KEY, reverse=True)[:limit]
+        result = sorted(entries, key=_TS_KEY, reverse=True)[:limit]
+        log.debug("recent: role=%r tier=%s → %d entries", agent_role, tier, len(result))
+        return result
 
     async def debug_trace(
         self,
@@ -111,6 +120,10 @@ class TemporalSearchMixin:
                     for e in matched[:3]
                 ],
             }
+        log.debug(
+            "debug_trace: role=%r query=%r range=(%r,%r)",
+            agent_role, query[:60], start_datetime, end_datetime,
+        )
         return {
             "query": query,
             "range": (start_datetime, end_datetime),

@@ -25,10 +25,16 @@ All memory tools accept an optional 'role' parameter:
 """
 from __future__ import annotations
 
-from typing import Final
+import logging
+from typing import TYPE_CHECKING, Any, Final
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
 from config.tiers import WORKING, EPISODIC, LONG_TERM, ANY
+
+if TYPE_CHECKING:
+    from agents.base_agent import ToolDefinition
+
+log = logging.getLogger("goat2.memory.tools")
 
 __all__ = [
     "GOAT_ROLE",
@@ -39,6 +45,7 @@ __all__ = [
     "format_entries",
     "format_no_results",
     "validate_tier",
+    "make_tool",
 ]
 
 # ---------------------------------------------------------------------------
@@ -146,3 +153,43 @@ def validate_tier(tier: str, allowed: tuple[str, ...]) -> str | None:
     if tier not in allowed:
         return f"ERROR: invalid tier '{tier}'; valid: {allowed}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# ToolDefinition factory
+# ---------------------------------------------------------------------------
+
+
+def make_tool(
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    handler: Any,
+) -> "ToolDefinition":
+    """Build a ToolDefinition with a lazy import of ``agents.base_agent``.
+
+    The import is performed inside this helper so that ``memory_tools``
+    files keep ``agents`` out of their module-level imports — this avoids
+    any module-load-time coupling between the memory layer and the
+    agent base class, even though the dependency is one-way and
+    cycle-free at runtime.
+
+    Args:
+        name: Tool identifier.
+        description: Human-readable tool description.
+        parameters: JSON-Schema-style parameter definition.
+        handler: Async or sync callable invoked by the supervisor.
+
+    Returns:
+        A ``ToolDefinition`` instance.
+
+    Example:
+        >>> MEMORY_SEARCH = make_tool("memory_search", "...", {...}, _handler)
+    """
+    from agents.base_agent import ToolDefinition
+    return ToolDefinition(
+        name=name,
+        description=description,
+        parameters=parameters,
+        handler=handler,
+    )

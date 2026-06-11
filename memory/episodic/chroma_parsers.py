@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from memory.episodic.chroma_helpers import _str_to_tags
 from memory.episodic.chroma_types import ChromaGetResult, ChromaQueryResult, ChromaStoredMetadata
 from memory.shared.types import AgentRole, EntryId, IsoTimestamp, MemoryEntry, MemoryEntryMetadata
+
+log = logging.getLogger("goat2.memory.chroma")
 
 _SOURCE: Final[str] = "chroma"
 

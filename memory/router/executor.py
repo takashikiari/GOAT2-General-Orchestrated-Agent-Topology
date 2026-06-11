@@ -6,8 +6,10 @@ and records timing statistics for adaptive routing.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from memory.router.types import (
     CONF_HIGH,
@@ -17,7 +19,11 @@ from memory.router.types import (
     Millis,
     RoutingDecision,
 )
-from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
+
+if TYPE_CHECKING:
+    from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
+
+log = logging.getLogger("goat2.memory.router")
 
 __all__ = ["execute_route"]
 
@@ -41,10 +47,15 @@ async def _query_layer(
         results: list[MemoryEntry] = await layer.search(
             role, query, limit=limit, tags=None
         )
-    except Exception:
+    except Exception as exc:
+        log.warning("executor._query_layer: layer=%s error=%s", name, exc)
         results = []
     ms = Millis((time.monotonic() - t0) * 1_000.0)
     record(LayerTiming(layer=name, duration_ms=ms, hit=bool(results)))
+    log.debug(
+        "executor._query_layer: layer=%s dur_ms=%.2f hits=%d",
+        name, float(ms), len(results),
+    )
     return results
 
 
@@ -70,6 +81,11 @@ async def execute_route(
 
     def _get(name: LayerName) -> MemoryLayer:
         return layers[name]
+
+    log.debug(
+        "execute_route: layers=%s confidence=%.2f",
+        decision.layers, float(decision.confidence),
+    )
 
     if decision.confidence >= CONF_HIGH:
         return await _query_layer(

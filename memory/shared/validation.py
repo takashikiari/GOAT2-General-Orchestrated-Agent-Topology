@@ -19,8 +19,11 @@ All write operations should call validate_memory_write() before storing.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Final
+
+log = logging.getLogger("goat2.memory.shared")
 
 __all__ = [
     "MemoryValidationError",
@@ -88,9 +91,11 @@ def validate_key(key: str) -> None:
         MemoryValidationError: If key fails any validation check.
     """
     if not key or not key.strip():
+        log.warning("validate_key: empty/whitespace key rejected")
         raise MemoryValidationError("key", "cannot be empty or whitespace")
 
     if len(key) > MAX_KEY_LENGTH:
+        log.warning("validate_key: length=%d exceeds MAX_KEY_LENGTH=%d", len(key), MAX_KEY_LENGTH)
         raise MemoryValidationError(
             "key",
             f"exceeds maximum length ({len(key)} > {MAX_KEY_LENGTH})",
@@ -98,10 +103,12 @@ def validate_key(key: str) -> None:
 
     # Allow alphanumeric, dash, underscore, slash, dot
     if not re.match(r"^[\w\-./]+$", key):
+        log.warning("validate_key: invalid characters in key=%r", key)
         raise MemoryValidationError(
             "key",
             "contains invalid characters (use alphanumeric, dash, underscore, slash, dot)",
         )
+    log.debug("validate_key: OK (key=%r, len=%d)", key, len(key))
 
 
 def validate_value(value: str, tier: str = "working") -> None:
@@ -120,9 +127,11 @@ def validate_value(value: str, tier: str = "working") -> None:
         MemoryValidationError: If value fails any validation check.
     """
     if not isinstance(value, str):
+        log.warning("validate_value: non-string value type=%s", type(value).__name__)
         raise MemoryValidationError("value", "must be a string")
 
     if not value.strip():
+        log.warning("validate_value: empty/whitespace value rejected")
         raise MemoryValidationError("value", "cannot be empty or whitespace-only")
 
     # Tier-specific limits
@@ -132,10 +141,15 @@ def validate_value(value: str, tier: str = "working") -> None:
         max_len = MAX_VALUE_LENGTH
 
     if len(value) > max_len:
+        log.warning(
+            "validate_value: length=%d exceeds max=%d for tier=%s",
+            len(value), max_len, tier,
+        )
         raise MemoryValidationError(
             "value",
             f"exceeds maximum length for {tier} ({len(value)} > {max_len})",
         )
+    log.debug("validate_value: OK (tier=%s, len=%d)", tier, len(value))
 
 
 def sanitize_content(content: str) -> str:

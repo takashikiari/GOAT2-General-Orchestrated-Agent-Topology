@@ -16,20 +16,26 @@ class ChromaExtrasMixin(ChromaBase):
     async def count(self, agent_role: AgentRole) -> int:
         """Return the total number of documents stored for agent_role."""
         try:
-            return await asyncio.to_thread(
+            count = await asyncio.to_thread(
                 lambda: self._get_collection(agent_role).count()
             )
-        except Exception:
+            log.debug("chroma.count: role=%r → %d", agent_role, count)
+            return count
+        except Exception as exc:
+            log.warning("chroma.count: error for role=%r: %s", agent_role, exc)
             return 0
 
     async def collections(self) -> list[str]:
         """Return names of all GOAT-owned ChromaDB collections (prefix goat2_)."""
         try:
-            return await asyncio.to_thread(
+            names = await asyncio.to_thread(
                 lambda: [
                     c.name for c in self._get_chroma().list_collections()
                     if c.name.startswith(_COLLECTION_PREFIX)
                 ]
             )
-        except Exception:
+            log.debug("chroma.collections: %d collections", len(names))
+            return names
+        except Exception as exc:
+            log.warning("chroma.collections: error: %s", exc)
             return []

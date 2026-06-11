@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from memory.shared.types import MemoryEntry
+
+log = logging.getLogger("goat2.memory.working")
 
 __all__ = ["_tokenize", "_score", "_entry_has_all_tags"]
 

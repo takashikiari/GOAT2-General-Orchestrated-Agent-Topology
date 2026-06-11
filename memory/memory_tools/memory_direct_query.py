@@ -11,16 +11,20 @@ DAG agents are restricted to working tier only with SESSION_ROLE from config.rol
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 import json
 import re
 from typing import Final, TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
+from memory.memory_tools.memory_helpers import make_tool
+
 from config.roles import GOAT_ROLE
-from tools.registry_accessor import get_registry
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_DIRECT_QUERY"]
 
@@ -113,6 +117,7 @@ async def _handler(
         JSON results or error message
     """
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -159,7 +164,7 @@ async def _handler(
         return f"ERROR: query execution failed: {exc}"
 
 
-MEMORY_DIRECT_QUERY = ToolDefinition(
+MEMORY_DIRECT_QUERY = make_tool(
     name="memory_direct_query",
     description=(
         "Query long-term memory stores (Letta/ChromaDB/Redis) with simple syntax. "

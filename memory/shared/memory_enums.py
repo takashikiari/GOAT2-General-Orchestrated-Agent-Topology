@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
+
+log = logging.getLogger("goat2.memory.shared")
 
 __all__ = ["MemoryType", "MemoryTierLiteral", "LayerStatus"]
 

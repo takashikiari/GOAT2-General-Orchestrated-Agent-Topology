@@ -1,8 +1,15 @@
+"""filter_by_time / resolve_range — pure post-filter and human-range parser."""
 from __future__ import annotations
 
-from memory.shared.types import MemoryEntry
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry
 
 __all__ = ["filter_by_time", "resolve_range"]
+
+log = logging.getLogger("goat2.memory.temporal")
 
 
 def filter_by_time(
@@ -27,6 +34,7 @@ def filter_by_time(
         if end_ts is not None and ts > end_ts:
             continue
         result.append(e)
+    log.debug("filter_by_time: kept=%d (from %d)", len(result), len(entries))
     return result
 
 

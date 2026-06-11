@@ -10,10 +10,18 @@ All code must now use Registry for working memory access.
 """
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from memory.working.working_backend import StorageBackend
 from memory.working.working_crud import WorkingCrudMixin
 from memory.working.working_query import WorkingQueryMixin
 from memory.working.working_sweep import WorkingSweepMixin
+
+if TYPE_CHECKING:
+    from memory.working.dict_backend import DictBackend
+
+log = logging.getLogger("goat2.memory.working")
 
 __all__ = ["WorkingMemoryLayer", "StorageBackend"]
 
@@ -39,8 +47,16 @@ class WorkingMemoryLayer(
         *,
         default_ttl: int = 3600,
     ) -> None:
-        from memory.working.dict_backend import DictBackend
-
-        self.backend: StorageBackend = backend or DictBackend()
+        self.backend: StorageBackend = backend or self._default_backend()
         self.default_ttl: int = default_ttl
         self._sweep_task = None
+        log.debug(
+            "WorkingMemoryLayer: initialised (backend=%s default_ttl=%d)",
+            type(self.backend).__name__, self.default_ttl,
+        )
+
+    @staticmethod
+    def _default_backend() -> StorageBackend:
+        """Lazy default backend — avoids hard import at module load."""
+        from memory.working.dict_backend import DictBackend
+        return DictBackend()

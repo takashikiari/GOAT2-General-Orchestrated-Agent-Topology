@@ -1,7 +1,10 @@
-"""Temporal memory query tools — timeline, recent, and debug trace.
+"""Temporal memory query tools — timeline and recent (GOAT + DAG).
 
-Provides three ToolDefinition constants (MEMORY_TIMELINE, MEMORY_RECENT,
-MEMORY_DEBUG_TRACE) for time-based memory queries.
+Provides two ToolDefinition constants (MEMORY_TIMELINE, MEMORY_RECENT,
+MEMORY_RECENT_DAG) for time-based memory queries.
+
+The MEMORY_DEBUG_TRACE tool was moved to ``memory_debug_trace_tool.py``
+to keep this file under the 260-line ceiling.
 
 MEMORY ACCESS ARCHITECTURE:
 ===========================
@@ -15,30 +18,30 @@ Tools determine caller role from the executing agent's context.
 The BaseAgent.role attribute is checked to enforce tier restrictions:
 - Agents with role=GOAT_ROLE or supervisor agents get full access
 - All other agents (DAG agents) restricted to working tier only
-
-Refactored to use memory_helpers.py for shared logic (stays under 200 lines).
 """
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Any
+import logging
+from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE, SESSION_ROLE
 from config.tiers import ANY
 from memory.memory_tools.memory_helpers import (
+    make_tool,
     ANY_TIERS,
     format_entries,
     format_memory_error,
     format_no_results,
-    validate_tier,
+    validate_tier
 )
-from tools.registry_accessor import get_registry
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
-__all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_RECENT_DAG", "MEMORY_DEBUG_TRACE"]
+log = logging.getLogger("goat2.memory.tools")
+
+__all__ = ["MEMORY_TIMELINE", "MEMORY_RECENT", "MEMORY_RECENT_DAG"]
+
 
 # ---------------------------------------------------------------------------
 # Tool handlers
@@ -54,10 +57,6 @@ async def _timeline_handler(
 ) -> str:
     """Return entries from a specific time window, newest first.
 
-    MEMORY ACCESS:
-    - GOAT supervisor: Full tier access (working, episodic, long_term)
-    - DAG agents: Working tier only (enforced automatically)
-
     Args:
         start_datetime: ISO 8601 or natural language (e.g. 'yesterday')
         end_datetime: ISO 8601 or natural-language end bound
@@ -69,12 +68,17 @@ async def _timeline_handler(
         Formatted entries or error message
     """
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
         return error
+    log.debug(
+        "memory_timeline: tier=%s range=(%r,%r) limit=%d",
+        tier, start_datetime, end_datetime, limit,
+    )
 
     try:
         entries = await memory_manager.timeline(
@@ -93,7 +97,7 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler_dag(params: dict[str, Any], caller_role: str) -> str:
+async def _recent_handler_dag(params: dict, caller_role: str) -> str:
     """Wrapper that forces tier=working for DAG agents."""
     return await _recent_handler(limit=params.get("limit", 50), tier="working")
 
@@ -105,10 +109,6 @@ async def _recent_handler(
 ) -> str:
     """Return the N most recent memory entries, newest first.
 
-    MEMORY ACCESS:
-    - GOAT supervisor: Full tier access (working, episodic, long_term)
-    - DAG agents: Working tier only (enforced automatically)
-
     Args:
         limit: Max results (default 50)
         tier: Tier to query (default: 'any')
@@ -118,12 +118,14 @@ async def _recent_handler(
         Formatted entries or error message
     """
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
     error = validate_tier(tier, ANY_TIERS)
     if error:
         return error
+    log.debug("memory_recent: tier=%s limit=%d", tier, limit)
 
     try:
         entries = await memory_manager.recent(
@@ -140,49 +142,11 @@ async def _recent_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _debug_trace_handler(
-    query: str,
-    start_datetime: str | None = None,
-    end_datetime: str | None = None,
-    memory_manager: "MemoryManager | None" = None,
-) -> str:
-    """Search each tier separately; show match counts with optional time filter.
-
-    MEMORY ACCESS:
-    - GOAT supervisor: Full tier access (working, episodic, long_term)
-    - DAG agents: Working tier only (enforced automatically)
-
-    Args:
-        query: Semantic search query
-        start_datetime: Optional ISO 8601 or natural-language start
-        end_datetime: Optional ISO 8601 or natural-language end
-        memory_manager: Optional injected MemoryManager
-
-    Returns:
-        JSON-formatted debug trace results
-    """
-    if memory_manager is None:
-        registry = get_registry()
-        memory_manager = registry.memory_manager
-
-    try:
-        result = await memory_manager.debug_trace(
-            GOAT_ROLE,
-            query,
-            start_datetime,
-            end_datetime,
-        )
-    except Exception as exc:
-        return format_memory_error("memory_debug_trace", exc)
-
-    return json.dumps(result, ensure_ascii=False, indent=2)
-
-
 # ---------------------------------------------------------------------------
 # Tool definitions
 # ---------------------------------------------------------------------------
 
-MEMORY_TIMELINE = ToolDefinition(
+MEMORY_TIMELINE = make_tool(
     name="memory_timeline",
     description="Return entries from a specific time window, newest first.",
     parameters={
@@ -212,7 +176,7 @@ MEMORY_TIMELINE = ToolDefinition(
     handler=_timeline_handler,
 )
 
-MEMORY_RECENT_DAG = ToolDefinition(
+MEMORY_RECENT_DAG = make_tool(
     name="memory_recent",
     description="Return the N most recent working memory entries, newest first. DAG-safe: only searches working tier (Redis).",
     parameters={
@@ -229,7 +193,7 @@ MEMORY_RECENT_DAG = ToolDefinition(
     handler=_recent_handler_dag,
 )
 
-MEMORY_RECENT = ToolDefinition(
+MEMORY_RECENT = make_tool(
     name="memory_recent",
     description="Return the N most recent memory entries, newest first.",
     parameters={
@@ -249,28 +213,4 @@ MEMORY_RECENT = ToolDefinition(
         },
     },
     handler=_recent_handler,
-)
-
-MEMORY_DEBUG_TRACE = ToolDefinition(
-    name="memory_debug_trace",
-    description="Search each tier separately; show match counts.",
-    parameters={
-        "type": "object",
-        "required": ["query"],
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Semantic search query.",
-            },
-            "start_datetime": {
-                "type": "string",
-                "description": "Optional ISO 8601 or natural-language start.",
-            },
-            "end_datetime": {
-                "type": "string",
-                "description": "Optional ISO 8601 or natural-language end.",
-            },
-        },
-    },
-    handler=_debug_trace_handler,
 )

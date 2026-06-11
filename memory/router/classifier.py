@@ -1,12 +1,15 @@
 """Classify a free-text query into a routing category — pure, no I/O, PyO3 candidate."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Final
 
 from memory.router.types import QueryType
 
 __all__ = ["classify_query"]
+
+log = logging.getLogger("goat2.memory.router")
 
 # Explicit time references: "yesterday", "last week", "3 days ago", "when did", etc.
 _TEMPORAL_RE: Final[re.Pattern[str]] = re.compile(
@@ -33,17 +36,22 @@ def classify_query(query: str) -> tuple[QueryType, float]:
     """
     q = query.strip()
     if not q or len(q.split()) < 2:
+        log.debug("classify_query: empty/short query → unknown")
         return "unknown", 0.0
 
     temporal_hits = _TEMPORAL_RE.findall(q)
     if temporal_hits:
         strength = min(1.0, 0.60 + 0.15 * len(temporal_hits))
+        log.debug("classify_query: temporal (hits=%d, strength=%.2f)", len(temporal_hits), strength)
         return "temporal", strength
 
     if _RECENCY_RE.search(q):
+        log.debug("classify_query: recency (strength=0.80)")
         return "recency", 0.80
 
     if len(q.split()) >= _MIN_SEMANTIC_WORDS:
+        log.debug("classify_query: semantic (strength=0.60)")
         return "semantic", 0.60
 
+    log.debug("classify_query: generic (strength=0.40)")
     return "generic", 0.40

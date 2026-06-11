@@ -5,9 +5,12 @@ semantic distinction, and Protocol interfaces for structural typing.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, NewType, NotRequired, Required, TypedDict
 from typing import Protocol, runtime_checkable
+
+log = logging.getLogger("goat2.memory.shared")
 
 __all__ = [
     "AgentRole",

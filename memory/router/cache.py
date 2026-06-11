@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import OrderedDict
 from typing import Final
 
 from memory.router.types import QueryType, RoutingDecision, RouteKey
 
 __all__ = ["RouteCache", "make_route_key"]
+
+log = logging.getLogger("goat2.memory.router")
 
 _CACHE_MAXSIZE: Final[int] = 128
 _KEY_WORDS:     Final[int] = 5     # significant words hashed into the cache key
@@ -35,13 +38,16 @@ class RouteCache:
     def __init__(self, maxsize: int = _CACHE_MAXSIZE) -> None:
         self._data: OrderedDict[RouteKey, RoutingDecision] = OrderedDict()
         self._maxsize = maxsize
+        log.debug("RouteCache: initialised (maxsize=%d)", maxsize)
 
     def get(self, key: RouteKey) -> RoutingDecision | None:
         """Return cached decision with cached=True set, or None on miss."""
         if key not in self._data:
+            log.debug("RouteCache.get: MISS key=%s", key)
             return None
         self._data.move_to_end(key)
         d = self._data[key]
+        log.debug("RouteCache.get: HIT key=%s", key)
         return RoutingDecision(d.layers, d.confidence, d.query_type, cached=True)
 
     def put(self, key: RouteKey, decision: RoutingDecision) -> None:
@@ -50,7 +56,9 @@ class RouteCache:
             self._data.move_to_end(key)
         self._data[key] = decision
         if len(self._data) > self._maxsize:
-            self._data.popitem(last=False)
+            evicted, _ = self._data.popitem(last=False)
+            log.debug("RouteCache.put: evicted LRU key=%s", evicted)
+        log.debug("RouteCache.put: stored key=%s (size=%d)", key, len(self._data))
 
     @property
     def size(self) -> int:

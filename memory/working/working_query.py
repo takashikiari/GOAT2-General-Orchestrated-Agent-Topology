@@ -26,6 +26,7 @@ class WorkingQueryMixin:
         """
         all_keys = await self.backend.keys(agent_role)
         if not all_keys:
+            log.debug("working.search: no keys for %s", agent_role)
             return []
         query_terms                            = _tokenize(query)
         scored: list[tuple[float, MemoryEntry]] = []
@@ -43,7 +44,9 @@ class WorkingQueryMixin:
             key=lambda x: (x[0], float(x[1].metadata.get("created_at_ts") or 0)),
             reverse=True,
         )
-        return [e for _, e in scored[:limit]]
+        result = [e for _, e in scored[:limit]]
+        log.debug("working.search: %r → %d hits", query[:60], len(result))
+        return result
 
     async def list(
         self, agent_role: AgentRole, *, limit: int = 20,

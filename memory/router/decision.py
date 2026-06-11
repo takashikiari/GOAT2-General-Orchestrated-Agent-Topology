@@ -1,11 +1,15 @@
 """Convert confidence score + layer preferences into a RoutingDecision — pure, no I/O."""
 from __future__ import annotations
 
+import logging
+
 from memory.router.types import (
     CONF_HIGH, CONF_LOW, Confidence, LayerName, QueryType, RoutingDecision,
 )
 
 __all__ = ["make_decision"]
+
+log = logging.getLogger("goat2.memory.router")
 
 
 def make_decision(
@@ -31,9 +35,14 @@ def make_decision(
         layers = preferred[:2]
     else:
         layers = preferred   # full fan-out — all three
-    return RoutingDecision(
+    decision = RoutingDecision(
         layers=layers,
         confidence=confidence,
         query_type=query_type,
         cached=cached,
     )
+    log.debug(
+        "make_decision: type=%s conf=%.2f → layers=%s (cached=%s)",
+        query_type, float(confidence), layers, cached,
+    )
+    return decision

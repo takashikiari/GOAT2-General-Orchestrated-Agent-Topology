@@ -11,16 +11,18 @@ BEHAVIOR:
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
 from config.tiers import WORKING, EPISODIC, LONG_TERM
-from memory.memory_tools.memory_helpers import format_memory_error, format_entries, ANY_TIERS
-from tools.registry_accessor import get_registry
+from memory.memory_tools.memory_helpers import format_memory_error, format_entries, ANY_TIERS, make_tool
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_PROMOTE"]
 
@@ -58,6 +60,7 @@ async def _promote_handler(
         return f"ERROR: from_tier and to_tier must be different"
 
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -98,7 +101,7 @@ async def _promote_handler(
         return format_memory_error("memory_promote", exc)
 
 
-MEMORY_PROMOTE = ToolDefinition(
+MEMORY_PROMOTE = make_tool(
     name="memory_promote",
     description="Promote a memory entry between tiers. For long_term source, use query instead of key.",
     parameters={

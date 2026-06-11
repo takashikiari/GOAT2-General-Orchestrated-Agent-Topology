@@ -9,6 +9,9 @@ EXPORTS:
 - count_long_term_entries(mm): Number of entries in long-term memory
 - memory_health_report(mm): Dict with tier status and counts
 """
+from __future__ import annotations
+
+import logging
 
 from memory.memory_metrics.metrics import (
     count_episodic_entries,
@@ -16,6 +19,8 @@ from memory.memory_metrics.metrics import (
     count_working_entries,
     memory_health_report,
 )
+
+log = logging.getLogger("goat2.memory.metrics")
 
 __all__ = [
     "count_working_entries",

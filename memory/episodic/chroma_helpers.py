@@ -5,6 +5,7 @@ output for given inputs.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ from memory.shared.types import (
     MemoryEntryMetadata,
     MemoryKey,
 )
+
+log = logging.getLogger("goat2.memory.chroma")
 
 __all__ = [
     "_sanitize_key",

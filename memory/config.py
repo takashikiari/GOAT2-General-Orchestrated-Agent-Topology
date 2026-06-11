@@ -5,6 +5,10 @@ Replaces hardcoded values with configurable constants.
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.config")
+
 __all__ = [
     "WORKING_BACKEND",
     "EPISODIC_BACKEND",

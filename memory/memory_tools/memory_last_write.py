@@ -10,9 +10,12 @@ DAG agents are restricted to working tier only with SESSION_ROLE from config.rol
 
 from __future__ import annotations
 
+import logging
 from typing import Final
 
-from agents.base_agent import ToolDefinition
+from memory.memory_tools.memory_helpers import make_tool
+
+log = logging.getLogger("goat2.memory.tools")
 
 __all__ = ["MEMORY_LAST_WRITE"]
 
@@ -63,7 +66,7 @@ async def _handler(tier: str) -> str:
         return f"ERROR: failed to query last write: {exc}"
 
 
-MEMORY_LAST_WRITE = ToolDefinition(
+MEMORY_LAST_WRITE = make_tool(
     name="memory_last_write",
     description=(
         "Check the last write timestamp for a memory tier (working/episodic/long_term). "

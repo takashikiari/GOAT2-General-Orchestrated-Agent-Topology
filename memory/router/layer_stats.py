@@ -5,6 +5,7 @@ PyO3 compatibility where possible.
 """
 from __future__ import annotations
 
+import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import Final
@@ -12,6 +13,8 @@ from typing import Final
 from memory.router.types import LayerName, LayerTiming, _ALL_LAYERS
 
 __all__ = ["LayerStats", "LayerStatsTracker"]
+
+log = logging.getLogger("goat2.memory.router")
 
 _SAMPLE_CAP: Final[int] = 1000  # max latency samples per layer (ring buffer)
 
@@ -72,6 +75,7 @@ class LayerStatsTracker:
         self._samples: dict[LayerName, deque[float]] = {
             layer: deque(maxlen=_SAMPLE_CAP) for layer in _ALL_LAYERS
         }
+        log.debug("LayerStatsTracker: initialised for layers=%s", list(_ALL_LAYERS))
 
     def record(self, timing: LayerTiming) -> None:
         """
@@ -86,6 +90,10 @@ class LayerStatsTracker:
         if timing.hit:
             s.hits += 1
         self._samples[timing.layer].append(float(timing.duration_ms))
+        log.debug(
+            "LayerStatsTracker.record: layer=%s dur_ms=%.2f hit=%s",
+            timing.layer, float(timing.duration_ms), timing.hit,
+        )
 
     def get(self, layer: LayerName) -> LayerStats:
         """

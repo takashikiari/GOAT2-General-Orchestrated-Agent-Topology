@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from memory.shared.memory_enums import MemoryType
-from memory.shared.types import MemoryEntry
 
-log = logging.getLogger("goat2.memory.manager")
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry, MemoryLayer
+
+log = logging.getLogger("goat2.memory.shared")
 
 
 class MemoryPromoteMixin:

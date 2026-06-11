@@ -6,11 +6,15 @@ store, retrieve, locate, delete, list, and clear operations.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from memory.shared.memory_enums import MemoryType
-from memory.shared.types import MemoryEntry, MemoryEntryMetadata, MemoryLayer
 
-log = logging.getLogger("goat2.memory.manager")
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry, MemoryEntryMetadata, MemoryLayer
+    from memory.working.working_memory import WorkingMemoryLayer
+
+log = logging.getLogger("goat2.memory.shared")
 
 
 class MemoryCrudMixin:
@@ -72,7 +76,9 @@ class MemoryCrudMixin:
         memory_type: MemoryType | str = MemoryType.WORKING,
     ) -> MemoryEntry | None:
         """Retrieve entry by exact key from specified tier."""
-        return await self._layer(memory_type).retrieve(agent_role, key)
+        result = await self._layer(memory_type).retrieve(agent_role, key)
+        log.debug("retrieve(%s, %s, %s) → %s", agent_role, key, memory_type, "hit" if result else "miss")
+        return result
 
     async def locate(
         self,

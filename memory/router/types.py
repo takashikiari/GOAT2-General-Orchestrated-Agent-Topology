@@ -5,8 +5,11 @@ and frozen dataclasses for immutability.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Final, Literal, NewType
+
+log = logging.getLogger("goat2.memory.router")
 
 # Rust equivalent: enum QueryType
 QueryType = Literal["temporal", "semantic", "recency", "generic", "unknown"]

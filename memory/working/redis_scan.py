@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from memory.shared.types import AgentRole, MemoryKey
+
+log = logging.getLogger("goat2.memory.working")
 
 
 async def scan_keys(r: object, pattern: str, prefix: str) -> list[MemoryKey]:
@@ -13,6 +17,7 @@ async def scan_keys(r: object, pattern: str, prefix: str) -> list[MemoryKey]:
             found.append(MemoryKey(full_key[len(prefix):]))
         if cursor == 0:
             break
+    log.debug("scan_keys: pattern=%r → %d keys", pattern, len(found))
     return found
 
 
@@ -25,4 +30,6 @@ async def scan_delete(r: object, pattern: str) -> int:
         all_keys.extend(batch)
         if cursor == 0:
             break
-    return await r.delete(*all_keys) if all_keys else 0  # type: ignore[union-attr]
+    deleted = await r.delete(*all_keys) if all_keys else 0  # type: ignore[union-attr]
+    log.debug("scan_delete: pattern=%r → deleted %d", pattern, deleted)
+    return deleted

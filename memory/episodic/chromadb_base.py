@@ -32,6 +32,10 @@ class ChromaBase:
         self._embedding_fn = embedding_fn
         self._chroma: chromadb.ClientAPI | None            = None
         self._cols:   dict[AgentRole, chromadb.Collection] = {}
+        log.debug(
+            "ChromaBase: initialised (persist_dir=%s has_embedding=%s)",
+            self._persist_dir, self._embedding_fn is not None,
+        )
 
     def _get_chroma(self) -> chromadb.ClientAPI:
         """Lazily initialise the ChromaDB PersistentClient, creating the persist dir if needed."""

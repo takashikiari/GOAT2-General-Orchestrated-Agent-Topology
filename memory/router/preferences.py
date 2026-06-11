@@ -5,12 +5,15 @@ observed hit rates for intelligent layer preference ordering.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from memory.router.layer_stats import LayerStats
 from memory.router.types import LayerName, QueryType, _ALL_LAYERS
 
 __all__ = ["preferred_layers"]
+
+log = logging.getLogger("goat2.memory.router")
 
 # Base affinity scores per (query_type, layer). Higher = more preferred.
 # Rust equivalent: static AFFINITY: &[(QueryType, [(LayerName, f64); 3])]
@@ -48,4 +51,6 @@ def preferred_layers(
             return base
         return _W_AFFINITY * base + _W_HISTORY * s.hit_rate
 
-    return tuple(sorted(_ALL_LAYERS, key=_score, reverse=True))
+    ordered = tuple(sorted(_ALL_LAYERS, key=_score, reverse=True))
+    log.debug("preferred_layers: query_type=%s → %s", query_type, ordered)
+    return ordered

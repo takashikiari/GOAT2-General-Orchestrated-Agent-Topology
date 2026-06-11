@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from memory.shared.memory_enums import MemoryType
 from memory.temporal.temporal_filter import filter_by_time, resolve_range
-from memory.shared.types import MemoryEntry, MemoryLayer
 
-log = logging.getLogger("goat2.memory.manager")
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry, MemoryLayer
+
+log = logging.getLogger("goat2.memory.shared")
 
 
 class MemorySearchMixin:

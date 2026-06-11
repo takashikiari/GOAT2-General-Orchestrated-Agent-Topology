@@ -25,6 +25,10 @@ class RedisConn:
         self._socket_timeout               = socket_timeout
         self._decode_responses             = decode_responses
         self._redis: object | None         = None
+        log.debug(
+            "RedisConn: initialised (url=%s max=%d timeout=%.1fs)",
+            self._url, self._max_connections, self._socket_timeout,
+        )
 
     def _rkey(self, ns: AgentRole, key: MemoryKey) -> str:
         # Pure — PyO3 candidate: fn rkey(ns: &str, key: &str) -> String
@@ -51,9 +55,11 @@ class RedisConn:
                 socket_timeout=self._socket_timeout,
                 decode_responses=self._decode_responses,
             )
+            log.debug("RedisConn._get_redis: client opened")
         return self._redis
 
     async def close(self) -> None:
         if self._redis is not None:
             await self._redis.aclose()  # type: ignore[union-attr]
             self._redis = None
+            log.debug("RedisConn.close: client closed")

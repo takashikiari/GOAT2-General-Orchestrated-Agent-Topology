@@ -16,15 +16,17 @@ BEHAVIOR:
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
-from memory.memory_tools.memory_helpers import format_memory_error, validate_tier
-from tools.registry_accessor import get_registry
+from memory.memory_tools.memory_helpers import format_memory_error, validate_tier, make_tool
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_TTL"]
 
@@ -47,6 +49,7 @@ async def _ttl_handler(
         TTL message with remaining seconds, or error
     """
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -72,7 +75,7 @@ async def _ttl_handler(
         return format_memory_error("memory_ttl", exc)
 
 
-MEMORY_TTL = ToolDefinition(
+MEMORY_TTL = make_tool(
     name="memory_ttl",
     description="Check remaining TTL for a working memory entry.",
     parameters={

@@ -47,7 +47,7 @@ def validate_fact(key: str, value: str, kind: str, existing_block: str) -> Guard
     Returns 'allowed' otherwise.
     """
     nk = key.strip().lower()
-    
+    log.debug("validate_fact: key=%r kind=%r (existing_block_len=%d)", nk, kind, len(existing_block))
     # Whitelist check — block any key not in ALLOWED_KEYS regardless of kind
     if nk not in _ALLOWED_KEYS:
         return GuardResult(decision="blocked", reason=f"key not in ALLOWED_KEYS whitelist: {nk}")

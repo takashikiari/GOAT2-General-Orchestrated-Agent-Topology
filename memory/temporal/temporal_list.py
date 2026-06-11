@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
-from memory.shared.types import MemoryEntry
+if TYPE_CHECKING:
+    from memory.shared.types import MemoryEntry
 
 __all__ = ["gather_tier_list"]
 
@@ -37,4 +39,5 @@ async def gather_tier_list(
             if k not in seen:
                 seen.add(k)
                 merged.append(e)
+    log.debug("gather_tier_list: merged=%d (tier=%s)", len(merged), tier)
     return merged

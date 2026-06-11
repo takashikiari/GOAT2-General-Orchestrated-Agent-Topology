@@ -6,6 +6,10 @@ Semantic search uses HNSW (cosine space).
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.chroma")
+
 from memory.episodic.chroma_crud import ChromaCrudMixin
 from memory.episodic.chroma_extras import ChromaExtrasMixin
 from memory.episodic.chroma_query import ChromaQueryMixin

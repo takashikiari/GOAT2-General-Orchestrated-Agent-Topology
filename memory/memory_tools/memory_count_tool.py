@@ -17,15 +17,17 @@ Returns a summary showing entry count for each tier:
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
-from memory.memory_tools.memory_helpers import format_memory_error
-from tools.registry_accessor import get_registry
+from memory.memory_tools.memory_helpers import format_memory_error, make_tool
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_COUNT"]
 
@@ -48,6 +50,7 @@ async def _count_handler(
         Count message for specified tier(s)
     """
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -55,6 +58,7 @@ async def _count_handler(
     if tier not in valid_tiers:
         return f"ERROR: invalid tier '{tier}'; valid: {valid_tiers}"
 
+    log.debug("memory_count: tier=%s", tier)
     try:
         counts: dict[str, int] = {}
 
@@ -85,7 +89,7 @@ async def _count_handler(
         return format_memory_error("memory_count", exc)
 
 
-MEMORY_COUNT = ToolDefinition(
+MEMORY_COUNT = make_tool(
     name="memory_count",
     description="Count entries in a specific memory tier or all tiers.",
     parameters={

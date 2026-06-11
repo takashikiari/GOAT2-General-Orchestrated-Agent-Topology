@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from memory.long_term.letta_helpers import _now_iso
 from memory.shared.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry,
     MemoryEntryMetadata, MemoryKey,
 )
+
+log = logging.getLogger("goat2.memory.letta")
 
 
 class _InContextFallback:
@@ -38,6 +42,7 @@ class _InContextFallback:
             created_at=IsoTimestamp(_now_iso()), source="fallback",
         )
         self._store[agent_role].append(entry)
+        log.debug("fallback.store: role=%s key=%s", agent_role, key)
         return entry
 
     def retrieve(self, agent_role: AgentRole, key: MemoryKey) -> MemoryEntry | None:

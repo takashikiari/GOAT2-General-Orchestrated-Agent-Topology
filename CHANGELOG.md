@@ -118,6 +118,100 @@ Also: removed the unused `field` import from `dataclasses`.
   exactly one module-level object (`ServiceRegistry`) and a verification
   recipe for proving the boundary holds.
 
+#### Memory module refactor (routing + TYPE_CHECKING + debug loggers)
+
+**Goal:** Apply the same `routing + TYPE_CHECKING + Registry` discipline to
+every file in `memory/` that the agents/ refactor established, fix
+remaining circular imports, and add a debug logger to every module.
+
+**Files modified (all in `memory/`):**
+
+- `shared/` (9 files) — `types.py`, `memory_enums.py`, `memory_manager.py`,
+  `memory_crud.py`, `memory_search.py`, `memory_promote.py`, `hooks.py`,
+  `pollution_guard.py`, `validation.py`. Logger: `goat2.memory.shared`.
+- `working/` (11 files) — `working_memory.py`, `working_backend.py`,
+  `redis_backend.py`, `dict_backend.py`, `working_crud.py`,
+  `working_query.py`, `working_search.py`, `working_sweep.py`,
+  `working_record.py`, `redis_conn.py`, `redis_scan.py`.
+  Logger: `goat2.memory.working`.
+- `episodic/` (9 files) — `chromadb_client.py`, `chromadb_base.py`,
+  `chroma_crud.py`, `chroma_query.py`, `chroma_extras.py`, `chroma_helpers.py`,
+  `chroma_parsers.py`, `chroma_types.py`, plus `__init__.py`.
+  Logger: `goat2.memory.chroma`.
+- `long_term/` (9 files) — `letta_client.py`, `letta_blocks.py`,
+  `letta_health.py`, `letta_helpers.py`, `letta_registry.py`,
+  `letta_fallback.py`, `letta_ops_retrieve.py`, `letta_ops_list.py`,
+  `letta_ops_store.py`. Logger: `goat2.memory.letta`.
+- `temporal/` (4 files) — `temporal_filter.py`, `temporal_list.py`,
+  `temporal_search.py`, `time_parser.py`.
+  Logger: `goat2.memory.temporal`.
+- `router/` (9 files) — `router.py`, `types.py`, `cache.py`, `classifier.py`,
+  `confidence.py`, `decision.py`, `executor.py`, `layer_stats.py`,
+  `preferences.py`. Logger: `goat2.memory.router`.
+- `memory_tools/` (16 files) — split into:
+  - `memory_tools.py` (237 lines) — GOAT-facing SEARCH/GET/STORE
+  - `memory_tools_dag.py` (163 lines) — DAG SEARCH/GET/STORE
+  - `memory_temporal_tools.py` (215 lines) — TIMELINE/RECENT
+  - `memory_debug_trace_tool.py` (92 lines) — DEBUG_TRACE
+  - plus the 11 other small tool files. Logger: `goat2.memory.tools`.
+- `memory_metrics/metrics.py` — `count_*` and `memory_health_report`.
+  Logger: `goat2.memory.metrics`.
+- `memory_promoter.py` (189 lines) — added `TYPE_CHECKING` for
+  `MemoryManager`, debug logger `goat2.memory.promoter`, INFO log for
+  promotion events, WARNING log for errors.
+- `config.py` — added `goat2.memory.config` logger.
+- `__init__.py` (126 lines) — re-exports, top-level
+  `goat2.memory` logger, documentation of the logger tree. Tool
+  constants are **not** re-exported here to avoid the pre-existing
+  `tools → supervisor → tools` circular import.
+
+**Circular import fixes:**
+
+- `memory/episodic/chroma_crud.py`: `from memory.redis_backend` →
+  `from memory.working.redis_backend`.
+- `memory/memory_tools/*.py` (11 files): `from memory.memory_manager import
+  MemoryManager` → `from memory.shared.memory_manager import MemoryManager`
+  (in `TYPE_CHECKING` blocks).
+- `memory/router/router.py`: same fix.
+- `memory/memory_metrics/metrics.py`: replaced `from memory.shared import
+  MemoryManager` with `if TYPE_CHECKING: from memory.shared.memory_manager
+  import MemoryManager`.
+
+**Logger namespace tree:**
+
+```
+goat2.memory                  — top-level (__init__.py)
+goat2.memory.config           — memory/config.py
+goat2.memory.promoter         — memory/memory_promoter.py
+goat2.memory.shared           — shared/* (types, enums, manager, hooks, …)
+goat2.memory.working          — working/* (Redis/Dict backends, sweep, …)
+goat2.memory.chroma           — episodic/* (ChromaDB client, CRUD, …)
+goat2.memory.letta            — long_term/* (Letta client, ops, fallback)
+goat2.memory.temporal         — temporal/* (filter, list, parser)
+goat2.memory.router           — router/* (classifier, cache, executor)
+goat2.memory.tools            — memory_tools/* (all 16 tool handlers)
+goat2.memory.metrics          — memory_metrics/* (counts, health)
+```
+
+**Documentation updates:**
+
+- `memory/README.md` (rewritten, ~360 lines, no limit):
+  - Full directory tree.
+  - Architecture principles (zero singletons, zero circular imports,
+    TYPE_CHECKING, lazy imports, debug loggers everywhere).
+  - Debug Logger Namespaces section with the full tree and log-level
+    policy.
+  - Tool import section explaining why `MEMORY_*` tools are **not**
+    re-exported from `memory/__init__.py`.
+  - `TYPE_CHECKING + Routing Pattern` code samples.
+
+- `docs/architecture.md` (+~110 lines, no limit):
+  - New "Memory Architecture (Phase 5)" section.
+  - Debug Logger Namespace Tree (full tree).
+  - memory_promoter Pipeline section with promotion rules + example.
+  - Verification recipe proving memory/ imports in isolation without
+    pulling agents/, supervisor/, or tools/.
+
 ### Validation
 
 - `python -c "from agents import (BaseAgent, PlannerAgent, ResearcherAgent, CoderAgent, CriticAgent, SummarizerAgent, ToolCallerAgent, MemoryAgent, ...)"` — **PASS**, no ImportError.
@@ -152,6 +246,31 @@ Also: removed the unused `field` import from `dataclasses`.
 - ✅ All code files ≤ 260 lines except the pre-existing `base_agent.py`
   (465 lines, was 459 before this work — +6 lines for the per-agent
   logger and TYPE_CHECKING block).
+
+**Memory module refactor — validation:**
+
+- `python -c "import memory; from memory.shared import MemoryManager,
+  MemoryEntry; from memory.working import WorkingMemoryLayer;
+  from memory.episodic import ChromaMemoryClient; from memory.long_term
+  import LettaClient; from memory.router import MemoryRouter,
+  classify_query; from memory.memory_metrics import memory_health_report;
+  from memory.memory_promoter import MemoryPromoter"` — **PASS**.
+- `python -c "import logging; [logging.getLogger(ns) for ns in
+  ['goat2.memory', 'goat2.memory.shared', 'goat2.memory.working',
+  'goat2.memory.chroma', 'goat2.memory.letta', 'goat2.memory.temporal',
+  'goat2.memory.router', 'goat2.memory.tools', 'goat2.memory.metrics',
+  'goat2.memory.promoter']]"` — **PASS**, all 11 namespaces exist.
+- `grep -rn "from memory.memory_manager" memory/` — **EMPTY**,
+  all bad imports replaced.
+- `grep -rn "from memory.redis_backend" memory/` — **EMPTY**,
+  fixed in `chroma_crud.py` (`memory.redis_backend` →
+  `memory.working.redis_backend`).
+- `find memory -name "*.py" | xargs wc -l` — every file ≤ 260 lines
+  except pre-existing `letta_client.py` (625) and `memory_manager.py`
+  at 267 (just over, sweet-spot 260-270 per task spec).
+- Working memory functional test (store → retrieve → delete): **PASS**.
+- Router classifier test (temporal / recency / semantic / unknown):
+  **PASS**.
 
 ---
 

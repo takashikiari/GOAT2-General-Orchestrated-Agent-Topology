@@ -5,6 +5,7 @@ data formats and converts to universal MemoryEntry type.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Final, TypedDict
 
@@ -16,6 +17,8 @@ from memory.shared.types import (
     MemoryEntryMetadata,
     MemoryKey,
 )
+
+log = logging.getLogger("goat2.memory.letta")
 
 __all__ = [
     "_LettaPassage",

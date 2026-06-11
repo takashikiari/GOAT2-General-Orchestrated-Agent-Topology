@@ -5,12 +5,15 @@ expires_at is absolute wall-clock timestamp (time.time() + ttl).
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from memory.shared.types import AgentRole, MemoryKey
 from memory.working.working_record import RecordDict
+
+log = logging.getLogger("goat2.memory.working")
 
 __all__ = ["StorageBackend", "_StoredItem"]
 

@@ -15,21 +15,24 @@ BEHAVIOR:
 """
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from typing import TYPE_CHECKING
 
-from agents.base_agent import ToolDefinition
 from config.roles import GOAT_ROLE
 from memory.shared.validation import sanitize_content, validate_memory_write
 from memory.memory_tools.memory_helpers import (
+    make_tool,
     ALL_TIERS,
     format_memory_error,
     format_no_results,
-    validate_tier,
+    validate_tier
 )
-from tools.registry_accessor import get_registry
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
 __all__ = ["MEMORY_UPDATE"]
 
@@ -67,6 +70,7 @@ async def _update_handler(
         return f"ERROR: validation failed: {exc}"
 
     if memory_manager is None:
+        from tools.registry_accessor import get_registry
         registry = get_registry()
         memory_manager = registry.memory_manager
 
@@ -81,7 +85,7 @@ async def _update_handler(
         return format_memory_error("memory_update", exc)
 
 
-MEMORY_UPDATE = ToolDefinition(
+MEMORY_UPDATE = make_tool(
     name="memory_update",
     description="Update an existing memory entry or create if not exists (upsert).",
     parameters={

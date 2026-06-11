@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 __all__ = ["parse_time_range"]
+
+log = logging.getLogger("goat2.memory.temporal")
 
 _TZ = ZoneInfo("Europe/Bucharest")
 _UTC = timezone.utc
@@ -31,6 +34,7 @@ def parse_time_range(expr: str) -> tuple[float | None, float | None]:
     if not expr:
         return None, None
     low = expr.strip().lower()
+    log.debug("parse_time_range: expr=%r", low)
     now = _now()
     today = _today()
     yest = today - timedelta(days=1)

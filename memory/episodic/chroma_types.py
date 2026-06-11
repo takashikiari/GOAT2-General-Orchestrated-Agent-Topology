@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Final, NotRequired, Required, TypedDict
+
+log = logging.getLogger("goat2.memory.chroma")
 
 __all__ = [
     "ChromaStoredMetadata", "ChromaGetResult", "ChromaQueryResult",

@@ -6,6 +6,7 @@ routing preferences based on observed latency and hit rates.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from memory.router.cache import RouteCache, make_route_key
@@ -16,10 +17,12 @@ from memory.router.executor import execute_route
 from memory.router.layer_stats import LayerStats, LayerStatsTracker
 from memory.router.preferences import preferred_layers
 from memory.router.types import LayerName, RoutingDecision
-from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
 
 if TYPE_CHECKING:
-    from memory.memory_manager import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
+    from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
+
+log = logging.getLogger("goat2.memory.router")
 
 __all__ = ["MemoryRouter"]
 
@@ -41,6 +44,7 @@ class MemoryRouter:
     """
 
     def __init__(self, manager: MemoryManager) -> None:
+        log.debug("MemoryRouter: initialising with manager=%s", type(manager).__name__)
         self._tracker: LayerStatsTracker = LayerStatsTracker()
         self._cache: RouteCache = RouteCache()
         self._layers: dict[LayerName, MemoryLayer] = {
@@ -48,6 +52,7 @@ class MemoryRouter:
             "episodic": manager.episodic,
             "long_term": manager.long_term,
         }
+        log.info("MemoryRouter: ready (cache_maxsize=%d)", self._cache.size)
 
     async def search(
         self,
@@ -73,6 +78,12 @@ class MemoryRouter:
             confidence = compute_confidence(query_type, strength, pref_hr)
             decision = make_decision(query_type, confidence, preferred)
             self._cache.put(route_key, decision)
+            log.debug(
+                "MemoryRouter.search: cache MISS — query_type=%s confidence=%.2f layers=%s",
+                query_type, float(confidence), preferred,
+            )
+        else:
+            log.debug("MemoryRouter.search: cache HIT — layers=%s", decision.layers)
 
         return await execute_route(
             decision,

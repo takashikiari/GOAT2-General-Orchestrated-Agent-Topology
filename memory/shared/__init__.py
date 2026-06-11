@@ -10,6 +10,10 @@ EXPORTS:
 - auto_save_memory: Hook for automatic memory persistence
 - PollutionGuard: Content quality validation
 """
+from __future__ import annotations
+
+import logging
+
 from memory.shared.types import (
     AgentRole,
     MemoryKey,
@@ -26,6 +30,8 @@ from memory.shared.memory_enums import MemoryType, MemoryTierLiteral, LayerStatu
 from memory.shared.memory_manager import MemoryManager
 from memory.shared.hooks import auto_save_memory
 from memory.shared.pollution_guard import PollutionGuard
+
+log = logging.getLogger("goat2.memory.shared")
 
 __all__ = [
     # Types

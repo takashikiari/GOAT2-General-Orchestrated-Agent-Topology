@@ -532,3 +532,140 @@ This passes because the `from supervisor.registry import AgentRegistry`
 inside `config/registry.py` lives inside `ServiceRegistry.__init__`,
 not at module level. The `TYPE_CHECKING` block at the top only provides
 type hints and never runs.
+
+---
+
+## Memory Architecture (Phase 5)
+
+### Three-Tier Memory (Recap)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    GOAT (Supervisor)                         │
+│  ┌────────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │   Working      │  │   Episodic   │  │  Long-term   │    │
+│  │   (Redis)      │  │  (ChromaDB)  │  │   (Letta)    │    │
+│  │                │  │              │  │              │    │
+│  │ • Session ctx  │  │ • Past turns │  │ • User pref  │    │
+│  │ • Active conv  │  │ • Histories  │  │ • Profiles   │    │
+│  │ • Tool output  │  │ • Patterns   │  │ • Long-term  │    │
+│  │ • DAG bridge   │  │              │  │   memories   │    │
+│  └───────┬────────┘  └──────────────┘  └──────────────┘    │
+│          │                                                   │
+│          │ Redis (bridge)                                    │
+│          ▼                                                   │
+│  ┌──────────────────────────────────────────────────┐        │
+│  │                DAG Agents                         │        │
+│  └──────────────────────────────────────────────────┘        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### routing + TYPE_CHECKING + Registry Applied to memory/
+
+Every file in `memory/` follows the same architectural rules as `agents/`,
+`supervisor/`, and `tools/`:
+
+1. **`from __future__ import annotations`** at the top of every file
+2. **`from typing import TYPE_CHECKING`** + `if TYPE_CHECKING:` for
+   cross-module type hints (e.g. `MemoryManager`, `ToolDefinition`,
+   `AgentRegistry`)
+3. **Lazy imports** inside function bodies for cross-module
+   instantiation (e.g. `from memory.router import MemoryRouter` lives
+   inside `MemoryManager._get_router()`)
+4. **No module-level singletons** — `memory_manager`, `working_memory`,
+   etc. have all been removed. Every consumer goes through
+   `config/registry.py` `ServiceRegistry`.
+5. **Debug loggers** at namespace `goat2.memory.<submodule>` in every
+   file, logging initialization + read/write operations at DEBUG and
+   errors / missing keys / tier unavailable at WARNING.
+
+### Debug Logger Namespace Tree
+
+```
+goat2.memory                  — memory/__init__.py (top-level)
+goat2.memory.config           — memory/config.py
+goat2.memory.promoter         — memory/memory_promoter.py
+goat2.memory.shared           — shared/types, enums, manager, hooks, validation
+goat2.memory.working          — working/* (DictBackend, RedisBackend, sweep, query, …)
+goat2.memory.chroma           — episodic/* (ChromaDB client, CRUD, query, parsers)
+goat2.memory.letta            — long_term/* (Letta client, ops, registry, fallback)
+goat2.memory.temporal         — temporal/* (filter, list, parser)
+goat2.memory.router           — router/* (classifier, cache, executor, decision)
+goat2.memory.tools            — memory_tools/* (all 16 tool handlers)
+goat2.memory.metrics          — memory_metrics/* (counts, health)
+```
+
+**Log levels:**
+
+- `DEBUG` — initialization, reads, writes, search hits, sweeps, routing
+  decisions, layer timings, classifier scores
+- `INFO` — promotion events, layer reconnection, service init
+- `WARNING` — errors, missing keys, validation failures, tier unavailable,
+  Redis corrupt records
+
+**Enable verbose logging:**
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("goat2.memory").setLevel(logging.DEBUG)
+```
+
+### memory_promoter Pipeline
+
+`memory/memory_promoter.py` is a pipeline component that handles automatic
+tier promotion between memory tiers. It's distinct from
+`memory.shared.hooks` (which does turn-based auto-save) and
+`MemoryManager.promote_with_guard` (which does guarded promote).
+
+**Promotion Rules (matching `MemoryManager.promote_turns`):**
+
+| Condition | Promotion | keep_source |
+|-----------|-----------|-------------|
+| Turn 2+ (messages >= 4) | WORKING → EPISODIC | True |
+| Turn 3+ (messages >= 6) | EPISODIC → LONG_TERM | False |
+
+**Tool distribution note:**
+
+- DAG agents: `FILE_TOOLS + WEB_SEARCH + DAG_MEMORY_TOOLS` (working tier)
+- GOAT CONVERSATIONAL: `FILE_TOOLS + MEMORY_TOOLS` (all tiers)
+- GOAT VALIDATOR: direct `memory_manager` access only
+- GOAT Memory Promoter: direct `memory_manager.promote()` only
+
+**Example:**
+
+```python
+from memory.memory_promoter import MemoryPromoter
+
+promoter = MemoryPromoter(memory_manager)
+if promoter.should_promote_to_episodic(turn_count):
+    await promoter.promote_to_episodic(turn_count)
+# Or auto-decide:
+await promoter.promote_turn(turn_count)
+```
+
+### Verification
+
+To prove the memory module is importable in isolation:
+
+```python
+import sys
+import memory
+import memory.shared, memory.working, memory.episodic
+import memory.long_term, memory.temporal, memory.router
+import memory.memory_metrics, memory.memory_promoter
+# All of the above MUST succeed without importing agents/, supervisor/, or tools/
+forbidden = [m for m in sys.modules if m.startswith(('agents.', 'supervisor.', 'tools.'))]
+assert not forbidden, f"memory/ leaked: {forbidden}"
+```
+
+This passes because every cross-module dependency in `memory/` is hidden
+behind a `TYPE_CHECKING` guard or a lazy import inside a function body.
+
+### Tool Imports — Important
+
+`memory/__init__.py` deliberately does **NOT** re-export the `MEMORY_*`
+tool definitions. Importing them transitively pulls
+`tools → supervisor → tools` which is a pre-existing circular chain in
+the codebase. Use `from memory.memory_tools import MEMORY_SEARCH` instead.
+

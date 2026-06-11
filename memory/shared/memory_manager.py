@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from memory.router import MemoryRouter
     from memory.shared.types import AgentRole, MemoryEntry, MemoryLayer
 
-log = logging.getLogger("goat2.memory.manager")
+log = logging.getLogger("goat2.memory.shared")
 
 __all__ = ["MemoryManager", "MemoryType", "LayerStatus"]
 
@@ -224,40 +224,15 @@ class MemoryManager(
 
         Runs as non-blocking background task after store_turn().
 
+        The actual implementation lives in ``memory_promote_turns.py`` to
+        keep this file under the 260-line ceiling.
+
         Args:
             agent_role: Role namespace (e.g., 'user_session')
             turn_count: Current number of messages in history
         """
-        try:
-            # Turn 2+ : promote working → episodic
-            if turn_count >= 4:
-                keys = await self.working.backend.keys(agent_role)
-                for key in keys:
-                    if key.startswith("turn_"):
-                        await self.promote_with_guard(
-                            agent_role, key,
-                            from_type=MemoryType.WORKING,
-                            to_type=MemoryType.EPISODIC,
-                            keep_source=True,
-                        )
-                log.debug("promote_turns: working → episodic for %d keys", len(keys))
-
-            # Turn 3+ : promote episodic → long_term
-            if turn_count >= 6:
-                # ChromaDB doesn't have simple keys() — use recent entries
-                entries = await self.episodic.search(agent_role, "turn", limit=10)
-                for entry in entries:
-                    key = entry.key if hasattr(entry, 'key') else entry.get('id', '')
-                    if key.startswith("turn_"):
-                        await self.promote_with_guard(
-                            agent_role, key,
-                            from_type=MemoryType.EPISODIC,
-                            to_type=MemoryType.LONG_TERM,
-                            keep_source=False,
-                        )
-                log.debug("promote_turns: episodic → long_term completed")
-        except Exception as e:
-            log.warning("promote_turns: background task failed: %s", e)
+        from memory.shared.memory_promote_turns import run_promote_turns
+        await run_promote_turns(self, agent_role, turn_count)
 
     def __repr__(self) -> str:
         return (

@@ -38,8 +38,13 @@ ALSO EXPORTS:
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger("goat2.memory.tools")
+
 from memory.memory_tools.memory_auto_promote_tool import MEMORY_AUTO_PROMOTE
 from memory.memory_tools.memory_count_tool import MEMORY_COUNT
+from memory.memory_tools.memory_debug_trace_tool import MEMORY_DEBUG_TRACE
 from memory.memory_tools.memory_delete_tool import MEMORY_DELETE
 from memory.memory_tools.memory_direct_query import MEMORY_DIRECT_QUERY
 from memory.memory_tools.memory_embedding_tool import MEMORY_EMBEDDING
@@ -47,7 +52,6 @@ from memory.memory_tools.memory_export_tool import MEMORY_EXPORT
 from memory.memory_tools.memory_last_write import MEMORY_LAST_WRITE
 from memory.memory_tools.memory_promote_tool import MEMORY_PROMOTE
 from memory.memory_tools.memory_temporal_tools import (
-    MEMORY_DEBUG_TRACE,
     MEMORY_RECENT,
     MEMORY_RECENT_DAG,
     MEMORY_TIMELINE,
@@ -56,6 +60,8 @@ from memory.memory_tools.memory_tools import (
     MEMORY_GET,
     MEMORY_SEARCH,
     MEMORY_STORE,
+)
+from memory.memory_tools.memory_tools_dag import (
     MEMORY_GET_DAG,
     MEMORY_SEARCH_DAG,
     MEMORY_STORE_DAG,

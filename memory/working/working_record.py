@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Final, TypedDict
 
@@ -7,6 +8,8 @@ from memory.shared.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry,
     MemoryEntryMetadata, MemoryKey, MemorySource,
 )
+
+log = logging.getLogger("goat2.memory.working")
 
 _SOURCE: Final[MemorySource] = "working"
 

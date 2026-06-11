@@ -29,9 +29,9 @@ from typing import TYPE_CHECKING, Final
 from config.roles import SESSION_ROLE
 
 if TYPE_CHECKING:
-    from memory.shared import MemoryManager
+    from memory.shared.memory_manager import MemoryManager
 
-log = logging.getLogger("goat2.memory_promoter")
+log = logging.getLogger("goat2.memory.promoter")
 
 __all__ = ["MemoryPromoter"]
 
@@ -74,6 +74,7 @@ class MemoryPromoter:
             memory_manager: MemoryManager for tier access.
         """
         self._mm = memory_manager
+        log.debug("MemoryPromoter: initialised (manager=%s)", type(memory_manager).__name__)
 
     def should_promote_to_episodic(self, turn_count: int) -> bool:
         """Check if should promote to episodic tier.
@@ -130,7 +131,7 @@ class MemoryPromoter:
             )
             return True
         except Exception as e:
-            log.error(
+            log.warning(
                 "MemoryPromoter: promote_to_episodic failed at turn %d: %s",
                 turn_count, e,
             )
@@ -163,7 +164,7 @@ class MemoryPromoter:
             )
             return True
         except Exception as e:
-            log.error(
+            log.warning(
                 "MemoryPromoter: promote_to_longterm failed at turn %d: %s",
                 turn_count, e,
             )

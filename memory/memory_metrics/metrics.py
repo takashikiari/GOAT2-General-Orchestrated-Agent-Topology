@@ -11,7 +11,13 @@ EXPORTS:
 """
 from __future__ import annotations
 
-from memory.shared import MemoryManager
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memory.shared.memory_manager import MemoryManager
+
+log = logging.getLogger("goat2.memory.metrics")
 
 __all__ = [
     "count_working_entries",
@@ -21,7 +27,7 @@ __all__ = [
 ]
 
 
-async def count_working_entries(mm: MemoryManager) -> int:
+async def count_working_entries(mm: "MemoryManager") -> int:
     """Count entries in working memory tier.
 
     Args:
@@ -32,12 +38,15 @@ async def count_working_entries(mm: MemoryManager) -> int:
     """
     try:
         entries = await mm.working.list("goat", limit=1000)
-        return len(entries)
-    except Exception:
+        count = len(entries)
+        log.debug("count_working_entries: %d", count)
+        return count
+    except Exception as exc:
+        log.warning("count_working_entries: failed: %s", exc)
         return 0
 
 
-async def count_episodic_entries(mm: MemoryManager) -> int:
+async def count_episodic_entries(mm: "MemoryManager") -> int:
     """Count entries in episodic memory tier.
 
     Args:
@@ -48,12 +57,15 @@ async def count_episodic_entries(mm: MemoryManager) -> int:
     """
     try:
         entries = await mm.episodic.list("goat", limit=1000)
-        return len(entries)
-    except Exception:
+        count = len(entries)
+        log.debug("count_episodic_entries: %d", count)
+        return count
+    except Exception as exc:
+        log.warning("count_episodic_entries: failed: %s", exc)
         return 0
 
 
-async def count_long_term_entries(mm: MemoryManager) -> int:
+async def count_long_term_entries(mm: "MemoryManager") -> int:
     """Count entries in long-term memory tier.
 
     Note: Letta doesn't have a simple count API. This returns the
@@ -68,12 +80,14 @@ async def count_long_term_entries(mm: MemoryManager) -> int:
     try:
         # Letta lists agents, not entries directly
         # Return 0 as placeholder - requires Letta API for accurate count
+        log.debug("count_long_term_entries: 0 (Letta has no count API)")
         return 0
-    except Exception:
+    except Exception as exc:
+        log.warning("count_long_term_entries: failed: %s", exc)
         return 0
 
 
-async def memory_health_report(mm: MemoryManager) -> dict:
+async def memory_health_report(mm: "MemoryManager") -> dict:
     """Get comprehensive health report for all memory tiers.
 
     Args:
@@ -93,7 +107,7 @@ async def memory_health_report(mm: MemoryManager) -> dict:
     episodic_count = await count_episodic_entries(mm)
     long_term_count = await count_long_term_entries(mm)
 
-    return {
+    report = {
         "status": {
             "working": status.working,
             "episodic": status.episodic,
@@ -106,3 +120,5 @@ async def memory_health_report(mm: MemoryManager) -> dict:
         },
         "healthy": status.working or status.episodic,
     }
+    log.debug("memory_health_report: healthy=%s", report["healthy"])
+    return report
