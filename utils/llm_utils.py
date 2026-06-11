@@ -30,7 +30,7 @@ __all__ = [
     "_format_dep_context", "_model_label",
 ]
 
-log = logging.getLogger("goat2.llm_utils")
+log = logging.getLogger("goat2.utils.llm_utils")
 
 _clients: dict[str, AsyncOpenAI] = {}
 

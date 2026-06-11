@@ -33,6 +33,30 @@ To prevent "Message is too long" API errors:
 - `_MAX_RESULT_CHARS`: 4000 per individual result
 - `_MAX_TOTAL_MESSAGES_CHARS`: 128000 total across messages
 
+## Routing Pattern
+
+`utils/` is a shared leaf module — it may be imported by `agents/`, `supervisor/`, and `tools/` without creating circular imports.
+
+Rules applied in this module:
+- `from __future__ import annotations` in every file (type hints as strings, no runtime eval)
+- Cross-layer type hints (`AgentResult` from `supervisor.types`) are placed under `if TYPE_CHECKING:` — they only resolve during type checking, never at import time
+- No module-level imports from `agents/`, `supervisor/`, or `tools/` — `config.settings` is the only cross-module import (it is a leaf module with no transitive dependencies on the three main layers)
+- `_get_client` imports `Settings` inside the function body as a safeguard against future circular chains
+
+## Debug Logger Namespaces
+
+| File | Logger name |
+|------|-------------|
+| `utils/__init__.py` | `goat2.utils` |
+| `utils/llm_utils.py` | `goat2.utils.llm_utils` |
+
+Enable per-module DEBUG output:
+
+```python
+import logging
+logging.getLogger("goat2.utils.llm_utils").setLevel(logging.DEBUG)
+```
+
 ## Usage
 
 ```python

@@ -1,19 +1,10 @@
-"""Utility functions for GOAT 2.0 — LLM client, message formatting, JSON extraction.
+"""Utility functions for GOAT 2.0 — LLM client, message formatting, JSON extraction."""
+from __future__ import annotations
 
-This module provides shared utilities used across the supervisor, agents,
-and tools modules.
+import logging
 
-EXPORTS:
-=======
-- _get_client: Cached AsyncOpenAI client per provider
-- _call_llm: Send messages to LLM, return text content
-- _extract_json: Extract JSON from text with multiple fallback parsers
-- _extract_balanced_json: Extract JSON using brace-balance counting
-- _format_dep_context: Format AgentResults as Markdown for context
-- _model_label: Get model label for a role
-- _truncate_content: Truncate content to max chars
-- _truncate_messages: Ensure all messages respect size limits
-"""
+log = logging.getLogger("goat2.utils")
+
 from utils.llm_utils import (
     _get_client,
     _call_llm,

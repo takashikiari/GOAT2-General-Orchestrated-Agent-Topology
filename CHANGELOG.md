@@ -9,6 +9,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### utils/ — routing + TYPE_CHECKING + debug loggers
+
+- **`utils/__init__.py`**: Added `from __future__ import annotations`, `import logging`,
+  `log = logging.getLogger("goat2.utils")`. Replaced multi-line docstring with single-line.
+- **`utils/llm_utils.py`**: Corrected logger name `"goat2.llm_utils"` → `"goat2.utils.llm_utils"`
+  to match the `goat2.<module>.<submodule>` hierarchy. File already had `from __future__ import annotations`
+  and `AgentResult` under `TYPE_CHECKING` — no further changes needed.
+- **`utils/README.md`**: Added Routing Pattern and Debug Logger Namespaces sections.
+
 #### supervisor/ — routing + TYPE_CHECKING + debug loggers
 
 **Goal:** Complete the `routing + TYPE_CHECKING + Registry` pattern across all `supervisor/` files,
