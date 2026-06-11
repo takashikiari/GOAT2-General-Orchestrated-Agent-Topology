@@ -30,6 +30,7 @@ from supervisor.pipeline.runners import (
     _run_summarizer,
     _run_tool_caller,
 )
+from supervisor.pipeline.critic_rerun import STRICTER_SYSTEM_PROMPTS, _rerun_failed_tasks
 
 __all__ = [
     "WorkflowGraph",
@@ -49,4 +50,6 @@ __all__ = [
     "_run_critic",
     "_run_summarizer",
     "_run_tool_caller",
+    "STRICTER_SYSTEM_PROMPTS",
+    "_rerun_failed_tasks",
 ]

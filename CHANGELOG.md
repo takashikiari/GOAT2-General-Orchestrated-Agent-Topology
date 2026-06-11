@@ -593,6 +593,169 @@ GOAT conversational had file tools it shouldn't use. DAG agents had inconsistent
 
 ---
 
+#### tools/ — routing + TYPE_CHECKING + debug loggers + circular-import fixes
+
+**Goal:** Complete the `routing + TYPE_CHECKING + Registry` pattern across all `tools/`
+files, matching the style already applied to `agents/`, `supervisor/`, `config/`, and
+`memory/`. Two pre-existing circular-import chains in `tools/` are broken.
+
+**1. Routing + TYPE_CHECKING applied to every `tools/*.py` file**
+
+- `from __future__ import annotations` is now the first statement of every file.
+- `from typing import TYPE_CHECKING` + `if TYPE_CHECKING:` block holds every
+  cross-module type hint (`ToolDefinition`, `MemoryManager`, `TaggedResult`,
+  `ServiceRegistry`, `FileStorageService`).
+- No `from agents.*` or `from supervisor.*` import appears at module level
+  in any tools/ file. Verified by AST check across all 14 modules.
+
+**2. New helper: `tools/_make_tool.py::make_tool`**
+
+A factory that hides the `from agents.base_agent import ToolDefinition` import
+inside its function body. This is the only safe way to keep the
+`module-level TOOL = ToolDefinition(...)` pattern while still respecting the
+"no cross-layer module-level imports" rule. Mirrors the pattern already used
+in `memory/memory_tools/memory_helpers.py::make_tool`.
+
+Every tool definition now reads:
+
+```python
+from tools._make_tool import make_tool
+...
+MY_TOOL = make_tool(name=..., description=..., parameters=_SCHEMA, handler=_handler)
+```
+
+**3. Debug logger namespaces** — every file declares a logger under
+`goat2.tools.<submodule>`:
+
+```
+goat2.tools                       — tools/__init__.py
+goat2.tools.make_tool             — _make_tool.py
+goat2.tools.tool_runner           — tool_runner.py
+goat2.tools.registry_accessor     — registry_accessor.py
+goat2.tools.file                  — file/__init__.py
+goat2.tools.file.create / grep / info / list / read / read_lines / search / write
+goat2.tools.file.op_response      — file_op_response.py
+goat2.tools.file.executor         — file_executor.py
+goat2.tools.file.executor_helpers — file_executor_helpers.py
+goat2.tools.file.storage          — file_storage_service.py
+goat2.tools.file.storage_helpers  — file_storage_helpers.py
+goat2.tools.file.path_utils       — path_utils.py
+goat2.tools.web                   — web/__init__.py
+goat2.tools.web.search            — web_search.py
+goat2.tools.system                — system/__init__.py
+goat2.tools.system.calculator     — calculator.py
+goat2.tools.system.think          — think.py
+goat2.tools.system.shell          — shell_tool.py
+```
+
+**Log levels:**
+- `DEBUG` — tool calls, parameters, results, search hits, dispatch info
+- `INFO`  — successful file ops, list/read/write summaries
+- `WARNING` — errors, blocked operations, invalid parameters, timeouts
+
+**4. Circular-import fixes in tools/**
+
+- **`tools/file/file_op_response.py`**: removed module-level
+  `from supervisor.types import Plan, SupervisorResult` — moved to lazy import
+  inside `file_op_result()`. Corrected the forward reference from the legacy
+  `Registry` alias to the real class `ServiceRegistry`. Fixed the broken
+  `from supervisor.behavior_mirror import mirror_instruction` (path does not
+  exist) to `from supervisor.behavior.behavior_mirror import mirror_instruction`.
+
+- **`tools/tool_runner.py`**: removed module-level
+  `from supervisor.logging.source_types import …` and
+  `from supervisor.logging.structured_logger import …` — moved inside the
+  body of `_call_with_tools()`. Breaks the chain
+  `tools → supervisor → tools` that previously crashed on `import tools`.
+
+  `TaggedResult` is still referenced in the return-type annotation, but it is
+  a string under `from __future__ import annotations`; the real class is
+  resolved only when `_call_with_tools()` is actually called.
+
+- **`tools/file/file_storage_helpers.py`**: fixed bad relative import
+  `from file_storage_service import …` to absolute
+  `from tools.file.file_storage_service import …`.
+
+**5. `tools/__init__.py` and the tool groups**
+
+- The `from agents.base_agent import ToolDefinition` import at module level
+  is removed; the type is now under `if TYPE_CHECKING:`.
+- `from tools.tool_runner import _call_with_tools` is preserved (the only
+  cross-tools- submodule import; tool_runner is a leaf of the tools/ tree).
+- A top-level `log = logging.getLogger("goat2.tools")` is added.
+- `ALL_TOOLS` (26), `FILE_TOOLS` (10), `MEMORY_TOOLS` (16), `DAG_MEMORY_TOOLS`
+  (4), and the four namespace constants (`DAG_NAMESPACE`, `GOAT_NAMESPACE`,
+  `VALIDATOR_NAMESPACE`, `PROMOTER_NAMESPACE`) are unchanged.
+
+**6. Tool distribution per agent** (verified against `supervisor/pipeline/runners.py`):
+
+| Agent / Caller | Tools |
+|---|---|
+| GOAT CONVERSATIONAL | 16 memory + WEB_SEARCH (no file, no shell) |
+| file_op_result (conversational file op) | 10 FILE_TOOLS |
+| DAG tool_caller | 8 file + 4 DAG memory (12 total) |
+| DAG researcher | WEB_SEARCH, MEMORY_SEARCH_DAG (2) |
+| DAG coder | 8 file + SHELL (9 total) |
+| DAG critic | MEMORY_RECENT_DAG, MEMORY_GET_DAG (2) |
+| DAG summarizer | MEMORY_RECENT_DAG (1) |
+| DAG memory | 4 DAG memory tools |
+| DAG planner | no tools |
+
+**7. `tools/README.md` updated** with:
+- Architecture (routing + TYPE_CHECKING + Registry) section.
+- Debug logger namespace tree.
+- Tool distribution per agent role table.
+- Circular-import fixes in tools/ section.
+- Verification recipe.
+- Updated "Adding a Tool" example using `make_tool`.
+
+**8. `docs/architecture.md` updated** with:
+- New "Tool Distribution per Agent Role" table.
+- New "routing + TYPE_CHECKING + Registry Applied to tools/" section.
+- New "Debug Logger Namespace Tree (tools/)" section.
+- New "Circular-Import Fixes in tools/" section.
+- New "Verification" recipe.
+- Corrected "File Tools: 9" count to 8 (plus separate Shell, Web, System rows).
+
+### Validation
+
+- `python -c "import tools; print(len(tools.ALL_TOOLS), len(tools.FILE_TOOLS), len(tools.MEMORY_TOOLS), len(tools.DAG_MEMORY_TOOLS))"` — **PASS**, `26 10 16 4`.
+- `python -c "import tools; assert not [m for m in __import__('sys').modules if m.startswith('supervisor.')]"` — **PASS**, importing `tools/` does not pull in `supervisor/`.
+- AST verification: 14 `tools/*.py` files have zero `from agents` or `from supervisor` at module level.
+- All 26 tools have a callable `handler`, non-empty `name`/`description`/`parameters`.
+- All `make_tool`-built tools pass `ToolDefinition` construction (name, description, parameters, handler).
+
+### Files modified
+
+- **created**: `tools/_make_tool.py`
+- **modified**: `tools/__init__.py`, `tools/tool_runner.py`, `tools/registry_accessor.py`
+- **modified**: `tools/file/__init__.py`, `tools/file/file_create.py`,
+  `tools/file/file_grep.py`, `tools/file/file_info.py`, `tools/file/file_list.py`,
+  `tools/file/file_read.py`, `tools/file/file_read_lines.py`,
+  `tools/file/file_search.py`, `tools/file/file_write.py`,
+  `tools/file/file_op_response.py`, `tools/file/file_executor_helpers.py`,
+  `tools/file/file_storage_service.py`, `tools/file/file_storage_helpers.py`,
+  `tools/file/path_utils.py` (logger namespace only)
+- **modified**: `tools/web/__init__.py`, `tools/web/web_search.py`
+- **modified**: `tools/system/__init__.py`, `tools/system/calculator.py`,
+  `tools/system/think.py`, `tools/system/shell_tool.py`
+- **modified**: `tools/README.md`, `docs/architecture.md`, `CHANGELOG.md`
+
+### Constraint compliance
+
+- ✅ `config/agent_types.py` — NOT modified.
+- ✅ No singletonuri added.
+- ✅ `tools/` never imports from `agents/` or `supervisor/` at module level
+  (verified via AST check on all 14 tools/ files). Cross-layer imports live
+  only inside function bodies (e.g. `make_tool`, `_call_with_tools`,
+  `file_op_result`, `safe_path`, `get_storage_backend`).
+- ✅ `tools/tool_runner.py` is the only tools/ file that imports from
+  `supervisor/` at all, and only from `supervisor.logging.*` (a leaf module).
+- ✅ All 26 tools remain functional after the refactor.
+- ✅ Logger namespace follows the `goat2.tools.<submodule>` hierarchy.
+
+---
+
 ## [Unreleased] — 2026-06-10
 
 ### Changed
