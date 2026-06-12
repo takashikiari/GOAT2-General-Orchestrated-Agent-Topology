@@ -141,10 +141,13 @@ async def build_dag_prompt(
         data = _extract_json(raw)
         log.debug("build_dag_prompt: agents=%s criteria=%d",
                   data.get("required_agents"), len(data.get("verification_criteria", [])))
+        agents = list(data.get("required_agents", []))
+        if "critic" not in agents and len(agents) > 1:
+            agents.append("critic")
         return DagPrompt(
             task_id=uuid.uuid4().hex,
             technical_prompt=str(data.get("technical_prompt", intent)),
-            required_agents=list(data.get("required_agents", [])),
+            required_agents=agents,
             verification_criteria=list(data.get("verification_criteria", [])),
             memory_updates=bool(data.get("memory_updates", False)),
             constraints=dict(data.get("constraints", {})),
