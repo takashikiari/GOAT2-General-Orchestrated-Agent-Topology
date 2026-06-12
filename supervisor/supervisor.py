@@ -69,6 +69,11 @@ class GoatSupervisor:
                 await auto_save_memory(self.memory_manager, "user_session", intent, summary)
             except Exception as e:
                 log.warning("auto_save_memory failed: %s", e)
+            try:
+                from supervisor.pipeline.behavioral_learning import store_correction
+                asyncio.create_task(store_correction(self.registry, intent, summary))
+            except Exception as e:
+                log.debug("store_correction skipped: %s", e)
             asyncio.create_task(self._schedule_promotion(turn_count))
         except Exception as e:
             log.debug("Memory storage skipped: %s", e)
