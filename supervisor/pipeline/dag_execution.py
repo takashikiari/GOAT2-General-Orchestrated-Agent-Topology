@@ -75,6 +75,42 @@ async def run_dag_pipeline(
         except Exception as e:
             log.debug("dag_execution: instructions read failed, using raw intent: %s", e)
 
+    # Build DagPrompt — GOAT formulates a structured technical objective for DAG.
+    # DAG receives technical_prompt instead of raw intent; required_agents guide the planner.
+    dag_prompt = None
+    try:
+        from supervisor.pipeline.dag_prompt_builder import build_dag_prompt
+        from supervisor.classification.classifier_prompt import format_history
+        history_text = format_history(supervisor._history.messages) if supervisor._history else ""
+        dag_prompt = await build_dag_prompt(
+            instr_intent, instr_ctx, history_text, supervisor.registry,
+        )
+        # Persist DagPrompt to dag:<session_id>:instructions so DAG agents can read it.
+        if supervisor.memory_manager:
+            import dataclasses as _dc
+            import json as _dp_j
+            import time as _dp_t
+            from config.limits import DAG_RESULT_TTL
+            from config.roles import SESSION_ROLE
+            from memory.working.working_record import RecordDict
+            _dp_key = f"dag:{supervisor._session_id}:instructions"
+            _dp_now = _dp_t.time()
+            _dp_payload = _dp_j.dumps(_dc.asdict(dag_prompt), ensure_ascii=False)
+            _dp_record: RecordDict = {
+                "id": _dp_key, "agent_role": SESSION_ROLE, "key": _dp_key,
+                "content": _dp_payload,
+                "metadata": {"type": "dag_prompt", "session_id": supervisor._session_id},
+                "created_at": _dp_t.strftime("%Y-%m-%dT%H:%M:%SZ", _dp_t.gmtime(_dp_now)),
+                "created_at_ts": _dp_now, "expires_at": _dp_now + DAG_RESULT_TTL,
+            }
+            await supervisor.memory_manager.working.backend.set(
+                SESSION_ROLE, _dp_key, _dp_record, expires_at=_dp_record["expires_at"],
+            )
+            log.debug("dag_execution: DagPrompt written task_id=%s agents=%s",
+                      dag_prompt.task_id, dag_prompt.required_agents)
+    except Exception as _dp_exc:
+        log.warning("dag_execution: build_dag_prompt failed, using raw intent: %s", _dp_exc)
+
     plan_ctx = supervisor._history.as_plan_context(
         instr_intent, supervisor._user_profile or "", instr_ctx,
     )
@@ -91,7 +127,11 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
 
     # Lazy imports keep the supervisor/agents/ boundary clean.
     from agents.planner_decompose import decompose_plan
-    plan = await decompose_plan(plan_ctx, supervisor.registry)
+    plan = await decompose_plan(
+        dag_prompt.technical_prompt if dag_prompt else plan_ctx,
+        supervisor.registry,
+        required_agents=dag_prompt.required_agents if dag_prompt else None,
+    )
     lang = await prepare_tasks(plan.tasks, supervisor.memory_manager, intent, supervisor.registry)
     session_id = str(uuid.uuid4())
     results = await WorkflowGraph(plan.tasks).execute(
@@ -121,6 +161,30 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
                 log.warning("DagBridge: timeout session=%s — dag_verified=False", session_id)
         except Exception as e:
             log.warning("DagBridge/GoatValidator failed: %s", e)
+
+    # Level 1 — Tool Execution Verifier: checks tool calls against verification_criteria.
+    # Runs after GoatValidator (which is kept intact). Non-critical — never blocks pipeline.
+    if dag_verified and dag_prompt and dag_prompt.verification_criteria:
+        try:
+            from supervisor.pipeline.tool_verifier import run_tool_verifier
+            verifier_report = await run_tool_verifier(results, dag_prompt, supervisor.registry)
+            if not verifier_report.passed:
+                log.warning(
+                    "ToolVerifier: %d unmet criteria — score=%.2f unmet=%s",
+                    len(verifier_report.unmet_criteria), verifier_report.score,
+                    verifier_report.unmet_criteria,
+                )
+        except Exception as _vfy_exc:
+            log.warning("tool_verifier failed (non-critical): %s", _vfy_exc)
+
+    # Level 2 — enrich plan_ctx with DagPrompt technical objective + criteria so the
+    # critic LLM evaluates against the actual intent, not the raw planner context.
+    if dag_prompt:
+        _criteria_lines = "\n".join(f"- {c}" for c in dag_prompt.verification_criteria)
+        plan_ctx = (
+            f"{plan_ctx}\n\n[Technical Objective]\n{dag_prompt.technical_prompt}"
+            + (f"\n\n[Verification Criteria]\n{_criteria_lines}" if _criteria_lines else "")
+        )
 
     if not dag_verified:
         summary = (

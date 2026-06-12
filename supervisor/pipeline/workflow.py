@@ -78,15 +78,24 @@ from typing import TYPE_CHECKING
 
 from supervisor.types import AgentResult
 from supervisor.pipeline.dag import DAGraph, DAGNode, DAGEdge
-from supervisor.pipeline.runners import _run_researcher, _run_coder, _run_critic, _run_summarizer, _run_tool_caller
+from supervisor.pipeline.runners import (
+    _run_researcher,
+    _run_coder,
+    _run_critic,
+    _run_summarizer,
+    _run_tool_caller,
+    _run_memory,
+)
 
-# Runner mapping per role (replaces registry.get for runners)
+# Runner mapping per role — must stay in sync with VALID_ROLES in plan_validator.py
+# and the "role" values listed in PLANNER_SYSTEM in agents/planner_decompose.py.
 _RUNNERS: dict[str, callable] = {
     "researcher": _run_researcher,
     "coder": _run_coder,
     "critic": _run_critic,
     "summarizer": _run_summarizer,
     "tool_caller": _run_tool_caller,
+    "memory": _run_memory,
 }
 
 
@@ -153,6 +162,50 @@ async def _write_task_memory(
         "expires_at": now + DAG_RESULT_TTL,
     }
     await memory_manager.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])
+
+
+async def _write_task_status(
+    memory_manager: "MemoryManager",
+    session_id: str,
+    tid: str,
+    role: str,
+    output: str,
+    status: str,
+) -> None:
+    """Write per-task status record to dag:{session_id}:task:{tid}:status (TTL 3600s).
+
+    Args:
+        memory_manager: MemoryManager for Redis access.
+        session_id: DAG session identifier.
+        tid: Task identifier.
+        role: Agent role that executed the task.
+        output: Task output or error message (truncated to 500 chars).
+        status: "completed" or "failed".
+    """
+    import json as _j
+    import time as _t
+    from config.limits import DAG_RESULT_TTL
+    from config.roles import SESSION_ROLE
+    from memory.working.working_record import RecordDict
+    key = f"dag:{session_id}:task:{tid}:status"
+    now = _t.time()
+    payload = _j.dumps({
+        "agent": role,
+        "status": status,
+        "summary": (output or "")[:500],
+        "timestamp": now,
+    }, ensure_ascii=False)
+    record: RecordDict = {
+        "id": key, "agent_role": SESSION_ROLE, "key": key,
+        "content": payload,
+        "metadata": {"type": "dag_task_status", "task_id": tid, "session_id": session_id},
+        "created_at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(now)),
+        "created_at_ts": now,
+        "expires_at": now + DAG_RESULT_TTL,
+    }
+    await memory_manager.working.backend.set(
+        SESSION_ROLE, key, record, expires_at=record["expires_at"],
+    )
 
 
 class WorkflowGraph:
@@ -659,6 +712,12 @@ class WorkflowGraph:
                                 log.debug("dag:%s:task:%s written to Redis", session_id, tid)
                             except Exception as _e:
                                 log.warning("Task memory write failed: %s", _e)
+                            try:
+                                await _write_task_status(
+                                    memory_manager, session_id, tid, task.role, output, "completed",
+                                )
+                            except Exception as _se:
+                                log.warning("Task status write failed: %s", _se)
                         if verbose:
                             log.debug(
                                 "Completed task %s: %s",
@@ -698,6 +757,13 @@ class WorkflowGraph:
                         )
                         # ── FIX (Problema 3): marchează ca eșuat pentru propagare ──
                         failed_ids.add(tid)
+                        if session_id and memory_manager:
+                            try:
+                                await _write_task_status(
+                                    memory_manager, session_id, tid, task.role, str(e), "failed",
+                                )
+                            except Exception as _fe:
+                                log.warning("Task status write (failed) failed: %s", _fe)
 
             # Execute all tasks in this wave concurrently
             await asyncio.gather(*[_run(tid) for tid in filtered_wave])

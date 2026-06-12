@@ -4,13 +4,13 @@ GOAT is the master of all three memory tiers. The DAG agents write
 their progress to working memory (Redis) under the `dag:*` namespace.
 This module gives GOAT the read-side primitives it needs to:
 
-  1. Discover active DAG sessions before classifying a new intent.
+  1. Discover active DAG sessions before the routing LLM call.
   2. Read the current progress of a specific DAG on demand.
-  3. Honor explicit user overrides (force CONVERSATIONAL / COMPLEX)
-     for the duration of the session.
+  3. Write/read explicit routing overrides for the session.
+  4. Wait on pause/stop control signals during DAG execution.
 
-There is no DAG-execution logic here — only the read primitives
-that let GOAT reason about what's in flight.
+There is no classification logic here — classify_intent() is GOAT's
+internal tool, called from GoatSupervisor._goat_routing_decision().
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ __all__ = [
     "read_dag_progress",
     "read_override",
     "write_override",
-    "persist_session_override",
+    "wait_if_paused",
 ]
 
 
@@ -166,25 +166,15 @@ async def write_override(registry: "ServiceRegistry", session_id: str, value: st
         return False
 
 
-async def persist_session_override(
-    registry: "ServiceRegistry",
-    intent: str,
-    session_id: str,
-) -> None:
-    """Detect (semantically) and persist the user's routing override.
+async def wait_if_paused(registry: "ServiceRegistry", session_id: str) -> bool:
+    """Proxy to dag_control.wait_if_paused using the registry's memory manager.
 
-    Convenience wrapper used by the supervisor on every turn: it
-    asks the LLM whether the user explicitly requested a routing
-    mode, and if so, stores the override in working memory so
-    subsequent turns in the same session can apply it without
-    re-asking the LLM.
+    Called by WorkflowGraph (and optionally by DAG agents) after each wave
+    to honour GOAT's pause/stop control signals.
 
-    Best-effort: logs and continues on any error.
+    Returns:
+        True to continue execution, False when a stop signal is received.
     """
-    try:
-        from supervisor.classification.classifier_context import detect_override
-        override = await detect_override(intent, registry)
-        if override:
-            await write_override(registry, session_id, override)
-    except Exception as e:
-        log.debug("persist_session_override failed: %s", e)
+    mm = getattr(registry, "memory_manager", None)
+    from supervisor.pipeline.dag_control import wait_if_paused as _ctrl_wait
+    return await _ctrl_wait(mm, session_id)

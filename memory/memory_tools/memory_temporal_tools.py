@@ -99,7 +99,7 @@ async def _timeline_handler(
 
 async def _recent_handler_dag(params: dict, caller_role: str) -> str:
     """Wrapper that forces tier=working for DAG agents."""
-    return await _recent_handler(limit=params.get("limit", 50), tier="working")
+    return await _recent_handler(limit=int(params.get("limit", 50)), tier="working")
 
 
 async def _recent_handler(

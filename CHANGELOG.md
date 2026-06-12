@@ -7,7 +7,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-12
 
+### Changed
+
+#### Classifier promoted to GOAT internal tool — removes mandatory middleware
+
+**Problem fixed**: `classify_intent()` was called as mandatory middleware on every user
+message, forcing `override=complex` via `persist_session_override()` → `detect_override()`,
+which caused "intent unclear" clarification loops on every turn.
+
+**TASK 1+4 — `supervisor/supervisor.py`**:
+- Removed `prepare_classification_context()` call from `run()`.
+- Removed `classify_intent()` call from `run()` (no longer middleware).
+- Removed module-level import of `classify_intent`; `classify_direct_request` moved to
+  lazy import inside `_handle_direct_request()`.
+- Added `_goat_routing_decision(intent, mem_ctx, active_dags) → IntentDepth`: single LLM
+  call returning `conversational` or `complex`; defaults to CONVERSATIONAL on failure.
+- New `run()` flow: session init → memory turn → active DAG check → direct bypass →
+  `_goat_routing_decision()` → conversational path OR clarification gate → DAG pipeline.
+
+**TASK 2 — `supervisor/pipeline/pre_classify.py`**:
+- Removed `persist_session_override` import and call entirely.
+- `prepare_classification_context()` now only scans active DAGs; `intent` and `session_id`
+  params kept for API compatibility but are unused.
+
+**TASK 3 — `supervisor/pipeline/dag_awareness.py`**:
+- Removed `persist_session_override()` function (called `detect_override` — root cause of
+  the forced-override bug).
+- Updated `__all__`: removed `persist_session_override`, added `wait_if_paused`.
+- Added `wait_if_paused(registry, session_id) → bool`: registry-based proxy to
+  `dag_control.wait_if_paused(mm, session_id)`.
+
+**TASK 5 — `supervisor/pipeline/workflow.py`**:
+- Added `_run_memory` to the import from `runners.py`.
+- Added `"memory": _run_memory` to `_RUNNERS` dict — fixes `KeyError` when the planner
+  assigns a task with `role="memory"` (valid per `VALID_ROLES` in `plan_validator.py`).
+
 ### Added
+
+#### DagPrompt architecture — dynamic GOAT→DAG instruction pipeline
+
+**TASK 1 — DagPrompt builder** (`supervisor/pipeline/dag_prompt_builder.py`, new):
+- `DagPrompt` dataclass: `task_id`, `technical_prompt`, `required_agents`, `verification_criteria`, `memory_updates`, `constraints`.
+- `build_dag_prompt(intent, mem_ctx, history_text, registry) → DagPrompt`: single LLM call; LLM selects agents and verification criteria dynamically — no hardcoded rules or lists.
+
+**TASK 2 — Clarification gate in `supervisor/supervisor.py`**:
+- `_check_intent_clarity(intent, mem_ctx)`: delegates to `intent_clarity.check_intent_clarity()` via lazy import.
+- `supervisor/pipeline/intent_clarity.py` (new): single LLM call returning "clear"/"unclear"; defaults to `True` on failure so ambiguity never hard-blocks the pipeline.
+- In `GoatSupervisor.run()`: if intent is unclear, returns `conv_result()` as a clarification request before DAG dispatch.
+
+**TASK 3 — DAG receives DagPrompt**:
+- `supervisor/pipeline/dag_execution.py`: calls `build_dag_prompt()` after reading instructions from Redis; persists `DagPrompt` JSON to `dag:<session_id>:instructions` (TTL 3600s); passes `technical_prompt` to `decompose_plan()` instead of raw `plan_ctx`; passes `required_agents` as planner guidance.
+- `agents/planner_decompose.py`: `decompose_plan()` now accepts optional `required_agents: list[str] | None` kwarg; appends as a "guidance only" note to the planner's user message.
+
+**TASK 4 — Two-level verification**:
+- Level 1 — `supervisor/pipeline/tool_verifier.py` (new): `VerifierReport` dataclass + `run_tool_verifier(results, dag_prompt, registry)`. Single LLM call evaluates tool execution against `DagPrompt.verification_criteria`. Falls back to passing report if criteria absent or LLM fails. Runs after GoatValidator (unchanged).
+- Level 2 — `dag_execution.py`: enriches `plan_ctx` with `dag_prompt.technical_prompt` and `verification_criteria` before calling `critique_results()` — no changes to `agents/critique.py` needed; the LLM critic receives full dynamic context automatically.
+
+**TASK 5 — Per-task status writes in `supervisor/pipeline/workflow.py`**:
+- `_write_task_status(memory_manager, session_id, tid, role, output, status)`: writes `{agent, status, summary, timestamp}` JSON to `dag:<session_id>:task:<tid>:status` (TTL 3600s) after every task completes or fails.
+- Called from `_run()` inner function on both success and exception paths.
 
 #### GOAT → DAG isolation + control protocol
 

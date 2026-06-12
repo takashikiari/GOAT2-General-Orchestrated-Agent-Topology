@@ -1,26 +1,9 @@
-"""Pre-classify orchestration — DAG awareness + override persistence.
+"""Pre-classify orchestration — DAG awareness scan only.
 
-This module extracts the steps that the supervisor's `run()` method
-performs between session init and intent classification:
-
-  1. Scan working memory for active DAG sessions (DAG awareness).
-  2. Persist any explicit user override for the rest of the session.
-
-The classifier LLM uses these signals to:
-  - prefer CONVERSATIONAL for follow-ups about in-flight DAGs,
-  - apply the override unconditionally when one is present.
-
-The module is intentionally a free function so the supervisor class
-stays focused on routing and DAG execution, and the orchestration
-logic is testable in isolation.
-
-REGISTRY IMMUTABILITY:
-======================
-`ServiceRegistry` uses `__slots__` and does not allow dynamic
-attribute assignment. The conversation history is therefore NOT
-attached to the registry — it is passed explicitly through the
-call chain (GoatSupervisor → prepare_classification_context →
-classify_intent). The registry stays stateless.
+Scans working memory for active DAG sessions and returns their status.
+No classification and no override detection are performed here.
+The classifier is GOAT's internal tool, called from _goat_routing_decision()
+inside GoatSupervisor, not from this module.
 """
 from __future__ import annotations
 
@@ -37,50 +20,33 @@ __all__ = ["prepare_classification_context"]
 
 async def prepare_classification_context(
     registry,
-    history: "ConversationHistory",
-    intent: str,
-    session_id: str,
+    history: "ConversationHistory | None" = None,
+    intent: str = "",
+    session_id: str = "",
 ) -> list[dict]:
-    """Prepare the supervisor + registry for LLM-based intent classification.
+    """Scan working memory for active DAG sessions.
 
-    Performs two steps in order:
-      1. Scan working memory for active DAG sessions (DAG awareness).
-      2. Detect (semantically) and persist any explicit override
-         for this session.
-
-    The history is NOT attached to the registry — it is passed
-    explicitly to `classify_intent` by the caller. This module
-    just returns the list of active DAGs found so the supervisor
-    can log or react to it.
+    Returns the list of active DAG sessions found in working memory.
+    No classification or override detection is performed.
 
     Args:
-        registry: The ServiceRegistry.
-        history:  The current ConversationHistory instance (read-only
-                  for the duration of this call).
-        intent:   The raw user message text.
-        session_id: The current GOAT session ID (UUID string).
+        registry:   The ServiceRegistry.
+        history:    ConversationHistory (unused, kept for API compat).
+        intent:     Raw user message (unused, kept for API compat).
+        session_id: Current GOAT session ID (unused, kept for API compat).
 
     Returns:
-        The list of active DAG sessions found in working memory
-        (empty if none). The return value is informational only —
-        the classifier reads the same list independently.
+        Active DAG sessions list — informational only.
     """
-    from supervisor.pipeline.dag_awareness import (
-        scan_active_dags,
-        persist_session_override,
-    )
+    from supervisor.pipeline.dag_awareness import scan_active_dags
     active = await scan_active_dags(registry)
     if active:
         log.info(
             "DAG awareness: %d active session(s) in working memory",
             len(active),
         )
-    # Persist any explicit user override (semantic) for the session.
-    await persist_session_override(registry, intent, session_id)
     log.debug(
-        "prepare_classification_context: history turns=%d intent_len=%d session=%s",
+        "prepare_classification_context: history_turns=%d",
         len(history.messages) if history else 0,
-        len(intent),
-        session_id[:8],
     )
     return active

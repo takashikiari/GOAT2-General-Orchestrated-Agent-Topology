@@ -63,21 +63,37 @@ def _fallback_plan(intent: str) -> Plan:
     ])
 
 
-async def decompose_plan(intent: str, registry: "Registry") -> Plan:
+async def decompose_plan(
+    intent: str,
+    registry: "Registry",
+    required_agents: list[str] | None = None,
+) -> Plan:
     """Call the supervisor model to decompose intent into an AgentTask DAG.
 
     REGISTRY INJECTION (PHASE 4):
     =============================
     Requires registry parameter. Uses registry.settings.supervisor.model.
+
+    Args:
+        intent: Technical prompt (from DagPrompt) or raw plan context.
+        registry: ServiceRegistry for model configuration.
+        required_agents: Optional agent roles from DagPrompt used as guidance
+            for task creation. Planner still decides execution order and waves.
     """
     _settings = registry.settings
     spec = _settings.supervisor.model
-    log.debug("decompose_plan: spec=%s", spec)
+    log.debug("decompose_plan: spec=%s agents_hint=%s", spec, required_agents)
+    user_content = f"Decompose this intent into tasks:\n\n{intent}"
+    if required_agents:
+        user_content += (
+            f"\n\nSuggested agents (guidance only — not a hard constraint): "
+            f"{', '.join(required_agents)}"
+        )
     raw = await _call_llm(
         spec,
         [
             {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user",   "content": f"Decompose this intent into tasks:\n\n{intent}"},
+            {"role": "user",   "content": user_content},
         ],
         json_mode=(spec.provider == Provider.OPENAI),
     )
