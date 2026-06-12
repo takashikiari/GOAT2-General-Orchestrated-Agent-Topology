@@ -121,7 +121,7 @@ async def check_intent_clarity(
         if not raw_json:
             log.debug("intent_clarity: no JSON in response — defaulting to clear")
             return _CLEAR_DEFAULT
-        data = json.loads(raw_json)
+        data = raw_json if isinstance(raw_json, dict) else json.loads(raw_json)
         is_clear = bool(data.get("clear", True))
         missing = [str(m) for m in data.get("missing", [])]
         question = str(data.get("clarification_question", ""))
