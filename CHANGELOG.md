@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-12
+
+### Added
+
+#### GOAT → DAG isolation + control protocol
+
+**TASK 1 — GOAT→DAG communication via working memory:**
+- `supervisor/session/session.py`: `write_dag_instructions(mm, session_id, intent, mem_ctx, capabilities)` writes structured task instructions to `dag:<session_id>:instructions` (TTL 3600s); `retrieve_dag_instructions(mm, session_id)` reads them back. Both exported in `__all__`.
+- `supervisor/supervisor.py`: `run()` writes DAG instructions before calling `_run_dag()` using a module-level `_DAG_CAPABILITIES_SUMMARY` constant.
+- `supervisor/pipeline/dag_execution.py`: `run_dag_pipeline()` reads `dag:<session_id>:instructions` and uses the structured intent/context as `plan_ctx`; falls back to raw intent if key missing (backward compat).
+
+**TASK 2 — GOAT DAG Control Protocol:**
+- `supervisor/pipeline/dag_control.py` (new): `write_dag_control`, `read_dag_control`, `wait_if_paused` helpers for `dag:<session_id>:control` key (`"run"|"pause"|"stop"`).
+- `supervisor/pipeline/workflow.py`: `WorkflowGraph` checks control key after each wave via `wait_if_paused`; `"pause"` waits up to 60s (2s intervals); `"stop"` writes final progress and returns early.
+- `supervisor/supervisor.py`: `pause_dag(session_id)`, `resume_dag(session_id)`, `stop_dag(session_id)`, `get_dag_updates(session_id)` public methods.
+
+**TASK 3 — DAG control tools for GOAT CONVERSATIONAL:**
+- `supervisor/pipeline/dag_tools.py` (new): `make_dag_tools(mm)` factory returning `query_dag_status` and `control_dag` ToolDefinition objects with `memory_manager` captured via closure.
+- `supervisor/identity.py`: `direct_response()` now includes the two DAG tools in its tool list. Onboarding block extracted to `supervisor/identity_onboarding.py` to maintain the 260-line budget.
+
+**TASK 4 — Session helpers export:**
+- `supervisor/session/session.py`: `write_dag_instructions` and `retrieve_dag_instructions` added to `__all__`.
+
+---
+
 ## [Unreleased] — 2026-06-11
 
 ### Changed

@@ -702,6 +702,24 @@ class WorkflowGraph:
             # Execute all tasks in this wave concurrently
             await asyncio.gather(*[_run(tid) for tid in filtered_wave])
 
+            # ── DAG CONTROL CHECK — after every wave ──
+            # GOAT may write "pause" or "stop" to dag:<session_id>:control.
+            # wait_if_paused blocks on pause (max 60s) and returns False on stop.
+            if session_id and memory_manager:
+                from supervisor.pipeline.dag_control import wait_if_paused
+                should_continue = await wait_if_paused(memory_manager, session_id)
+                if not should_continue:
+                    log.info("WorkflowGraph: stop signal — terminating after wave %d", wave_idx)
+                    completed_stop = sorted(
+                        tid for tid, r in results.items() if r.error is None
+                    )
+                    from supervisor.pipeline.dag_progress import write_final_progress
+                    await write_final_progress(
+                        memory_manager, session_id,
+                        total_waves=len(waves), completed=completed_stop,
+                    )
+                    return results
+
             # ── DAG PROGRESS REPORTING (TASK 3) ──
             # After each wave completes, write a progress record to
             # working memory at `dag:<session_id>:progress` with the

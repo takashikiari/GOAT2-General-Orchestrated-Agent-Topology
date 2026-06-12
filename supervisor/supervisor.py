@@ -35,6 +35,16 @@ _REASON_LABELS: dict[str, str] = {
     "stale_memory": "memory query returned stale data",
 }
 
+# Capability summary written into DAG instructions so DAG knows what agents can do.
+_DAG_CAPABILITIES_SUMMARY: str = (
+    "tool_caller: file_read, file_write, file_create, file_list, file_search, file_grep, "
+    "memory_recent, memory_get, memory_store, memory_search; "
+    "researcher: web_search, memory_search; "
+    "coder: file_read, file_write, file_create, shell(read-only); "
+    "critic: memory_recent, memory_get(read-only); "
+    "summarizer: memory_recent(read-only)"
+)
+
 
 class GoatSupervisor:
     """GOAT 2.0 orchestrator — session, tiered memory, DAG execution. See docs/supervisor.md."""
@@ -167,6 +177,17 @@ class GoatSupervisor:
             self._history.add_assistant(r.summary)
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
             return r
+        # GOAT formulates and writes structured instructions for DAG before handing off.
+        # DAG reads dag:<session_id>:instructions instead of raw intent.
+        if self.memory_manager:
+            try:
+                from supervisor.session.session import write_dag_instructions
+                await write_dag_instructions(
+                    self.memory_manager, self._session_id,
+                    intent, mem_ctx, _DAG_CAPABILITIES_SUMMARY,
+                )
+            except Exception as e:
+                log.warning("write_dag_instructions failed (non-critical): %s", e)
         return await self._run_dag(intent, t0, depth, mem_ctx)
 
     async def finalize_session(self) -> None:
@@ -187,3 +208,27 @@ class GoatSupervisor:
     def make_agent(self, role: str, model_key: str, system_prompt: str) -> AgentRunner:
         """Build and register a simple LLM runner from a model key + system prompt."""
         return self.agent_registry.make_and_register(role, model_key, system_prompt)
+
+    async def pause_dag(self, session_id: str) -> None:
+        """Write "pause" to dag:<session_id>:control — DAG halts after its current wave."""
+        from supervisor.pipeline.dag_control import write_dag_control
+        await write_dag_control(self.memory_manager, session_id, "pause")
+
+    async def resume_dag(self, session_id: str) -> None:
+        """Write "run" to dag:<session_id>:control — resumes a paused DAG."""
+        from supervisor.pipeline.dag_control import write_dag_control
+        await write_dag_control(self.memory_manager, session_id, "run")
+
+    async def stop_dag(self, session_id: str) -> None:
+        """Write "stop" to dag:<session_id>:control — DAG terminates after current wave."""
+        from supervisor.pipeline.dag_control import write_dag_control
+        await write_dag_control(self.memory_manager, session_id, "stop")
+
+    async def get_dag_updates(self, session_id: str) -> dict | None:
+        """Read dag:<session_id>:progress from working memory.
+
+        Returns:
+            Progress dict (wave, total_waves, completed_tasks, status) or None.
+        """
+        from supervisor.pipeline.dag_awareness import read_dag_progress
+        return await read_dag_progress(self.registry, session_id)

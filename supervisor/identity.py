@@ -60,26 +60,12 @@ _BLOCKED_KEYS: Final[frozenset[str]] = frozenset({
     "agent_id", "passage_id", "search_key", "limit", "offset", "score", "source",
     "memory_type", "ttl", "count", "timestamp", "created_at", "updated_at"})
 
-# ── Onboarding constants ──
-_ONBOARDING_KEY: Final[str] = "onboarding_done"
-_WELCOME_MESSAGE: Final[str] = (
-    "\n\n"
-    "\u250C\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\n"
-    "\u2502  \U0001F410 GOAT \u2014 always ready                          \u2502\n"
-    "\u2502                                                     \u2502\n"
-    "\u2502  I can read files, search the web, write code,       \u2502\n"
-    "\u2502  check memory, analyze, compare, implement.          \u2502\n"
-    "\u2502                                                     \u2502\n"
-    "\u2502  Just tell me what you need.                         \u2502\n"
-    "\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518"
+# ── Onboarding helpers (constants + builders live in identity_onboarding.py) ──
+from supervisor.identity_onboarding import (  # noqa: E402
+    _ONBOARDING_KEY,
+    _build_welcome_message,
+    _build_adaptive_hint,
 )
-
-# Adaptive hints for the first 3 turns (rotating)
-_HINTS: Final[list[str]] = [
-    "\n\n\U0001F410 I can read any file in the workspace \u2014 just tell me which one.",
-    "\n\n\U0001F410 I search the web in real time \u2014 give me a query.",
-    "\n\n\U0001F410 I can write code, analyze, compare \u2014 tell me what you need.",
-]
 
 
 # ── Public onboarding helpers ──
@@ -112,44 +98,6 @@ async def set_onboarding_done(mm: MemoryManager | None) -> None:
         await mm.store(GOAT_ROLE, _ONBOARDING_KEY, "true")
     except Exception:
         pass
-
-
-# ── Internal helpers ──
-
-def _build_welcome_message(turn: int, onboarding_done: bool) -> str:
-    """Build the onboarding hint to append to the first response.
-
-    Args:
-        turn: Current turn number (1-based).
-        onboarding_done: Whether the welcome message was already shown.
-
-    Returns:
-        Welcome message string if applicable, empty string otherwise.
-    """
-    if onboarding_done:
-        return ""
-    if turn == 1:
-        return _WELCOME_MESSAGE
-    return ""
-
-
-def _build_adaptive_hint(turn: int, onboarding_done: bool) -> str:
-    """Build an adaptive hint for the first 3 turns.
-
-    Args:
-        turn: Current turn number (1-based).
-        onboarding_done: Whether onboarding is complete.
-
-    Returns:
-        Hint string if applicable, empty string otherwise.
-    """
-    if onboarding_done:
-        return ""
-    if 2 <= turn <= 4:
-        idx = turn - 2  # turn 2 → hint 0, turn 3 → hint 1, turn 4 → hint 2
-        if idx < len(_HINTS):
-            return _HINTS[idx]
-    return ""
 
 
 def _filter_profile(text: str) -> str:
@@ -218,10 +166,12 @@ async def direct_response(
     """
     from tools import WEB_SEARCH
     from tools.system import READ_LOGS
+    from supervisor.pipeline.dag_tools import make_dag_tools
     _settings = registry.settings
-    # GOAT conversational: 16 memory tools + web_search — NO file tools, NO shell
+    # GOAT conversational: 16 memory tools + web_search + dag monitor/control tools
     _memory_tools = registry.memory_tools
     _memory_manager = registry.memory_manager
+    _dag_tools = make_dag_tools(_memory_manager)
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
@@ -237,7 +187,7 @@ async def direct_response(
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        _memory_tools + [WEB_SEARCH, READ_LOGS],
+        _memory_tools + [WEB_SEARCH, READ_LOGS] + _dag_tools,
         temperature=0.7,
         tool_choice="auto",
         memory_manager=_memory_manager,

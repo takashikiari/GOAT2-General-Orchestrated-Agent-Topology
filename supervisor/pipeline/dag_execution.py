@@ -15,6 +15,7 @@ isolation and the supervisor class stays small.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -56,10 +57,35 @@ async def run_dag_pipeline(
     from supervisor.logging.auditor import run_auditor
     from supervisor.pipeline.task_prep import prepare_tasks
 
+    # Read structured instructions GOAT wrote before calling this function.
+    # Falls back to raw intent if the key is missing (backward compat).
+    instr_intent, instr_ctx = intent, mem_ctx
+    if supervisor.memory_manager:
+        try:
+            from supervisor.session.session import retrieve_dag_instructions
+            raw = await retrieve_dag_instructions(
+                supervisor.memory_manager, supervisor._session_id,
+            )
+            if raw:
+                instr = json.loads(raw)
+                instr_intent = instr.get("intent", intent)
+                instr_ctx = instr.get("context", mem_ctx)
+                log.debug("dag_execution: using instructions from working memory session=%s",
+                          supervisor._session_id)
+        except Exception as e:
+            log.debug("dag_execution: instructions read failed, using raw intent: %s", e)
+
     plan_ctx = supervisor._history.as_plan_context(
-        intent, supervisor._user_profile or "", mem_ctx,
+        instr_intent, supervisor._user_profile or "", instr_ctx,
     )
-    plan_ctx = f"[require_source: true]\n{plan_ctx}"
+    dag_capabilities = """[DAG Agent Capabilities]
+tool_caller: file_read, file_write, file_create, file_list, file_search, file_grep, file_info, file_read_lines, memory_recent, memory_get, memory_store, memory_search (working tier only)
+researcher: web_search, memory_search (working tier only)
+coder: file_read, file_write, file_create, shell (read-only)
+critic: memory_recent, memory_get (read-only)
+summarizer: memory_recent (read-only)
+Use tool_caller for file operations. Use researcher for web search. Use coder for code generation."""
+    plan_ctx = f"[require_source: true]\n{dag_capabilities}\n{plan_ctx}"
     if depth == IntentDepth.ANALYTICAL:
         plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
 

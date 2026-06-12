@@ -53,6 +53,14 @@ class RedisBackend(RedisConn, StorageBackend):
         r = await self._get_redis()
         return await scan_keys(r, self._ns_pattern(ns), self._ns_prefix(ns))
 
+    async def scan(self, ns: AgentRole, pattern: str) -> list[MemoryKey]:
+        """Scan Redis keys matching a custom pattern within namespace."""
+        from memory.working.redis_scan import scan_keys
+        r = await self._get_redis()
+        prefix = self._ns_prefix(ns)
+        full_pattern = f"{prefix}{pattern}"
+        return await scan_keys(r, full_pattern, prefix)
+
     async def flush(self, ns: AgentRole) -> int:
         r = await self._get_redis()
         return await scan_delete(r, self._ns_pattern(ns))
