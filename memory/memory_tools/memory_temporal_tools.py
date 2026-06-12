@@ -97,9 +97,9 @@ async def _timeline_handler(
     return format_entries(entries, max_content_len=150)
 
 
-async def _recent_handler_dag(params: dict, caller_role: str) -> str:
+async def _recent_handler_dag(limit: int = 50, **kwargs) -> str:
     """Wrapper that forces tier=working for DAG agents."""
-    return await _recent_handler(limit=int(params.get("limit", 50)), tier="working")
+    return await _recent_handler(limit=int(limit), tier="working")
 
 
 async def _recent_handler(

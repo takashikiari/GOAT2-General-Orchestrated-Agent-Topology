@@ -102,7 +102,7 @@ def validate_key(key: str) -> None:
         )
 
     # Allow alphanumeric, dash, underscore, slash, dot
-    if not re.match(r"^[\w\-./]+$", key):
+    if not re.match(r"^[\w\-./:]+$", key):
         log.warning("validate_key: invalid characters in key=%r", key)
         raise MemoryValidationError(
             "key",
