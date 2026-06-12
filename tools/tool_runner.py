@@ -55,7 +55,7 @@ def _prepare_args(args: dict, tool_map: dict, name: str) -> tuple[dict, str | No
     required = schema.get("required", [])
 
     # Apply defaults for missing optional parameters
-    for prop_name, prop_schema in props.items():
+    for prop_name, prop_schema in (props or {}).items():
         if prop_name not in args and "default" in prop_schema:
             args[prop_name] = prop_schema["default"]
 

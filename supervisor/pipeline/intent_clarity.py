@@ -40,6 +40,17 @@ async def check_intent_clarity(
     history_text: str,
     registry: "Registry",
 ) -> bool:
+    # If DAG is forbidden by user override → always unclear (force conversational)
+    try:
+        from config.roles import SESSION_ROLE
+        from memory.shared.types import MemoryKey
+        key = MemoryKey("dag_constraint_execution_rule")
+        record = await registry.memory_manager.working.backend.get(SESSION_ROLE, key)
+        if record:
+            log.debug("intent_clarity: DAG forbidden by user override — returning unclear")
+            return False
+    except Exception:
+        pass
     """Ask the LLM whether the intent is clear enough for DAG execution.
 
     Returns True (clear) when the DAG can proceed. Defaults to True on any
