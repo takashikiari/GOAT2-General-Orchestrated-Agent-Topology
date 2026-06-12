@@ -111,7 +111,7 @@ async def _run_tool_caller(
     agent = ToolCallerAgent(spec=registry.settings.agents.get("tool_caller"))
     log.debug("_run_tool_caller: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
     output = await agent.execute(task, dep_results)
-    task.source = "file"
+    task.source = "file" if output.strip() else "generated"
     return output
 
 

@@ -134,6 +134,20 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
     )
     lang = await prepare_tasks(plan.tasks, supervisor.memory_manager, intent, supervisor.registry)
     session_id = str(uuid.uuid4())
+    # Write active DAG session_id to working memory so GOAT can control it
+    try:
+        from config.roles import SESSION_ROLE
+        from memory.working.working_record import RecordDict
+        import time as _t
+        key = f"goat:{supervisor._session_id}:active_dag"
+        now = _t.time()
+        record: RecordDict = {"id": key, "agent_role": SESSION_ROLE, "key": key,
+            "content": session_id, "metadata": {"type": "active_dag"},
+            "created_at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(now)),
+            "created_at_ts": now, "expires_at": now + 3600}
+        await supervisor.memory_manager.working.backend.set(SESSION_ROLE, key, record, expires_at=now + 3600)
+    except Exception as _e:
+        pass
     results = await WorkflowGraph(plan.tasks).execute(
         supervisor.agent_registry, supervisor._semaphore,
         verbose=supervisor._verbose, memory_manager=supervisor.memory_manager,

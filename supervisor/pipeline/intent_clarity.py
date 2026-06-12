@@ -31,7 +31,8 @@ _SYSTEM: str = (
     "Consider an intent unclear ONLY when the DAG would need to guess essential "
     "parameters — target file path, desired scope, timeframe, or subject — that "
     "are not resolvable from memory context or conversation history.\n"
-    "Reason semantically. Do not pattern-match on syntax or length.\n\n"
+    "Reason semantically. Do not pattern-match on syntax or length.\n"
+    "Always respond in the same language as the user message. If the user writes in Romanian, respond in Romanian.\n\n"
     "Return ONLY this JSON — no prose, no markdown:\n"
     '{"clear": true|false,\n'
     ' "missing": ["list of missing details that prevent execution"],\n'
