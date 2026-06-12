@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-12 (runners refactored to use agent templates)
+
+### Changed
+
+#### runners.py now delegates to agent classes — no more hardcoded prompts or tool lists
+
+**`supervisor/pipeline/runners.py`** — full rewrite (245 → 115 lines):
+- All 6 runners (`_run_researcher`, `_run_coder`, `_run_critic`, `_run_summarizer`, `_run_tool_caller`, `_run_memory`) now instantiate the matching agent class and call `agent.execute(task, dep_results)`.
+- Removed all hardcoded system prompts, tool lists, `_call_with_tools`, and `_format_dep_context`.
+- `_run_critic` maps `agent.extract_verdict()` + `agent.is_blocking()` to `SEVERITY: PASS|MINOR|MAJOR|CRITICAL` prefix, preserving WorkflowGraph compatibility.
+- `_run_summarizer` early-exit check (all upstream empty) preserved.
+- Source tracking preserved: `"net"` (researcher), `"file"` (coder, tool_caller), `"generated"` (critic, summarizer), `"memory"` (memory).
+- Registry injection preserved: all runners use `registry.settings.agents.get(role)` — zero singletons.
+
+**`agents/researcher.py`**:
+- Added `WEB_SEARCH` + `MEMORY_SEARCH_DAG` to `__init__` via lazy import (avoids agent↔tools cycle).
+- `execute()` already suppresses tools when `spec.tool_calling=False` via `tools=[]` override.
+
+**`agents/coder.py`**:
+- Added 8 file tools + `SHELL` to `__init__` via lazy import.
+- `validate_syntax` `@tool`-decorated method auto-discovered by `BaseAgent` → CoderAgent now has 10 tools total.
+
+---
+
 ## [Unreleased] — 2026-06-12 (clarity gates + DagPrompt validation)
 
 ### Changed

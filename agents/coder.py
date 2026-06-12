@@ -74,10 +74,19 @@ class CoderAgent(BaseAgent):
     role = "coder"
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
+        from tools import (  # lazy — avoids agent↔tools cycle
+            FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST,
+            FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, SHELL,
+        )
+        _file_tools = [
+            FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST,
+            FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, SHELL,
+        ]
         super().__init__(
             spec=spec or Settings().agents.get("coder"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.2,  # low: code should be precise and deterministic
+            temperature=0.2,
+            tools=_file_tools,
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
