@@ -73,9 +73,6 @@ from supervisor.session import (
 from supervisor.classification import (
     IntentDepth,
     classify_intent,
-    DirectRequest,
-    DirectTool,
-    classify_direct_request,
     detect_language,
 )
 
@@ -178,9 +175,6 @@ __all__ = [
     # Classification
     "IntentDepth",
     "classify_intent",
-    "DirectRequest",
-    "DirectTool",
-    "classify_direct_request",
     "detect_language",
     # Logging
     "AuditReport",

@@ -4,7 +4,8 @@ The prompt is plain prose — no keywords, no regex hints, no scoring
 rules. The model is told in natural language what GOAT can do, what
 requires deep thinking, and is given the full context (history,
 active DAGs, profile, override, prior corrections). The model
-returns exactly one word: conversational, analytical, or complex.
+returns a structured JSON object with intent, confidence, reasoning,
+and per-dimension scores.
 """
 from __future__ import annotations
 
@@ -19,21 +20,21 @@ __all__ = ["build_classifier_prompt", "format_active_dags", "format_hints", "for
 # ── Pure LLM system prompt ──
 # This is the *only* source of truth. The model sees plain prose
 # describing what GOAT can do, what requires deep thinking, and the
-# full context. There is no regex, no list, no scoring.
+# full context. There is no regex, no list, no hardcoded scoring.
 _CLASSIFIER_SYSTEM: Final[str] = (
     "You are the routing brain for GOAT, a multi-agent assistant.\n"
     "\n"
-    "GOAT can answer directly (CONVERSATIONAL) when the request is:\n"
+    "GOAT can answer directly (conversational) when the request is:\n"
     "  - a question it can answer from memory or a quick web search\n"
     "  - a definition, explanation, comparison, or chitchat\n"
     "  - a small lookup, status check, or trivial single-tool task\n"
     "  - any follow-up that GOAT already has the context for\n"
     "\n"
-    "GOAT should run a small DAG (ANALYTICAL) when the request needs\n"
+    "GOAT should run a small DAG (simple) when the request needs\n"
     "1–2 sub-tasks: a focused comparison, a single code change, a\n"
     "structured summary, a short multi-part answer.\n"
     "\n"
-    "GOAT should run the full DAG (COMPLEX) when the request needs\n"
+    "GOAT should run the full DAG (complex) when the request needs\n"
     "multi-step research, code across multiple files, deep analysis\n"
     "of the codebase, system configuration, architecture decisions,\n"
     "or any task that benefits from parallel sub-tasks with review.\n"
@@ -42,14 +43,23 @@ _CLASSIFIER_SYSTEM: Final[str] = (
     "  - the current conversation (user turns only)\n"
     "  - active DAG sessions, if any\n"
     "  - the user profile (semantic summary from long-term memory)\n"
-    "  - any explicit user override (force CONVERSATIONAL / COMPLEX)\n"
+    "  - any explicit user override (force conversational / complex)\n"
     "  - prior corrections from the user about similar intents\n"
     "\n"
     "Use all of this context. Apply the override if one is present.\n"
     "If a DAG is already running and the user is asking about it,\n"
-    "prefer CONVERSATIONAL so GOAT can report progress.\n"
+    "prefer conversational so GOAT can report progress.\n"
     "\n"
-    "Reply with exactly one word: conversational, analytical, or complex."
+    "Scoring guidelines (apply these to fill in the scores):\n"
+    "  conversational: all scores < 0.3\n"
+    "  simple:         complexity < 0.5 AND tool_requirement < 0.6\n"
+    "  complex:        any score > 0.6\n"
+    "\n"
+    "Reply with a JSON object only — no other text:\n"
+    '{"intent": "conversational"|"simple"|"complex",\n'
+    ' "confidence": 0.0-1.0,\n'
+    ' "reasoning": "brief explanation",\n'
+    ' "scores": {"complexity": 0.0-1.0, "tool_requirement": 0.0-1.0, "context_dependency": 0.0-1.0}}'
 )
 
 
@@ -69,7 +79,7 @@ def build_classifier_prompt(
         f"\n[User override]\n{override or 'none'}\n"
         f"\n[Prior corrections]\n{format_hints(hints)}\n"
         f"\n[Latest user message]\n{intent}\n"
-        f"\nReply with exactly one word: conversational, analytical, or complex."
+        f"\nReply with a JSON object only — no other text."
     )
 
 

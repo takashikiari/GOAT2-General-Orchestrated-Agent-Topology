@@ -146,6 +146,7 @@ async def direct_response(
     style: str = "",
     turn: int = 1,
     onboarding_done: bool = True,
+    goat_session_id: str = "",
 ) -> TaggedResult:
     """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
 
@@ -171,7 +172,7 @@ async def direct_response(
     # GOAT conversational: 16 memory tools + web_search + dag monitor/control tools
     _memory_tools = registry.memory_tools
     _memory_manager = registry.memory_manager
-    _dag_tools = make_dag_tools(_memory_manager)
+    _dag_tools = make_dag_tools(_memory_manager, goat_session_id=goat_session_id)
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
@@ -205,6 +206,7 @@ async def conv_result(
     style: str = "",
     turn: int = 1,
     onboarding_done: bool = True,
+    goat_session_id: str = "",
 ) -> SupervisorResult:
     """Return a SupervisorResult from a direct LLM response with full conversation history.
 
@@ -221,6 +223,7 @@ async def conv_result(
     tagged = await direct_response(
         messages, profile, registry, summary, mem_ctx, style,
         turn=turn, onboarding_done=onboarding_done,
+        goat_session_id=goat_session_id,
     )
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},

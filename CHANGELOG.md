@@ -5,6 +5,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-12 (classifier consolidation + DAG spawn tools)
+
+### Changed
+
+#### Single classifier, two new DAG tools, background DAG spawning
+
+**TASK 1 — Removed `request_classifier.py`**:
+- Deleted `supervisor/classification/request_classifier.py` (regex-based bypass classifier).
+- Removed `_handle_direct_request()` from `GoatSupervisor` — no more hardcoded memory/file bypass.
+- Removed `DirectRequest`, `DirectTool`, `classify_direct_request` from `classification/__init__.py` and `supervisor/__init__.py`.
+
+**TASK 2 — Replaced `_goat_routing_decision` with `classify_intent()`**:
+- Deleted `_goat_routing_decision()` from `GoatSupervisor` — the third classifier is gone.
+- `run()` now calls `classify_intent(intent, registry, history, session_id=self._session_id)` as the single routing decision point.
+- Removed explicit `_check_active_dags()` call from `run()` — `classify_intent` gathers active DAGs internally via `_gather_all()`.
+- Deleted dead helpers `_check_active_dags()` and `_read_dag_progress()` from `GoatSupervisor`.
+- Added `classify_intent` to the module-level import in `supervisor.py`.
+
+**TASK 3 — `start_dag` tool added to GOAT conversational tools**:
+- `make_dag_tools(mm, goat_session_id="")`: new `goat_session_id` parameter (closure-captured).
+- `start_dag(task_description, session_id?)`: writes `dag:<session_id>:instructions` to working memory (TTL `WORKING_MEMORY_TTL`); writes `goat:<goat_session_id>:pending_dag = session_id` to signal the supervisor; returns session_id.
+- `identity.py`: `direct_response()` and `conv_result()` both accept and thread `goat_session_id=""` through to `make_dag_tools`.
+
+**TASK 4 — `list_dag_sessions` tool added to GOAT conversational tools**:
+- `list_dag_sessions()`: scans `dag:*:progress` keys using the correct two-step scan→get pattern; returns JSON array of active sessions; handles backends without scan support gracefully.
+- Both new tools (`start_dag`, `list_dag_sessions`) returned from `make_dag_tools`.
+
+**TASK 5 — Supervisor fires background DAG after conversational reply**:
+- `_pop_pending_dag()`: reads and deletes `goat:<session_id>:pending_dag` from working memory.
+- After CONVERSATIONAL path returns, supervisor checks for pending DAG and fires `asyncio.create_task(self._run_dag(...))` — user gets immediate reply, DAG runs in background.
+- `goat_session_id=self._session_id` passed to all three `conv_result()` call sites (CONVERSATIONAL path and two clarification gate calls).
+
+**CLASSIFIER IMPROVEMENT — Structured JSON output**:
+- `classifier_prompt.py`: `_CLASSIFIER_SYSTEM` updated to request a JSON object `{intent, confidence, reasoning, scores{complexity, tool_requirement, context_dependency}}` with LLM-guided routing rules (no hardcoded conditionals in Python).
+- `classifier.py`: added `import json`; added `session_id: str | None = None` param; uses `_extract_balanced_json` to parse LLM output; maps `"simple"` → `IntentDepth.ANALYTICAL`; writes full JSON to `goat:<session_id>:intent_classification` (TTL 300s) when session_id provided; falls back to single-word parse on JSON failure.
+
+---
+
 ## [Unreleased] — 2026-06-12
 
 ### Changed

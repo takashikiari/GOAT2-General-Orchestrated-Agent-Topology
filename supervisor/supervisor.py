@@ -11,7 +11,7 @@ from config.roles import SESSION_ROLE
 from supervisor.types import AgentRunner, Plan, SupervisorResult
 from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
-from supervisor.classification.classifier import IntentDepth
+from supervisor.classification.classifier import IntentDepth, classify_intent
 from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
@@ -88,99 +88,26 @@ class GoatSupervisor:
         except Exception as e:
             log.warning("Promotion task failed (non-critical): %s", e)
 
-    async def _handle_direct_request(self, intent: str, t0: float) -> SupervisorResult | None:
-        """Bypass DAG for simple memory_recent / memory_get / file_read queries."""
-        from supervisor.classification.request_classifier import classify_direct_request
-        classification = classify_direct_request(intent)
-        if not classification:
+    async def _pop_pending_dag(self) -> str | None:
+        """Read and delete goat:<session_id>:pending_dag from working memory."""
+        if not self.memory_manager:
             return None
-        log.info("Direct request bypass: tool=%s confidence=%.2f query=%.60s",
-                 classification.tool, classification.confidence, intent)
         try:
-            from memory.memory_tools.memory_tools import MEMORY_GET
-            from memory.memory_tools.memory_temporal_tools import MEMORY_RECENT
-            from tools.file.file_executor import EXECUTOR
-            tool, param = classification.tool, classification.extracted_param
-            if tool == "memory_recent":
-                result = await MEMORY_RECENT.handler()
-            elif tool == "memory_get" and param:
-                result = await MEMORY_GET.handler(key=param)
-            elif tool == "file_read" and param:
-                result = EXECUTOR.read(param)
-            else:
+            from config.roles import SESSION_ROLE as _SROLE
+            key = f"goat:{self._session_id}:pending_dag"
+            record = await self.memory_manager.working.backend.get(_SROLE, key)
+            if record is None:
                 return None
-            await self._store_and_promote(1, intent, result)
-            return SupervisorResult(
-                intent=intent, plan=Plan(tasks=[]), results={}, critique="", summary=result,
-                total_duration_s=time.monotonic() - t0, session_id=str(uuid.uuid4()),
-                sources={"direct": tool}, metadata_summary=f"direct_bypass tool={tool}",
-                dag_verified=False, dag_detail="",
-            )
+            await self.memory_manager.working.backend.delete(_SROLE, key)
+            return record.get("content")
         except Exception as e:
-            log.warning("Direct request handler failed, falling back to DAG: %s", e)
+            log.debug("_pop_pending_dag failed: %s", e)
             return None
 
     async def _run_dag(self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str) -> SupervisorResult:
         """Thin wrapper over the extracted pipeline module."""
         from supervisor.pipeline.dag_execution import run_dag_pipeline
         return await run_dag_pipeline(self, intent, t0, depth, mem_ctx)
-
-    async def _goat_routing_decision(
-        self, intent: str, mem_ctx: str, active_dags: list[dict],
-    ) -> IntentDepth:
-        """Single LLM call — GOAT decides conversational vs complex routing.
-
-        No middleware, no override persistence. The LLM receives the
-        conversation history, memory context, active-DAG count, and the
-        raw user message and returns exactly one word: conversational or
-        complex. Defaults to CONVERSATIONAL on any LLM failure.
-        """
-        from utils.llm_utils import _call_llm
-        from supervisor.classification.classifier_prompt import format_history
-
-        history_text = format_history(self._history.messages) if self._history else ""
-        dag_note = (
-            f"\n{len(active_dags)} active DAG session(s) in working memory."
-            if active_dags else ""
-        )
-        system = (
-            "You are GOAT. Decide how to handle the user message.\n"
-            "Reply with exactly one word:\n"
-            "  conversational — answer directly (memory lookup, web search, DAG\n"
-            "    status update, control command, greeting, clarification,\n"
-            "    short question, or any follow-up GOAT already has context for)\n"
-            "  complex — spawn the multi-agent DAG (multi-step research, code\n"
-            "    generation, deep analysis requiring parallel sub-tasks with review)"
-        )
-        user_prompt = (
-            f"Conversation so far:\n{history_text or '(none)'}\n\n"
-            f"Memory context:\n{(mem_ctx or '(none)')[:400]}\n"
-            f"{dag_note}\n"
-            f"User message: {intent}\n\n"
-            "Reply: conversational or complex"
-        )
-        settings = self.registry.settings
-        try:
-            raw = await _call_llm(
-                settings.agents.get("memory"),
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user_prompt},
-                ],
-            )
-        except Exception as e:
-            log.warning(
-                "GOAT routing LLM call failed, defaulting to CONVERSATIONAL: %s", e,
-            )
-            return IntentDepth.CONVERSATIONAL
-
-        token = raw.strip().lower().split()[0] if raw.strip() else ""
-        log.info("GOAT routing decision: intent=%.60s → %s", intent, token)
-        if token == "complex":
-            log.debug("GOAT routing: COMPLEX — spawning DAG")
-            return IntentDepth.COMPLEX
-        log.debug("GOAT routing: CONVERSATIONAL — answering directly")
-        return IntentDepth.CONVERSATIONAL
 
     async def _check_intent_clarity(self, intent: str, mem_ctx: str) -> bool:
         """Return False when the LLM judges the intent too ambiguous for DAG execution."""
@@ -189,28 +116,17 @@ class GoatSupervisor:
         history_text = format_history(self._history.messages) if self._history else ""
         return await check_intent_clarity(intent, mem_ctx, history_text, self.registry)
 
-    async def _check_active_dags(self) -> list[dict]:
-        """Backward-compat wrapper over `dag_awareness.scan_active_dags`."""
-        from supervisor.pipeline.dag_awareness import scan_active_dags
-        return await scan_active_dags(self.registry)
-
-    async def _read_dag_progress(self, session_id: str) -> dict | None:
-        """Backward-compat wrapper over `dag_awareness.read_dag_progress`."""
-        from supervisor.pipeline.dag_awareness import read_dag_progress
-        return await read_dag_progress(self.registry, session_id)
-
     async def run(self, intent: str) -> SupervisorResult:
-        """Route intent: GOAT decides directly vs DAG via a single LLM call.
+        """Route intent: classify_intent decides conversational vs DAG.
 
         FLOW:
         1. Initialize session (profile, history, behavior style) on first call.
         2. Add user turn to history.
         3. Run memory turn (recall + fact extraction).
-        4. Check active DAG sessions in working memory.
-        5. If a single-tool bypass applies, return direct result.
-        6. Single LLM routing call: conversational or complex.
-        7. CONVERSATIONAL → direct LLM reply via conv_result().
-        8. COMPLEX → clarification gate → DAG pipeline.
+        4. Single LLM routing call via classify_intent: conversational or complex.
+        5. CONVERSATIONAL → direct LLM reply via conv_result().
+           After reply, check if GOAT called start_dag — if so, fire DAG as background task.
+        6. COMPLEX → clarification gate → DAG pipeline.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -221,27 +137,27 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
-        # Check active DAGs — context fed into the routing LLM call.
-        active_dags = await self._check_active_dags()
-        if active_dags:
-            log.info("DAG awareness: %d active session(s) in working memory", len(active_dags))
+        # Single classifier — classify_intent gathers active DAGs and context internally.
+        depth = await classify_intent(
+            intent, self.registry, self._history, session_id=self._session_id,
+        )
+        log.info("classify_intent: intent=%.80s → %s", intent, depth.value)
 
-        # Single-tool direct bypass (memory_recent / memory_get / file_read).
-        direct_result = await self._handle_direct_request(intent, t0)
-        if direct_result:
-            self._history.add_assistant(direct_result.summary)
-            return direct_result
-
-        # Single LLM routing call — GOAT decides: conversational or complex.
-        depth = await self._goat_routing_decision(intent, mem_ctx, active_dags)
         if depth == IntentDepth.CONVERSATIONAL:
             r = await conv_result(
                 intent, self._history.messages, self._user_profile or "",
                 self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
+                goat_session_id=self._session_id,
             )
             self._history.add_assistant(r.summary)
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
+            # If GOAT called start_dag during this turn, fire the DAG as a background task.
+            pending_dag_id = await self._pop_pending_dag()
+            if pending_dag_id:
+                log.info("GOAT: pending DAG session=%s — firing background task", pending_dag_id)
+                asyncio.create_task(self._run_dag(intent, t0, IntentDepth.COMPLEX, mem_ctx))
             return r
+
         # GOAT formulates and writes structured instructions for DAG before handing off.
         # DAG reads dag:<session_id>:instructions instead of raw intent.
         if self.memory_manager:
@@ -253,16 +169,19 @@ class GoatSupervisor:
                 )
             except Exception as e:
                 log.warning("write_dag_instructions failed (non-critical): %s", e)
+
         # Clarification gate: ask LLM if intent needs disambiguation before DAG dispatch.
         if not await self._check_intent_clarity(intent, mem_ctx):
             log.info("GOAT: intent unclear — returning clarification request")
             r = await conv_result(
                 intent, self._history.messages, self._user_profile or "",
                 self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
+                goat_session_id=self._session_id,
             )
             self._history.add_assistant(r.summary)
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
             return r
+
         return await self._run_dag(intent, t0, depth, mem_ctx)
 
     async def finalize_session(self) -> None:
