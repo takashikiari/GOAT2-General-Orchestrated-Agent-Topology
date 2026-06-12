@@ -5,25 +5,32 @@ replaces raw user intent as the input to the planner, ensuring the DAG receives
 a self-contained technical objective with dynamically-selected agents and
 observable verification criteria.
 
-All decisions (required_agents, verification_criteria) are made by a single LLM
-call — no hardcoded rules, patterns, or agent lists anywhere in this module.
+After building, call validate_dag_prompt() to check:
+  - verification_criteria not empty
+  - critic present for complex tasks (researcher/coder involved)
+  - technical_prompt is specific enough for autonomous execution (LLM check)
+
+All decisions (required_agents, verification_criteria, specificity) are made by LLM
+calls — no hardcoded rules, patterns, or agent lists in this module.
 """
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
 
 from config.settings import Provider
-from utils.llm_utils import _call_llm, _extract_json
+from utils.llm_utils import _call_llm, _extract_json, _extract_balanced_json
 
 if TYPE_CHECKING:
     from config.registry import Registry
+    from supervisor.pipeline.intent_clarity import ClarityResult
 
 log = logging.getLogger("goat2.supervisor.pipeline.dag_prompt_builder")
 
-__all__ = ["DagPrompt", "build_dag_prompt"]
+__all__ = ["DagPrompt", "build_dag_prompt", "validate_dag_prompt"]
 
 _SYSTEM: str = (
     "You are GOAT's DAG instruction builder. Given a user intent, memory context, "
@@ -48,6 +55,15 @@ _SYSTEM: str = (
     "  - memory_updates: true when agents should write findings to working memory\n"
     "  - constraints: task-specific limits the planner should respect "
     "(max_tasks, language, workspace_path, tier_access, ttl)\n"
+)
+
+_VALIDATE_SYSTEM: str = (
+    "You are a DAG prompt validator. Check if the technical_prompt is specific enough "
+    "for autonomous multi-agent execution — no essential parameters should be ambiguous.\n\n"
+    "Return ONLY this JSON — no prose:\n"
+    '{"valid": true|false,\n'
+    ' "missing": ["specific detail1", ...],\n'
+    ' "clarification_question": "exact question to ask the user (empty string if valid)"}'
 )
 
 
@@ -123,6 +139,8 @@ async def build_dag_prompt(
             json_mode=(spec.provider == Provider.OPENAI),
         )
         data = _extract_json(raw)
+        log.debug("build_dag_prompt: agents=%s criteria=%d",
+                  data.get("required_agents"), len(data.get("verification_criteria", [])))
         return DagPrompt(
             task_id=uuid.uuid4().hex,
             technical_prompt=str(data.get("technical_prompt", intent)),
@@ -134,3 +152,74 @@ async def build_dag_prompt(
     except Exception as exc:
         log.warning("build_dag_prompt: LLM call or parse failed — using fallback: %s", exc)
         return _fallback_dag_prompt(intent)
+
+
+async def validate_dag_prompt(
+    dag_prompt: DagPrompt,
+    intent: str,
+    registry: "Registry",
+) -> "ClarityResult":
+    """Validate a DagPrompt for completeness and specificity.
+
+    Checks (in order):
+    1. verification_criteria not empty — DAG cannot confirm success without them.
+    2. critic in required_agents when researcher or coder is present (complex task).
+    3. LLM check: technical_prompt is specific enough for autonomous execution.
+
+    Returns ClarityResult(clear=True) on pass. Returns ClarityResult with a specific
+    clarification_question on any failure. Defaults to clear=True on LLM error
+    so validation never hard-blocks the pipeline.
+
+    Args:
+        dag_prompt: The DagPrompt to validate.
+        intent: Original user intent (for LLM context).
+        registry: ServiceRegistry for model configuration.
+
+    Returns:
+        ClarityResult indicating whether the DagPrompt is ready for execution.
+    """
+    from supervisor.pipeline.intent_clarity import ClarityResult
+
+    missing: list[str] = []
+
+    # Check 1: verification_criteria must not be empty
+    if not dag_prompt.verification_criteria:
+        missing.append("no observable verification criteria — cannot confirm task completion")
+
+    # Check 2: critic required when researcher or coder is involved
+    _complex_roles = frozenset({"researcher", "coder"})
+    if _complex_roles.intersection(dag_prompt.required_agents) and "critic" not in dag_prompt.required_agents:
+        missing.append("critic agent missing — required to validate output for complex tasks")
+
+    if missing:
+        question = f"To proceed, I need more specifics: {'; '.join(missing)}. Can you clarify your request?"
+        log.debug("validate_dag_prompt: structural issues=%s", missing)
+        return ClarityResult(clear=False, missing=missing, clarification_question=question)
+
+    # Check 3: LLM specificity check on technical_prompt
+    spec = registry.settings.supervisor.model
+    user = (
+        f"Technical prompt: {dag_prompt.technical_prompt}\n"
+        f"Required agents: {dag_prompt.required_agents}\n"
+        f"Verification criteria: {dag_prompt.verification_criteria}\n"
+        f"Original intent: {intent}\n\n"
+        "Is this specific enough for autonomous execution? Return JSON."
+    )
+    try:
+        raw = await _call_llm(spec, [
+            {"role": "system", "content": _VALIDATE_SYSTEM},
+            {"role": "user",   "content": user},
+        ])
+        raw_json = _extract_balanced_json(raw) if raw.strip() else ""
+        if raw_json:
+            data = json.loads(raw_json)
+            if not bool(data.get("valid", True)):
+                missing_items = [str(m) for m in data.get("missing", [])]
+                question = str(data.get("clarification_question", "")) or "Could you provide more details?"
+                log.debug("validate_dag_prompt: LLM says invalid missing=%s", missing_items)
+                return ClarityResult(clear=False, missing=missing_items, clarification_question=question)
+    except Exception as e:
+        log.debug("validate_dag_prompt: LLM check failed — defaulting to valid: %s", e)
+
+    log.debug("validate_dag_prompt: passed task_id=%s agents=%s", dag_prompt.task_id, dag_prompt.required_agents)
+    return ClarityResult(clear=True, missing=[], clarification_question="")

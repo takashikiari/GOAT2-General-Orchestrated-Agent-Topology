@@ -20,19 +20,11 @@ if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
     from agents.critique import CriticVerdict
+    from supervisor.pipeline.intent_clarity import ClarityResult
 
 log = logging.getLogger("goat2.supervisor")
 
 __all__ = ["GoatSupervisor"]
-
-_REASON_LABELS: dict[str, str] = {
-    "missing_tool_params": "tool called but parameters missing — cannot validate",
-    "empty_file_read": "file tool returned no content",
-    "unverified_execution": "required tool was not invoked",
-    "source_violation": "tool returned disallowed source type",
-    "net_error": "web search returned an error",
-    "stale_memory": "memory query returned stale data",
-}
 
 # Capability summary written into DAG instructions so DAG knows what agents can do.
 _DAG_CAPABILITIES_SUMMARY: str = (
@@ -43,6 +35,8 @@ _DAG_CAPABILITIES_SUMMARY: str = (
     "critic: memory_recent, memory_get(read-only); "
     "summarizer: memory_recent(read-only)"
 )
+
+_FALLBACK_CLARIFICATION = "Could you provide more details about what you'd like me to do?"
 
 
 class GoatSupervisor:
@@ -109,24 +103,54 @@ class GoatSupervisor:
         from supervisor.pipeline.dag_execution import run_dag_pipeline
         return await run_dag_pipeline(self, intent, t0, depth, mem_ctx)
 
-    async def _check_intent_clarity(self, intent: str, mem_ctx: str) -> bool:
-        """Return False when the LLM judges the intent too ambiguous for DAG execution."""
+    async def _check_intent_clarity(self, intent: str, mem_ctx: str) -> "ClarityResult":
+        """Return ClarityResult from LLM intent clarity check.
+
+        Returns ClarityResult(clear=True) on any failure — ambiguity never hard-blocks.
+        """
         from supervisor.pipeline.intent_clarity import check_intent_clarity
         from supervisor.classification.classifier_prompt import format_history
         history_text = format_history(self._history.messages) if self._history else ""
         return await check_intent_clarity(intent, mem_ctx, history_text, self.registry)
 
+    async def _validate_dag_prompt(self, intent: str, mem_ctx: str) -> "ClarityResult":
+        """Build a DagPrompt and validate it for completeness and specificity.
+
+        Returns ClarityResult(clear=False) with a specific clarification_question
+        if the prompt is missing required information. Defaults to clear=True on
+        any exception so validation never hard-blocks the pipeline.
+        """
+        from supervisor.pipeline.dag_prompt_builder import build_dag_prompt, validate_dag_prompt
+        from supervisor.pipeline.intent_clarity import ClarityResult
+        from supervisor.classification.classifier_prompt import format_history
+        history_text = format_history(self._history.messages) if self._history else ""
+        try:
+            dag_prompt = await build_dag_prompt(intent, mem_ctx, history_text, self.registry)
+            return await validate_dag_prompt(dag_prompt, intent, self.registry)
+        except Exception as e:
+            log.debug("_validate_dag_prompt failed — defaulting to clear: %s", e)
+            return ClarityResult(clear=True, missing=[], clarification_question="")
+
+    def _clarification_result(self, intent: str, t0: float, question: str) -> SupervisorResult:
+        """Build a SupervisorResult that surfaces a clarification question to the user."""
+        return SupervisorResult(
+            intent=intent,
+            plan=Plan(tasks=[]),
+            results={},
+            critique="",
+            summary=question or _FALLBACK_CLARIFICATION,
+            sources={"conv": "generated"},
+            total_duration_s=time.monotonic() - t0,
+        )
+
     async def run(self, intent: str) -> SupervisorResult:
         """Route intent: classify_intent decides conversational vs DAG.
 
         FLOW:
-        1. Initialize session (profile, history, behavior style) on first call.
-        2. Add user turn to history.
-        3. Run memory turn (recall + fact extraction).
-        4. Single LLM routing call via classify_intent: conversational or complex.
-        5. CONVERSATIONAL → direct LLM reply via conv_result().
-           After reply, check if GOAT called start_dag — if so, fire DAG as background task.
-        6. COMPLEX → clarification gate → DAG pipeline.
+        1. init session → add user turn → memory turn
+        2. classify_intent → CONVERSATIONAL or COMPLEX
+        3. CONVERSATIONAL: conv_result; if start_dag called, fire background DAG
+        4. COMPLEX: write instructions → clarity gate → prompt validation gate → DAG
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -158,8 +182,7 @@ class GoatSupervisor:
                 asyncio.create_task(self._run_dag(intent, t0, IntentDepth.COMPLEX, mem_ctx))
             return r
 
-        # GOAT formulates and writes structured instructions for DAG before handing off.
-        # DAG reads dag:<session_id>:instructions instead of raw intent.
+        # GOAT writes structured instructions for DAG before any checks.
         if self.memory_manager:
             try:
                 from supervisor.session.session import write_dag_instructions
@@ -170,14 +193,20 @@ class GoatSupervisor:
             except Exception as e:
                 log.warning("write_dag_instructions failed (non-critical): %s", e)
 
-        # Clarification gate: ask LLM if intent needs disambiguation before DAG dispatch.
-        if not await self._check_intent_clarity(intent, mem_ctx):
-            log.info("GOAT: intent unclear — returning clarification request")
-            r = await conv_result(
-                intent, self._history.messages, self._user_profile or "",
-                self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
-                goat_session_id=self._session_id,
-            )
+        # Gate 1 — Intent clarity: is the intent specific enough for the DAG?
+        clarity = await self._check_intent_clarity(intent, mem_ctx)
+        if not clarity.clear:
+            log.info("GOAT: intent unclear — question=%.80s", clarity.clarification_question)
+            r = self._clarification_result(intent, t0, clarity.clarification_question)
+            self._history.add_assistant(r.summary)
+            await self._store_and_promote(len(self._history.messages), intent, r.summary)
+            return r
+
+        # Gate 2 — DagPrompt validation: are agents and criteria complete and specific?
+        dag_validity = await self._validate_dag_prompt(intent, mem_ctx)
+        if not dag_validity.clear:
+            log.info("GOAT: dag_prompt invalid — question=%.80s", dag_validity.clarification_question)
+            r = self._clarification_result(intent, t0, dag_validity.clarification_question)
             self._history.add_assistant(r.summary)
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
             return r

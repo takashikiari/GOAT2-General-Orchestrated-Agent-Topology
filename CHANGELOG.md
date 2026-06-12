@@ -5,6 +5,42 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-12 (clarity gates + DagPrompt validation)
+
+### Changed
+
+#### Specific clarification questions replace generic "please clarify" messages
+
+**TASK 1 — `supervisor/pipeline/intent_clarity.py`**:
+- Added `ClarityResult` dataclass: `clear: bool`, `missing: list[str]`, `clarification_question: str`. `__bool__` returns `clear`.
+- `check_intent_clarity()` return type changed from `bool` to `ClarityResult`.
+- `_SYSTEM` prompt updated to request JSON: `{"clear": bool, "missing": [...], "clarification_question": "..."}`.
+- LLM output parsed via `_extract_balanced_json` + `json.loads`; falls back to `ClarityResult(clear=True)` on any parse error.
+- DAG-override path also returns a specific `ClarityResult` with a ready-to-send question.
+- `__all__` updated to include `ClarityResult`.
+
+**TASK 2 — `supervisor/supervisor.py`**:
+- `_check_intent_clarity()` return type updated from `bool` to `ClarityResult`; callers updated.
+- Added `_validate_dag_prompt(intent, mem_ctx) → ClarityResult` method: builds DagPrompt then calls `validate_dag_prompt()`.
+- Added `_clarification_result(intent, t0, question) → SupervisorResult` helper: returns the clarification question directly as the supervisor response (no extra LLM call).
+- `run()` now has two explicit gates before DAG dispatch:
+  - Gate 1 (intent clarity): if `clarity.clear` is False, return `clarification_question` as response.
+  - Gate 2 (DagPrompt validation): if `dag_validity.clear` is False, return `clarification_question` as response.
+- Removed unused `_REASON_LABELS` module-level dict.
+- Added `ClarityResult` to `TYPE_CHECKING` imports.
+
+**TASK 3 — `supervisor/pipeline/dag_prompt_builder.py`**:
+- Added `validate_dag_prompt(dag_prompt, intent, registry) → ClarityResult` function.
+  - Check 1: `verification_criteria` must not be empty.
+  - Check 2: `critic` must be in `required_agents` when `researcher` or `coder` is present (complex task).
+  - Check 3: LLM specificity check via `_VALIDATE_SYSTEM` prompt — returns JSON `{valid, missing, clarification_question}`.
+  - All checks fail-safe to `ClarityResult(clear=True)` on LLM error.
+- Added `_VALIDATE_SYSTEM` constant for the validation LLM prompt.
+- Added `import json` and `_extract_balanced_json` to module-level imports.
+- `__all__` updated to include `validate_dag_prompt`.
+
+---
+
 ## [Unreleased] — 2026-06-12 (classifier consolidation + DAG spawn tools)
 
 ### Changed
