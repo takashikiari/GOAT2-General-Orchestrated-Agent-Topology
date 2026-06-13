@@ -286,6 +286,12 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
+        # Check for pending DAG from start_dag tool call
+        pending_dag_session = await self._pop_pending_dag()
+        if pending_dag_session:
+            log.info("GOAT: pending DAG found session=%s — firing DAG", pending_dag_session)
+            return await self._run_dag(intent, t0, IntentDepth.COMPLEX, mem_ctx)
+
         # Check for routing disagreement with previous decision before classifying
         previous_routing = await self._get_previous_routing()
         if previous_routing:
