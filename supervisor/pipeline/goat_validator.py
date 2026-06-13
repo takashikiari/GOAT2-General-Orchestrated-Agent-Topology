@@ -164,7 +164,9 @@ async def _check_hallucination_llm(
         "  - Genuine outputs may have errors but show real work\n"
         "  - Fabricated outputs: refuse to answer, claim inability without reason, "
         "    or present invented facts\n"
-        "  - If outputs are mostly empty, set genuine=false"
+        "  - If outputs are mostly empty, set genuine=false\n"
+        "  - SEVERITY: PASS/MINOR/MAJOR/CRITICAL is a valid critic output, NOT hallucination\n"
+        "  - Incomplete sentences in summaries are acceptable, not hallucination"
     )
 
     try:

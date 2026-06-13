@@ -46,9 +46,10 @@ _SYSTEM: str = (
     "Rules:\n"
     "  - technical_prompt: include all context the planner needs; do not reference "
     "this JSON — it must be self-contained\n"
-    "  - required_agents: infer from the task type; valid roles are researcher, "
-    "coder, critic, summarizer, tool_caller; reason from the intent — do not use "
-    "a fixed list\n"
+    "  - required_agents: use ONLY these exact role names: researcher, coder, critic, summarizer, tool_caller, memory. "
+    "Do NOT invent new roles like promote_to_letta, check_memory, monitor_logs, etc. "
+    "Choose from the list based on task needs.
+"
     "  - verification_criteria: list 2–5 observable outcomes that prove the task "
     "succeeded (e.g. 'file was read', 'web search returned results', "
     "'code was written to disk')\n"
@@ -139,6 +140,7 @@ async def build_dag_prompt(
             json_mode=(spec.provider == Provider.OPENAI),
         )
         data = _extract_json(raw)
+        log.info("build_dag_prompt: technical_prompt=%.200s", data.get("technical_prompt", ""))
         log.debug("build_dag_prompt: agents=%s criteria=%d",
                   data.get("required_agents"), len(data.get("verification_criteria", [])))
         agents = list(data.get("required_agents", []))

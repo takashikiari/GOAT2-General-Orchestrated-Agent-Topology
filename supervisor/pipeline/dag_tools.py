@@ -119,7 +119,8 @@ def make_dag_tools(
                 try:
                     payload = json.loads(content)
                     parts = str(key).split(":")
-                    payload["session_id"] = parts[1] if len(parts) > 1 else "?"
+                    # Key format: goat2:working:user_session:dag:<session_id>:progress
+                    payload["session_id"] = parts[4] if len(parts) > 4 else parts[-2] if len(parts) > 1 else "?"
                     active.append(payload)
                 except Exception:
                     continue
