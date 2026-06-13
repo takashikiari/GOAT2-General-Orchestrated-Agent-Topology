@@ -1,17 +1,22 @@
-"""DagPrompt builder — GOAT formulates structured execution instructions for DAG.
+"""DagPrompt builder — the Prompter that FORMATS GOAT's decision for the DAG.
 
-GOAT calls build_dag_prompt() before spawning the DAG. The resulting DagPrompt
-replaces raw user intent as the input to the planner, ensuring the DAG receives
-a self-contained technical objective with dynamically-selected agents and
-observable verification criteria.
+Architecture contract: **GOAT decides → Prompter formats → DAG executes.**
+
+GOAT (``goat_enrichment.enrich_intent``) has already decided WHAT to execute and
+produced a ``GoatDecision``. ``build_dag_prompt()`` consumes that decision — it
+does NOT guess intent. It shapes the decision into a structured ``DagPrompt``:
+``technical_prompt`` is grounded in ``GoatDecision.enriched_intent``,
+``required_agents`` is guided by ``GoatDecision.tool_hints``, and
+``GoatDecision.workspace_context`` is folded into the constraints the planner
+respects.
 
 After building, call validate_dag_prompt() to check:
   - verification_criteria not empty
   - critic present for complex tasks (researcher/coder involved)
   - technical_prompt is specific enough for autonomous execution (LLM check)
 
-All decisions (required_agents, verification_criteria, specificity) are made by LLM
-calls — no hardcoded rules, patterns, or agent lists in this module.
+The Prompter only formats and selects concrete agents — no hardcoded rules,
+patterns, or agent lists, and it never re-decides the user's intent.
 """
 from __future__ import annotations
 
@@ -27,14 +32,18 @@ from utils.llm_utils import _call_llm, _extract_json, _extract_balanced_json
 if TYPE_CHECKING:
     from config.registry import Registry
     from supervisor.pipeline.intent_clarity import ClarityResult
+    from supervisor.pipeline.goat_enrichment import GoatDecision
 
 log = logging.getLogger("goat2.supervisor.pipeline.dag_prompt_builder")
 
 __all__ = ["DagPrompt", "build_dag_prompt", "validate_dag_prompt"]
 
 _SYSTEM: str = (
-    "You are GOAT's DAG instruction builder. Given a user intent, memory context, "
-    "and conversation history, produce a structured DAG execution plan as JSON.\n\n"
+    "You are GOAT's DAG Prompter. GOAT has ALREADY DECIDED what to execute and "
+    "given you an enriched instruction, tool hints, and workspace context. Your job "
+    "is to FORMAT that decision into a structured DAG execution plan as JSON — you do "
+    "NOT re-decide the intent. Ground technical_prompt in the enriched instruction and "
+    "let the tool hints guide which agents you select.\n\n"
     "Return ONLY this JSON schema — no prose, no markdown:\n"
     "{\n"
     '  "technical_prompt": "<comprehensive, self-contained objective for the DAG planner>",\n'
@@ -48,7 +57,8 @@ _SYSTEM: str = (
     "this JSON — it must be self-contained\n"
     "  - required_agents: use ONLY these exact role names: researcher, coder, critic, summarizer, tool_caller, memory. "
     "Do NOT invent new roles like promote_to_letta, check_memory, monitor_logs, etc. "
-    "Choose from the list based on task needs.\n"
+    "Let the provided tool hints guide your choice, then select from the list based on task needs.\n"
+    "  - technical_prompt must describe the WORK to be done, NOT how to control the DAG itself\n"
     "  - verification_criteria: list 2–5 observable outcomes that prove the task "
     "succeeded (e.g. 'file was read', 'web search returned results', "
     "'code was written to disk')\n"
@@ -102,19 +112,24 @@ def _fallback_dag_prompt(intent: str) -> DagPrompt:
 
 
 async def build_dag_prompt(
-    intent: str,
+    decision: "GoatDecision",
     mem_ctx: str,
     history_text: str,
     registry: "Registry",
 ) -> DagPrompt:
-    """Build a DagPrompt from user intent via a single LLM call.
+    """Format a GoatDecision into a DagPrompt via a single LLM call.
 
-    The LLM decides required_agents and verification_criteria dynamically based
-    on the intent — no hardcoded rules or patterns. Falls back to a minimal
-    DagPrompt wrapping raw intent on any failure.
+    The Prompter FORMATS — it does not decide. GOAT has already decided WHAT to
+    execute (``decision.enriched_intent``), which tools to prefer
+    (``decision.tool_hints``), and the workspace facts
+    (``decision.workspace_context``). This call shapes that decision into the
+    DagPrompt schema: technical_prompt is grounded in enriched_intent,
+    required_agents are guided by tool_hints, and workspace_context plus GOAT's
+    constraints are folded into the planner constraints. Falls back to a minimal
+    DagPrompt wrapping the enriched intent on any failure.
 
     Args:
-        intent: The user's original intent text.
+        decision: GOAT's enrichment decision for the user's intent.
         mem_ctx: Pre-computed memory context string from the working tier.
         history_text: Formatted recent conversation history.
         registry: ServiceRegistry for model configuration.
@@ -123,12 +138,18 @@ async def build_dag_prompt(
         DagPrompt with LLM-selected agents, criteria, and technical objective.
     """
     spec = registry.settings.supervisor.model
-    user_parts = [f"Intent: {intent}"]
+    user_parts = [f"Enriched instruction (already decided by GOAT):\n{decision.enriched_intent}"]
+    if decision.tool_hints:
+        user_parts.append("\nTool hints (prefer these roles/capabilities):\n" + ", ".join(decision.tool_hints))
+    if decision.workspace_context:
+        user_parts.append(f"\nWorkspace context:\n{decision.workspace_context}")
+    if decision.constraints:
+        user_parts.append(f"\nConstraints:\n{json.dumps(decision.constraints, ensure_ascii=False)}")
     if mem_ctx:
         user_parts.append(f"\nMemory context:\n{mem_ctx}")
     if history_text:
         user_parts.append(f"\nRecent conversation:\n{history_text}")
-    user_parts.append("\nBuild the DAG execution plan.")
+    user_parts.append("\nFormat this into the DAG execution plan.")
 
     try:
         raw = await _call_llm(
@@ -141,22 +162,28 @@ async def build_dag_prompt(
         )
         data = _extract_json(raw)
         log.info("build_dag_prompt: technical_prompt=%.200s", data.get("technical_prompt", ""))
-        log.debug("build_dag_prompt: agents=%s criteria=%d",
-                  data.get("required_agents"), len(data.get("verification_criteria", [])))
+        log.debug("build_dag_prompt: agents=%s hints=%s criteria=%d",
+                  data.get("required_agents"), decision.tool_hints,
+                  len(data.get("verification_criteria", [])))
         agents = list(data.get("required_agents", []))
         if "critic" not in agents and len(agents) > 1:
             agents.append("critic")
+        # Fold GOAT's workspace context + constraints into the planner constraints.
+        constraints = dict(decision.constraints)
+        constraints.update(dict(data.get("constraints", {})))
+        if decision.workspace_context:
+            constraints.setdefault("workspace_context", decision.workspace_context)
         return DagPrompt(
             task_id=uuid.uuid4().hex,
-            technical_prompt=str(data.get("technical_prompt", intent)),
+            technical_prompt=str(data.get("technical_prompt", decision.enriched_intent)) or decision.enriched_intent,
             required_agents=agents,
             verification_criteria=list(data.get("verification_criteria", [])),
             memory_updates=bool(data.get("memory_updates", False)),
-            constraints=dict(data.get("constraints", {})),
+            constraints=constraints,
         )
     except Exception as exc:
         log.warning("build_dag_prompt: LLM call or parse failed — using fallback: %s", exc)
-        return _fallback_dag_prompt(intent)
+        return _fallback_dag_prompt(decision.enriched_intent)
 
 
 async def validate_dag_prompt(

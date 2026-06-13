@@ -5,6 +5,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-13 (GOAT decides → Prompter formats → DAG executes)
+
+### Added
+
+#### `supervisor/pipeline/goat_enrichment.py` — the decision stage
+
+- New module implementing the architecture contract **GOAT decides → Prompter formats → DAG executes**.
+- `enrich_intent(intent, mem_ctx, history, registry) -> GoatDecision` makes a single LLM call that turns a raw, under-specified intent into a complete, self-contained decision. Pure LLM reasoning — no hardcoded paths, rules, or regex. Responds in the user's language. Degrades to a fallback decision wrapping the raw intent on any failure (never hard-blocks).
+- `GoatDecision` dataclass: `enriched_intent`, `workspace_context`, `tool_hints`, `constraints`.
+- Available agent roles + tool names are discovered dynamically from the registry (no hardcoded agent list), so `tool_hints` are grounded in what actually exists.
+
+### Changed
+
+#### `dag_prompt_builder.py` — now FORMATS a GoatDecision instead of guessing intent
+
+- `build_dag_prompt()` signature changed from `(intent, mem_ctx, history_text, registry)` to `(decision, mem_ctx, history_text, registry)`.
+- `technical_prompt` is grounded in `GoatDecision.enriched_intent`; `required_agents` are guided by `GoatDecision.tool_hints`; `GoatDecision.workspace_context` + GOAT constraints are folded into the planner constraints.
+- System prompt reframed: the Prompter formats and selects concrete agents; it no longer re-decides the user's intent.
+
+#### `supervisor/supervisor.py` — GOAT decides before the DAG runs
+
+- New `_enrich_intent()` helper (lazy import of `enrich_intent`) runs the decide stage.
+- `_execute_with_depth()` now enriches the intent into a `GoatDecision` once and reuses it for both the validation gate and DAG execution.
+- `_validate_dag_prompt()` accepts the `GoatDecision` and passes it to the Prompter.
+- `_run_dag()` threads the optional `GoatDecision` through to `run_dag_pipeline()`.
+
+#### `supervisor/pipeline/dag_execution.py` — threads the decision to the Prompter
+
+- `run_dag_pipeline()` gained an optional `decision` parameter. When absent (e.g. the pending-DAG fast path), it enriches the intent in-pipeline so the Prompter always receives a `GoatDecision` rather than a raw intent.
+- `build_dag_prompt()` is now called with the `GoatDecision`.
+
+DagBridge, GoatValidator, IntentDepth, and the working-memory instruction flow are unchanged. All cross-module references use `TYPE_CHECKING` + lazy imports; zero singletons added. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-12 (runners refactored to use agent templates)
 
 ### Changed

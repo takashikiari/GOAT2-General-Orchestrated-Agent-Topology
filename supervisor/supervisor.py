@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from config.registry import ServiceRegistry
     from agents.critique import CriticVerdict
     from supervisor.pipeline.intent_clarity import ClarityResult
+    from supervisor.pipeline.goat_enrichment import GoatDecision
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -177,10 +178,30 @@ class GoatSupervisor:
         from supervisor.pipeline.behavioral_learning import store_correction
         await store_correction(self.registry, intent, goat_routed, user_wanted)
 
-    async def _run_dag(self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str) -> SupervisorResult:
-        """Thin wrapper over the extracted pipeline module."""
+    async def _run_dag(
+        self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str,
+        decision: "GoatDecision | None" = None,
+    ) -> SupervisorResult:
+        """Thin wrapper over the extracted pipeline module.
+
+        Threads GOAT's enrichment decision through to the DAG pipeline. When
+        ``decision`` is None (e.g. the pending-DAG fast path), the pipeline
+        enriches the intent itself so the Prompter always receives a decision.
+        """
         from supervisor.pipeline.dag_execution import run_dag_pipeline
-        return await run_dag_pipeline(self, intent, t0, depth, mem_ctx)
+        log.debug("_run_dag: depth=%s decision=%s", depth.value, "provided" if decision else "none")
+        return await run_dag_pipeline(self, intent, t0, depth, mem_ctx, decision)
+
+    async def _enrich_intent(self, intent: str, mem_ctx: str) -> "GoatDecision":
+        """GOAT decides — enrich raw intent into a complete GoatDecision.
+
+        This is the *decide* stage of GOAT decides → Prompter formats → DAG
+        executes. Delegates to the enrichment module's single LLM call.
+        """
+        from supervisor.pipeline.goat_enrichment import enrich_intent
+        from supervisor.classification.classifier_prompt import format_history
+        history_text = format_history(self._history.messages) if self._history else ""
+        return await enrich_intent(intent, mem_ctx, history_text, self.registry)
 
     async def _execute_with_depth(
         self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str
@@ -216,8 +237,12 @@ class GoatSupervisor:
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
             return r
 
-        # Gate 2 — DagPrompt validation
-        dag_validity = await self._validate_dag_prompt(intent, mem_ctx)
+        # GOAT decides — enrich the raw intent into a complete GoatDecision once,
+        # then reuse it for both the validation gate and DAG execution.
+        decision = await self._enrich_intent(intent, mem_ctx)
+
+        # Gate 2 — DagPrompt validation (Prompter formats the decision, then validates)
+        dag_validity = await self._validate_dag_prompt(decision, intent, mem_ctx)
         if not dag_validity.clear:
             log.info("GOAT: dag_prompt invalid — question=%.80s", dag_validity.clarification_question)
             r = self._clarification_result(intent, t0, dag_validity.clarification_question)
@@ -225,7 +250,7 @@ class GoatSupervisor:
             await self._store_and_promote(len(self._history.messages), intent, r.summary)
             return r
 
-        return await self._run_dag(intent, t0, depth, mem_ctx)
+        return await self._run_dag(intent, t0, depth, mem_ctx, decision)
 
     async def _check_intent_clarity(self, intent: str, mem_ctx: str) -> "ClarityResult":
         """Return ClarityResult from LLM intent clarity check.
@@ -237,19 +262,23 @@ class GoatSupervisor:
         history_text = format_history(self._history.messages) if self._history else ""
         return await check_intent_clarity(intent, mem_ctx, history_text, self.registry)
 
-    async def _validate_dag_prompt(self, intent: str, mem_ctx: str) -> "ClarityResult":
-        """Build a DagPrompt and validate it for completeness and specificity.
+    async def _validate_dag_prompt(
+        self, decision: "GoatDecision", intent: str, mem_ctx: str
+    ) -> "ClarityResult":
+        """Format GOAT's decision into a DagPrompt and validate it.
 
-        Returns ClarityResult(clear=False) with a specific clarification_question
-        if the prompt is missing required information. Defaults to clear=True on
-        any exception so validation never hard-blocks the pipeline.
+        The Prompter (build_dag_prompt) formats the already-made GoatDecision;
+        this gate then checks completeness and specificity. Returns
+        ClarityResult(clear=False) with a specific clarification_question if the
+        prompt is missing required information. Defaults to clear=True on any
+        exception so validation never hard-blocks the pipeline.
         """
         from supervisor.pipeline.dag_prompt_builder import build_dag_prompt, validate_dag_prompt
         from supervisor.pipeline.intent_clarity import ClarityResult
         from supervisor.classification.classifier_prompt import format_history
         history_text = format_history(self._history.messages) if self._history else ""
         try:
-            dag_prompt = await build_dag_prompt(intent, mem_ctx, history_text, self.registry)
+            dag_prompt = await build_dag_prompt(decision, mem_ctx, history_text, self.registry)
             return await validate_dag_prompt(dag_prompt, intent, self.registry)
         except Exception as e:
             log.debug("_validate_dag_prompt failed — defaulting to clear: %s", e)

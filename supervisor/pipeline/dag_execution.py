@@ -25,6 +25,7 @@ from supervisor.classification.classifier import IntentDepth
 
 if TYPE_CHECKING:
     from supervisor.types import SupervisorResult
+    from supervisor.pipeline.goat_enrichment import GoatDecision
 
 log = logging.getLogger("goat2.supervisor.pipeline")
 
@@ -39,8 +40,15 @@ async def run_dag_pipeline(
     t0: float,
     depth: IntentDepth,
     mem_ctx: str,
+    decision: "GoatDecision | None" = None,
 ) -> "SupervisorResult":
     """Execute the full ANALYTICAL or COMPLEX DAG pipeline.
+
+    Architecture: GOAT decides → Prompter formats → DAG executes. GOAT's
+    enrichment ``decision`` is threaded in and handed to the Prompter
+    (build_dag_prompt). When ``decision`` is None (e.g. the pending-DAG fast
+    path), this function enriches the intent itself so the Prompter always
+    receives a decision instead of a raw intent.
 
     Args:
         supervisor: The GoatSupervisor instance (for state access).
@@ -48,6 +56,7 @@ async def run_dag_pipeline(
         t0:        Monotonic start time for duration accounting.
         depth:     IntentDepth.ANALYTICAL or IntentDepth.COMPLEX.
         mem_ctx:   Pre-computed memory context string.
+        decision:  GOAT's enrichment decision; enriched here if None.
 
     Returns:
         SupervisorResult with plan, results, summary, dag_verified.
@@ -75,15 +84,22 @@ async def run_dag_pipeline(
         except Exception as e:
             log.debug("dag_execution: instructions read failed, using raw intent: %s", e)
 
-    # Build DagPrompt — GOAT formulates a structured technical objective for DAG.
+    # GOAT decides → Prompter formats. Ensure a GoatDecision exists (enrich here
+    # only when the caller did not provide one, e.g. the pending-DAG fast path).
+    from supervisor.classification.classifier_prompt import format_history
+    history_text = format_history(supervisor._history.messages) if supervisor._history else ""
+    if decision is None:
+        from supervisor.pipeline.goat_enrichment import enrich_intent
+        decision = await enrich_intent(instr_intent, instr_ctx, history_text, supervisor.registry)
+        log.debug("dag_execution: enriched intent in-pipeline (no decision passed)")
+
+    # Build DagPrompt — the Prompter FORMATS GOAT's decision into a technical objective.
     # DAG receives technical_prompt instead of raw intent; required_agents guide the planner.
     dag_prompt = None
     try:
         from supervisor.pipeline.dag_prompt_builder import build_dag_prompt
-        from supervisor.classification.classifier_prompt import format_history
-        history_text = format_history(supervisor._history.messages) if supervisor._history else ""
         dag_prompt = await build_dag_prompt(
-            instr_intent, instr_ctx, history_text, supervisor.registry,
+            decision, instr_ctx, history_text, supervisor.registry,
         )
         # Persist DagPrompt to dag:<session_id>:instructions so DAG agents can read it.
         if supervisor.memory_manager:
