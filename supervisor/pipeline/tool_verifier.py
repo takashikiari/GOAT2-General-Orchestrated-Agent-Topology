@@ -113,7 +113,10 @@ async def run_tool_verifier(
                 },
             ],
         )
-        data = _extract_json(raw)
+        import re as _re
+        clean_raw = _re.sub(r"```(?:json)?
+?", "", raw).strip()
+        data = _extract_json(clean_raw)
         return VerifierReport(
             passed=bool(data.get("passed", True)),
             score=float(data.get("score", 1.0)),
