@@ -31,7 +31,12 @@ async def detect_override(intent: str, registry: "Registry") -> str | None:
 
     Returns "conversational", "complex", or None. The LLM is told
     in prose what an override looks like. No keywords are listed.
+    Only triggers on FIRST message of a session (no previous routing).
     """
+    # Skip if this is a follow-up - routing correction handled elsewhere
+    # This only checks for explicit override on fresh intent
+    if not intent.strip():
+        return None
     system = (
         "Decide whether the user is explicitly asking for a specific "
         "routing mode. If the user wants GOAT to answer directly without "

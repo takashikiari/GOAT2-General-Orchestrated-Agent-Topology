@@ -37,12 +37,12 @@ _SYSTEM: str = (
     '  "unmet_criteria": ["<criterion that failed>", ...]\n'
     "}\n\n"
     "Rules:\n"
-    "  - passed is true only when ALL criteria are met\n"
+    "  - passed is true only when ALL criteria are met with clear evidence\n"
     "  - score is the fraction of criteria that passed (0.0–1.0)\n"
     "  - findings has exactly one entry per criterion\n"
     "  - unmet_criteria lists only the failed ones\n"
-    "  - Base your evaluation solely on evidence in the outputs — "
-    "do not assume, do not hallucinate\n"
+    "  - Base your evaluation solely on evidence in the outputs — do not assume\n"
+    "  - If outputs are empty or unclear, set passed=false, score=0.0\n"
     "  - If no criteria are provided, return passed=true, score=1.0"
 )
 
@@ -66,8 +66,8 @@ class VerifierReport:
     raw: str
 
 
-def _passing_report() -> VerifierReport:
-    """Return a trivially-passing report used as fallback when criteria are absent."""
+def _empty_report() -> VerifierReport:
+    """Return an empty report used when criteria are absent (not a failure)."""
     return VerifierReport(passed=True, score=1.0, findings=[], unmet_criteria=[], raw="")
 
 
@@ -91,8 +91,8 @@ async def run_tool_verifier(
         VerifierReport with pass/fail status, per-criterion findings, and score.
     """
     if not dag_prompt.verification_criteria:
-        log.debug("tool_verifier: no criteria — trivially passing")
-        return _passing_report()
+        log.debug("tool_verifier: no criteria — skipping verification")
+        return _empty_report()
 
     spec = registry.settings.agents.get("critic")
     criteria_block = "\n".join(f"- {c}" for c in dag_prompt.verification_criteria)
@@ -122,5 +122,11 @@ async def run_tool_verifier(
             raw=raw,
         )
     except Exception as exc:
-        log.warning("run_tool_verifier: LLM call or parse failed — trivially passing: %s", exc)
-        return _passing_report()
+        log.warning("run_tool_verifier: LLM call or parse failed — reporting failure: %s", exc)
+        return VerifierReport(
+            passed=False,
+            score=0.0,
+            findings=[],
+            unmet_criteria=["verification_criteria"],
+            raw=str(exc),
+        )

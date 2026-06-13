@@ -1,7 +1,7 @@
 """GOAT Validator — Post-DAG validation before synthesis.
 
 Validates DAG results before synthesis to ensure role conformity,
-source tags, tool calls present, and no hallucination markers.
+source tags, tool calls present, and no hallucination.
 If validation passes → synthesize. If validation fails → _unverified_summary.
 
 TOOL DISTRIBUTION:
@@ -25,11 +25,13 @@ This is distinct from dag_validator.py because:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from config.agents import AGENT_ROLES, EXECUTION_ROLES
+
+if TYPE_CHECKING:
+    from config.registry import Registry
 
 log = logging.getLogger("goat2.supervisor.pipeline")
 
@@ -38,26 +40,12 @@ __all__ = ["ValidationReport", "validate_dag_result", "validate_dag_result_simpl
 # Valid source tags
 VALID_SOURCES: Final[frozenset[str]] = frozenset({"net", "file", "memory", "generated"})
 
-# Hallucination markers to detect
-HALLUCINATION_MARKERS: Final[list[str]] = [
-    "i cannot",
-    "i'm unable",
-    "i'm not able",
-    "as an ai",
-    "as a language model",
-    "i don't have the ability",
-    "i do not have access",
-    "i cannot provide",
-    "please note that i am an ai",
-    "note: this is a placeholder",
-    "[placeholder]",
-    "[todo]",
-    "tbd",
-    "to be determined",
-    "coming soon",
-    "not yet implemented",
-    "error: not found",
-    "error: no results",
+# Quick check fallback markers (only for empty/failed cases)
+_FAILED_OUTPUT_MARKERS = [
+    "error:",
+    "not found",
+    "no results",
+    "failed",
 ]
 
 
@@ -124,20 +112,81 @@ def _validate_source(source: str) -> bool:
     return source in VALID_SOURCES
 
 
-def _has_hallucination_markers(text: str) -> bool:
-    """Check for hallucination markers in text.
+def _has_failed_output(text: str) -> bool:
+    """Quick check for obvious failure patterns.
 
     Args:
-        text: Text to check for markers.
+        text: Text to check.
 
     Returns:
-        True if any hallucination marker found.
+        True if text appears to be an error/failure response.
     """
-    text_lower = text.lower()
-    for marker in HALLUCINATION_MARKERS:
-        if marker in text_lower:
+    text_lower = text.lower().strip()
+    for marker in _FAILED_OUTPUT_MARKERS:
+        if text_lower.startswith(marker) or text_lower == marker:
             return True
     return False
+
+
+async def _check_hallucination_llm(
+    outputs: dict[str, str],
+    registry: "Registry",
+) -> tuple[bool, list[str]]:
+    """Check for hallucination using LLM (semantic, not keywords).
+
+    Args:
+        outputs: Dictionary of task_id -> output text.
+        registry: ServiceRegistry for model access.
+
+    Returns:
+        Tuple of (has_hallucination, list of task IDs with issues).
+    """
+    if not outputs:
+        return False, []
+
+    # Build prompt
+    lines = []
+    for tid, output in outputs.items():
+        text = output[:300] + "..." if len(output) > 300 else output
+        lines.append(f"## {tid}\n{text}")
+
+    prompt = "\n\n".join(lines)
+    system = (
+        "You are GOAT's hallucination detector. Evaluate whether each agent output "
+        "appears to be genuine or fabricated.\n\n"
+        "Return ONLY this JSON:\n"
+        "{\n"
+        '  "genuine": true,\n'
+        '  "issues": ["task_id: description", ...]\n'
+        "}\n\n"
+        "Rules:\n"
+        "  - genuine=true if outputs appear real, false if they seem fabricated\n"
+        "  - Genuine outputs may have errors but show real work\n"
+        "  - Fabricated outputs: refuse to answer, claim inability without reason, "
+        "    or present invented facts\n"
+        "  - If outputs are mostly empty, set genuine=false"
+    )
+
+    try:
+        from utils.llm_utils import _call_llm, _extract_json
+        spec = registry.settings.agents.get("critic")
+        raw = await _call_llm(spec, [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ])
+        data = _extract_json(raw)
+        if not data:
+            return False, []
+
+        genuine = bool(data.get("genuine", True))
+        issue_list = list(data.get("issues", []))
+
+        if not genuine:
+            log.warning("goat_validator: LLM detected hallucination — %s", issue_list)
+        return not genuine, issue_list
+    except Exception as e:
+        log.debug("goat_validator: LLM check failed, using fallback: %s", e)
+        return False, []
 
 
 def _extract_task_outputs(dag_detail: str) -> dict[str, str]:
@@ -157,9 +206,10 @@ def _extract_task_outputs(dag_detail: str) -> dict[str, str]:
     }
 
 
-def validate_dag_result(
+async def validate_dag_result(
     dag_detail: str,
     results: dict,
+    registry=None,
 ) -> ValidationReport:
     """Validate DAG result before synthesis.
 
@@ -167,11 +217,12 @@ def validate_dag_result(
     - Role conformity: Each task has valid role from AGENT_ROLES
     - Source tags: Source is one of {net, file, memory, generated}
     - Tool calls present: Execution roles must have tool_called=True
-    - No hallucination markers: Check for common hallucination phrases
+    - No hallucination: LLM-based semantic check
 
     Args:
         dag_detail: The DAG result string from Redis (from retrieve_dag_result).
         results: Dictionary of task_id -> AgentResult from workflow execution.
+        registry: Optional ServiceRegistry for LLM hallucination check.
 
     Returns:
         ValidationReport with pass/fail status and error details.
@@ -205,15 +256,23 @@ def validate_dag_result(
     if tool_errors:
         errors.append(f"tool_calls_missing: {', '.join(tool_errors)}")
 
-    # 4. Check for hallucination markers in outputs
+    # 4. Check for hallucination (LLM-based, semantic)
+    has_hallucination = False
     hallucination_errors = []
-    for tid, output in task_outputs.items():
-        if _has_hallucination_markers(output):
-            # Truncate for logging
-            preview = output[:100] + "..." if len(output) > 100 else output
-            hallucination_errors.append(f"task={tid} output={preview}")
+    if task_outputs and registry:
+        has_halluc, issues = await _check_hallucination_llm(task_outputs, registry)
+        has_hallucination = has_halluc
+        hallucination_errors = issues
+    elif task_outputs:
+        # Fallback: quick check if no registry
+        for tid, output in task_outputs.items():
+            if _has_failed_output(output):
+                preview = output[:100] + "..." if len(output) > 100 else output
+                hallucination_errors.append(f"task={tid} output={preview}")
+                has_hallucination = True
+
     if hallucination_errors:
-        errors.append(f"hallucination_markers: {', '.join(hallucination_errors[:3])}")
+        errors.append(f"hallucination: {', '.join(hallucination_errors[:3])}")
 
     # Build report
     passed = len(errors) == 0
@@ -222,7 +281,7 @@ def validate_dag_result(
         role_conformity=len(role_errors) == 0,
         source_tags_valid=len(source_errors) == 0,
         tool_calls_present=len(tool_errors) == 0,
-        no_hallucination_markers=len(hallucination_errors) == 0,
+        no_hallucination_markers=not has_hallucination,
         errors=errors,
     )
 

@@ -10,7 +10,7 @@ This module gives GOAT the read-side primitives it needs to:
   4. Wait on pause/stop control signals during DAG execution.
 
 There is no classification logic here — classify_intent() is GOAT's
-internal tool, called from GoatSupervisor._goat_routing_decision().
+internal tool, called from GoatSupervisor.run().
 """
 from __future__ import annotations
 

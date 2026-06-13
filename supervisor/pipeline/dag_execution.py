@@ -154,6 +154,17 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
         session_id=session_id,
     )
 
+    # Unified verification: run all checks together for coherent reporting
+    verification_summary = {"corroboration": None, "tool_verifier": None, "hallucination": None}
+    try:
+        from supervisor.pipeline.agent_corroboration import check_corroboration
+        corr = await check_corroboration(results, supervisor.registry)
+        verification_summary["corroboration"] = {"consistent": corr.consistent, "issues": corr.issues}
+        if not corr.consistent:
+            log.warning("Corroboration check failed: %s", corr.issues)
+    except Exception as e:
+        log.debug("corroboration check skipped: %s", e)
+
     dag_verified, dag_detail, validation_errors = False, "", []
     if supervisor.memory_manager:
         try:
@@ -164,7 +175,7 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
             )
             if dag_result:
                 dag_detail = dag_result
-                report = validate_dag_result(dag_detail, results)
+                report = await validate_dag_result(dag_detail, results, supervisor.registry)
                 if report.passed:
                     dag_verified = True
                     log.info("GoatValidator: passed — dag_verified=True session=%s", session_id)
@@ -201,10 +212,16 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
         )
 
     if not dag_verified:
-        summary = (
-            ("Not available. " + "; ".join(validation_errors) + ".")
-            if validation_errors else "UNVERIFIED"
-        )
+        # DAG failed validation but may have partial results — synthesize what's available
+        available = [r.output for r in results.values() if r.output and not r.error]
+        if available:
+            from agents.critique import synthesize_results as _synth
+            try:
+                summary = await _synth(plan_ctx, results, critique="", registry=supervisor.registry, lang=lang)
+            except Exception:
+                summary = "Am obținut rezultate parțiale dar validarea a eșuat. " + " ".join(available[:2])[:500]
+        else:
+            summary = "Nu am putut obține rezultate verificate pentru acest task."
         critique_str = ""
     else:
         from agents.critique import critique_results, synthesize_results
@@ -241,11 +258,21 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
     log.info("Done in %.1fs — success=%s dag_verified=%s sources=%s",
              total, all(r.ok for r in results.values()), dag_verified, list(sources.values()))
     from supervisor.types import Plan, SupervisorResult
+    # Build verification summary string for metadata_summary
+    vfy_parts = []
+    if verification_summary.get("corroboration"):
+        c = verification_summary["corroboration"]
+        vfy_parts.append(f"corroboration:{'FAIL' if not c.get('consistent') else 'PASS'}")
+    if verification_summary.get("tool_verifier"):
+        t = verification_summary["tool_verifier"]
+        vfy_parts.append(f"tool_verifier:{t.get('score', 0):.2f}")
+    vfy_str = "; ".join(vfy_parts) if vfy_parts else metadata
+
     r = SupervisorResult(
         intent=intent, plan=plan, results=results,
         critique=critique_str if dag_verified else "",
         summary=summary, total_duration_s=total, session_id=session_id,
-        sources=sources, metadata_summary=metadata,
+        sources=sources, metadata_summary=vfy_str if vfy_parts else metadata,
         dag_verified=dag_verified, dag_detail=dag_detail,
     )
     supervisor._history.add_assistant(r.summary)

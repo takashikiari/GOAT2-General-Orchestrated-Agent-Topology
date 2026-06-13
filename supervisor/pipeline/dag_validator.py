@@ -12,8 +12,7 @@ DAG output is stored to Redis and read by supervisor for validation.
 
 CONTRADICTION DETECTION:
 ========================
-Detects conflicting claims between agent outputs and marks DAG as unsafe
-when mutually exclusive assertions are found.
+Uses LLM for semantic contradiction detection (not keyword matching).
 """
 from __future__ import annotations
 
@@ -48,19 +47,67 @@ _ROLE_ALLOWED_SOURCES: Final[dict[str, frozenset[str]]] = {
 
 _NET_ERROR_PREFIXES: Final[tuple[str, ...]] = ("error:", "http ", "no results")
 
-# Contradiction detection: semantic opposites
-_CONTRADICTIONS: Final[dict[str, list[str]]] = {
-    "true": ["false", "not true", "incorrect"],
-    "false": ["true", "correct", "accurate"],
-    "yes": ["no", "not yes", "negative"],
-    "no": ["yes", "affirmative", "positive"],
-    "exists": ["not exist", "missing", "absent"],
-    "missing": ["exists", "present", "available"],
-    "enabled": ["disabled", "turned off"],
-    "disabled": ["enabled", "turned on"],
-    "success": ["failure", "failed", "error"],
-    "failure": ["success", "succeeded", "worked"],
-}
+
+async def _check_contradictions_llm(
+    results: "dict[str, AgentResult]",
+    registry: "Registry",
+) -> tuple[bool, list[str]]:
+    """Check for contradictions using LLM (semantic, not keywords).
+
+    Args:
+        results: Dictionary of task_id -> AgentResult.
+        registry: ServiceRegistry for model access.
+
+    Returns:
+        Tuple of (has_contradiction, list of issue descriptions).
+    """
+    if len(results) < 2:
+        return False, []
+
+    # Build prompt with outputs
+    lines = []
+    for tid, result in results.items():
+        output = result.output or "(empty)"
+        if len(output) > 400:
+            output = output[:400] + "..."
+        lines.append(f"## {tid} ({result.role})\n{output}")
+
+    prompt = "\n\n".join(lines)
+    system = (
+        "You are GOAT's contradiction detector. Evaluate whether agent outputs "
+        "contain conflicting claims about the same subject.\n\n"
+        "Return ONLY this JSON:\n"
+        "{\n"
+        '  "consistent": true,\n'
+        '  "issues": ["task_id: conflicting claim", ...]\n'
+        "}\n\n"
+        "Rules:\n"
+        "  - consistent=true if outputs agree or are unrelated\n"
+        "  - Check for: numeric differences, opposite recommendations, "
+        "    conflicting facts, different file paths for same file\n"
+        "  - If outputs are empty, return consistent=true\n"
+    )
+
+    try:
+        from utils.llm_utils import _call_llm, _extract_json
+        spec = registry.settings.agents.get("critic")
+        raw = await _call_llm(spec, [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ])
+        data = _extract_json(raw)
+        if not data:
+            return False, []
+
+        consistent = bool(data.get("consistent", True))
+        issues = list(data.get("issues", []))
+
+        if not consistent:
+            log.warning("dag_validator: LLM detected contradictions — %s", issues)
+        return not consistent, issues
+    except Exception as e:
+        log.debug("dag_validator: LLM check failed: %s", e)
+        return False, []
 
 
 @dataclass(frozen=True)
@@ -203,8 +250,9 @@ def _is_contradictory(results: dict[str, AgentResult]) -> tuple[bool, str, str, 
     return False, "", "", ""
 
 
-def validate_results(
+async def validate_results(
     results: dict[str, AgentResult],
+    registry: "Registry" = None,
 ) -> tuple[dict[str, AgentResult], list[ValidationStatus]]:
     """Validate all DAG results before aggregation.
 
@@ -219,7 +267,7 @@ def validate_results(
     - unverified_execution: Execution role (researcher/tool_caller) didn't call a tool
     - source_violation: Role got source not in its whitelist
     - net_error: source=net but returned an error
-    - contradiction: Two tasks made mutually exclusive claims
+    - contradiction: LLM-based semantic check
 
     DAG agents can only produce: net, file, generated sources.
     (memory source removed — DAG cannot access ChromaDB/Letta)
@@ -228,17 +276,30 @@ def validate_results(
     """
     statuses: list[ValidationStatus] = []
 
-    # First, check for cross-result contradictions (applies to entire DAG)
-    has_contradiction, tid1, tid2, desc = _is_contradictory(results)
-    if has_contradiction:
-        # Mark both conflicting tasks as unsafe
-        statuses.append(ValidationStatus(task_id=tid1, safe=False, reason="contradiction"))
-        statuses.append(ValidationStatus(task_id=tid2, safe=False, reason="contradiction"))
-        # Mark all other tasks as safe (they're not at fault)
-        for tid in results:
-            if tid not in (tid1, tid2):
-                statuses.append(ValidationStatus(task_id=tid, safe=True))
-        return results, statuses
+    # First, check for cross-result contradictions (LLM-based)
+    if registry:
+        has_contradiction, issues = await _check_contradictions_llm(results, registry)
+        if has_contradiction:
+            for issue in issues:
+                # Parse issue to get task_id
+                tid = issue.split(":")[0].strip()
+                statuses.append(ValidationStatus(task_id=tid, safe=False, reason="contradiction"))
+            # Mark others as safe
+            issue_tids = {i.split(":")[0].strip() for i in issues if ":" in i}
+            for tid in results:
+                if tid not in issue_tids:
+                    statuses.append(ValidationStatus(task_id=tid, safe=True))
+            return results, statuses
+    else:
+        # Fallback: quick keyword check
+        has_contradiction, tid1, tid2, desc = _is_contradictory(results)
+        if has_contradiction:
+            statuses.append(ValidationStatus(task_id=tid1, safe=False, reason="contradiction"))
+            statuses.append(ValidationStatus(task_id=tid2, safe=False, reason="contradiction"))
+            for tid in results:
+                if tid not in (tid1, tid2):
+                    statuses.append(ValidationStatus(task_id=tid, safe=True))
+            return results, statuses
 
     # Individual task validation (existing checks)
     for tid, result in results.items():

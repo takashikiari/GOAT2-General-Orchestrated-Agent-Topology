@@ -44,18 +44,23 @@ _SIMILARITY_THRESHOLD: Final[float] = 0.30
 _MIN_CONTENT_LEN:      Final[int]   = 20
 
 # Patterns for extracting entity-like claims (numbers, proper nouns, key-value pairs)
+# Only extract ACTUAL facts, not session IDs or metadata
 _NUMBER_PATTERN = re.compile(
     r'\b\d+[.,]?\d*\s*(?:%|KB|MB|GB|ms|s|h|d|€|\$|lei|euro|dolari|ms|sec|min|ore|zile)\b',
     re.IGNORECASE,
 )
+# Key-value patterns only for actual config values, not session IDs
 _KEY_VALUE_PATTERN = re.compile(
-    r'\b(\w+)\s*(?::|==|=|–|-|—)\s*(["\']?[^"\',;.]+["\']?)',
+    r'\b(?:success|error|status|version|size|count)\s*(?::|==|=|–|-|—)\s*(["\']?[^"\',;.]+["\']?)',
+    re.IGNORECASE,
 )
-# Romanian quotes: „ " and « » as well as standard quotes
+# Only property patterns for verifiable facts
 _PROPERTY_PATTERN = re.compile(
     r'\b(?:are|este|costă|durează|conține|folosește|rulează|suportă|necesită|include|oferă|produce|generează|calculează)\s+([^,;.]+)',
     re.IGNORECASE,
 )
+# Ignore patterns for session metadata
+_IGNORE_PREFIXES = ("dag:", "goat:", "session", "timestamp", "uuid:", "key:", "test_")
 
 # Semantic opposites for contradiction detection
 _SEMANTIC_OPPOSITES: dict[str, list[str]] = {
@@ -112,13 +117,21 @@ def _jaccard(a: str, b: str) -> float:
 
 
 def _extract_claims(text: str) -> set[str]:
-    """Extract concrete claims (numbers, key-values, properties) from text."""
+    """Extract concrete claims (numbers, key-values, properties) from text.
+
+    Filters out session IDs, timestamps, and other metadata.
+    """
     claims: set[str] = set()
     for match in _NUMBER_PATTERN.findall(text):
         claims.add(match.lower().strip())
     for match in _KEY_VALUE_PATTERN.findall(text):
         k, v = match
-        claims.add(f"{k.strip().lower()}:{v.strip().lower()}")
+        k_lower = k.strip().lower()
+        v_lower = v.strip().lower()
+        # Skip session/metadata keys
+        if any(skip in k_lower for skip in _IGNORE_PREFIXES):
+            continue
+        claims.add(f"{k_lower}:{v_lower}")
     for match in _PROPERTY_PATTERN.findall(text):
         claims.add(match.strip().lower())
     return claims
@@ -205,17 +218,25 @@ async def run_auditor(results: dict[str, AgentResult]) -> AuditReport:
                     report.compared_pairs += 1
 
     # 3. Potential hallucination markers: single-source numerical claims
-    #    If only one result makes a specific numerical claim, flag it
+    #    Only flag actual facts, not session metadata or IDs
     if len(all_valid) >= 2:
         all_claims: list[tuple[str, AgentResult]] = []
         for r in all_valid:
             for c in _extract_claims(r.output):
-                all_claims.append((c, r))
+                # Filter out session metadata
+                skip = False
+                for prefix in _IGNORE_PREFIXES:
+                    if c.lower().startswith(prefix):
+                        skip = True
+                        break
+                if not skip:
+                    all_claims.append((c, r))
         claim_sources: dict[str, list[str]] = {}
         for claim, r in all_claims:
             claim_sources.setdefault(claim, []).append(f"{r.role}/{r.task_id}")
         for claim, sources in claim_sources.items():
-            if len(sources) == 1 and ":" in claim:
+            # Only flag if it's an actual fact claim (contains key words)
+            if len(sources) == 1 and any(w in claim.lower() for w in ["success", "error", "status", "version", "size", "count", "cost", "price"]):
                 msg = (
                     f"Unverified claim: '{claim}' appears only in {sources[0]}, "
                     f"no corroboration from other roles"

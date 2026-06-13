@@ -2,8 +2,8 @@
 
 Scans working memory for active DAG sessions and returns their status.
 No classification and no override detection are performed here.
-The classifier is GOAT's internal tool, called from _goat_routing_decision()
-inside GoatSupervisor, not from this module.
+The classifier is GOAT's internal tool, called from GoatSupervisor.run(),
+not from this module.
 """
 from __future__ import annotations
 
