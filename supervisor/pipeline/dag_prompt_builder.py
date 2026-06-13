@@ -48,14 +48,14 @@ _SYSTEM: str = (
     "this JSON — it must be self-contained\n"
     "  - required_agents: use ONLY these exact role names: researcher, coder, critic, summarizer, tool_caller, memory. "
     "Do NOT invent new roles like promote_to_letta, check_memory, monitor_logs, etc. "
-    "Choose from the list based on task needs.
-"
+    "Choose from the list based on task needs.\n"
     "  - verification_criteria: list 2–5 observable outcomes that prove the task "
     "succeeded (e.g. 'file was read', 'web search returned results', "
     "'code was written to disk')\n"
     "  - memory_updates: true when agents should write findings to working memory\n"
     "  - constraints: task-specific limits the planner should respect "
     "(max_tasks, language, workspace_path, tier_access, ttl)\n"
+    "  - technical_prompt must NOT contain session IDs, DAG IDs, or references to specific sessions\\n"
 )
 
 _VALIDATE_SYSTEM: str = (
