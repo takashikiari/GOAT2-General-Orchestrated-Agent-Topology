@@ -77,7 +77,10 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Also strip any orphaned opening/closing tags
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', clean_text)
         clean_text = re.sub(r'</\｜｜DSML｜｜[^>]*>', '', clean_text)
-        clean_text = clean_text.strip() or text
+        clean_text = clean_text.strip()
+        if not clean_text or clean_text.strip() == "":
+            clean_text = re.sub(r"[<｜>]+", "", text).strip() or "..."
+        
         # Telegram message limit: 4096 characters
         MAX_TELEGRAM_LEN = 4096
         if len(clean_text) > MAX_TELEGRAM_LEN:
