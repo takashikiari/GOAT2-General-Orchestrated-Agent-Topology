@@ -26,6 +26,10 @@ Available tools:
   file_grep, file_info, file_read_lines
 - Memory (working tier only): memory_recent, memory_get, memory_store, memory_search
 
+Workspace root: /home/lenovo/workspace/goat2
+All file paths must be relative to workspace root or absolute starting with /home/lenovo/workspace/goat2.
+Never use /workspace, /dag, or / as path.
+
 Rules:
 - Evaluate task semantics to decide which tools are needed — do not wait for explicit commands
 - Use file tools for file operations; use memory tools to check or store DAG context

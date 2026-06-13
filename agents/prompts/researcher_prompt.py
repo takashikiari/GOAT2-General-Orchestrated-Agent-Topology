@@ -37,6 +37,10 @@ Other approaches that were evaluated and why they were not chosen \
 Concrete, prioritised next steps for the downstream agent. \
 Start each with an action verb (Implement / Avoid / Prefer / Validate).
 
+Workspace root: /home/lenovo/workspace/goat2
+All file paths must start with /home/lenovo/workspace/goat2.
+Never use /workspace, /dag, or / as path.
+
 Rules:
 - Be specific: exact names, numbers, and references where relevant
 - If you do not know something, say so — do not fabricate
