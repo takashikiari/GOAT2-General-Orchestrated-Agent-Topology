@@ -74,8 +74,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
         # Also match mixed pairs: <tag1>...</tag2> where content differs
         clean_text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', clean_text, flags=re.DOTALL)
-        # Also strip any orphaned opening tags (no closing tag)
+        # Also strip any orphaned opening/closing tags
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', clean_text)
+        clean_text = re.sub(r'</\｜｜DSML｜｜[^>]*>', '', clean_text)
         clean_text = clean_text.strip() or text
         # Telegram message limit: 4096 characters
         MAX_TELEGRAM_LEN = 4096

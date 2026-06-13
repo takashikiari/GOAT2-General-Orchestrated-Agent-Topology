@@ -125,7 +125,11 @@ def _extract_claims(text: str) -> set[str]:
     for match in _NUMBER_PATTERN.findall(text):
         claims.add(match.lower().strip())
     for match in _KEY_VALUE_PATTERN.findall(text):
-        k, v = match[0], match[1] if isinstance(match, (list, tuple)) and len(match) >= 2 else (match, "")
+        if isinstance(match, (list, tuple)):
+            k = str(match[0]) if match else ""
+            v = str(match[1]) if len(match) >= 2 else ""
+        else:
+            k, v = str(match), ""
         k_lower = k.strip().lower()
         v_lower = v.strip().lower()
         # Skip session/metadata keys

@@ -110,6 +110,13 @@ async def decompose_plan(
         log.warning("Planner output malformed (%s) — using fallback plan", exc)
         return _fallback_plan(intent)
 
+    # Force final summarizer to depend on all other tasks
+    summarizer_tasks = [t for t in tasks if t.role == "summarizer"]
+    if summarizer_tasks:
+        final_sum = summarizer_tasks[-1]
+        all_other_ids = [t.id for t in tasks if t.id != final_sum.id]
+        final_sum.depends_on = list(set(final_sum.depends_on) | set(all_other_ids))
+
     plan = Plan(tasks=tasks)
 
     # ── Validate the plan before returning ──────────────────────────────
