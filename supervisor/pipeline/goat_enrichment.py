@@ -159,6 +159,10 @@ async def enrich_intent(
         user_parts.append(f"\nMemory context:\n{mem_ctx}")
     if history:
         user_parts.append(f"\nConversation history:\n{history}")
+    import os as _os
+    workspace = _os.environ.get("GOAT_WORKSPACE", "")
+    if workspace:
+        user_parts.append(f"\nWorkspace root (use this exact path): {workspace}")
     if available:
         user_parts.append(f"\nAvailable tools:\n{available}")
     user_parts.append("\nDecide what must be executed. Return the JSON.")
