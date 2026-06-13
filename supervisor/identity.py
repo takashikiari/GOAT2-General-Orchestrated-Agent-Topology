@@ -125,8 +125,10 @@ def _system_with_profile(profile: str, summary: str = "", style: str = "") -> st
     from supervisor.behavior.behavior_mirror import mirror_instruction
     import datetime as _dt
     _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    parts = [GOAT_SYSTEM, f"
-Current date and time: {_now} (Romania/Bucharest timezone)."]
+    _ts = "\nCurrent date and time: " + _now + " (Romania/Bucharest timezone)."
+
+
+    parts = [GOAT_SYSTEM, _ts]
     if style:
         directive = mirror_instruction(style)
         if directive:
