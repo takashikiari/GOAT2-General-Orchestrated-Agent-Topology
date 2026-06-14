@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 log = logging.getLogger("goat2.supervisor.session")
 
-from supervisor.session.history import ConversationHistory, load_session_summary
+from supervisor.session.history import ConversationHistory, load_session_summary, load_episodic_context
 from supervisor.identity import load_user_profile, check_onboarding_done
 from supervisor.behavior.behavior_store import load_style
 
@@ -44,13 +44,20 @@ async def init_session(mm: MemoryManager | None) -> tuple[str, ConversationHisto
     """
     if mm is None:
         return "", ConversationHistory(), "", True  # No memory = assume done
-    profile, summary, style, onboarding = await asyncio.gather(
+    profile, summary, style, onboarding, episodic = await asyncio.gather(
         _safe(load_user_profile(mm)),
         _safe(load_session_summary(mm)),
         _safe(load_style(mm)),
         _safe_onboarding(mm),
+        _safe(load_episodic_context(mm)),
     )
-    return profile, ConversationHistory(summary), style, onboarding
+    history = ConversationHistory(summary)
+    # Inject episodic context into profile so GOAT knows previous session context
+    full_profile = profile
+    if episodic:
+        full_profile = (profile + "\n\n" + episodic).strip() if profile else episodic
+
+    return full_profile, history, style, onboarding
 
 
 async def _safe(coro) -> str:

@@ -90,3 +90,22 @@ async def load_session_summary(mm: MemoryManager | None) -> str:
         return entry.content if entry else ""
     except Exception:
         return ""
+
+
+async def load_episodic_context(mm: "MemoryManager | None", limit: int = 100) -> str:
+    """Load recent episodic memory entries for session injection."""
+    if mm is None:
+        return ""
+    try:
+        entries = await mm.episodic.backend.list("user_session", limit=limit)
+        if not entries:
+            return ""
+        lines = []
+        for e in entries:
+            content = e.get("content", "") if isinstance(e, dict) else getattr(e, "content", "")
+            if content:
+                lines.append(f"- {content[:200]}")
+        return "[Episodic Memory]\n" + "\n".join(lines) if lines else ""
+    except Exception as exc:
+        log.debug("load_episodic_context failed: %s", exc)
+        return ""
