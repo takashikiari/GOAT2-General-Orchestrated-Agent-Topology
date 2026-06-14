@@ -5,6 +5,7 @@ as separate Telegram messages. The bot only responds with result.summary.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Final
@@ -67,7 +68,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         result = await sv.run(intent)
-        text = mask_sensitive(result.summary.strip())
+        text = mask_sensitive(str(result.summary or "").strip())
         if not text:
             text = "DAG returned empty result. Unverified."
         # Filter out tool calls from response (both wrapper and individual invoke tags)
@@ -95,13 +96,26 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"[error] {exc}")
 
 
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log unhandled Application-level errors so they are never silently lost."""
+    import traceback as _tb
+    log.error(
+        "Unhandled exception in Telegram handler: %s\n%s",
+        context.error,
+        "".join(_tb.format_exception(type(context.error), context.error, context.error.__traceback__))
+        if context.error else "no traceback",
+    )
+
+
 def build_app() -> Application:
     """Build and configure the Telegram Application."""
     if not _TOKEN:
         raise RuntimeError("channels.telegram_token is not set in config/goat.toml")
     app = Application.builder().token(_TOKEN).build()
-    # ── FIX: Only handle TEXT messages — ignore tool calls, media, etc. ──
+    # ── Only handle TEXT messages — ignore tool calls, media, etc. ──
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    # ── Global error handler so Application-level exceptions are never lost ──
+    app.add_error_handler(_error_handler)
     return app
 
 

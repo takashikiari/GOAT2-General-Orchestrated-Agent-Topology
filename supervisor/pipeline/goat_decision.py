@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from config.settings import Provider
@@ -34,6 +35,15 @@ log = logging.getLogger("goat2.supervisor.pipeline.goat_decision")
 __all__ = ["GoatDecision", "decide"]
 
 _VALID_ACTIONS = ("direct", "clarify", "dag")
+
+# Last-resort regex: extract action from malformed JSON without a full parse.
+_ACTION_RE = re.compile(r'"action"\s*:\s*"(direct|clarify|dag)"')
+
+
+def _fallback_action(raw: str) -> str | None:
+    """Extract action from raw text when JSON parsing fails completely."""
+    m = _ACTION_RE.search(raw)
+    return m.group(1) if m else None
 
 _GOAT_SYSTEM: str = (
     "You are GOAT, a multi-agent supervisor. You receive the full context (your "
@@ -112,6 +122,7 @@ async def decide(
     """
     spec = registry.settings.supervisor.model
     user_prompt = _build_user_prompt(intent, goat_context, clarity_context, hints)
+    raw = ""
     try:
         raw = await _call_llm(
             spec,
@@ -135,5 +146,10 @@ async def decide(
         log.info("decide: action=%s intent=%.80s", decision.action, intent)
         return decision
     except Exception as exc:
-        log.warning("decide: LLM call or parse failed — defaulting to direct: %s", exc)
-        return GoatDecision(action="direct")
+        # Try to recover the action even from malformed JSON via regex.
+        rescued = _fallback_action(raw) if raw else None
+        log.warning(
+            "decide: parse failed (rescued=%s) raw=%.300s error=%s",
+            rescued or "none", raw[:300] if raw else "N/A", exc,
+        )
+        return GoatDecision(action=rescued or "direct")

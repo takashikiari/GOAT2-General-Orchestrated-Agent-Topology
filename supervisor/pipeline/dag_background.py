@@ -31,16 +31,13 @@ def spawn(supervisor: "GoatSupervisor", dag_instructions: str, session_id: str) 
 
     The task is stored in ``supervisor._active_dag_tasks[session_id]`` so GOAT can
     later check whether it is still running and surface its result.
+
+    NOTE: instructions are written to working memory by ``_dispatch()`` (in supervisor.py)
+    *before* this function is called, using the full ``mem_ctx`` and capabilities summary.
+    We must NOT write them again here — a second write would overwrite the richer data with
+    empty ``mem_ctx`` and empty ``capabilities``.  ``run_dag_pipeline`` falls back to the
+    ``dag_instructions`` parameter when the memory key is absent.
     """
-    # Write instructions to working memory so run_dag_pipeline can find them
-    mm = supervisor.memory_manager
-    if mm:
-        try:
-            from supervisor.session.session import write_dag_instructions
-            import asyncio as _asyncio
-            _asyncio.create_task(write_dag_instructions(mm, supervisor._session_id, dag_instructions, "", ""))
-        except Exception as _e:
-            log.debug("spawn: write_dag_instructions failed: %s", _e)
     task = asyncio.create_task(_dag_runner(supervisor, session_id, dag_instructions))
     supervisor._active_dag_tasks[session_id] = task
     log.info("spawn: background DAG session=%s (active=%d)", session_id, len(supervisor._active_dag_tasks))
@@ -58,7 +55,9 @@ async def _dag_runner(supervisor: "GoatSupervisor", session_id: str, dag_instruc
     t0 = time.monotonic()
     try:
         from supervisor.pipeline.dag_execution import run_dag_pipeline
-        result = await run_dag_pipeline(supervisor, dag_instructions, t0, "", dag_instructions=dag_instructions)
+        # Pass dag_instructions as intent (fallback); run_dag_pipeline reads the
+        # richer structured instructions from working memory first (set by _dispatch()).
+        result = await run_dag_pipeline(supervisor, dag_instructions, t0, "")
         summary = (result.summary or "").strip() or "DAG finished with no summary."
         log.info("_dag_runner: session=%s complete (%.1fs)", session_id, time.monotonic() - t0)
     except Exception as exc:

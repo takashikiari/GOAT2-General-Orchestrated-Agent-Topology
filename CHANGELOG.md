@@ -5,6 +5,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 — Bug fixes: _history, tuple.strip, telegram errors, JSON parse, DAG instructions
+
+### Fixed — five production bugs from chat=1912576407 logs
+
+**ERROR 1 — `config/registry.py`: `ServiceRegistry._history` missing**
+- Removed `_history: object = None` class attribute. It was never in `__slots__`, making
+  per-instance writes raise `AttributeError`. `ConversationHistory` lives solely on
+  `GoatSupervisor._history` — no registry attribute needed.
+
+**ERROR 2 — `supervisor/session/session_init.py`: `tuple.strip()` crash**
+- `_safe(coro)` now enforces `str` return. If any memory loader returns a non-str (e.g. a
+  `(content, metadata)` tuple), it is discarded and `""` is returned instead of leaking the
+  tuple into `_user_profile` / `_behavior_style` / `result.summary`.
+- `supervisor/interfaces/telegram_bot.py`: Added `str(result.summary or "").strip()` as
+  defence-in-depth so future non-str summaries never crash the bot.
+
+**ERROR 3 — `supervisor/interfaces/telegram_bot.py`: missing import + no error handler**
+- Added `import asyncio`.
+- Added `_error_handler` async function and registered it with `app.add_error_handler()`.
+  Application-level exceptions (network errors, startup failures) are now logged, not silently
+  discarded.
+
+**ERROR 4 — `supervisor/pipeline/goat_decision.py`: JSON parse failures not diagnosable**
+- `raw = ""` initialised before the `try` block so it is always in scope for the except.
+- Added `import re` and `_fallback_action()` (regex on `"action": "direct|clarify|dag"`):
+  if `_extract_json` raises but the action is still readable in the raw text, GOAT returns the
+  correct action instead of always falling back to `direct`.
+- Except block now logs `raw[:300]` so operators can diagnose malformed model output.
+
+**ERROR 5 — `supervisor/pipeline/dag_background.py`: DAG instructions overwritten**
+- Removed the `write_dag_instructions` async task from `spawn()`. `_dispatch()` already writes
+  complete instructions (with `mem_ctx` and `_DAG_CAPABILITIES_SUMMARY`) before calling
+  `spawn_dag_background()`; the second write in `spawn()` raced and overwrote with empty data.
+- Cleaned up `_dag_runner` call: `run_dag_pipeline(supervisor, dag_instructions, t0, "")` —
+  removes the redundant `dag_instructions=dag_instructions` keyword duplicate. `run_dag_pipeline`
+  reads from working memory first and falls back to the `intent` (= `dag_instructions`) param.
+
+---
+
 ## [Unreleased] — 2026-06-14 (DAG runs detached in the background; GOAT never blocks)
 
 ### Changed — GOAT is the kernel, DAG is a background process

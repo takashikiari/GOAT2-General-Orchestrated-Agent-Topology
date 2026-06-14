@@ -19,7 +19,7 @@ from memory.working.working_query import WorkingQueryMixin
 from memory.working.working_sweep import WorkingSweepMixin
 
 if TYPE_CHECKING:
-    from memory.working.dict_backend import DictBackend
+    from memory.working.redis_backend import RedisBackend
 
 log = logging.getLogger("goat2.memory.working")
 
@@ -58,5 +58,5 @@ class WorkingMemoryLayer(
     @staticmethod
     def _default_backend() -> StorageBackend:
         """Lazy default backend — avoids hard import at module load."""
-        from memory.working.dict_backend import DictBackend
-        return DictBackend()
+        from memory.working.redis_backend import RedisBackend
+        return RedisBackend()

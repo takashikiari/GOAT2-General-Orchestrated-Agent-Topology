@@ -61,9 +61,14 @@ async def init_session(mm: MemoryManager | None) -> tuple[str, ConversationHisto
 
 
 async def _safe(coro) -> str:
-    """Await coro; return '' on any exception or falsy result."""
+    """Await coro; always return str — '' on error, non-str, or falsy result."""
     try:
-        return await coro or ""
+        result = await coro
+        if isinstance(result, str):
+            return result
+        if result:
+            log.debug("_safe: expected str, got %s — ignoring", type(result).__name__)
+        return ""
     except Exception:
         return ""
 

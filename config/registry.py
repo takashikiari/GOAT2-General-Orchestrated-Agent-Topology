@@ -199,9 +199,6 @@ class ServiceRegistry:
             len(self.agent_registry.roles()),
         )
 
-    # Optional: conversation history attached per-request by GoatSupervisor
-    _history: object = None
-
     def get(self, role: str):
         """Get agent runner by role — delegates to the owned AgentRegistry.
 
