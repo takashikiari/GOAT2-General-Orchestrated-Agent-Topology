@@ -29,7 +29,6 @@ __all__ = [
     "get_previous_routing",
     "set_previous_routing",
     "clear_previous_routing",
-    "check_disagreement",
     "store_routing_correction",
 ]
 
@@ -103,14 +102,6 @@ async def clear_previous_routing(mm: "MemoryManager | None", session_id: str) ->
         await mm.working.backend.delete(_SROLE, key)
     except Exception:
         pass
-
-
-async def check_disagreement(
-    registry: "ServiceRegistry", user_message: str, previous_routing: str
-) -> tuple[bool, str]:
-    """Check if a user message disagrees with the previous routing decision."""
-    from supervisor.pipeline.behavioral_learning import detect_routing_disagreement
-    return await detect_routing_disagreement(user_message, previous_routing, registry)
 
 
 async def store_routing_correction(

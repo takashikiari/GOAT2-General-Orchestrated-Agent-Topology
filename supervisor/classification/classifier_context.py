@@ -11,56 +11,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from utils.llm_utils import _call_llm
-
 log = logging.getLogger("goat2.supervisor.classification.classifier_context")
 
 if TYPE_CHECKING:
     from config.registry import Registry
 
 __all__ = [
-    "detect_override",
     "gather_active_dags",
     "gather_user_profile",
     "gather_hints",
 ]
-
-
-async def detect_override(intent: str, registry: "Registry") -> str | None:
-    """Ask the LLM whether the user is explicitly overriding routing.
-
-    Returns "conversational", "complex", or None. The LLM is told
-    in prose what an override looks like. No keywords are listed.
-    Only triggers on FIRST message of a session (no previous routing).
-    """
-    # Skip if this is a follow-up - routing correction handled elsewhere
-    # This only checks for explicit override on fresh intent
-    if not intent.strip():
-        return None
-    system = (
-        "Decide whether the user is explicitly asking for a specific "
-        "routing mode. If the user wants GOAT to answer directly without "
-        "spawning the deep-thinking pipeline, reply: conversational. "
-        "If the user wants GOAT to think deeply, spawn the DAG, or run "
-        "the full pipeline, reply: complex. If there is no explicit "
-        "routing request, reply: none. Reply with exactly one word: "
-        "conversational, complex, or none."
-    )
-    try:
-        raw = await _call_llm(
-            registry.settings.agents.get("memory"),
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": intent},
-            ],
-        )
-    except Exception as e:
-        log.debug("override detection failed: %s", e)
-        return None
-    token = raw.strip().lower().split()[0] if raw.strip() else ""
-    if token in ("conversational", "complex"):
-        return token
-    return None
 
 
 async def gather_active_dags(registry: "Registry") -> list[dict]:

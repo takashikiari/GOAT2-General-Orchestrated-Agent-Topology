@@ -1,4 +1,10 @@
-"""GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md for full architecture."""
+"""GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md for full architecture.
+
+Single-call architecture: one GOAT decision LLM call (``goat_decision.decide``)
+replaces the former 6-call routing pipeline. Middleware only builds context (no
+LLM). Based on the decision's action the supervisor either replies directly
+(tool-enabled), asks a clarification, or runs the DAG (specialized agent LLMs).
+"""
 from __future__ import annotations
 import uuid
 
@@ -15,22 +21,13 @@ from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
 from supervisor.session.turn_persistence import store_and_promote
-from supervisor.session.routing_state import (
-    pop_pending_dag,
-    get_previous_routing,
-    set_previous_routing,
-    clear_previous_routing,
-    check_disagreement,
-    store_routing_correction,
-)
-from supervisor.pipeline.gates import check_intent_clarity_gate, validate_dag_prompt_gate
-from supervisor.pipeline.intent_clarity import CLARITY_THRESHOLD, CLARITY_CONFIDENT
+from supervisor.session.routing_state import pop_pending_dag
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
     from agents.critique import CriticVerdict
-    from supervisor.pipeline.goat_enrichment import GoatDecision
+    from supervisor.pipeline.goat_decision import GoatDecision
 
 log = logging.getLogger("goat2.supervisor")
 
@@ -50,7 +47,7 @@ _FALLBACK_CLARIFICATION = "Could you provide more details about what you'd like 
 
 
 class GoatSupervisor:
-    """GOAT 2.0 orchestrator — session, tiered memory, DAG execution. See docs/supervisor.md."""
+    """GOAT 2.0 orchestrator — session, tiered memory, single-call routing, DAG execution."""
 
     def __init__(self, registry: "ServiceRegistry") -> None:
         """Initialize with ServiceRegistry for dependency injection."""
@@ -67,83 +64,16 @@ class GoatSupervisor:
         self._session_id: str = str(uuid.uuid4())
 
     async def _run_dag(
-        self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str,
-        decision: "GoatDecision | None" = None,
+        self, intent: str, t0: float, mem_ctx: str, dag_instructions: str = "",
     ) -> SupervisorResult:
-        """Thin wrapper over the extracted pipeline module.
+        """Run the DAG pipeline with GOAT's self-contained ``dag_instructions``.
 
-        Threads GOAT's enrichment decision through to the DAG pipeline. When
-        ``decision`` is None (e.g. the pending-DAG fast path), the pipeline
-        enriches the intent itself so the Prompter always receives a decision.
+        The instructions (already decided by the single GOAT call) become the
+        planner objective; the DAG's specialized agents do the rest.
         """
         from supervisor.pipeline.dag_execution import run_dag_pipeline
-        log.debug("_run_dag: depth=%s decision=%s", depth.value, "provided" if decision else "none")
-        return await run_dag_pipeline(self, intent, t0, depth, mem_ctx, decision)
-
-    async def _enrich_intent(self, intent: str, mem_ctx: str) -> "GoatDecision":
-        """GOAT decides — enrich raw intent into a complete GoatDecision.
-
-        This is the *decide* stage of GOAT decides → Prompter formats → DAG
-        executes. Delegates to the enrichment module's single LLM call.
-        """
-        from supervisor.pipeline.goat_enrichment import enrich_intent
-        from supervisor.classification.classifier_prompt import format_history
-        history_text = format_history(self._history.messages) if self._history else ""
-        return await enrich_intent(intent, mem_ctx, history_text, self.registry)
-
-    async def _execute_with_depth(
-        self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str
-    ) -> SupervisorResult:
-        """Execute with a specific routing depth (after correction)."""
-        await set_previous_routing(self.memory_manager, self._session_id, depth)
-        if depth == IntentDepth.CONVERSATIONAL:
-            r = await conv_result(
-                intent, self._history.messages, self._user_profile or "",
-                self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
-                goat_session_id=self._session_id,
-            )
-            self._history.add_assistant(r.summary)
-            await store_and_promote(self, len(self._history.messages), intent, r.summary)
-            return r
-        # COMPLEX or ANALYTICAL: run through DAG pipeline with gates
-        if self.memory_manager:
-            try:
-                from supervisor.session.session import write_dag_instructions
-                await write_dag_instructions(
-                    self.memory_manager, self._session_id,
-                    intent, mem_ctx, _DAG_CAPABILITIES_SUMMARY,
-                )
-            except Exception as e:
-                log.warning("write_dag_instructions failed: %s", e)
-
-        # Gate 1 — Intent clarity (scored: <0.5 blocks; 0.5–0.79 proceeds with warning)
-        clarity = await check_intent_clarity_gate(self, intent, mem_ctx)
-        log.debug("GOAT: clarity_score=%.2f clear=%s", clarity.clarity_score, clarity.clear)
-        if clarity.clarity_score < CLARITY_THRESHOLD:
-            log.info("GOAT: intent unclear — score=%.2f question=%.80s",
-                     clarity.clarity_score, clarity.clarification_question)
-            r = self._clarification_result(intent, t0, clarity.clarification_question)
-            self._history.add_assistant(r.summary)
-            await store_and_promote(self, len(self._history.messages), intent, r.summary)
-            return r
-        if clarity.clarity_score < CLARITY_CONFIDENT:
-            log.warning("GOAT: intent partially clear — score=%.2f, proceeding from context. missing=%s",
-                        clarity.clarity_score, clarity.missing)
-
-        # GOAT decides — enrich the raw intent into a complete GoatDecision once,
-        # then reuse it for both the validation gate and DAG execution.
-        decision = await self._enrich_intent(intent, mem_ctx)
-
-        # Gate 2 — DagPrompt validation (Prompter formats the decision, then validates)
-        dag_validity = await validate_dag_prompt_gate(self, decision, intent, mem_ctx)
-        if not dag_validity.clear:
-            log.info("GOAT: dag_prompt invalid — question=%.80s", dag_validity.clarification_question)
-            r = self._clarification_result(intent, t0, dag_validity.clarification_question)
-            self._history.add_assistant(r.summary)
-            await store_and_promote(self, len(self._history.messages), intent, r.summary)
-            return r
-
-        return await self._run_dag(intent, t0, depth, mem_ctx, decision)
+        log.debug("_run_dag: instructions=%.80s", dag_instructions or intent)
+        return await run_dag_pipeline(self, intent, t0, mem_ctx, dag_instructions or intent)
 
     def _clarification_result(self, intent: str, t0: float, question: str) -> SupervisorResult:
         """Build a SupervisorResult that surfaces a clarification question to the user."""
@@ -157,15 +87,60 @@ class GoatSupervisor:
             total_duration_s=time.monotonic() - t0,
         )
 
+    async def _reply_direct(self, intent: str, t0: float, mem_ctx: str) -> SupervisorResult:
+        """Generate a tool-enabled conversational reply (memory/web available)."""
+        r = await conv_result(
+            intent, self._history.messages, self._user_profile or "",
+            self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
+            goat_session_id=self._session_id,
+        )
+        self._history.add_assistant(r.summary)
+        await store_and_promote(self, len(self._history.messages), intent, r.summary)
+        return r
+
+    async def _build_context(self, intent: str, mem_ctx: str):
+        """Build all decision context — pure, NO LLM. Returns (goat_ctx, clarity_ctx, hints)."""
+        from supervisor.pipeline.goat_enrichment import build_goat_context
+        from supervisor.pipeline.intent_clarity import build_clarity_context
+        from supervisor.pipeline.behavioral_learning import recall_corrections
+        from supervisor.classification.classifier_prompt import format_dialogue
+        goat_ctx = build_goat_context(self.registry, mem_ctx)
+        history_text = format_dialogue(self._history.messages) if self._history else ""
+        clarity_ctx = build_clarity_context(history_text, mem_ctx)
+        hints = await recall_corrections(self.registry, limit=3)
+        return goat_ctx, clarity_ctx, hints
+
+    async def _dispatch(
+        self, intent: str, t0: float, mem_ctx: str, decision: "GoatDecision",
+    ) -> SupervisorResult:
+        """Execute GOAT's decision: dag → pipeline, clarify → question, direct → reply."""
+        if decision.action == "dag":
+            if self.memory_manager:
+                try:
+                    from supervisor.session.session import write_dag_instructions
+                    await write_dag_instructions(
+                        self.memory_manager, self._session_id,
+                        decision.dag_instructions or intent, mem_ctx, _DAG_CAPABILITIES_SUMMARY,
+                    )
+                except Exception as e:
+                    log.warning("write_dag_instructions failed: %s", e)
+            return await self._run_dag(intent, t0, mem_ctx, decision.dag_instructions)
+        if decision.action == "clarify":
+            r = self._clarification_result(intent, t0, decision.clarification)
+            self._history.add_assistant(r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
+            return r
+        return await self._reply_direct(intent, t0, mem_ctx)
+
     async def run(self, intent: str) -> SupervisorResult:
-        """Route intent: classify_intent decides conversational vs DAG.
+        """Handle one user message via the single GOAT decision call.
 
         FLOW:
-        1. init session → add user turn → memory turn
-        2. check for routing disagreement with previous decision
-        3. classify_intent → CONVERSATIONAL or COMPLEX
-        4. CONVERSATIONAL: conv_result; if start_dag called, fire background DAG
-        5. COMPLEX: write instructions → clarity gate → prompt validation gate → DAG
+        1. init session → add user turn → memory turn (memory subsystem).
+        2. pending-DAG fast path (start_dag tool).
+        3. build context (GoatContext, ClarityContext, hints) — pure, no LLM.
+        4. ONE GOAT decision call → {action, response, clarification, dag_instructions}.
+        5. dispatch: direct → tool-enabled reply; clarify → question; dag → pipeline.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -176,37 +151,19 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
-        # Check for pending DAG from start_dag tool call
+        # Pending DAG from a start_dag tool call — fire directly.
         pending_dag_session = await pop_pending_dag(self.memory_manager, self._session_id)
         if pending_dag_session:
             log.info("GOAT: pending DAG found session=%s — firing DAG", pending_dag_session)
-            return await self._run_dag(intent, t0, IntentDepth.COMPLEX, mem_ctx)
+            return await self._run_dag(intent, t0, mem_ctx, intent)
 
-        # Check for routing disagreement with previous decision before classifying
-        previous_routing = await get_previous_routing(self.memory_manager, self._session_id)
-        if previous_routing:
-            is_disagree, wanted = await check_disagreement(self.registry, intent, previous_routing)
-            if is_disagree:
-                log.info("routing correction: was=%s wanted=%s", previous_routing, wanted)
-                # Store the correction for future learning
-                await store_routing_correction(self.registry, intent, previous_routing, wanted)
-                # Apply the correction: override the classification
-                if wanted == "complex":
-                    depth = IntentDepth.COMPLEX
-                elif wanted == "conversational":
-                    depth = IntentDepth.CONVERSATIONAL
-                else:
-                    depth = IntentDepth.ANALYTICAL
-                # Clear previous routing and continue with the corrected depth
-                await clear_previous_routing(self.memory_manager, self._session_id)
-                return await self._execute_with_depth(intent, t0, depth, mem_ctx)
-
-        # Single classifier — classify_intent gathers active DAGs and context internally.
-        depth = await classify_intent(
-            intent, self.registry, self._history, session_id=self._session_id,
-        )
-        log.info("classify_intent: intent=%.80s → %s", intent, depth.value)
-        return await self._execute_with_depth(intent, t0, depth, mem_ctx)
+        # The ONE GOAT call decides everything from pure-built context.
+        goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)
+        from supervisor.pipeline.goat_decision import decide
+        decision = await decide(self.registry, intent, goat_ctx, clarity_ctx, hints)
+        depth = classify_intent(decision)
+        log.info("GOAT decision: action=%s → %s intent=%.80s", decision.action, depth.value, intent)
+        return await self._dispatch(intent, t0, mem_ctx, decision)
 
     async def finalize_session(self) -> None:
         """Analyze session turns and persist updated behavior profile to Letta."""

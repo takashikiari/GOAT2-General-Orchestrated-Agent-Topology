@@ -25,7 +25,6 @@ from supervisor.classification.classifier import IntentDepth
 
 if TYPE_CHECKING:
     from supervisor.types import SupervisorResult
-    from supervisor.pipeline.goat_enrichment import GoatDecision
 
 log = logging.getLogger("goat2.supervisor.pipeline")
 
@@ -38,25 +37,22 @@ async def run_dag_pipeline(
     supervisor,
     intent: str,
     t0: float,
-    depth: IntentDepth,
     mem_ctx: str,
-    decision: "GoatDecision | None" = None,
+    dag_instructions: str = "",
 ) -> "SupervisorResult":
-    """Execute the full ANALYTICAL or COMPLEX DAG pipeline.
+    """Execute the DAG pipeline from GOAT's self-contained instructions.
 
-    Architecture: GOAT decides → Prompter formats → DAG executes. GOAT's
-    enrichment ``decision`` is threaded in and handed to the Prompter
-    (build_dag_prompt). When ``decision`` is None (e.g. the pending-DAG fast
-    path), this function enriches the intent itself so the Prompter always
-    receives a decision instead of a raw intent.
+    Single-call architecture: GOAT's one decision call already produced
+    ``dag_instructions``. This function FORMATS them into a DagPrompt (pure, no
+    LLM) and runs the planner plus the specialized DAG agents. The
+    DagBridge/GoatValidator verification path is unchanged.
 
     Args:
         supervisor: The GoatSupervisor instance (for state access).
-        intent:    The user's intent text.
+        intent:    The user's original intent text (fallback objective).
         t0:        Monotonic start time for duration accounting.
-        depth:     IntentDepth.ANALYTICAL or IntentDepth.COMPLEX.
         mem_ctx:   Pre-computed memory context string.
-        decision:  GOAT's enrichment decision; enriched here if None.
+        dag_instructions: GOAT's self-contained planner objective.
 
     Returns:
         SupervisorResult with plan, results, summary, dag_verified.
@@ -66,9 +62,9 @@ async def run_dag_pipeline(
     from supervisor.logging.auditor import run_auditor
     from supervisor.pipeline.task_prep import prepare_tasks
 
-    # Read structured instructions GOAT wrote before calling this function.
-    # Falls back to raw intent if the key is missing (backward compat).
-    instr_intent, instr_ctx = intent, mem_ctx
+    # GOAT's dag_instructions are the planner objective. Prefer the structured
+    # instructions GOAT persisted (if present); else fall back to the passed text.
+    instr_intent, instr_ctx = dag_instructions or intent, mem_ctx
     if supervisor.memory_manager:
         try:
             from supervisor.session.session import retrieve_dag_instructions
@@ -77,47 +73,30 @@ async def run_dag_pipeline(
             )
             if raw:
                 instr = json.loads(raw)
-                instr_intent = instr.get("intent", intent)
+                instr_intent = instr.get("intent", instr_intent)
                 instr_ctx = instr.get("context", mem_ctx)
                 log.debug("dag_execution: using instructions from working memory session=%s",
                           supervisor._session_id)
         except Exception as e:
             log.debug("dag_execution: instructions read failed, using raw intent: %s", e)
 
-    # GOAT decides → Prompter formats. Ensure a GoatDecision exists (enrich here
-    # only when the caller did not provide one, e.g. the pending-DAG fast path).
-    from supervisor.classification.classifier_prompt import format_history
-    history_text = format_history(supervisor._history.messages) if supervisor._history else ""
-    if decision is None:
-        from supervisor.pipeline.goat_enrichment import enrich_intent
-        decision = await enrich_intent(instr_intent, instr_ctx, history_text, supervisor.registry)
-        log.debug("dag_execution: enriched intent in-pipeline (no decision passed)")
-
-    # Build DagPrompt — the Prompter FORMATS GOAT's decision into a technical objective.
-    # DAG receives technical_prompt instead of raw intent; required_agents guide the planner.
+    # FORMAT GOAT's instructions into a DagPrompt — pure, no LLM. The planner (a
+    # specialized DAG agent) decomposes the objective and selects its own agents.
     from supervisor.pipeline.dag_setup import (
         build_plan_context, persist_dag_prompt, write_active_dag,
     )
-    dag_prompt = None
-    try:
-        from supervisor.pipeline.dag_prompt_builder import build_dag_prompt
-        dag_prompt = await build_dag_prompt(
-            decision, instr_ctx, history_text, supervisor.registry,
-        )
-    except Exception as _dp_exc:
-        log.warning("dag_execution: build_dag_prompt failed, using raw intent: %s", _dp_exc)
-    # Persist DagPrompt to dag:<session_id>:instructions so DAG agents can read it.
-    if dag_prompt is not None:
-        await persist_dag_prompt(supervisor.memory_manager, supervisor._session_id, dag_prompt)
+    from supervisor.pipeline.dag_prompt_builder import build_dag_prompt
+    dag_prompt = build_dag_prompt(instr_intent)
+    await persist_dag_prompt(supervisor.memory_manager, supervisor._session_id, dag_prompt)
 
-    plan_ctx = build_plan_context(supervisor, instr_intent, instr_ctx, depth)
+    plan_ctx = build_plan_context(supervisor, instr_intent, instr_ctx, IntentDepth.COMPLEX)
 
     # Lazy imports keep the supervisor/agents/ boundary clean.
     from agents.planner_decompose import decompose_plan
     plan = await decompose_plan(
-        dag_prompt.technical_prompt if dag_prompt else plan_ctx,
+        dag_prompt.technical_prompt or plan_ctx,
         supervisor.registry,
-        required_agents=dag_prompt.required_agents if dag_prompt else None,
+        required_agents=dag_prompt.required_agents or None,
     )
     lang = await prepare_tasks(plan.tasks, supervisor.memory_manager, intent, supervisor.registry)
     session_id = str(uuid.uuid4())

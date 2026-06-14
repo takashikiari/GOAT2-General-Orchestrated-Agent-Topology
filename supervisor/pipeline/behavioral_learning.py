@@ -29,22 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "store_correction",
     "recall_corrections",
-    "detect_routing_disagreement",
 ]
-
-# System prompt for routing disagreement detection
-_DISAGREEMENT_SYSTEM = (
-    "You are a routing disagreement detector. Your job is to determine if the user "
-    "is explicitly correcting GOAT's routing decision. "
-    "The user might say:\n"
-    "  - 'no, think about this / use the DAG / think deeply'\n"
-    "  - 'that was conversational, i wanted you to analyze this'\n"
-    "  - 'run a DAG for this' or 'use the full pipeline'\n"
-    "  - 'you should have researched this first' or 'i wanted research'\n"
-    "  - 'use the planner / researcher / critic for this'\n"
-    "But they might also simply continue the conversation normally. "
-    "Reply with exactly one word: disagreement, clarification, or none."
-)
 
 
 async def store_correction(
@@ -153,57 +138,3 @@ async def recall_corrections(registry: "ServiceRegistry", limit: int = 3) -> lis
     except Exception as e:
         log.debug("recall_corrections failed: %s", e)
         return []
-
-
-async def detect_routing_disagreement(
-    user_message: str,
-    goat_routed: str,
-    registry: "ServiceRegistry",
-) -> tuple[bool, str]:
-    """Detect if the user's message disagrees with GOAT's previous routing decision.
-
-    Uses pure LLM reasoning (no keywords). Only triggers when there's a previous
-    routing decision to compare against - this is NOT the same as override detection.
-
-    Args:
-        user_message: The user's latest message after GOAT's response.
-        goat_routed: What GOAT initially routed (conversational/analytical/complex).
-        registry: ServiceRegistry for model access.
-
-    Returns:
-        (True, user_wanted) if disagreement detected, (False, "") otherwise.
-    """
-    # Skip if no previous routing to disagree with
-    if not goat_routed or goat_routed == "none":
-        return False, ""
-    try:
-        from utils.llm_utils import _call_llm
-        settings = registry.settings
-        raw = await _call_llm(
-            settings.agents.get("memory"),
-            [
-                {"role": "system", "content": _DISAGREEMENT_SYSTEM},
-                {"role": "user", "content": f"GOAT routed as: {goat_routed}\nUser message: {user_message}"},
-            ],
-        )
-        token = raw.strip().lower().split()[0] if raw.strip() else ""
-        if token == "disagreement":
-            # Second call to extract what the user wanted
-            wanted_raw = await _call_llm(
-                settings.agents.get("memory"),
-                [
-                    {"role": "system", "content": "In 1-3 words, state what the user wanted GOAT to do. "
-                                             "E.g., 'use DAG', 'research', 'think deeply', 'analyze code'. "
-                                             "Reply with just the desired mode."},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            wanted = wanted_raw.strip().lower().split()[0] if wanted_raw.strip() else "complex"
-            if wanted not in ("conversational", "analytical", "complex"):
-                wanted = "complex"
-            log.info("routing disagreement detected: goat=%s wanted=%s", goat_routed, wanted)
-            return True, wanted
-        return False, ""
-    except Exception as e:
-        log.debug("detect_routing_disagreement failed: %s", e)
-        return False, ""

@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (single GOAT decision call replaces the 6-call routing pipeline)
+
+### Changed — one LLM call decides everything; middleware is pure context
+
+The pre-response pipeline made **6 separate LLM calls** (`detect_override`,
+`detect_routing_disagreement`, `classify_intent`, `check_intent_clarity`,
+`enrich_intent`, `build_dag_prompt`/`validate_dag_prompt`) whose conflicting guardrails
+caused DAG-spawn loops. They are collapsed into **one** GOAT decision call; middleware
+becomes pure context builders (no LLM); DAG agents keep their own specialized LLMs.
+
+- **New `supervisor/pipeline/goat_decision.py`** — `GoatDecision` dataclass `{action, response, clarification, dag_instructions}` and `decide(registry, intent, goat_context, clarity_context, hints)`: the single routing LLM call with one unified system prompt. Falls back to `action="direct"` on any failure (never auto-escalates to a DAG).
+- **`goat_enrichment.py`** → pure `GoatContext` builder (`build_goat_context`): workspace from `GOAT_WORKSPACE`, agent roles/tools from the registry, memory context. No LLM (`enrich_intent` removed).
+- **`intent_clarity.py`** → pure `ClarityContext` builder (`build_clarity_context`): conversation + memory grounding, **structural** `missing_info` only (no keyword/regex heuristics). GOAT judges clarity. (`check_intent_clarity`/`ClarityResult`/`CLARITY_*` removed.)
+- **`behavioral_learning.py`** → hint collector only; removed `detect_routing_disagreement` (LLM). `store_correction`/`recall_corrections` kept.
+- **`classifier_context.py`** → removed `detect_override` (LLM); pure gatherers kept.
+- **`classifier.py`** → `classify_intent(decision) -> IntentDepth` is now a **pure parser** (`dag`→COMPLEX, else CONVERSATIONAL). No LLM, no context gathering. `IntentDepth` enum unchanged.
+- **`dag_prompt_builder.py`** → `build_dag_prompt(dag_instructions, constraints=None)` is now a **pure synchronous formatter** of GOAT's instructions into a `DagPrompt` (planner picks agents). LLM build + `validate_dag_prompt` removed.
+- **`supervisor.py` `run()`** rewired: build context (pure) → one `decide()` call → `_dispatch`: `direct` → existing tool-enabled `conv_result` (memory/web preserved); `clarify` → clarification text; `dag` → pure DagPrompt → DAG pipeline. Removed `_execute_with_depth`, `_enrich_intent`, the two gates, and the override/disagreement LLM steps.
+- **`dag_execution.py`** — `run_dag_pipeline(supervisor, intent, t0, mem_ctx, dag_instructions)`: formats via the pure `build_dag_prompt`; no enrich, no LLM in the prompt path. DagBridge/GoatValidator verification untouched.
+- **`gates.py`** retired (empty stub); **`routing_state.py`** dropped `check_disagreement`.
+
+Only ONE routing LLM call remains (`decide`); `mem_turn`'s memory recall/fact-store is the memory subsystem, not the routing pipeline. No regex/keywords/hardcoded thresholds; zero singletons; DagBridge, GoatValidator, IntentDepth, and `identity.conv_result` untouched. All files ≤260 lines. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-14 (structured turn persistence + LLM-scored episodic promotion)
 
 ### Changed
