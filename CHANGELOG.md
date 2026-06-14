@@ -5,6 +5,68 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (intent clarity reasons in conversational context)
+
+### Changed
+
+Building on the scored clarity work below, `check_intent_clarity` now scores the
+current message **in the context of the recent dialogue**, fixing over-triggering on
+short replies ("raport", "memory check", "da") that were obvious given what the
+assistant had just said but ambiguous in isolation.
+
+- **`classifier_prompt.py`** — new **`format_dialogue(history, max_messages=10)`**: role-labeled prose including BOTH user and assistant turns (~5 turns), so a short reply can be read against the assistant message that prompted it. `format_history` (user-only) is left untouched — still used by the classifier, `dag_execution`, and Gate 2. Exported via `__all__`.
+- **`gates.py`** — `check_intent_clarity_gate` now feeds `format_dialogue(...)` instead of `format_history(...)`.
+- **`intent_clarity.py`** — `_SYSTEM` rewritten with an explicit "REASON IN CONTEXT" directive: interpret the current message in light of the conversation/memory, never in isolation; a short message is clear when context supplies its referent. The user payload now presents the conversation + memory as context **first**, then the current message to score. `check_intent_clarity` docstring updated accordingly.
+
+`ClarityResult` (clear / clarity_score / missing / clarification_question), the `0.5` gating threshold, and `supervisor.py` Gate 1 are unchanged from the scored-clarity work below. Pure LLM reasoning — no keywords, patterns, or regex. DagBridge, GoatValidator, IntentDepth untouched; zero singletons. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
+## [Unreleased] — 2026-06-14 (scored intent clarity replaces binary clear/unclear)
+
+### Changed
+
+#### `intent_clarity.py` — continuous clarity score instead of a binary gate
+
+The binary clear/unclear check over-triggered clarification requests on short messages that were obvious in context ("raport", "memory check", "da"). It now asks the LLM for a continuous `clarity_score` (0.0–1.0) and interprets three bands:
+
+- **0.8–1.0** clear → proceed to the DAG.
+- **0.5–0.79** mostly clear → GOAT completes from context and proceeds (logs a WARNING).
+- **0.0–0.49** ambiguous → ask the user for clarification.
+
+Details:
+- **`ClarityResult`** gains `clarity_score: float` (defaults to 1.0; `missing` and `clarification_question` also defaulted) so existing constructors in `dag_prompt_builder.py` and `gates.py` keep working unchanged. `clear` is retained and derived as `clarity_score >= CLARITY_THRESHOLD`. `__bool__` unchanged.
+- New module constants **`CLARITY_THRESHOLD = 0.5`** (the only value that gates execution) and **`CLARITY_CONFIDENT = 0.8`** (warn-band boundary; affects logging only). Exported via `__all__`.
+- **`_SYSTEM`** prompt rewritten to request `{"clarity_score", "missing", "clarification_question"}` and to score short-but-obvious messages high. Pure LLM scoring — no keyword/length/regex rules.
+- New helper **`_parse_score()`** clamps to [0.0, 1.0] and falls back to the legacy `clear` flag (then 1.0) on missing/garbage input, so a malformed response never over-blocks. The forbidden-DAG override now returns `clarity_score=0.0`.
+
+#### `supervisor.py` — Gate 1 acts on the score
+
+- Logs `clarity_score` at DEBUG every turn.
+- Blocks only when `clarity_score < CLARITY_THRESHOLD` (0.5); for `[0.5, 0.8)` logs a WARNING and proceeds. Imports the two constants from `intent_clarity` (single source of truth). Gate 2 (`validate_dag_prompt_gate`) unchanged — still branches on `.clear`.
+
+DagBridge, GoatValidator, and IntentDepth untouched. Zero singletons. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
+## [Unreleased] — 2026-06-14 (file-size compliance: 260-line ceiling)
+
+### Changed
+
+#### Split `supervisor.py` (391 → 246) and `dag_execution.py` (298 → 258) under the 260-line ceiling
+
+The 260-line-per-file rule is now canonical. Two files that already exceeded it were decomposed into cohesive, single-responsibility modules. Pure mechanical extraction — no behavior change; DagBridge, GoatValidator, IntentDepth, and the enrichment flow are untouched. Zero singletons; every extracted function takes its dependencies (or the live `supervisor`) explicitly.
+
+New modules:
+- **`supervisor/session/routing_state.py`** — the 6 routing / pending-DAG working-memory helpers (`pop_pending_dag`, `get_previous_routing`, `set_previous_routing`, `clear_previous_routing`, `check_disagreement`, `store_routing_correction`).
+- **`supervisor/session/turn_persistence.py`** — `store_and_promote` + `schedule_promotion` (turn storage, behavioral-style learning, tier promotion).
+- **`supervisor/pipeline/gates.py`** — `check_intent_clarity_gate` + `validate_dag_prompt_gate` (the two pre-execution gates).
+- **`supervisor/pipeline/dag_setup.py`** — `build_plan_context`, `persist_dag_prompt`, `write_active_dag` (planner-context assembly + DAG working-memory persistence, extracted from `run_dag_pipeline`).
+
+`supervisor.py` and `dag_execution.py` now delegate to these; dead imports (`SESSION_ROLE`, `ClarityResult`) removed. Verified: all touched files ≤260 lines, byte-compile, and `from supervisor.supervisor import GoatSupervisor` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-13 (GOAT decides → Prompter formats → DAG executes)
 
 ### Added

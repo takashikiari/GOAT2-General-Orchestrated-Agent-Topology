@@ -95,51 +95,22 @@ async def run_dag_pipeline(
 
     # Build DagPrompt — the Prompter FORMATS GOAT's decision into a technical objective.
     # DAG receives technical_prompt instead of raw intent; required_agents guide the planner.
+    from supervisor.pipeline.dag_setup import (
+        build_plan_context, persist_dag_prompt, write_active_dag,
+    )
     dag_prompt = None
     try:
         from supervisor.pipeline.dag_prompt_builder import build_dag_prompt
         dag_prompt = await build_dag_prompt(
             decision, instr_ctx, history_text, supervisor.registry,
         )
-        # Persist DagPrompt to dag:<session_id>:instructions so DAG agents can read it.
-        if supervisor.memory_manager:
-            import dataclasses as _dc
-            import json as _dp_j
-            import time as _dp_t
-            from config.limits import DAG_RESULT_TTL
-            from config.roles import SESSION_ROLE
-            from memory.working.working_record import RecordDict
-            _dp_key = f"dag:{supervisor._session_id}:instructions"
-            _dp_now = _dp_t.time()
-            _dp_payload = _dp_j.dumps(_dc.asdict(dag_prompt), ensure_ascii=False)
-            _dp_record: RecordDict = {
-                "id": _dp_key, "agent_role": SESSION_ROLE, "key": _dp_key,
-                "content": _dp_payload,
-                "metadata": {"type": "dag_prompt", "session_id": supervisor._session_id},
-                "created_at": _dp_t.strftime("%Y-%m-%dT%H:%M:%SZ", _dp_t.gmtime(_dp_now)),
-                "created_at_ts": _dp_now, "expires_at": _dp_now + DAG_RESULT_TTL,
-            }
-            await supervisor.memory_manager.working.backend.set(
-                SESSION_ROLE, _dp_key, _dp_record, expires_at=_dp_record["expires_at"],
-            )
-            log.debug("dag_execution: DagPrompt written task_id=%s agents=%s",
-                      dag_prompt.task_id, dag_prompt.required_agents)
     except Exception as _dp_exc:
         log.warning("dag_execution: build_dag_prompt failed, using raw intent: %s", _dp_exc)
+    # Persist DagPrompt to dag:<session_id>:instructions so DAG agents can read it.
+    if dag_prompt is not None:
+        await persist_dag_prompt(supervisor.memory_manager, supervisor._session_id, dag_prompt)
 
-    plan_ctx = supervisor._history.as_plan_context(
-        instr_intent, supervisor._user_profile or "", instr_ctx,
-    )
-    dag_capabilities = """[DAG Agent Capabilities]
-tool_caller: file_read, file_write, file_create, file_list, file_search, file_grep, file_info, file_read_lines, memory_recent, memory_get, memory_store, memory_search (working tier only)
-researcher: web_search, memory_search (working tier only)
-coder: file_read, file_write, file_create, shell (read-only)
-critic: memory_recent, memory_get (read-only)
-summarizer: memory_recent (read-only)
-Use tool_caller for file operations. Use researcher for web search. Use coder for code generation."""
-    plan_ctx = f"[require_source: true]\n{dag_capabilities}\n{plan_ctx}"
-    if depth == IntentDepth.ANALYTICAL:
-        plan_ctx = f"[Lightweight: ≤2 tasks]\n{plan_ctx}"
+    plan_ctx = build_plan_context(supervisor, instr_intent, instr_ctx, depth)
 
     # Lazy imports keep the supervisor/agents/ boundary clean.
     from agents.planner_decompose import decompose_plan
@@ -150,20 +121,8 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
     )
     lang = await prepare_tasks(plan.tasks, supervisor.memory_manager, intent, supervisor.registry)
     session_id = str(uuid.uuid4())
-    # Write active DAG session_id to working memory so GOAT can control it
-    try:
-        from config.roles import SESSION_ROLE
-        from memory.working.working_record import RecordDict
-        import time as _t
-        key = f"goat:{supervisor._session_id}:active_dag"
-        now = _t.time()
-        record: RecordDict = {"id": key, "agent_role": SESSION_ROLE, "key": key,
-            "content": session_id, "metadata": {"type": "active_dag"},
-            "created_at": _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(now)),
-            "created_at_ts": now, "expires_at": now + 3600}
-        await supervisor.memory_manager.working.backend.set(SESSION_ROLE, key, record, expires_at=now + 3600)
-    except Exception as _e:
-        pass
+    # Write active DAG session_id to working memory so GOAT can control it.
+    await write_active_dag(supervisor.memory_manager, supervisor._session_id, session_id)
     results = await WorkflowGraph(plan.tasks).execute(
         supervisor.agent_registry, supervisor._semaphore,
         verbose=supervisor._verbose, memory_manager=supervisor.memory_manager,
@@ -292,7 +251,8 @@ Use tool_caller for file operations. Use researcher for web search. Use coder fo
         dag_verified=dag_verified, dag_detail=dag_detail,
     )
     supervisor._history.add_assistant(r.summary)
-    await supervisor._store_and_promote(
-        len(supervisor._history.messages), intent, r.summary,
+    from supervisor.session.turn_persistence import store_and_promote
+    await store_and_promote(
+        supervisor, len(supervisor._history.messages), intent, r.summary,
     )
     return r

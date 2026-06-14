@@ -14,7 +14,10 @@ from typing import Final
 
 log = logging.getLogger("goat2.supervisor.classification.classifier_prompt")
 
-__all__ = ["build_classifier_prompt", "format_active_dags", "format_hints", "format_history"]
+__all__ = [
+    "build_classifier_prompt", "format_active_dags", "format_hints",
+    "format_history", "format_dialogue",
+]
 
 
 # ── Pure LLM system prompt ──
@@ -92,6 +95,32 @@ def format_history(history: list[dict[str, str]] | None) -> str:
         return "(no prior conversation)"
     last = user_turns[-6:]
     return "\n".join(f"- {t}" for t in last)
+
+
+def format_dialogue(
+    history: list[dict[str, str]] | None, max_messages: int = 10
+) -> str:
+    """Format the recent dialogue (BOTH user and assistant turns) as role-labeled prose.
+
+    Unlike ``format_history`` (user turns only), this preserves the back-and-forth so
+    an LLM can interpret a short reply such as "da" or "raport" in the context that
+    produced it. Keeps the last ``max_messages`` non-system messages — 10 by default,
+    covering at least the last ~5 conversational turns when available.
+
+    Args:
+        history: Conversation messages (role/content dicts).
+        max_messages: How many trailing non-system messages to keep.
+
+    Returns:
+        Newline-joined "Role: content" lines, oldest first, or a placeholder.
+    """
+    if not history:
+        return "(no prior conversation)"
+    turns = [m for m in history if m.get("role") != "system"]
+    if not turns:
+        return "(no prior conversation)"
+    recent = turns[-max_messages:]
+    return "\n".join(f"{m['role'].title()}: {m['content']}" for m in recent)
 
 
 def format_active_dags(active: list[dict] | None) -> str:

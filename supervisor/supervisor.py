@@ -7,7 +7,6 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from config.roles import SESSION_ROLE
 from supervisor.types import AgentRunner, Plan, SupervisorResult
 from supervisor.session.history import ConversationHistory
 from supervisor.identity import conv_result
@@ -15,12 +14,22 @@ from supervisor.classification.classifier import IntentDepth, classify_intent
 from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
+from supervisor.session.turn_persistence import store_and_promote
+from supervisor.session.routing_state import (
+    pop_pending_dag,
+    get_previous_routing,
+    set_previous_routing,
+    clear_previous_routing,
+    check_disagreement,
+    store_routing_correction,
+)
+from supervisor.pipeline.gates import check_intent_clarity_gate, validate_dag_prompt_gate
+from supervisor.pipeline.intent_clarity import CLARITY_THRESHOLD, CLARITY_CONFIDENT
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
     from agents.critique import CriticVerdict
-    from supervisor.pipeline.intent_clarity import ClarityResult
     from supervisor.pipeline.goat_enrichment import GoatDecision
 
 log = logging.getLogger("goat2.supervisor")
@@ -57,127 +66,6 @@ class GoatSupervisor:
         self._history: ConversationHistory | None = None
         self._session_id: str = str(uuid.uuid4())
 
-    async def _store_and_promote(self, turn_count: int, intent: str, summary: str) -> None:
-        """Store turn in working memory, auto-save to episodic tier, schedule promotion."""
-        if not self.memory_manager:
-            return
-        try:
-            from supervisor.session import store_turn, store_goat_turn
-            await store_turn(self.memory_manager, turn_count, intent, summary)
-            await store_goat_turn(self.memory_manager, self._session_id, intent, summary)
-            try:
-                from memory.shared.hooks import auto_save_memory
-                await auto_save_memory(self.memory_manager, "user_session", intent, summary)
-            except Exception as e:
-                log.warning("auto_save_memory failed: %s", e)
-            # Behavioral learning: detect routing disagreement from user's next message
-            # This is handled in the run() loop after user feedback, not here
-            try:
-                from supervisor.behavior.behavior_analyzer import analyze_style
-                from supervisor.behavior.behavior_store import save_style
-                from supervisor.behavior.behavior_session import get_recent_turns
-                from supervisor.behavior.behavior_profile import serialize
-                turns = await get_recent_turns(self.memory_manager, limit=10)
-                if turns:
-                    profile = await analyze_style(turns, self.registry)
-                    if profile:
-                        await save_style(self.memory_manager, serialize(profile))
-            except Exception as e:
-                log.debug("behavior analysis skipped: %s", e)
-            asyncio.create_task(self._schedule_promotion(turn_count))
-        except Exception as e:
-            log.warning("Memory storage skipped: %s", e)
-
-    async def _schedule_promotion(self, turn_count: int) -> None:
-        """Promote conversation turns through memory tiers (background task)."""
-        if not self.memory_manager:
-            return
-        try:
-            await self.memory_manager.promote_turns(SESSION_ROLE, turn_count)
-        except Exception as e:
-            log.warning("Promotion task failed (non-critical): %s", e)
-
-    async def _pop_pending_dag(self) -> str | None:
-        """Read and delete goat:<session_id>:pending_dag from working memory."""
-        if not self.memory_manager:
-            return None
-        try:
-            from config.roles import SESSION_ROLE as _SROLE
-            key = f"goat:{self._session_id}:pending_dag"
-            record = await self.memory_manager.working.backend.get(_SROLE, key)
-            if record is None:
-                return None
-            await self.memory_manager.working.backend.delete(_SROLE, key)
-            return record.get("content")
-        except Exception as e:
-            log.debug("_pop_pending_dag failed: %s", e)
-            return None
-
-    async def _get_previous_routing(self) -> str | None:
-        """Read the previous routing decision from working memory."""
-        if not self.memory_manager:
-            return None
-        try:
-            from config.roles import SESSION_ROLE as _SROLE
-            key = f"goat:{self._session_id}:last_routing"
-            record = await self.memory_manager.working.backend.get(_SROLE, key)
-            if record is None:
-                return None
-            return record.get("content")
-        except Exception as e:
-            log.debug("_get_previous_routing failed: %s", e)
-            return None
-
-    async def _set_previous_routing(self, depth: IntentDepth) -> None:
-        """Store the routing decision for the next turn to check against."""
-        if not self.memory_manager:
-            return
-        try:
-            from config.roles import SESSION_ROLE as _SROLE
-            from config.limits import WORKING_MEMORY_TTL
-            key = f"goat:{self._session_id}:last_routing"
-            now = time.time()
-            record = {
-                "id": key,
-                "agent_role": _SROLE,
-                "key": key,
-                "content": depth.value,
-                "metadata": {"type": "routing_decision"},
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-                "created_at_ts": now,
-                "expires_at": now + WORKING_MEMORY_TTL,
-            }
-            await self.memory_manager.working.backend.set(
-                _SROLE, key, record, expires_at=record["expires_at"]
-            )
-        except Exception as e:
-            log.debug("_set_previous_routing failed: %s", e)
-
-    async def _clear_previous_routing(self) -> None:
-        """Clear the previous routing decision."""
-        if not self.memory_manager:
-            return
-        try:
-            from config.roles import SESSION_ROLE as _SROLE
-            key = f"goat:{self._session_id}:last_routing"
-            await self.memory_manager.working.backend.delete(_SROLE, key)
-        except Exception:
-            pass
-
-    async def _check_disagreement(
-        self, user_message: str, previous_routing: str
-    ) -> tuple[bool, str]:
-        """Check if user message disagrees with previous routing decision."""
-        from supervisor.pipeline.behavioral_learning import detect_routing_disagreement
-        return await detect_routing_disagreement(user_message, previous_routing, self.registry)
-
-    async def _store_routing_correction(
-        self, intent: str, goat_routed: str, user_wanted: str
-    ) -> None:
-        """Store routing correction for behavioral learning."""
-        from supervisor.pipeline.behavioral_learning import store_correction
-        await store_correction(self.registry, intent, goat_routed, user_wanted)
-
     async def _run_dag(
         self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str,
         decision: "GoatDecision | None" = None,
@@ -207,7 +95,7 @@ class GoatSupervisor:
         self, intent: str, t0: float, depth: IntentDepth, mem_ctx: str
     ) -> SupervisorResult:
         """Execute with a specific routing depth (after correction)."""
-        await self._set_previous_routing(depth)
+        await set_previous_routing(self.memory_manager, self._session_id, depth)
         if depth == IntentDepth.CONVERSATIONAL:
             r = await conv_result(
                 intent, self._history.messages, self._user_profile or "",
@@ -215,7 +103,7 @@ class GoatSupervisor:
                 goat_session_id=self._session_id,
             )
             self._history.add_assistant(r.summary)
-            await self._store_and_promote(len(self._history.messages), intent, r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
         # COMPLEX or ANALYTICAL: run through DAG pipeline with gates
         if self.memory_manager:
@@ -228,61 +116,34 @@ class GoatSupervisor:
             except Exception as e:
                 log.warning("write_dag_instructions failed: %s", e)
 
-        # Gate 1 — Intent clarity
-        clarity = await self._check_intent_clarity(intent, mem_ctx)
-        if not clarity.clear:
-            log.info("GOAT: intent unclear — question=%.80s", clarity.clarification_question)
+        # Gate 1 — Intent clarity (scored: <0.5 blocks; 0.5–0.79 proceeds with warning)
+        clarity = await check_intent_clarity_gate(self, intent, mem_ctx)
+        log.debug("GOAT: clarity_score=%.2f clear=%s", clarity.clarity_score, clarity.clear)
+        if clarity.clarity_score < CLARITY_THRESHOLD:
+            log.info("GOAT: intent unclear — score=%.2f question=%.80s",
+                     clarity.clarity_score, clarity.clarification_question)
             r = self._clarification_result(intent, t0, clarity.clarification_question)
             self._history.add_assistant(r.summary)
-            await self._store_and_promote(len(self._history.messages), intent, r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
+        if clarity.clarity_score < CLARITY_CONFIDENT:
+            log.warning("GOAT: intent partially clear — score=%.2f, proceeding from context. missing=%s",
+                        clarity.clarity_score, clarity.missing)
 
         # GOAT decides — enrich the raw intent into a complete GoatDecision once,
         # then reuse it for both the validation gate and DAG execution.
         decision = await self._enrich_intent(intent, mem_ctx)
 
         # Gate 2 — DagPrompt validation (Prompter formats the decision, then validates)
-        dag_validity = await self._validate_dag_prompt(decision, intent, mem_ctx)
+        dag_validity = await validate_dag_prompt_gate(self, decision, intent, mem_ctx)
         if not dag_validity.clear:
             log.info("GOAT: dag_prompt invalid — question=%.80s", dag_validity.clarification_question)
             r = self._clarification_result(intent, t0, dag_validity.clarification_question)
             self._history.add_assistant(r.summary)
-            await self._store_and_promote(len(self._history.messages), intent, r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
 
         return await self._run_dag(intent, t0, depth, mem_ctx, decision)
-
-    async def _check_intent_clarity(self, intent: str, mem_ctx: str) -> "ClarityResult":
-        """Return ClarityResult from LLM intent clarity check.
-
-        Returns ClarityResult(clear=True) on any failure — ambiguity never hard-blocks.
-        """
-        from supervisor.pipeline.intent_clarity import check_intent_clarity
-        from supervisor.classification.classifier_prompt import format_history
-        history_text = format_history(self._history.messages) if self._history else ""
-        return await check_intent_clarity(intent, mem_ctx, history_text, self.registry)
-
-    async def _validate_dag_prompt(
-        self, decision: "GoatDecision", intent: str, mem_ctx: str
-    ) -> "ClarityResult":
-        """Format GOAT's decision into a DagPrompt and validate it.
-
-        The Prompter (build_dag_prompt) formats the already-made GoatDecision;
-        this gate then checks completeness and specificity. Returns
-        ClarityResult(clear=False) with a specific clarification_question if the
-        prompt is missing required information. Defaults to clear=True on any
-        exception so validation never hard-blocks the pipeline.
-        """
-        from supervisor.pipeline.dag_prompt_builder import build_dag_prompt, validate_dag_prompt
-        from supervisor.pipeline.intent_clarity import ClarityResult
-        from supervisor.classification.classifier_prompt import format_history
-        history_text = format_history(self._history.messages) if self._history else ""
-        try:
-            dag_prompt = await build_dag_prompt(decision, mem_ctx, history_text, self.registry)
-            return await validate_dag_prompt(dag_prompt, intent, self.registry)
-        except Exception as e:
-            log.debug("_validate_dag_prompt failed — defaulting to clear: %s", e)
-            return ClarityResult(clear=True, missing=[], clarification_question="")
 
     def _clarification_result(self, intent: str, t0: float, question: str) -> SupervisorResult:
         """Build a SupervisorResult that surfaces a clarification question to the user."""
@@ -316,19 +177,19 @@ class GoatSupervisor:
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
         # Check for pending DAG from start_dag tool call
-        pending_dag_session = await self._pop_pending_dag()
+        pending_dag_session = await pop_pending_dag(self.memory_manager, self._session_id)
         if pending_dag_session:
             log.info("GOAT: pending DAG found session=%s — firing DAG", pending_dag_session)
             return await self._run_dag(intent, t0, IntentDepth.COMPLEX, mem_ctx)
 
         # Check for routing disagreement with previous decision before classifying
-        previous_routing = await self._get_previous_routing()
+        previous_routing = await get_previous_routing(self.memory_manager, self._session_id)
         if previous_routing:
-            is_disagree, wanted = await self._check_disagreement(intent, previous_routing)
+            is_disagree, wanted = await check_disagreement(self.registry, intent, previous_routing)
             if is_disagree:
                 log.info("routing correction: was=%s wanted=%s", previous_routing, wanted)
                 # Store the correction for future learning
-                await self._store_routing_correction(intent, previous_routing, wanted)
+                await store_routing_correction(self.registry, intent, previous_routing, wanted)
                 # Apply the correction: override the classification
                 if wanted == "complex":
                     depth = IntentDepth.COMPLEX
@@ -337,7 +198,7 @@ class GoatSupervisor:
                 else:
                     depth = IntentDepth.ANALYTICAL
                 # Clear previous routing and continue with the corrected depth
-                await self._clear_previous_routing()
+                await clear_previous_routing(self.memory_manager, self._session_id)
                 return await self._execute_with_depth(intent, t0, depth, mem_ctx)
 
         # Single classifier — classify_intent gathers active DAGs and context internally.
