@@ -1,0 +1,122 @@
+"""Detached background DAG execution — GOAT is the kernel, DAG is a background process.
+
+When GOAT decides to run a DAG, the supervisor spawns it as a detached asyncio task
+instead of awaiting it, so ``sv.run()`` returns immediately and GOAT stays responsive.
+The DAG runs independently and writes its status/result to working memory; GOAT reads
+working memory to report status and completion on later turns. The DAG never blocks GOAT.
+
+All functions take the live ``supervisor`` (no singletons, no module state). Working
+memory is the only shared channel — the DAG writes, GOAT reads.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import TYPE_CHECKING
+
+from config.roles import SESSION_ROLE
+
+if TYPE_CHECKING:
+    from supervisor.supervisor import GoatSupervisor
+    from memory.shared import MemoryManager
+
+log = logging.getLogger("goat2.supervisor.pipeline.dag_background")
+
+__all__ = ["spawn", "write_completion", "collect_finished", "status"]
+
+
+def spawn(supervisor: "GoatSupervisor", dag_instructions: str, session_id: str) -> "asyncio.Task":
+    """Spawn the DAG as a detached background task and track it; return the Task.
+
+    The task is stored in ``supervisor._active_dag_tasks[session_id]`` so GOAT can
+    later check whether it is still running and surface its result.
+    """
+    task = asyncio.create_task(_dag_runner(supervisor, session_id, dag_instructions))
+    supervisor._active_dag_tasks[session_id] = task
+    log.info("spawn: background DAG session=%s (active=%d)", session_id, len(supervisor._active_dag_tasks))
+    return task
+
+
+async def _dag_runner(supervisor: "GoatSupervisor", session_id: str, dag_instructions: str) -> str:
+    """Run the DAG pipeline detached; persist running/complete status + result.
+
+    Reuses ``run_dag_pipeline`` unchanged (DagBridge/GoatValidator run inside it).
+    Any failure is captured as the completion summary so GOAT can report it.
+    """
+    mm = supervisor.memory_manager
+    await _write(mm, f"dag:{session_id}:status", "running")
+    t0 = time.monotonic()
+    try:
+        from supervisor.pipeline.dag_execution import run_dag_pipeline
+        result = await run_dag_pipeline(supervisor, dag_instructions, t0, "", dag_instructions)
+        summary = (result.summary or "").strip() or "DAG finished with no summary."
+        log.info("_dag_runner: session=%s complete (%.1fs)", session_id, time.monotonic() - t0)
+    except Exception as exc:
+        summary = f"DAG failed: {exc}"
+        log.warning("_dag_runner: session=%s failed: %s", session_id, exc)
+    await write_completion(mm, session_id, summary)
+    return summary
+
+
+async def write_completion(mm: "MemoryManager | None", session_id: str, summary: str) -> None:
+    """Write the DAG's final result and 'complete' status to working memory."""
+    await _write(mm, f"dag:{session_id}:result", summary)
+    await _write(mm, f"dag:{session_id}:status", "complete")
+    log.debug("write_completion: session=%s summary=%.80s", session_id, summary)
+
+
+async def collect_finished(supervisor: "GoatSupervisor") -> str:
+    """Surface finished background DAGs as a note and clear them from tracking.
+
+    For each completed task, reads its result from working memory, builds a
+    ``[DAG Update]`` block, and removes it from ``_active_dag_tasks``. Returns ''
+    when nothing finished, so GOAT only mentions DAGs that actually completed.
+    """
+    notes: list[str] = []
+    for sid, task in list(supervisor._active_dag_tasks.items()):
+        if not task.done():
+            continue
+        result = await _read(supervisor.memory_manager, f"dag:{sid}:result") or "completed"
+        notes.append(f"- session {sid}: {result}")
+        supervisor._active_dag_tasks.pop(sid, None)
+        log.info("collect_finished: surfaced and cleared session=%s", sid)
+    return ("[DAG Update]\n" + "\n".join(notes)) if notes else ""
+
+
+async def status(supervisor: "GoatSupervisor", session_id: str) -> dict:
+    """Return ``{session_id, running, status, progress}`` for a background DAG.
+
+    ``running`` comes from the task object; ``status``/``progress`` are read from
+    working memory (the DAG's shared channel).
+    """
+    task = supervisor._active_dag_tasks.get(session_id)
+    running = task is not None and not task.done()
+    mm = supervisor.memory_manager
+    st = await _read(mm, f"dag:{session_id}:status") or ("running" if running else "unknown")
+    progress = await _read(mm, f"dag:{session_id}:progress")
+    log.debug("status: session=%s running=%s status=%s", session_id, running, st)
+    return {"session_id": session_id, "running": running, "status": st, "progress": progress}
+
+
+async def _write(mm: "MemoryManager | None", key: str, content: str) -> None:
+    """Best-effort working-memory write (DAG → working memory only)."""
+    if mm is None:
+        return
+    try:
+        from config.limits import WORKING_MEMORY_TTL
+        await mm.working.store(SESSION_ROLE, key, content, ttl=WORKING_MEMORY_TTL)
+    except Exception as exc:
+        log.debug("_write(%s) failed: %s", key, exc)
+
+
+async def _read(mm: "MemoryManager | None", key: str) -> str:
+    """Best-effort working-memory read; returns the content string or ''."""
+    if mm is None:
+        return ""
+    try:
+        record = await mm.working.backend.get(SESSION_ROLE, key)
+        return record.get("content", "") if record else ""
+    except Exception as exc:
+        log.debug("_read(%s) failed: %s", key, exc)
+        return ""

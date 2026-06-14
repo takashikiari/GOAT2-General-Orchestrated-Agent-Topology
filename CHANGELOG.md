@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (DAG runs detached in the background; GOAT never blocks)
+
+### Changed — GOAT is the kernel, DAG is a background process
+
+Previously `sv.run()` `await`ed the full DAG pipeline when GOAT chose `action=dag`, so the
+user got no reply until the DAG finished (messages queued, status hallucinated). Now the DAG
+is **detached**: `sv.run()` returns immediately and the DAG runs independently, writing to
+working memory, which GOAT reads to report status/completion on later turns.
+
+- **New `supervisor/pipeline/dag_background.py`** — `spawn` (detached `asyncio.create_task`),
+  `_dag_runner` (runs the unchanged `run_dag_pipeline`, then persists result), `write_completion`
+  (writes `dag:<sid>:result` + `dag:<sid>:status="complete"`), `collect_finished` (surfaces finished
+  DAGs as a `[DAG Update]` note and clears them), `status` (running/status/progress from working memory).
+  Free functions over the live supervisor — no singletons.
+- **`supervisor/supervisor.py`** — `__init__` gains `_active_dag_tasks: dict[str, asyncio.Task]`.
+  New `spawn_dag_background`, `get_dag_status`, and `_dag_started_result` (summary "DAG started,
+  monitoring in background..."). Both the `action=dag` dispatch and the pending-DAG fast path now
+  spawn detached and **return immediately** (the blocking `_run_dag` is removed). `run()` calls
+  `collect_finished` after `mem_turn` and injects any completion note into `mem_ctx` so GOAT reports
+  finished DAGs naturally. Conversational/clarify paths unchanged — GOAT keeps its `query_dag_status`/
+  `list_dag_sessions` tools.
+- **`supervisor/interfaces/telegram_bot.py`** — removed the per-chat `_locks` and the
+  `async with _locks[chat_id]: pass` block (which also referenced an un-imported `asyncio`, a latent
+  `NameError`). Each message is now processed independently with no queuing/blocking.
+
+DAG never blocks GOAT; no locks in message handling; the DAG writes working memory only and GOAT reads
+it for status. DagBridge and GoatValidator are untouched (they run inside the detached pipeline). Zero
+singletons; all files ≤260 lines. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-14 (episodic memory: backend protocol, compartments, sliding window, timestamps)
 
 ### Added

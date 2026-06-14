@@ -62,18 +62,28 @@ class GoatSupervisor:
         self._behavior_style: str = ""
         self._history: ConversationHistory | None = None
         self._session_id: str = str(uuid.uuid4())
+        # Detached background DAGs: session_id → asyncio.Task. GOAT (kernel) stays
+        # responsive while these run; they write status/result to working memory.
+        self._active_dag_tasks: dict[str, asyncio.Task] = {}
 
-    async def _run_dag(
-        self, intent: str, t0: float, mem_ctx: str, dag_instructions: str = "",
-    ) -> SupervisorResult:
-        """Run the DAG pipeline with GOAT's self-contained ``dag_instructions``.
+    def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
+        """Spawn the DAG as a detached background task — GOAT returns immediately."""
+        from supervisor.pipeline import dag_background
+        return dag_background.spawn(self, dag_instructions, session_id)
 
-        The instructions (already decided by the single GOAT call) become the
-        planner objective; the DAG's specialized agents do the rest.
-        """
-        from supervisor.pipeline.dag_execution import run_dag_pipeline
-        log.debug("_run_dag: instructions=%.80s", dag_instructions or intent)
-        return await run_dag_pipeline(self, intent, t0, mem_ctx, dag_instructions or intent)
+    async def get_dag_status(self, session_id: str) -> dict:
+        """Report a background DAG's status from its task state + working memory."""
+        from supervisor.pipeline import dag_background
+        return await dag_background.status(self, session_id)
+
+    def _dag_started_result(self, intent: str, t0: float, session_id: str) -> SupervisorResult:
+        """Immediate result returned the moment a background DAG is spawned."""
+        return SupervisorResult(
+            intent=intent, plan=Plan(tasks=[]), results={}, critique="",
+            summary="DAG started, monitoring in background...",
+            sources={"conv": "generated"}, session_id=session_id,
+            total_duration_s=time.monotonic() - t0,
+        )
 
     def _clarification_result(self, intent: str, t0: float, question: str) -> SupervisorResult:
         """Build a SupervisorResult that surfaces a clarification question to the user."""
@@ -124,7 +134,13 @@ class GoatSupervisor:
                     )
                 except Exception as e:
                     log.warning("write_dag_instructions failed: %s", e)
-            return await self._run_dag(intent, t0, mem_ctx, decision.dag_instructions)
+            # Spawn the DAG detached and return immediately — GOAT never blocks.
+            session_id = str(uuid.uuid4())
+            self.spawn_dag_background(decision.dag_instructions or intent, session_id)
+            r = self._dag_started_result(intent, t0, session_id)
+            self._history.add_assistant(r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
+            return r
         if decision.action == "clarify":
             r = self._clarification_result(intent, t0, decision.clarification)
             self._history.add_assistant(r.summary)
@@ -151,11 +167,22 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
-        # Pending DAG from a start_dag tool call — fire directly.
+        # Surface any background DAGs that finished since the last turn so GOAT can
+        # report them naturally; finished tasks are cleared from tracking here.
+        from supervisor.pipeline import dag_background
+        dag_update = await dag_background.collect_finished(self)
+        if dag_update:
+            mem_ctx = f"{dag_update}\n{mem_ctx}" if mem_ctx else dag_update
+
+        # Pending DAG from a start_dag tool call — spawn detached, reply immediately.
         pending_dag_session = await pop_pending_dag(self.memory_manager, self._session_id)
         if pending_dag_session:
-            log.info("GOAT: pending DAG found session=%s — firing DAG", pending_dag_session)
-            return await self._run_dag(intent, t0, mem_ctx, intent)
+            log.info("GOAT: pending DAG session=%s — spawning background", pending_dag_session)
+            self.spawn_dag_background(intent, pending_dag_session)
+            r = self._dag_started_result(intent, t0, pending_dag_session)
+            self._history.add_assistant(r.summary)
+            await store_and_promote(self, len(self._history.messages), intent, r.summary)
+            return r
 
         # The ONE GOAT call decides everything from pure-built context.
         goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)

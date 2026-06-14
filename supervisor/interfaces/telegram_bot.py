@@ -61,6 +61,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     chat_id = update.message.chat_id
     sv = _supervisor_for(chat_id)
+    # No lock: each message is processed independently. GOAT stays responsive even
+    # while a DAG runs in the background, so messages never queue or block.
+    log.debug("chat=%d processing intent=%.80s", chat_id, intent)
 
     try:
         result = await sv.run(intent)
