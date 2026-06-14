@@ -12,9 +12,18 @@ from config.roles import SESSION_ROLE
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
 
-__all__ = ["ConversationHistory", "load_session_summary"]
+__all__ = ["ConversationHistory", "load_session_summary", "load_episodic_context"]
 
 _SUMMARY_KEY  = "session_summary"
+_EPISODIC_LIMIT = 300
+
+# Display order + labels for episodic compartments in the injected context block.
+_COMPARTMENT_LABELS: tuple[tuple[str, str], ...] = (
+    ("turns", "Turns"),
+    ("preferences", "Preferences"),
+    ("corrections", "Corrections"),
+    ("dag_results", "DAG Results"),
+)
 
 
 def _strip_dsml(text: str) -> str:
@@ -92,20 +101,54 @@ async def load_session_summary(mm: MemoryManager | None) -> str:
         return ""
 
 
-async def load_episodic_context(mm: "MemoryManager | None", limit: int = 100) -> str:
-    """Load recent episodic memory entries for session injection."""
+def _entry_field(entry: object, name: str, default: str = "") -> str:
+    """Read a field from an entry that may be a dict or a MemoryEntry."""
+    if isinstance(entry, dict):
+        val = entry.get(name, default)
+    else:
+        val = getattr(entry, name, default)
+    return val if isinstance(val, str) else (str(val) if val is not None else default)
+
+
+async def load_episodic_context(mm: "MemoryManager | None", limit: int = _EPISODIC_LIMIT) -> str:
+    """Load episodic entries for session injection, grouped by compartment.
+
+    Loads up to ``limit`` entries (all 300 by default) from the episodic tier and
+    renders an ``[Episodic Memory]`` block with one labelled sub-block per
+    compartment (Turns / Preferences / Corrections / DAG Results). Best-effort:
+    returns '' on any error so session start never breaks.
+    """
     if mm is None:
         return ""
     try:
-        entries = await mm.episodic.backend.list("user_session", limit=limit)
+        entries = await mm.episodic.list("user_session", limit=limit)
         if not entries:
             return ""
-        lines = []
+        buckets: dict[str, list[str]] = {}
         for e in entries:
-            content = e.get("content", "") if isinstance(e, dict) else getattr(e, "content", "")
-            if content:
-                lines.append(f"- {content[:200]}")
-        return "[Episodic Memory]\n" + "\n".join(lines) if lines else ""
+            content = _entry_field(e, "content")
+            if not content:
+                continue
+            meta = e.get("metadata", {}) if isinstance(e, dict) else getattr(e, "metadata", {})
+            comp = str((meta or {}).get("compartment", "")) or "turns"
+            key = _entry_field(e, "key")
+            date = _entry_field(e, "created_at")[:10]
+            buckets.setdefault(comp, []).append(f"- {key} ({date}): {content[:200]}")
+        if not buckets:
+            return ""
+        out = ["[Episodic Memory]"]
+        for comp, label in _COMPARTMENT_LABELS:
+            if buckets.get(comp):
+                out.append(f"[{label}]")
+                out.extend(buckets[comp])
+        # Any compartment not in the known label list (forward-compat).
+        known = {c for c, _ in _COMPARTMENT_LABELS}
+        for comp, lines in buckets.items():
+            if comp not in known:
+                out.append(f"[{comp.title()}]")
+                out.extend(lines)
+        log.debug("load_episodic_context: %d entries across %d compartments", len(entries), len(buckets))
+        return "\n".join(out)
     except Exception as exc:
         log.debug("load_episodic_context failed: %s", exc)
         return ""

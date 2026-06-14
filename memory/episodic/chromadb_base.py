@@ -44,6 +44,8 @@ class ChromaBase:
             self._chroma = chromadb.PersistentClient(
                 path=self._persist_dir,
                 settings=chromadb.Settings(anonymized_telemetry=False),
+                tenant="default_tenant",
+                database="default_database",
             )
             log.debug("ChromaDB initialised at %s", self._persist_dir)
         return self._chroma

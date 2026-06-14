@@ -124,17 +124,28 @@ def _build_chroma_metadata(
     iso: IsoTimestamp,
 ) -> ChromaStoredMetadata:
     """
-    Build ChromaDB metadata dict from components.
+    Build episodic metadata dict from components, including the full timestamp
+    schema (created/updated/accessed + access_count) and the compartment.
 
+    ``compartment`` and ``permanent`` are carried from ``user_meta`` when present.
+    A fresh write starts at ``access_count=0`` with ``accessed_at_ts == created``.
     Pure — PyO3 candidate.
     """
     tags_str = _tags_to_str(
         list(user_meta.get("tags") or []) if user_meta else []
     )
+    compartment = str(user_meta.get("compartment", "")) if user_meta else ""
+    permanent = bool(user_meta.get("permanent", False)) if user_meta else False
     return ChromaStoredMetadata(
         agent_role=str(agent_role),
         key=str(key),
         created_at=str(iso),
         created_at_ts=ts,
         tags=tags_str,
+        updated_at=str(iso),
+        updated_at_ts=float(ts),
+        accessed_at_ts=float(ts),
+        access_count=0,
+        compartment=compartment,
+        permanent=permanent,
     )

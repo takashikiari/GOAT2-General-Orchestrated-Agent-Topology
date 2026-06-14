@@ -62,8 +62,25 @@ class MemoryCrudMixin:
             return await layer.store(
                 agent_role, key, content, metadata=metadata, ttl=ttl
             )
-        entry = await layer.store(agent_role, key, content, metadata=metadata)
+        # EPISODIC / LONG_TERM. Episodic entries are tagged with a compartment
+        # (inferred from the key) and bounded by the sliding window after the write.
+        mt = MemoryType(memory_type)
+        meta = dict(metadata) if metadata else None
+        if mt == MemoryType.EPISODIC:
+            try:
+                from memory.episodic.compartments import compartment_for_key
+                meta = dict(meta or {})
+                meta.setdefault("compartment", compartment_for_key(key))
+            except Exception as exc:
+                log.debug("store: compartment detection skipped: %s", exc)
+        entry = await layer.store(agent_role, key, content, metadata=meta)
         log.debug("store(%s, %s) → %s", agent_role, key, memory_type)
+        if mt == MemoryType.EPISODIC:
+            try:
+                from memory.episodic.sliding_window import check_and_slide
+                await check_and_slide(layer, agent_role)
+            except Exception as exc:
+                log.debug("store: episodic sliding window skipped: %s", exc)
         try:
             import time
             from memory.working.redis_backend import RedisBackend

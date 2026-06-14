@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (episodic memory: backend protocol, compartments, sliding window, timestamps)
+
+### Added
+
+- **`memory/episodic/backend_protocol.py`** — `EpisodicMemoryBackend(Protocol)` (`@runtime_checkable`, storage-neutral names): `store/get/search/list/delete/count`. `ChromaMemoryClient` conforms structurally; a new `get()` on `ChromaCrudMixin` (delegates to `retrieve`, then bumps access stats) makes it satisfy the Protocol without touching existing `retrieve`/`search`.
+- **`memory/episodic/compartments.py`** — `EpisodicCompartment` enum (TURNS/PREFERENCES/DAG_RESULTS/CORRECTIONS), `namespaced_key`, `compartment_for_key` (explicit `<compartment>:` prefix, else legacy prefix map, else TURNS — deterministic categorization, not relevance). Documents access: GOAT → all compartments, DAG agents → none.
+- **`memory/episodic/sliding_window.py`** — capacity via **pure-LLM relevance** (replaces TTL): max 300, WARN at 280; at the limit the oldest non-permanent entries are scored — `<0.3` deleted, `>=0.7` marked `permanent` (kept forever, skipped by future windows), `0.3–0.7` kept. **Fallback:** LLM failure → delete oldest 20. Never raises.
+
+### Changed
+
+- **Timestamps on episodic entries** (`chroma_types.py`, `chroma_helpers.py`, `chroma_crud.py`): `ChromaStoredMetadata` gains `updated_at`/`updated_at_ts`/`accessed_at_ts`/`access_count`/`compartment`/`permanent` (all `NotRequired`). `_build_chroma_metadata` sets them on write; the new `get()` bumps `access_count`/`accessed_at_ts` (existing `retrieve` stays pure to avoid re-upsert amplification).
+- **`memory/shared/memory_crud.py`** — EPISODIC store branch now infers the compartment from the key, injects it into metadata, and runs the sliding window after the write (best-effort, never fatal). WORKING/LONG_TERM paths unchanged.
+- **`supervisor/session/history.py`** — `load_episodic_context` rewritten to load up to 300 entries via `mm.episodic.list` (fixes a latent `mm.episodic.backend.list` bug that always returned ""), grouped into a labelled `[Episodic Memory]` block by compartment. Already wired into `session_init` → now actually injects medium-term context at session start.
+
+No TTL on episodic (sliding window is the capacity mechanism); no hardcoded relevance rules (pure LLM); no regex; zero singletons; `memory/` imports nothing from `supervisor/` at module level. ChromaDB integration, `mem_inject`/`recall_context`, DagBridge, and GoatValidator are untouched. All files ≤260 lines. Verified: `python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-14 (single GOAT decision call replaces the 6-call routing pipeline)
 
 ### Changed — one LLM call decides everything; middleware is pure context

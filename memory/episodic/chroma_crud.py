@@ -129,6 +129,39 @@ class ChromaCrudMixin(ChromaBase):
         entries = _parse_get_result(result, agent_role)
         return entries[0] if entries else None
 
+    async def get(self, agent_role: AgentRole, key: MemoryKey) -> MemoryEntry | None:
+        """Protocol read path: retrieve by key and bump access stats.
+
+        Returns the entry (same as ``retrieve``) and, on a hit, best-effort
+        increments ``access_count`` and refreshes ``accessed_at_ts`` via a
+        re-upsert. ``retrieve`` stays pure (no write) for hot internal paths.
+        """
+        entry = await self.retrieve(agent_role, key)
+        if entry is not None:
+            await self._bump_access(agent_role, key)
+        return entry
+
+    async def _bump_access(self, agent_role: AgentRole, key: MemoryKey) -> None:
+        """Increment access_count and refresh accessed_at_ts for one entry."""
+        doc_id = _doc_id(agent_role, key)
+
+        def _sync() -> None:
+            col = self._get_collection(agent_role)
+            res = col.get(ids=[doc_id], include=["documents", "metadatas"])
+            if not res.get("ids"):
+                return
+            meta = dict((res.get("metadatas") or [None])[0] or {})
+            doc = (res.get("documents") or [None])[0] or ""
+            meta["access_count"] = int(meta.get("access_count", 0) or 0) + 1
+            meta["accessed_at_ts"] = float(_now_ts())
+            col.upsert(ids=[doc_id], documents=[doc], metadatas=[meta])
+
+        try:
+            await asyncio.to_thread(_sync)
+            log.debug("get: access bumped %s/%s", agent_role, key)
+        except Exception as exc:
+            log.debug("get: access bump skipped: %s", exc)
+
     async def delete(self, agent_role: AgentRole, key: MemoryKey) -> bool:
         """Delete by key; True if existed."""
         doc_id = _doc_id(agent_role, key)

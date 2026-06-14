@@ -23,12 +23,23 @@ _SEARCH_TAG_OVERSAMPLE: Final[int] = 3
 
 
 class ChromaStoredMetadata(TypedDict):
-    """Scalar metadata stored alongside every ChromaDB document."""
+    """Scalar metadata stored alongside every episodic document.
+
+    The trailing fields are ``NotRequired`` so documents written before this
+    schema (and the blank-metadata fallback) still load. All values are scalars
+    (str/int/float/bool) as the backend requires.
+    """
     agent_role:    str
     key:           str
     created_at:    str
     created_at_ts: int
     tags:          str    # comma-separated
+    updated_at:     NotRequired[str]
+    updated_at_ts:  NotRequired[float]
+    accessed_at_ts: NotRequired[float]
+    access_count:   NotRequired[int]
+    compartment:    NotRequired[str]
+    permanent:      NotRequired[bool]
 
 
 class ChromaGetResult(TypedDict, total=False):
