@@ -136,7 +136,11 @@ class GoatSupervisor:
                     log.warning("write_dag_instructions failed: %s", e)
             # Spawn the DAG detached and return immediately — GOAT never blocks.
             session_id = str(uuid.uuid4())
-            self.spawn_dag_background(decision.dag_instructions or intent, session_id)
+            dag_instr = decision.dag_instructions or intent
+            if goat_ctx.workspace and goat_ctx.workspace not in dag_instr:
+                dag_instr = f"Workspace root: {goat_ctx.workspace}\n\n" + dag_instr
+
+            self.spawn_dag_background(dag_instr, session_id)
             r = self._dag_started_result(intent, t0, session_id)
             self._history.add_assistant(r.summary)
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
