@@ -28,6 +28,7 @@ __all__ = ["SHELL"]
 # Whitelist of allowed commands (basic read-only operations)
 ALLOWED_COMMANDS: Final[set[str]] = {
     "ls", "pwd", "cat", "head", "tail", "grep", "echo", "mkdir",
+    "python3", "python", "which", "cd", "env", "printenv",
     "find", "wc", "du", "df", "ps", "date", "whoami", "hostname",
     "uname", "sort", "uniq", "tr", "sed", "awk", "cut", "join",
     "basename", "dirname", "readlink", "file", "stat", "lsblk",

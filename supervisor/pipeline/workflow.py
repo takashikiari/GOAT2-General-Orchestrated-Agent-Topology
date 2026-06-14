@@ -784,6 +784,23 @@ class WorkflowGraph:
                         memory_manager, session_id,
                         total_waves=len(waves), completed=completed_stop,
                     )
+                    try:
+                        import json as _json, time as _time
+                        from supervisor.pipeline.dag_bridge import DagBridge
+                        partial = _json.dumps({
+                            "session_id": session_id,
+                            "completed_at": _time.time(),
+                            "status": "stopped",
+                            "tasks": {
+                                tid: {"role": r.role, "output": r.output[:2000], "error": r.error}
+                                for tid, r in results.items()
+                            },
+                        }, indent=2)
+                        bridge = DagBridge(memory_manager)
+                        await bridge.write_result(session_id, partial)
+                        log.info("WorkflowGraph: partial result written on stop session=%s", session_id)
+                    except Exception as _e:
+                        log.warning("WorkflowGraph: failed to write partial result on stop: %s", _e)
                     return results
 
             # ── DAG PROGRESS REPORTING (TASK 3) ──

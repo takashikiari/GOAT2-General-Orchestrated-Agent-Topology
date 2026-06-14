@@ -166,7 +166,11 @@ async def _check_hallucination_llm(
         "    or present invented facts\n"
         "  - If outputs are mostly empty, set genuine=false\n"
         "  - SEVERITY: PASS/MINOR/MAJOR/CRITICAL is a valid critic output, NOT hallucination\n"
-        "  - Incomplete sentences in summaries are acceptable, not hallucination"
+        "  - Incomplete sentences in summaries are acceptable, not hallucination\n"
+        "  - Formal or polished language is NOT hallucination\n"
+        "  - Romanian language responses are valid, NOT hallucination\n"
+        "  - Tool call outputs (DSML tags, JSON) are valid, NOT hallucination\n"
+        "  - If output shows real file paths, timestamps, or system data — it is genuine"
     )
 
     try:

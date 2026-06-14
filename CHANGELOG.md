@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (dag_prompt_builder: pure-LLM formatting, zero hardcoded rules)
+
+### Changed
+
+#### `dag_prompt_builder.py` — the Prompter formats GoatDecision with no hardcoded rules
+
+`build_dag_prompt()` already received a `GoatDecision`; it now formats it into a `DagPrompt` using **pure LLM reasoning with zero hardcoded domain values** (only JSON schema keys remain as fixed strings).
+
+- **Removed the hardcoded role list** from `_SYSTEM` (`"researcher, coder, critic, summarizer, tool_caller, memory"` and the invent-no-roles examples). Available roles are now discovered dynamically via new helper **`_available_roles(registry)`** (`registry.agent_registry.roles()`) and passed to the LLM as context; the model picks `required_agents` only from those, guided by `decision.tool_hints`.
+- **Removed the forced-critic rule** (`if "critic" not in agents and len(agents) > 1: agents.append("critic")`). Agent selection is entirely the LLM's. (The DAG's critique phase in `dag_execution` is independent and unaffected.)
+- **Removed example verification-criteria templates** ("file was read", "web search returned results", …). The LLM now derives criteria specific to the task from the enriched instruction.
+- `_SYSTEM` instructs the model to **preserve EVERY detail** of `enriched_intent` in `technical_prompt`, and to respond in the user's language.
+- **`validate_dag_prompt()`** no longer uses the hardcoded `frozenset({"researcher","coder"})` critic rule. It keeps a structural empty-`verification_criteria` check plus the LLM specificity check — no role tables.
+
+`DagPrompt` schema is unchanged (`task_id`, `technical_prompt`, `required_agents`, `verification_criteria`, `memory_updates`, `constraints`), so `dag_execution` (which serializes via `dataclasses.asdict`) is unaffected. `build_dag_prompt` / `validate_dag_prompt` signatures unchanged; gates and DagBridge/GoatValidator/IntentDepth untouched. Zero singletons. File 260 lines. Verified: `python3 -c "from supervisor.pipeline.dag_prompt_builder import build_dag_prompt; print('ok')"` → `ok`.
+
+#### Fixed: unterminated string literal in `goat_validator.py`
+
+`goat_validator.py:169` had a corrupted multi-line string (lines 169–173 had lost their quoting), causing a `SyntaxError` that broke every `supervisor.*` import. Restored the exact text with proper string-concatenation quoting — no logic change. Not introduced by this task's edits; surfaced when the verification import exercised the `supervisor.pipeline` package.
+
+---
+
 ## [Unreleased] — 2026-06-14 (intent clarity reasons in conversational context)
 
 ### Changed

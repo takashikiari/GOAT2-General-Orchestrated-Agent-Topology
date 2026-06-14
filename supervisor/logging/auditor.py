@@ -40,7 +40,7 @@ class AuditReport:
     compared_pairs: int = 0
 
 
-_SIMILARITY_THRESHOLD: Final[float] = 0.30
+_SIMILARITY_THRESHOLD: Final[float] = 0.15
 _MIN_CONTENT_LEN:      Final[int]   = 20
 
 # Patterns for extracting entity-like claims (numbers, proper nouns, key-value pairs)
