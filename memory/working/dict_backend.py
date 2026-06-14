@@ -6,7 +6,7 @@ from memory.shared.types import AgentRole, MemoryKey
 from memory.working.working_backend import StorageBackend, _StoredItem
 from memory.working.working_record import RecordDict
 
-log = logging.getLogger("goat2.memory.working")
+log = logging.getLogger("goat2.memory.working.dict_backend")
 
 
 class DictBackend(StorageBackend):
@@ -56,6 +56,16 @@ class DictBackend(StorageBackend):
         for k in expired:
             del bucket[k]
         return list(bucket.keys())
+
+    async def scan(self, ns: AgentRole, pattern: str) -> list[MemoryKey]:
+        """Return live keys in namespace matching a glob-style pattern.
+
+        Mirrors the networked backend's scan via fnmatch so both satisfy the
+        WorkingMemoryBackend Protocol. No regex.
+        """
+        from fnmatch import fnmatchcase
+        live = await self.keys(ns)
+        return [k for k in live if fnmatchcase(str(k), pattern)]
 
     async def flush(self, ns: AgentRole) -> int:
         count           = len(self._store.get(ns, {}))

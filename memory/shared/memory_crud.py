@@ -51,6 +51,14 @@ class MemoryCrudMixin:
 
         layer = self._layer(memory_type)
         if isinstance(layer, WorkingMemoryLayer):
+            # Enforce the working-memory capacity bound before the write: promote
+            # the oldest turn entries to episodic if at the limit. Never fatal.
+            try:
+                from memory.working.capacity import check_and_promote
+                episodic = self._layer(MemoryType.EPISODIC)
+                await check_and_promote(layer.backend, episodic, agent_role)
+            except Exception as exc:
+                log.debug("store: capacity check skipped: %s", exc)
             return await layer.store(
                 agent_role, key, content, metadata=metadata, ttl=ttl
             )

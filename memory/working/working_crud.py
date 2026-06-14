@@ -11,9 +11,12 @@ from memory.shared.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey,
 )
 from memory.working.working_backend import StorageBackend
-from memory.working.working_record import _Record, _dict_to_record, _record_to_dict, _record_to_entry
+from memory.working.working_record import (
+    _Record, _dict_to_record, _record_to_dict, _record_to_entry,
+    stamp_on_read, stamp_on_write,
+)
 
-log = logging.getLogger("goat2.memory.working")
+log = logging.getLogger("goat2.memory.working.working_crud")
 _SOURCE: Final[str] = "working"
 
 
@@ -50,6 +53,7 @@ class WorkingCrudMixin:
             metadata=typed_meta, created_at=now_iso,
             created_at_ts=now_ts, expires_at=expires,
         ))
+        stamp_on_write(record, now_ts, now_iso)
         await self.backend.set(agent_role, key, record, expires_at=expires)
         log.debug("store(%s, %s) ttl=%s", agent_role, key, f"{ttl}s" if ttl else "none")
         return MemoryEntry(
@@ -60,9 +64,22 @@ class WorkingCrudMixin:
     async def retrieve(
         self, agent_role: AgentRole, key: MemoryKey,
     ) -> MemoryEntry | None:
-        """O(1) key lookup. Returns None if absent or expired."""
+        """O(1) key lookup. Returns None if absent or expired.
+
+        On a hit, bumps ``accessed_at_ts`` and ``access_count`` and writes the
+        record back, preserving its original ``expires_at`` so the access update
+        never extends or shortens the TTL. Write-back failures are non-fatal.
+        """
         record = await self.backend.get(agent_role, key)
-        return None if record is None else _record_to_entry(_dict_to_record(record))
+        if record is None:
+            return None
+        stamp_on_read(record, time.time())
+        try:
+            await self.backend.set(agent_role, key, record, expires_at=record.get("expires_at"))
+        except Exception as exc:
+            log.debug("retrieve(%s, %s): access write-back skipped: %s", agent_role, key, exc)
+        log.debug("retrieve(%s, %s) access_count=%s", agent_role, key, record.get("access_count"))
+        return _record_to_entry(_dict_to_record(record))
 
     async def delete(self, agent_role: AgentRole, key: MemoryKey) -> bool:
         return await self.backend.delete(agent_role, key)

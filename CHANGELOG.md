@@ -5,6 +5,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (working memory: backend protocol, capacity, full-context, timestamps)
+
+### Added
+
+#### `memory/working/backend_protocol.py` — storage-neutral backend abstraction
+
+- New `WorkingMemoryBackend(Protocol)` (`@runtime_checkable`) with seven async methods (`get/set/delete/keys/scan/flush/ping`) and **no storage-technology names** anywhere — "any backend implementing the Protocol works." The existing `StorageBackend` is kept for backward compatibility; both coexist.
+- `DictBackend` gained an async `scan()` (fnmatch, no regex) so it conforms alongside `RedisBackend` (which already had `scan`). No classes renamed. Exported from `memory/working/__init__.py`.
+
+#### `memory/working/capacity.py` — bounded working memory with auto-promotion
+
+- `get_promotable_entries` (oldest-first, **excludes `dag:*`**), `promote_oldest` (writes to episodic), and `check_and_promote(working, episodic, agent_role, max_entries=50)`.
+- Max **50 entries** per `agent_role`: WARNING at `>= 45`; at the limit the oldest turn entries are promoted to episodic and removed before the new write. **`dag:*` entries are never auto-promoted** (TTL only). Logging: DEBUG reads/writes, INFO promotion, WARNING capacity, ERROR backend failures.
+- Hooked into the WORKING branch of `MemoryCrudMixin.store` (`memory/shared/memory_crud.py`); wrapped in try/except so capacity never breaks a write.
+
+#### `memory/working/README.md`
+
+- New doc covering architecture, the backend Protocol + how to swap backends, capacity & `dag:*` isolation, full-context injection, and the timestamp schema.
+
+### Changed
+
+#### Timestamps on every working entry (`working_record.py`, `working_crud.py`)
+
+- `RecordDict` extended with `updated_at`, `updated_at_ts`, `accessed_at_ts`, `access_count` (all `NotRequired` — old records and the many literal `RecordDict` sites still valid).
+- New pure helpers `stamp_on_write` / `stamp_on_read`. `store()` stamps update/access fields; `retrieve()` increments `access_count` and bumps `accessed_at_ts`, writing back with the **original `expires_at`** so reads never change TTL. (Raw `backend.get` on DAG hot paths stays pure.)
+
+#### Full working-memory context injection (`supervisor/session/mem_inject.py`)
+
+- New `working_memory_block(mm)` builds a `[Working Memory]` block with **all** live entries (up to 50), unfiltered by semantic similarity, each as `- <key> (<timestamp>): <content>`, oldest-first, including `dag:*`. `recall_context` now returns the existing `[Memory]` fan-out **plus** this block for complete session awareness.
+
+Backward compatible throughout: no singletons added, `memory/` imports nothing from `supervisor/` at module level, the 16 memory tools and DAG raw writes are untouched, and all files stay ≤260 lines. Verified: `python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"` → `ok`; `from supervisor.supervisor import GoatSupervisor` → `ok` (no circular imports).
+
+---
+
 ## [Unreleased] — 2026-06-14 (dag_prompt_builder: pure-LLM formatting, zero hardcoded rules)
 
 ### Changed
