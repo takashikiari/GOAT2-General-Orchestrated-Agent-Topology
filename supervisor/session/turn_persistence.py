@@ -28,19 +28,15 @@ __all__ = ["store_and_promote", "schedule_promotion"]
 async def store_and_promote(
     supervisor: "GoatSupervisor", turn_count: int, intent: str, summary: str
 ) -> None:
-    """Store turn in working memory, auto-save to episodic tier, schedule promotion."""
+    """Store the turn (structured) in working memory, learn style, schedule promotion."""
     mm = supervisor.memory_manager
     if not mm:
         return
     try:
-        from supervisor.session import store_turn, store_goat_turn
+        # Persist this exchange to working memory as a structured turn record.
+        from supervisor.session.session import store_turn
         await store_turn(mm, turn_count, intent, summary)
-        await store_goat_turn(mm, supervisor._session_id, intent, summary)
-        try:
-            from memory.shared.hooks import auto_save_memory
-            await auto_save_memory(mm, "user_session", intent, summary)
-        except Exception as e:
-            log.warning("auto_save_memory failed: %s", e)
+        log.debug("store_and_promote: turn %d persisted", turn_count)
         # Behavioral learning: analyze recent turns and persist the updated style.
         try:
             from supervisor.behavior.behavior_analyzer import analyze_style

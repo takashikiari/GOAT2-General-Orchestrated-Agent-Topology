@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-14 (structured turn persistence + LLM-scored episodic promotion)
+
+### Changed
+
+#### Turns return to working memory as structured JSON (`supervisor/session/session.py`)
+
+- `store_turn(mm, turn, intent, summary, goat_action="conversational_reply")` now writes a structured JSON record instead of raw text: `user_intent` (≤500), `goat_action` (`conversational_reply`/`dag_spawn`/`clarification_request`), `summary` (≤200), `full_content` (`"User: …\nGOAT: …"`, ≤1000), `timestamp` (unix float), `turn_number`. Key `turn_<int(ts)>_<turn>`, TTL `WORKING_MEMORY_TTL`.
+- **Removed `store_goat_turn()`** (redundant) — merged into `store_turn`. Dropped its exports from `session.py` and `supervisor/session/__init__.py`, plus now-orphaned `GOAT_TURN_TTL` / `_MAX_TURN_CHARS` constants.
+
+#### Turn persistence re-enabled (`supervisor/session/turn_persistence.py`)
+
+- `store_and_promote` calls `store_turn(...)` again (turns had been disabled to RAM-only). This also **fixes a SyntaxError** the disabling edit left behind (an empty `try:` body), which was breaking every `supervisor.*` import. `auto_save_memory` stays removed; behavior-learning + `schedule_promotion` preserved.
+
+#### LLM-scored episodic promotion (`memory/working/capacity.py`)
+
+- At capacity, the oldest non-`dag:` entries are no longer promoted blindly. New `_score_relevance(content, context)` asks the LLM (model spec from a locally-constructed `Settings`, no singleton) for `{"relevance_score", "promote"}`. `promote=true` → episodic + delete; `promote=false` → **delete only** (dropped, keeps episodic clean). Recent-conversation context is built from the newest working entries, so `memory/` stays free of `supervisor` imports. Pure LLM — no keywords/regex.
+- **Fallback:** any LLM failure → promote-all (prior behavior), so capacity is always enforced. Also fixed the episodic `store(..., metadata=...)` call (was passed positionally against a keyword-only param and silently failing). `dag:*` exclusion unchanged.
+
+Backward compatible; no singletons; DagBridge, GoatValidator, ConversationHistory untouched. Verified: `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`.
+
+---
+
 ## [Unreleased] — 2026-06-14 (working memory: backend protocol, capacity, full-context, timestamps)
 
 ### Added

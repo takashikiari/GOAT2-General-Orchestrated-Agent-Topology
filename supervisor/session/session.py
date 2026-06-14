@@ -6,7 +6,7 @@ This bridges DAG execution results into the conversational context layer.
 MESSAGE SIZE MANAGEMENT:
 =======================
 Content stored to Redis is truncated to prevent oversized records:
-- Turn summaries: capped at _MAX_TURN_CHARS (10000) chars
+- Structured turns: per-field caps (intent 500, summary 200, full_content 1000)
 - DAG results: capped at _MAX_DAG_CHARS (50000) chars
 - Truncation is logged for observability
 """
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Final
 
 log = logging.getLogger("goat2.supervisor.session")
 
-from config.limits import DAG_RESULT_TTL
+from config.limits import DAG_RESULT_TTL, WORKING_MEMORY_TTL
 from config.roles import SESSION_ROLE
 from config.tiers import WORKING
 from memory.working.working_record import RecordDict
@@ -31,17 +31,17 @@ __all__ = [
     "store_turn",
     "store_dag_result",
     "retrieve_dag_result",
-    "store_goat_turn",
     "write_dag_instructions",
     "retrieve_dag_instructions",
 ]
 
-# ── Size limits to prevent oversized Redis records ──
-_MAX_TURN_CHARS: Final[int] = 10000    # max chars for a single turn summary
-_MAX_DAG_CHARS: Final[int] = 50000     # max chars for a full DAG result
+# Field truncation limits for structured turn records (per-field char caps).
+_MAX_INTENT_CHARS: Final[int] = 500
+_MAX_SUMMARY_CHARS: Final[int] = 200
+_MAX_FULL_CONTENT_CHARS: Final[int] = 1000
 
-# TTL for GOAT turn summaries (2 hours — longer than working memory default)
-GOAT_TURN_TTL: Final[int] = 7200
+# ── Size limits to prevent oversized Redis records ──
+_MAX_DAG_CHARS: Final[int] = 50000     # max chars for a full DAG result
 
 # TTL for DAG instructions written by GOAT before each pipeline run
 DAG_INSTRUCTIONS_TTL: Final[int] = 3600
@@ -67,18 +67,52 @@ def _truncate_for_storage(content: str, max_chars: int, label: str) -> str:
     return content[:max_chars] + "\n\n[... truncated for storage ...]"
 
 
-async def store_turn(mm: MemoryManager, turn: int, intent: str, summary: str) -> None:
-    """Persist one exchange to WORKING tier (Redis) only.
+async def store_turn(
+    mm: MemoryManager,
+    turn: int,
+    intent: str,
+    summary: str,
+    goat_action: str = "conversational_reply",
+) -> None:
+    """Persist one exchange to the WORKING tier as a structured JSON record.
 
-    Both conversational responses and DAG results are stored here. This enables
-    the conversational path to access prior DAG execution results via memory tools.
-    GOAT supervisor handles promotion to EPISODIC/LONG_TERM at session end.
+    Replaces the old raw-text turn with structured data so GOAT can reason over
+    prior exchanges. The JSON content carries:
 
-    Content is truncated to _MAX_TURN_CHARS to prevent oversized Redis records.
+        user_intent   — the user message, truncated to 500 chars
+        goat_action   — conversational_reply | dag_spawn | clarification_request
+        summary       — first 200 chars of the GOAT response
+        full_content  — "User: …\\nGOAT: …", truncated to 1000 chars
+        timestamp     — unix float
+        turn_number   — the turn counter
+
+    Stored under key ``turn_<int(timestamp)>_<turn_number>`` with TTL
+    ``WORKING_MEMORY_TTL``. ``goat_action`` defaults to ``conversational_reply``;
+    callers may pass ``dag_spawn`` or ``clarification_request`` when known.
+
+    Args:
+        mm: MemoryManager for tiered storage.
+        turn: Turn counter (message count) for this exchange.
+        intent: The user's message text.
+        summary: The GOAT response text.
+        goat_action: What GOAT did this turn (defaults to conversational_reply).
     """
-    content = f"User: {intent}\nAssistant: {summary}"
-    content = _truncate_for_storage(content, _MAX_TURN_CHARS, "turn")
-    await mm.store(SESSION_ROLE, f"turn_{turn:04d}", content, memory_type=WORKING)
+    now = time.time()
+    full_content = f"User: {intent}\nGOAT: {summary}"[:_MAX_FULL_CONTENT_CHARS]
+    payload = json.dumps(
+        {
+            "user_intent": (intent or "")[:_MAX_INTENT_CHARS],
+            "goat_action": goat_action,
+            "summary": (summary or "")[:_MAX_SUMMARY_CHARS],
+            "full_content": full_content,
+            "timestamp": now,
+            "turn_number": turn,
+        },
+        ensure_ascii=False,
+    )
+    key = f"turn_{int(now)}_{turn}"
+    await mm.store(SESSION_ROLE, key, payload, memory_type=WORKING, ttl=WORKING_MEMORY_TTL)
+    log.debug("store_turn: key=%s action=%s turn=%d", key, goat_action, turn)
 
 
 async def store_dag_result(mm: MemoryManager, session_id: str, full_detail: str) -> None:
@@ -118,34 +152,6 @@ async def retrieve_dag_result(mm: MemoryManager, session_id: str) -> str | None:
     if record is None:
         return None
     return record.get("content")
-
-
-async def store_goat_turn(
-    mm: MemoryManager,
-    session_id: str,
-    intent: str,
-    summary: str,
-) -> None:
-    """Persist GOAT response to WORKING tier with goat:<session_id>:turn_<ts> key.
-
-    Key format: goat:<session_id>:turn_<timestamp>
-    TTL: GOAT_TURN_TTL (7200s — 2 hours)
-    """
-    content = f"User: {intent}\nAssistant: {summary}"
-    content = _truncate_for_storage(content, _MAX_TURN_CHARS, "goat_turn")
-    now = time.time()
-    key = f"goat:{session_id}:turn_{int(now)}"
-    record: RecordDict = {
-        "id": key,
-        "agent_role": SESSION_ROLE,
-        "key": key,
-        "content": content,
-        "metadata": {"type": "goat_turn", "session_id": session_id, "created_at_ts": now},
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-        "created_at_ts": now,
-        "expires_at": now + GOAT_TURN_TTL,
-    }
-    await mm.working.backend.set(SESSION_ROLE, key, record, expires_at=record["expires_at"])
 
 
 async def write_dag_instructions(

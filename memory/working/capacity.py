@@ -1,18 +1,15 @@
-"""Working-memory capacity management — bound size, auto-promote the oldest.
+"""Working memory capacity management — max 100 entries, LLM-scored promotion.
 
-Working memory is a small, fast, session-scoped tier. Left unbounded it grows
-until entries expire by TTL, which can bloat context and slow scans. This module
-keeps each ``agent_role`` at or below a fixed number of entries by promoting the
-oldest **turn** entries to the episodic tier before a new write lands.
+When working memory is full, the oldest non-``dag:`` entries are candidates for
+promotion to the episodic tier. Rather than promoting blindly, an LLM scores each
+candidate against the recent conversation and decides whether it is worth keeping:
+relevant entries are promoted to episodic, irrelevant ones are dropped. This keeps
+episodic memory clean. If the LLM is unavailable, the batch falls back to
+promote-all (the prior behavior) so capacity is always enforced.
 
-Namespace isolation: keys in the ``dag:`` namespace are DAG coordination state
-and are NEVER auto-promoted — they are excluded from promotion and expire via
-their own TTL. Only conversational/turn entries (everything that is not ``dag:``)
-are promotable.
-
-All functions are pure utilities — no singletons, no module state. Backends are
-passed in and must satisfy the working-memory backend Protocol; the episodic
-backend only needs an async ``store(agent_role, key, content, metadata=...)``.
+The recent-conversation context is built from the newest working entries
+themselves, so this module stays self-contained — it never imports ``supervisor``.
+Relevance is pure LLM reasoning: no hardcoded keywords, patterns, or regex.
 """
 from __future__ import annotations
 
@@ -20,126 +17,127 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from memory.working.working_record import RecordDict
+    from memory.working.backend_protocol import WorkingMemoryBackend
 
 log = logging.getLogger("goat2.memory.working.capacity")
 
-__all__ = ["get_promotable_entries", "promote_oldest", "check_and_promote"]
+MAX_ENTRIES: int = 100
+WARN_THRESHOLD: int = 90
 
-# Entries are considered "approaching capacity" within this many of the max.
-_WARN_HEADROOM: int = 5
+# How many of the newest entries form the "recent conversation" context, and the
+# per-entry char cap applied when building that context for the LLM.
+_CONTEXT_ENTRIES: int = 5
+_CONTEXT_CHARS: int = 300
 
-# Namespace prefix that is never auto-promoted (DAG coordination state).
-_PROTECTED_PREFIX: str = "dag:"
+_RELEVANCE_SYSTEM: str = (
+    "You decide whether a single working-memory entry is worth keeping in long-term "
+    "episodic memory. You are given the recent conversation and one entry. Judge, purely "
+    "by meaning, whether the entry carries information likely to matter later (decisions, "
+    "facts, results, user preferences) versus transient chatter. Reason from the content "
+    "alone — no fixed keywords or rules.\n\n"
+    "Return ONLY this JSON — no prose:\n"
+    '{"relevance_score": 0.0, "promote": true}'
+)
 
 
-async def get_promotable_entries(working_backend, agent_role: str) -> list["RecordDict"]:
-    """Return promotable working records for ``agent_role``, oldest first.
+async def get_promotable_entries(backend: "WorkingMemoryBackend", agent_role: str) -> list[dict]:
+    """Return all non-dag entries for ``agent_role`` sorted oldest first."""
+    try:
+        keys = await backend.keys(agent_role)
+        entries: list[dict] = []
+        for key in keys:
+            if "dag:" in str(key):
+                continue
+            record = await backend.get(agent_role, key)
+            if record:
+                entries.append(record)
+        entries.sort(key=lambda e: e.get("created_at_ts", 0))
+        log.debug("get_promotable_entries(%s): %d promotable (dag:* excluded)", agent_role, len(entries))
+        return entries
+    except Exception as exc:
+        log.debug("get_promotable_entries failed: %s", exc)
+        return []
 
-    Excludes the protected ``dag:`` namespace. Records are sorted ascending by
-    ``created_at_ts`` so the caller can promote the oldest entries first.
 
-    Args:
-        working_backend: Backend satisfying the working-memory Protocol.
-        agent_role: Namespace whose entries are being considered.
+def _recent_context(promotable: list[dict]) -> str:
+    """Build a short recent-conversation context from the newest entries."""
+    newest = promotable[-_CONTEXT_ENTRIES:]
+    return "\n".join((e.get("content", "") or "")[:_CONTEXT_CHARS] for e in newest)
 
-    Returns:
-        Promotable records (``dag:`` excluded) sorted oldest → newest.
+
+async def _score_relevance(content: str, context: str) -> tuple[float, bool]:
+    """Score one entry's relevance via the LLM; returns (relevance_score, promote).
+
+    Raises on any failure so the caller can fall back to promote-all. Uses the
+    supervisor model spec from Settings (constructed locally — no singleton) and
+    the shared LLM helpers. Pure LLM reasoning, no keyword/regex rules.
     """
-    keys = await working_backend.keys(agent_role)
-    entries: list["RecordDict"] = []
-    for k in keys:
-        if str(k).startswith(_PROTECTED_PREFIX):
-            continue
-        record = await working_backend.get(agent_role, k)
-        if record is not None:
-            entries.append(record)
-    entries.sort(key=lambda r: float(r.get("created_at_ts") or 0.0))
-    log.debug(
-        "get_promotable_entries(%s): %d promotable (dag:* excluded)",
-        agent_role, len(entries),
-    )
-    return entries
-
-
-async def promote_oldest(
-    entries: list["RecordDict"], episodic_backend, agent_role: str, count: int
-) -> int:
-    """Promote the oldest ``count`` entries to the episodic tier.
-
-    Writes each record's content + metadata to ``episodic_backend``. Does not
-    delete from working memory — the caller owns the working backend and removes
-    the promoted keys once promotion succeeds. Backend failures are logged at
-    ERROR and skipped so one bad entry does not abort the batch.
-
-    Args:
-        entries: Promotable records, oldest first (from get_promotable_entries).
-        episodic_backend: Episodic layer with async ``store(...)``.
-        agent_role: Namespace being promoted.
-        count: How many of the oldest entries to promote.
-
-    Returns:
-        Number of entries successfully written to the episodic tier.
-    """
-    promoted = 0
-    for record in entries[:count]:
-        key = record.get("key", "")
-        content = record.get("content", "")
-        try:
-            await episodic_backend.store(
-                agent_role, key, content, metadata=record.get("metadata") or None
-            )
-            promoted += 1
-            log.debug("promote_oldest: %s → episodic", key)
-        except Exception as exc:
-            log.error("promote_oldest: failed to promote %s: %s", key, exc)
-    return promoted
+    from config.settings import Settings
+    from utils.llm_utils import _call_llm, _extract_json
+    spec = Settings().supervisor.model
+    raw = await _call_llm(spec, [
+        {"role": "system", "content": _RELEVANCE_SYSTEM},
+        {"role": "user", "content": f"Recent conversation:\n{context}\n\nEntry:\n{content}\n\nReturn JSON."},
+    ])
+    data = _extract_json(raw)
+    score = max(0.0, min(1.0, float(data.get("relevance_score", 1.0))))
+    return score, bool(data.get("promote", True))
 
 
 async def check_and_promote(
-    working_backend, episodic_backend, agent_role: str, max_entries: int = 50
-) -> int:
-    """Enforce the working-memory capacity bound for ``agent_role``.
+    working_backend: "WorkingMemoryBackend",
+    episodic_backend,
+    agent_role: str,
+    max_entries: int = MAX_ENTRIES,
+) -> None:
+    """Enforce capacity: LLM-score the oldest entries, promote the relevant, drop the rest.
 
-    Logs a WARNING as the count approaches ``max_entries`` (within
-    ``_WARN_HEADROOM``). At or above the limit, promotes the oldest promotable
-    entries to episodic and deletes them from working memory so a pending write
-    keeps the tier at or below ``max_entries``. ``dag:`` entries are never
-    promoted; if the tier is full of only ``dag:`` entries, nothing is promoted
-    (logged at WARNING).
-
-    Args:
-        working_backend: Backend satisfying the working-memory Protocol.
-        episodic_backend: Episodic layer with async ``store(...)``.
-        agent_role: Namespace to enforce capacity on.
-        max_entries: Maximum entries allowed (default 50).
-
-    Returns:
-        Number of entries promoted (and removed from working memory).
+    WARNs as the count approaches ``max_entries``. At the limit, the oldest
+    promotable entries are each scored by the LLM: ``promote=true`` → written to
+    episodic and removed from working; ``promote=false`` → removed only (dropped).
+    If any LLM score fails, the whole batch falls back to promote-all so capacity
+    is still enforced. ``dag:`` entries are never promoted.
     """
-    count = len(await working_backend.keys(agent_role))
-
-    if count < max_entries:
-        if count >= max_entries - _WARN_HEADROOM:
+    try:
+        count = len(await working_backend.keys(agent_role))
+        if count >= WARN_THRESHOLD:
             log.warning("capacity(%s): approaching limit (%d/%d)", agent_role, count, max_entries)
-        else:
-            log.debug("capacity(%s): %d/%d entries", agent_role, count, max_entries)
-        return 0
+        if count < max_entries:
+            return
+        log.info("capacity(%s): at limit (%d/%d) — scoring oldest for promotion", agent_role, count, max_entries)
 
-    log.info("capacity(%s): at limit (%d/%d) — promoting oldest", agent_role, count, max_entries)
-    entries = await get_promotable_entries(working_backend, agent_role)
-    to_promote = min(len(entries), count - max_entries + 1)
-    if to_promote <= 0:
-        log.warning("capacity(%s): at limit but no promotable entries (all dag:*)", agent_role)
-        return 0
+        promotable = await get_promotable_entries(working_backend, agent_role)
+        to_promote = promotable[: max(1, count - max_entries + 1)]
+        context = _recent_context(promotable)
 
-    promoted = await promote_oldest(entries, episodic_backend, agent_role, to_promote)
-    for record in entries[:promoted]:
-        try:
-            await working_backend.delete(agent_role, record.get("key", ""))
-        except Exception as exc:
-            log.error("capacity(%s): delete-after-promote failed for %s: %s",
-                      agent_role, record.get("key"), exc)
-    log.info("capacity(%s): promoted %d → episodic (now ~%d entries)",
-             agent_role, promoted, count - promoted)
-    return promoted
+        # Score each candidate; on any LLM failure, fall back to promote-all.
+        decisions: dict[str, bool] = {}
+        llm_ok = True
+        for entry in to_promote:
+            try:
+                score, promote = await _score_relevance(entry.get("content", ""), context)
+                decisions[entry.get("key", "")] = promote
+                log.debug("relevance(%s): score=%.2f promote=%s", entry.get("key"), score, promote)
+            except Exception as exc:
+                log.warning("capacity(%s): relevance LLM failed — promote-all fallback: %s", agent_role, exc)
+                llm_ok = False
+                break
+
+        promoted = dropped = 0
+        for entry in to_promote:
+            key = entry.get("key", "")
+            content = entry.get("content", "")
+            promote = True if not llm_ok else decisions.get(key, True)
+            try:
+                if promote and episodic_backend and content:
+                    await episodic_backend.store(agent_role, key, content, metadata=entry.get("metadata") or None)
+                    promoted += 1
+                elif not promote:
+                    dropped += 1
+                await working_backend.delete(agent_role, key)
+            except Exception as exc:
+                log.debug("promote/drop entry failed: %s", exc)
+        log.info("capacity(%s): promoted %d, dropped %d (llm=%s, now ~%d entries)",
+                 agent_role, promoted, dropped, llm_ok, count - promoted - dropped)
+    except Exception as exc:
+        log.debug("check_and_promote failed: %s", exc)
