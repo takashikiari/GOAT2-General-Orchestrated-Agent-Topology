@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -59,19 +60,52 @@ class MemoryPromoteMixin:
         """
         Bulk-promote every entry in from_type to to_type.
         `limit` caps the batch to prevent accidentally flushing a huge working-memory dump.
+        If to_type is LONG_TERM and Letta is unavailable, returns 0 immediately.
         """
+        # Guard: probe Letta before starting a potentially large batch
+        if to_type in (MemoryType.LONG_TERM, "long_term"):
+            long_term = getattr(self, "long_term", None)
+            if long_term is not None:
+                try:
+                    available = await asyncio.wait_for(long_term.health(), timeout=5.0)
+                    if not available:
+                        log.warning(
+                            "promote_all(%s): Letta unavailable — skipping %s → %s",
+                            agent_role, from_type, to_type,
+                        )
+                        return 0
+                except (asyncio.TimeoutError, Exception) as exc:
+                    log.warning(
+                        "promote_all(%s): Letta health check failed (%s) — skipping",
+                        agent_role, exc,
+                    )
+                    return 0
+            log.debug("promote_all(%s): Letta available, proceeding", agent_role)
+
         entries = await self.list(agent_role, memory_type=from_type, limit=limit)  # type: ignore[attr-defined]
         if not entries:
             return 0
 
         promoted = 0
         for entry in entries:
-            result = await self.promote(
-                agent_role, entry.key,
-                from_type=from_type, to_type=to_type, keep_source=keep_source,
-            )
-            if result is not None:
-                promoted += 1
+            try:
+                result = await asyncio.wait_for(
+                    self.promote(
+                        agent_role, entry.key,
+                        from_type=from_type, to_type=to_type, keep_source=keep_source,
+                    ),
+                    timeout=5.0,
+                )
+                if result is not None:
+                    promoted += 1
+            except asyncio.TimeoutError:
+                log.warning(
+                    "promote_all(%s): promote('%s') timed out — stopping batch early",
+                    agent_role, entry.key,
+                )
+                break
+            except Exception as exc:
+                log.debug("promote_all(%s): promote('%s') failed: %s", agent_role, entry.key, exc)
 
         log.info(
             "promote_all(%s): %d/%d entries %s → %s",

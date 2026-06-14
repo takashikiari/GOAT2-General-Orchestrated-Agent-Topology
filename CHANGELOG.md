@@ -5,6 +5,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-15 — Bug fixes: ChromaDB tenant, Letta PATCH, sliding window timeout, promote_all guard
+
+### Fixed — six production errors from system audit
+
+**ERROR 1+2 — `memory/episodic/chromadb_base.py`: ChromaDB tenant + get_tenant crash**
+- `_get_chroma()` already had `tenant="default_tenant"` and `database="default_database"`;
+  confirmed correct and left intact.
+- Added `try/except` with `log.error()` around `client.get_or_create_collection()` in
+  `_get_collection()` so tenant/collection failures surface clearly instead of propagating
+  as opaque errors.
+
+**ERROR 3 — `memory/long_term/letta_client.py`: Letta set_block HTTP 405**
+- Changed `client.put(f"/v1/agents/{id}/core-memory", ...)` to
+  `client.patch(f"/v1/agents/{id}/core-memory/blocks/{label}", json={"value": value})`.
+- Letta 0.16.8 requires `PATCH` on the per-block endpoint; `PUT` on the collection
+  endpoint returns 405.
+- Added per-request `timeout=10.0` (was inheriting the global 30 s client timeout).
+- Added explicit `except httpx.TimeoutException` path that falls back silently.
+
+**ERROR 4 — `memory/shared/memory_promote.py`: promote_all timeout cascade**
+- Added `import asyncio`.
+- `promote_all()` now probes Letta health (`asyncio.wait_for(..., timeout=5.0)`) before
+  starting any bulk work when `to_type` is `LONG_TERM`. Returns 0 immediately on
+  unavailability so the 30 s cascade cannot occur.
+- Each individual `promote()` call is now wrapped in `asyncio.wait_for(..., timeout=5.0)`;
+  first timeout stops the batch early with a WARNING log.
+
+**ERROR 5 — `memory/episodic/sliding_window.py`: window stuck at 1619/300**
+- `_SLIDE_BATCH` increased from 20 → 100 so each pass removes enough entries to
+  actually clear the overfull window.
+- Added `import asyncio`; wrapped `_score_relevance()` in
+  `asyncio.wait_for(..., timeout=10.0)`.
+- On `asyncio.TimeoutError`: immediately calls `_fallback_delete()` (deletes oldest
+  `_SLIDE_BATCH=100` entries) instead of spinning indefinitely.
+- LLM scoring uses `Settings().supervisor.model` (Groq/DeepSeek) — unchanged and correct.
+
+---
+
 ## [Unreleased] — 2026-06-14 — Bug fixes: _history, tuple.strip, telegram errors, JSON parse, DAG instructions
 
 ### Fixed — five production bugs from chat=1912576407 logs

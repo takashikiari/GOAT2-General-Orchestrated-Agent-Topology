@@ -15,6 +15,7 @@ satisfy the episodic backend Protocol; no singletons, no module state.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -27,7 +28,7 @@ __all__ = ["check_and_slide"]
 
 MAX_ENTRIES: int = 300
 WARN_THRESHOLD: int = 280
-_SLIDE_BATCH: int = 20          # oldest entries scored per pass (and fallback delete count)
+_SLIDE_BATCH: int = 100         # oldest entries scored per pass (and fallback delete count)
 _FETCH_MAX: int = 400
 _DELETE_BELOW: float = 0.3
 _PERMANENT_ABOVE: float = 0.7
@@ -125,7 +126,13 @@ async def check_and_slide(
             key = _field(entry, "key", "")
             content = _field(entry, "content", "") or ""
             try:
-                score = await _score_relevance(content, context)
+                score = await asyncio.wait_for(
+                    _score_relevance(content, context), timeout=10.0
+                )
+                log.debug("episodic relevance %s: score=%.2f", key, score)
+            except asyncio.TimeoutError:
+                log.error("episodic(%s): relevance LLM timed out — fallback delete oldest %d", agent_role, _SLIDE_BATCH)
+                return await _fallback_delete(backend, agent_role, candidates)
             except Exception as exc:
                 log.error("episodic(%s): relevance LLM failed — fallback: %s", agent_role, exc)
                 return await _fallback_delete(backend, agent_role, candidates)
@@ -139,7 +146,6 @@ async def check_and_slide(
                     promoted += 1
                 else:
                     kept += 1
-                log.debug("episodic relevance %s: score=%.2f", key, score)
             except Exception as exc:
                 log.debug("episodic slide op failed for %s: %s", key, exc)
         log.info("episodic(%s): deleted=%d permanent=%d kept=%d", agent_role, deleted, promoted, kept)

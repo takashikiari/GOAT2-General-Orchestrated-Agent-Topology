@@ -63,5 +63,13 @@ class ChromaBase:
             }
             if self._embedding_fn is not None:
                 kwargs["embedding_function"] = self._embedding_fn
-            self._cols[role] = client.get_or_create_collection(**kwargs)
+            try:
+                self._cols[role] = client.get_or_create_collection(**kwargs)
+                log.debug("ChromaDB collection ready: %s", _collection_name(role))
+            except Exception as exc:
+                log.error(
+                    "ChromaDB get_or_create_collection(%s) failed: %s",
+                    _collection_name(role), exc,
+                )
+                raise
         return self._cols[role]

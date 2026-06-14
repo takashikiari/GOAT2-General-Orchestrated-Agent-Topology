@@ -593,16 +593,15 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Update core memory block via Letta API (v0.5+)
-            response = await client.put(
-                f"/v1/agents/{agent_id}/core-memory",
-                json={
-                    "core_memory": {label: value},
-                },
+            # Letta 0.16.8: PATCH /v1/agents/{id}/core-memory/blocks/{label}
+            response = await client.patch(
+                f"/v1/agents/{agent_id}/core-memory/blocks/{label}",
+                json={"value": value},
+                timeout=10.0,
             )
 
             if response.status_code == 404:
-                log.debug("Letta memory endpoint not available; using fallback")
+                log.debug("Letta block '%s' not found; using fallback", label)
                 self._fallback.store(agent_role, label, value)
                 return True
 
@@ -610,6 +609,10 @@ class LettaClient(MemoryLayer):
             log.debug("Letta set_block success: %s", label)
             return True
 
+        except httpx.TimeoutException as e:
+            log.warning("Letta set_block timed out for block '%s'; using fallback", label)
+            self._fallback.store(agent_role, label, value)
+            return True
         except httpx.HTTPError as e:
             log.warning("Letta set_block HTTP error: %s", e)
             self._fallback.store(agent_role, label, value)
