@@ -121,7 +121,7 @@ class GoatSupervisor:
         return goat_ctx, clarity_ctx, hints
 
     async def _dispatch(
-        self, intent: str, t0: float, mem_ctx: str, decision: "GoatDecision",
+        self, intent: str, t0: float, mem_ctx: str, decision: "GoatDecision", goat_ctx=None,
     ) -> SupervisorResult:
         """Execute GOAT's decision: dag → pipeline, clarify → question, direct → reply."""
         if decision.action == "dag":
@@ -194,7 +194,7 @@ class GoatSupervisor:
         decision = await decide(self.registry, intent, goat_ctx, clarity_ctx, hints)
         depth = classify_intent(decision)
         log.info("GOAT decision: action=%s → %s intent=%.80s", decision.action, depth.value, intent)
-        return await self._dispatch(intent, t0, mem_ctx, decision)
+        return await self._dispatch(intent, t0, mem_ctx, decision, goat_ctx)
 
     async def finalize_session(self) -> None:
         """Analyze session turns and persist updated behavior profile to Letta."""

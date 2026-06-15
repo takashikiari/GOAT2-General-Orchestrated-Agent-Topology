@@ -90,6 +90,9 @@ async def _run_summarizer(
     registry: "Registry",
 ) -> str:
     """Synthesis: delegates to SummarizerAgent; skips LLM when all upstream outputs empty."""
+    import logging; _log = logging.getLogger("goat2.debug")
+    for _k, _r in dep_results.items():
+        _log.warning("summarizer dep_results: %s output=%r", _k, (_r.output or "")[:100])
     if dep_results and all(not (r.output or "").strip() for r in dep_results.values()):
         task.source = "generated"
         return "Not available. Upstream tasks returned no output."
