@@ -4,26 +4,30 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Final
+from typing import Final, TYPE_CHECKING
 
 from config.limits import WORKING_MEMORY_TTL
 from memory.shared.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey,
 )
-from memory.working.working_backend import StorageBackend
 from memory.working.working_record import (
     _Record, _dict_to_record, _record_to_dict, _record_to_entry,
     stamp_on_read, stamp_on_write,
 )
 
+if TYPE_CHECKING:
+    from memory.working.backend_protocol import WorkingMemoryBackend
+
 log = logging.getLogger("goat2.memory.working.working_crud")
 _SOURCE: Final[str] = "working"
+
+__all__ = ["WorkingCrudMixin"]
 
 
 class WorkingCrudMixin:
     """store / retrieve / delete / clear / health for WorkingMemoryLayer."""
 
-    backend:     StorageBackend
+    backend:     "WorkingMemoryBackend"
     default_ttl: int
 
     async def store(  # type: ignore[override]
@@ -54,7 +58,7 @@ class WorkingCrudMixin:
             created_at_ts=now_ts, expires_at=expires,
         ))
         stamp_on_write(record, now_ts, now_iso)
-        await self.backend.set(agent_role, key, record, expires_at=expires)
+        await self.backend.set(str(agent_role), str(key), record, expires)
         log.debug("store(%s, %s) ttl=%s", agent_role, key, f"{ttl}s" if ttl else "none")
         return MemoryEntry(
             id=entry_id, agent_role=agent_role, key=key, content=content,
@@ -70,22 +74,22 @@ class WorkingCrudMixin:
         record back, preserving its original ``expires_at`` so the access update
         never extends or shortens the TTL. Write-back failures are non-fatal.
         """
-        record = await self.backend.get(agent_role, key)
+        record = await self.backend.get(str(agent_role), str(key))
         if record is None:
             return None
         stamp_on_read(record, time.time())
         try:
-            await self.backend.set(agent_role, key, record, expires_at=record.get("expires_at"))
+            await self.backend.set(str(agent_role), str(key), record, record.get("expires_at"))
         except Exception as exc:
             log.debug("retrieve(%s, %s): access write-back skipped: %s", agent_role, key, exc)
         log.debug("retrieve(%s, %s) access_count=%s", agent_role, key, record.get("access_count"))
         return _record_to_entry(_dict_to_record(record))
 
     async def delete(self, agent_role: AgentRole, key: MemoryKey) -> bool:
-        return await self.backend.delete(agent_role, key)
+        return await self.backend.delete(str(agent_role), str(key))
 
     async def clear(self, agent_role: AgentRole) -> int:
-        count = await self.backend.flush(agent_role)
+        count = await self.backend.flush(str(agent_role))
         log.debug("clear(%s): removed %d entries", agent_role, count)
         return count
 
@@ -96,12 +100,12 @@ class WorkingCrudMixin:
         """Return up to `limit` most recent entries for agent_role."""
         from memory.shared.types import MemoryEntry
         try:
-            keys = await self.backend.keys(agent_role)
+            keys = await self.backend.keys(str(agent_role))
         except AttributeError:
             return []
         entries = []
         for key in keys[-limit:]:
-            record = await self.backend.get(agent_role, key)
+            record = await self.backend.get(str(agent_role), str(key))
             if record:
                 entries.append(MemoryEntry(
                     id=str(uuid.uuid4()),

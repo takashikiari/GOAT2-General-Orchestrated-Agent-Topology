@@ -1,21 +1,36 @@
+"""Background TTL eviction for working memory.
+
+No-op on RedisBackend (server handles TTL natively via EXPIRE). For
+DictBackend, exposes a sweep() method and a start_sweep_task() coroutine that
+fires it on an interval.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
-from memory.working.working_backend import StorageBackend
+if TYPE_CHECKING:
+    from memory.working.backend_protocol import WorkingMemoryBackend
 
-log = logging.getLogger("goat2.memory.working")
+log = logging.getLogger("goat2.memory.working.working_sweep")
+
+__all__ = ["WorkingSweepMixin"]
 
 
 class WorkingSweepMixin:
-    """Background TTL eviction for WorkingMemoryLayer. No-op on RedisBackend (server handles TTL)."""
+    """TTL eviction helpers for ``WorkingMemoryLayer``."""
 
-    backend:     StorageBackend
+    backend:     "WorkingMemoryBackend"
     _sweep_task: asyncio.Task | None
 
     async def sweep(self) -> int:
-        """Evict expired DictBackend entries now. Returns count removed."""
+        """Evict expired ``DictBackend`` entries now; no-op for other backends.
+
+        Returns:
+            Number of expired entries removed (0 when the backend is not a
+            ``DictBackend``).
+        """
         from memory.working.dict_backend import DictBackend
         if isinstance(self.backend, DictBackend):
             return self.backend.sweep()

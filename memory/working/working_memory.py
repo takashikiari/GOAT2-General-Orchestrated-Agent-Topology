@@ -1,7 +1,7 @@
 """WorkingMemoryLayer — Session-scoped working memory with TTL.
 
-Backed by a StorageBackend (DictBackend or RedisBackend). Provides
-fast, ephemeral storage for active conversation context.
+Backed by a ``WorkingMemoryBackend`` (``DictBackend`` or ``RedisBackend``).
+Provides fast, ephemeral storage for active conversation context.
 
 PHASE 4 UPDATE:
 ===============
@@ -13,17 +13,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from memory.working.working_backend import StorageBackend
 from memory.working.working_crud import WorkingCrudMixin
 from memory.working.working_query import WorkingQueryMixin
 from memory.working.working_sweep import WorkingSweepMixin
 
 if TYPE_CHECKING:
-    from memory.working.redis_backend import RedisBackend
+    from memory.working.backend_protocol import WorkingMemoryBackend
 
-log = logging.getLogger("goat2.memory.working")
+log = logging.getLogger("goat2.memory.working.working_memory")
 
-__all__ = ["WorkingMemoryLayer", "StorageBackend"]
+__all__ = ["WorkingMemoryLayer"]
 
 
 class WorkingMemoryLayer(
@@ -32,7 +31,7 @@ class WorkingMemoryLayer(
     """
     Session-scoped working memory with TTL.
 
-    Backed by a StorageBackend (DictBackend or RedisBackend).
+    Backed by a ``WorkingMemoryBackend`` (``DictBackend`` or ``RedisBackend``).
     Provides fast, ephemeral storage for active conversation context.
 
     TTL is enforced lazily on read for DictBackend, server-side for Redis.
@@ -43,11 +42,11 @@ class WorkingMemoryLayer(
 
     def __init__(
         self,
-        backend: StorageBackend | None = None,
+        backend: "WorkingMemoryBackend | None" = None,
         *,
         default_ttl: int = 3600,
     ) -> None:
-        self.backend: StorageBackend = backend or self._default_backend()
+        self.backend: "WorkingMemoryBackend" = backend or self._default_backend()
         self.default_ttl: int = default_ttl
         self._sweep_task = None
         log.debug(
@@ -56,7 +55,7 @@ class WorkingMemoryLayer(
         )
 
     @staticmethod
-    def _default_backend() -> StorageBackend:
+    def _default_backend() -> "WorkingMemoryBackend":
         """Lazy default backend — avoids hard import at module load."""
         from memory.working.redis_backend import RedisBackend
         return RedisBackend()

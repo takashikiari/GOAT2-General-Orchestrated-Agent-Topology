@@ -164,6 +164,84 @@ Exports added to ``memory/working/__init__.py``: ``collect`` and
   produced no response. Notification failure is itself caught and logged
   at DEBUG — never propagates back to Telegram.
 
+### Changed — working-memory backend unified to `WorkingMemoryBackend`
+
+**PROBLEM.** `memory/working/` shipped two conflicting backend protocols
+in parallel — the legacy `StorageBackend` (in `working_backend.py`) and
+the canonical `WorkingMemoryBackend` (in `backend_protocol.py`). Four
+files (`working_crud.py`, `working_sweep.py`, `redis_backend.py`,
+`dict_backend.py`) still implemented against `StorageBackend`, while
+`capacity.py` and `garbage_collector.py` already used the new
+`WorkingMemoryBackend`. The two protocols used different argument names
+(`ns: AgentRole` vs `agent_role: str`, `record: RecordDict` vs
+`value: dict`) and different `set()` signatures (the legacy one was
+keyword-only for `expires_at`), so a backend could not satisfy both at
+once. This split the working-memory tier across two interfaces and was
+the root cause of the memory corruption reports.
+
+**FIX.** Single canonical protocol — `WorkingMemoryBackend` from
+`memory/working/backend_protocol.py` is now the only backend interface.
+
+- **Deleted** `memory/working/working_backend.py` (legacy `StorageBackend`
+  Protocol + `_StoredItem` dataclass).
+- **Migrated** all callers to `WorkingMemoryBackend`:
+  - `working_crud.py` — `WorkingCrudMixin.backend` is now
+    `"WorkingMemoryBackend"`; `store()` / `retrieve()` pass `agent_role`
+    and `key` as positional `str` and use the new positional
+    `set(agent_role, key, value, expires_at)` signature.
+  - `working_sweep.py` — `WorkingSweepMixin.backend` is now
+    `"WorkingMemoryBackend"`; `sweep()` still detects `DictBackend` and
+    delegates to its sync `sweep()` (no change in behaviour).
+  - `working_query.py` — `WorkingQueryMixin.backend` is now
+    `"WorkingMemoryBackend"`; all key/agent_role values are converted to
+    `str` at the call site.
+  - `working_memory.py` — `WorkingMemoryLayer.__init__` and
+    `_default_backend` now type as `"WorkingMemoryBackend"`.
+- **Migrated** both concrete backends:
+  - `dict_backend.py` — implements `WorkingMemoryBackend` structurally
+    (no inheritance); signatures now `(agent_role: str, key: str,
+    value: dict, expires_at: float | None)`. The internal `_StoredItem`
+    dataclass is module-private and uses `dict` (no `RecordDict`
+    coupling). `sweep()` and `size()` remain sync utility methods.
+  - `redis_backend.py` — implements `WorkingMemoryBackend` structurally
+    (no inheritance); the same new signatures; `RedisConn` connection
+    management is unchanged.
+- **Updated** package exports:
+  - `memory/working/__init__.py` — drops `StorageBackend` from
+    `__all__`; adds a docstring note that `WorkingMemoryBackend` is the
+    only backend interface.
+  - `memory/__init__.py` — re-exports `WorkingMemoryBackend` (not
+    `StorageBackend`); `__all__` updated.
+- **No-op** for the new-protocol callers:
+  - `memory/working/capacity.py` — `check_and_promote` and
+    `get_promotable_entries` already used the new protocol; now
+    everything agrees.
+  - `memory/working/garbage_collector.py` — `collect` and
+    `schedule_auto_collect` already used the new protocol; now
+    everything agrees.
+
+**Constraint compliance.**
+
+- ✅ All modified files ≤ 260 lines (largest: `working_crud.py` at 119).
+- ✅ Docstrings on every public function and class.
+- ✅ `TYPE_CHECKING` used for `WorkingMemoryBackend` import in
+  `working_crud.py`, `working_sweep.py`, `working_query.py`,
+  `working_memory.py`, `working_query.py` — no runtime cycle.
+- ✅ Zero singletons — the registry still owns exactly one
+  `WorkingMemoryLayer` (and therefore one backend).
+- ✅ Debug loggers added: `goat2.memory.working.dict_backend`,
+  `goat2.memory.working.redis_backend`. All migrated files already had
+  namespaced loggers.
+- ✅ Verified:
+  - `python3 -c "from memory.working import WorkingMemoryBackend; print('ok')"` → **ok**
+  - `python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+  - `isinstance(DictBackend(), WorkingMemoryBackend)` → **True**
+  - `isinstance(RedisBackend(), WorkingMemoryBackend)` → **True**
+  - End-to-end: `WorkingMemoryLayer(DictBackend()).store/retrieve/list/search/ttl_of/delete/clear/health` — all pass.
+  - End-to-end: `collect()` evicts 10 turn entries when 60 are stored (50 retained), 0 when exactly 50 are stored.
+  - `schedule_auto_collect()` predicate: True at turn 10, False at turn 11.
+
 ### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
 
 New package `tools/goat_skills/` exposes 12 `ToolDefinition`s that drive

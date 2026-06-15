@@ -52,7 +52,7 @@ from memory.shared.memory_enums import MemoryType, MemoryTierLiteral, LayerStatu
 from memory.long_term.letta_client import LettaClient
 from memory.episodic.chromadb_client import ChromaMemoryClient
 from memory.working.working_memory import WorkingMemoryLayer
-from memory.working.working_backend import StorageBackend
+from memory.working.backend_protocol import WorkingMemoryBackend
 from memory.working.dict_backend import DictBackend
 from memory.working.redis_backend import RedisBackend
 from memory.working.working_record import RecordDict
@@ -103,7 +103,7 @@ __all__ = [
     "ChromaMemoryClient",
     # Working
     "WorkingMemoryLayer",
-    "StorageBackend",
+    "WorkingMemoryBackend",
     "DictBackend",
     "RedisBackend",
     "RecordDict",
