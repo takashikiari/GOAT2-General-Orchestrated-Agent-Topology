@@ -224,7 +224,7 @@ class GoatSupervisor:
                 from memory.working.capacity import check_and_promote
                 await check_and_promote(
                     self.memory_manager.working.backend, self.memory_manager.episodic,
-                    "user_session", max_entries=0,
+                    "user_session", max_entries=100,
                 )
                 log.info("finalize_session: working memory promoted to episodic")
             except Exception as e:
