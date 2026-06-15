@@ -242,6 +242,76 @@ the root cause of the memory corruption reports.
   - End-to-end: `collect()` evicts 10 turn entries when 60 are stored (50 retained), 0 when exactly 50 are stored.
   - `schedule_auto_collect()` predicate: True at turn 10, False at turn 11.
 
+### Fixed — session-init flush returns actual promoted count + DAG auto-clean
+
+**PROBLEM 1 — `check_and_promote` returned `None`, so the session-init
+flush log was always lying.** `supervisor/session_init_flush.py` was
+already calling `check_and_promote(..., max_entries=0)` and logging
+`"%d entries promoted to episodic"`, but the function had no
+`return` statement, so the `%d` was always formatted as
+`"None entries promoted to episodic"`. Operators could not see
+whether the flush actually moved data to episodic.
+
+**FIX 1 — `check_and_promote` now returns `int`.**
+- `memory/working/capacity.py`: signature changed from
+  `-> None` to `-> int`; returns `0` on early-exit (under limit /
+  exception), `promoted` on the normal path. The success log line was
+  also tightened:
+  `"promoted %d, dropped %d (llm=%s, remaining ~%d entries)"`
+  (the previous "now ~%d" was ambiguous about which count was the
+  delta).
+- `supervisor/session_init_flush.py` already had the right
+  `%d`-formatted log; with the new return value the count is now
+  accurate. No change needed to the caller.
+- At session start, `max_entries=0` triggers the "at limit" branch
+  immediately, so every non-`dag:` entry (filtered by
+  `get_promotable_entries`) becomes a candidate for promotion.
+  `dag:*` entries are skipped, as required by the spec.
+
+**PROBLEM 2 — DAG plumbing never reclaimed working memory.** A
+completed DAG wrote `dag:<sid>:status`, `dag:<sid>:result`,
+`dag:<sid>:task:<tid>`, `dag:<sid>:control` etc. into working memory
+under the `dag:` prefix, and only the GC's 1h `DAG_TTL_S` swept them
+away. The working namespace accumulated stale keys for every session
+the user ran.
+
+**FIX 2 — Detached auto-clean 60s after DAG completion.**
+- `supervisor/pipeline/dag_background.py`: new
+  `_auto_clean_dag(session_id, mm)` coroutine — sleeps
+  `_AUTO_CLEAN_DELAY_S` (60s) so GOAT's next turn can read the
+  result, then lists the `user_session` namespace, filters to keys
+  starting with `dag:<session_id>:`, and deletes them. Per-key
+  failures are swallowed. The whole coroutine is wrapped in
+  `try/except` so a stray exception can never crash the detached
+  task or log noise during shutdown.
+- `write_completion()` schedules the auto-clean via
+  `asyncio.create_task(_auto_clean_dag(...))` only after the result
+  and `complete` status are persisted. The create_task call is
+  guarded by `mm is not None` and a `RuntimeError` catch (no event
+  loop yet) so the helper is safe to call from any context.
+- New module constant `_AUTO_CLEAN_DELAY_S: float = 60.0` (named
+  constant, not magic number).
+
+**Constraint compliance.**
+
+- ✅ All modified files ≤ 260 lines (largest: `dag_background.py`
+  at 210).
+- ✅ Zero singletons — auto-clean is a per-DAG detached coroutine.
+- ✅ Namespaced loggers used:
+  `goat2.supervisor.pipeline.dag_background` for the new logs.
+- ✅ No blocking — sleep is `asyncio.sleep`, delete loop is per-key
+  `try/except`, the whole coroutine is detached.
+- ✅ Verified:
+  - `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.pipeline.dag_background import spawn; print('ok')"` → **ok**
+  - `check_and_promote(empty_ns, ..., max_entries=0)` returns `0` (int).
+  - `_auto_clean_dag('abc', mm)` removes only keys starting with
+    `dag:abc:`; other sessions' keys (`dag:xyz:status`) and
+    non-`dag:` keys (`turn:abc`) are untouched.
+  - End-to-end: `write_completion` + `asyncio.sleep(0.3)` removes
+    `dag:<sid>:status` and `dag:<sid>:result` (with delay patched
+    to 0.1s for the test).
+
 ### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
 
 New package `tools/goat_skills/` exposes 12 `ToolDefinition`s that drive

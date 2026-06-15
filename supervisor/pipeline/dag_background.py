@@ -29,6 +29,11 @@ __all__ = ["spawn", "write_completion", "collect_finished", "status"]
 # Kept small so a slow Redis call cannot stall GOAT.
 _REDIS_READ_TIMEOUT_S: float = 1.0
 
+# After a DAG completes, wait this long before auto-cleaning its `dag:*` keys.
+# The delay lets GOAT's next turn read the result/control keys before they
+# disappear; 60s is plenty for a single user-facing turn.
+_AUTO_CLEAN_DELAY_S: float = 60.0
+
 
 def spawn(supervisor: "GoatSupervisor", dag_instructions: str, session_id: str) -> "asyncio.Task":
     """Spawn the DAG as a detached background task and track it; return the Task.
@@ -72,10 +77,55 @@ async def _dag_runner(supervisor: "GoatSupervisor", session_id: str, dag_instruc
 
 
 async def write_completion(mm: "MemoryManager | None", session_id: str, summary: str) -> None:
-    """Write the DAG's final result and 'complete' status to working memory."""
+    """Write the DAG's final result and 'complete' status to working memory.
+
+    After the result is persisted, schedules a detached auto-clean task that
+    removes every ``dag:<session_id>:*`` key from working memory after a
+    short delay. The delay lets GOAT's next turn read the result first.
+    """
     await _write(mm, f"dag:{session_id}:result", summary)
     await _write(mm, f"dag:{session_id}:status", "complete")
     log.debug("write_completion: session=%s summary=%.80s", session_id, summary)
+    # Detached auto-clean — never blocks the caller. Failures are swallowed.
+    if mm is not None:
+        try:
+            asyncio.create_task(_auto_clean_dag(session_id, mm))
+        except RuntimeError as exc:
+            log.debug("write_completion: cannot schedule auto-clean (no loop?): %s", exc)
+
+
+async def _auto_clean_dag(session_id: str, mm: "MemoryManager") -> None:
+    """Sleep, then remove every ``dag:<session_id>:*`` key from working memory.
+
+    Runs detached — never blocks the supervisor. After ``_AUTO_CLEAN_DELAY_S``
+    (default 60s) it lists the working namespace, filters to keys scoped to
+    this session, and deletes them one by one. Failures on individual keys
+    are swallowed so one bad key cannot leave the rest behind.
+    """
+    try:
+        await asyncio.sleep(_AUTO_CLEAN_DELAY_S)
+        backend = getattr(getattr(mm, "working", None), "backend", None)
+        if backend is None:
+            log.debug("auto_clean_dag: no working backend (session=%s)", session_id)
+            return
+        prefix = f"dag:{session_id}:"
+        try:
+            keys = await backend.keys("user_session")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("auto_clean_dag: keys() failed for session=%s: %s", session_id, exc)
+            return
+        dag_keys = [k for k in keys if str(k).startswith(prefix)]
+        deleted = 0
+        for key in dag_keys:
+            try:
+                await backend.delete("user_session", str(key))
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                log.debug("auto_clean_dag: delete(%s) failed: %s", key, exc)
+        log.info("auto_clean_dag: cleaned %d/%d keys for session=%s",
+                 deleted, len(dag_keys), session_id)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("auto_clean_dag: aborted for session=%s: %s", session_id, exc)
 
 
 async def collect_finished(supervisor: "GoatSupervisor") -> str:

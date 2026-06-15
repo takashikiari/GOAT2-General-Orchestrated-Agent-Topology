@@ -89,7 +89,7 @@ async def check_and_promote(
     episodic_backend,
     agent_role: str,
     max_entries: int = MAX_ENTRIES,
-) -> None:
+) -> int:
     """Enforce capacity: LLM-score the oldest entries, promote the relevant, drop the rest.
 
     WARNs as the count approaches ``max_entries``. At the limit, the oldest
@@ -97,13 +97,18 @@ async def check_and_promote(
     episodic and removed from working; ``promote=false`` → removed only (dropped).
     If any LLM score fails, the whole batch falls back to promote-all so capacity
     is still enforced. ``dag:`` entries are never promoted.
+
+    Returns:
+        Number of entries successfully promoted to episodic (0 when the
+        function short-circuits or all writes fail).
     """
     try:
         count = len(await working_backend.keys(agent_role))
         if count >= WARN_THRESHOLD:
             log.warning("capacity(%s): approaching limit (%d/%d)", agent_role, count, max_entries)
         if count < max_entries:
-            return
+            log.debug("capacity(%s): under limit (%d/%d) — no promotion", agent_role, count, max_entries)
+            return 0
         log.info("capacity(%s): at limit (%d/%d) — scoring oldest for promotion", agent_role, count, max_entries)
 
         promotable = await get_promotable_entries(working_backend, agent_role)
@@ -137,7 +142,10 @@ async def check_and_promote(
                 await working_backend.delete(agent_role, key)
             except Exception as exc:
                 log.debug("promote/drop entry failed: %s", exc)
-        log.info("capacity(%s): promoted %d, dropped %d (llm=%s, now ~%d entries)",
-                 agent_role, promoted, dropped, llm_ok, count - promoted - dropped)
+        remaining = max(0, count - promoted - dropped)
+        log.info("capacity(%s): promoted %d, dropped %d (llm=%s, remaining ~%d entries)",
+                 agent_role, promoted, dropped, llm_ok, remaining)
+        return promoted
     except Exception as exc:
         log.debug("check_and_promote failed: %s", exc)
+        return 0
