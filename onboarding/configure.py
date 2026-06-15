@@ -104,7 +104,7 @@ def setup_memory_tiers(env: dict) -> dict:
         try:
             import chromadb
             persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "chroma_db")
-            client = chromadb.PersistentClient(path=persist_dir)
+            client = chromadb.PersistentClient(path=persist_dir, tenant=chromadb.config.DEFAULT_TENANT, database=chromadb.config.DEFAULT_DATABASE)
             client.heartbeat()
             result["episodic"] = True
         except Exception as e:

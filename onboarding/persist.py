@@ -60,7 +60,7 @@ def persist_identity(env: dict, config_status: dict, memory_status: dict) -> dic
         try:
             import chromadb
             persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "chroma_db")
-            client = chromadb.PersistentClient(path=persist_dir)
+            client = chromadb.PersistentClient(path=persist_dir, tenant=chromadb.config.DEFAULT_TENANT, database=chromadb.config.DEFAULT_DATABASE)
             collection = client.get_or_create_collection(CHROMA_COLLECTION_NAME)
             collection.add(
                 documents=[json.dumps(profile, default=str)],
