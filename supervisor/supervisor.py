@@ -103,9 +103,15 @@ class GoatSupervisor:
             intent, self._history.messages, self._user_profile or "",
             self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
             goat_session_id=self._session_id,
+            supervisor=self,
         )
         self._history.add_assistant(r.summary)
         await store_and_promote(self, len(self._history.messages), intent, r.summary)
+        # Check for pending DAG spawned by start_dag tool — spawn immediately
+        pending = await pop_pending_dag(self.memory_manager, self._session_id)
+        if pending:
+            log.info("GOAT: pending DAG session=%s — spawning background after direct reply", pending)
+            self.spawn_dag_background(intent, pending)
         return r
 
     async def _build_context(self, intent: str, mem_ctx: str):

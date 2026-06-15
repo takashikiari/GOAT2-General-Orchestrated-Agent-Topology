@@ -29,6 +29,7 @@ __all__ = ["make_dag_tools"]
 def make_dag_tools(
     mm: "MemoryManager | None",
     goat_session_id: str = "",
+    supervisor=None,
 ) -> "list[ToolDefinition]":
     """Build DAG monitor/control/spawn tools with closures over mm and goat_session_id.
 
@@ -86,13 +87,13 @@ def make_dag_tools(
             key = f"dag:{new_sid}:instructions"
             await mm.working.store(SESSION_ROLE, key, task_description, ttl=WORKING_MEMORY_TTL)
             log.debug("start_dag: wrote instructions session=%s", new_sid)
-            if goat_session_id:
+            if supervisor is not None:
+                from supervisor.pipeline.dag_background import spawn
+                spawn(supervisor, task_description, new_sid)
+                log.info("start_dag: spawned background DAG session=%s", new_sid)
+            elif goat_session_id:
                 pending_key = f"goat:{goat_session_id}:pending_dag"
                 await mm.working.store(SESSION_ROLE, pending_key, new_sid, ttl=WORKING_MEMORY_TTL)
-                log.debug(
-                    "start_dag: pending_dag written goat=%s dag=%s",
-                    goat_session_id, new_sid,
-                )
             return new_sid
         except Exception as e:
             log.debug("start_dag failed: %s", e)
