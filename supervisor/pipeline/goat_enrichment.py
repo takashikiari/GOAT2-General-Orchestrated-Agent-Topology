@@ -38,6 +38,7 @@ class GoatContext:
     available_agents: list[str]
     available_tools: str
     memory_context: str
+    dag_tools: list[str] = None
 
     def to_prompt(self) -> str:
         """Render this context as a prompt block for the GOAT decision call."""
@@ -46,6 +47,8 @@ class GoatContext:
             lines.append(f"Workspace root (use this exact path): {self.workspace}")
         if self.available_agents:
             lines.append("DAG agent roles: " + ", ".join(self.available_agents))
+        if self.dag_tools:
+            lines.append("DAG tool_caller tools (file operations): " + ", ".join(self.dag_tools))
         if self.available_tools:
             lines.append(self.available_tools)
         if self.memory_context:
@@ -106,6 +109,7 @@ def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatCo
     ctx = GoatContext(
         workspace=workspace,
         available_agents=_available_agents(registry),
+        dag_tools=[getattr(t, "name", "") for t in getattr(registry, "file_tools", []) if getattr(t, "name", "")],
         available_tools=_available_tools(registry),
         memory_context=mem_ctx or "",
     )
