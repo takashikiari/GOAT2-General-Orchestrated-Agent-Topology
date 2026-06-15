@@ -81,7 +81,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Also strip any orphaned opening/closing tags
         clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', clean_text)
         clean_text = re.sub(r'</\｜｜DSML｜｜[^>]*>', '', clean_text)
-        clean_text = clean_text.strip()
+        clean_text = re.sub(r"/DSML[A-Za-z_]*", "", clean_text).strip()
         if not clean_text or clean_text.strip() == "":
             clean_text = re.sub(r"[<｜>]+", "", text).strip() or "..."
         
