@@ -41,10 +41,6 @@ class ChromaBase:
         """Lazily initialise the ChromaDB PersistentClient, creating the persist dir if needed."""
         if self._chroma is None:
             os.makedirs(self._persist_dir, exist_ok=True)
-            try:
-                chromadb.api.client.SharedSystemClient.clear_system_cache()
-            except Exception:
-                pass
             self._chroma = chromadb.PersistentClient(
                 path=self._persist_dir,
                 settings=chromadb.Settings(anonymized_telemetry=False),
