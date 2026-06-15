@@ -43,6 +43,13 @@ async def pop_pending_dag(mm: "MemoryManager | None", session_id: str) -> str | 
         record = await mm.working.backend.get(_SROLE, key)
         if record is None:
             return None
+        # Only use pending_dag if created recently (last 60s)
+        import time as _time
+        created = record.get("created_at_ts", 0)
+        if _time.time() - created > 60:
+            await mm.working.backend.delete(_SROLE, key)
+            log.debug("pop_pending_dag: expired (age=%.0fs)", _time.time() - created)
+            return None
         await mm.working.backend.delete(_SROLE, key)
         return record.get("content")
     except Exception as e:
