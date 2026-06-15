@@ -207,6 +207,19 @@ class GoatSupervisor:
         self._behavior_style = await finalize_behavior(
             self.memory_manager, self._history, self._behavior_style, self.registry
         )
+        # Promote working memory to episodic and flush
+        if self.memory_manager:
+            try:
+                from memory.working.capacity import check_and_promote
+                await check_and_promote(
+                    self.memory_manager.working.backend,
+                    self.memory_manager.episodic,
+                    "user_session",
+                    max_entries=0,  # promote everything
+                )
+                log.info("finalize_session: working memory promoted to episodic")
+            except Exception as e:
+                log.warning("finalize_session: promote failed: %s", e)
 
     def register_agent(self, role: str, runner: AgentRunner) -> None:
         """Register a pre-built async runner under a role name.

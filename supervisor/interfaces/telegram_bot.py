@@ -107,6 +107,16 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def _shutdown(app) -> None:
+    """Finalize all sessions on shutdown — promote working memory to episodic."""
+    for chat_id, sv in _sessions.items():
+        try:
+            await sv.finalize_session()
+            log.info("finalize_session: chat=%d done", chat_id)
+        except Exception as e:
+            log.warning("finalize_session: chat=%d failed: %s", chat_id, e)
+
+
 def build_app() -> Application:
     """Build and configure the Telegram Application."""
     if not _TOKEN:
@@ -114,6 +124,7 @@ def build_app() -> Application:
     app = Application.builder().token(_TOKEN).build()
     # ── Only handle TEXT messages — ignore tool calls, media, etc. ──
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    app.post_shutdown(_shutdown)
     # ── Global error handler so Application-level exceptions are never lost ──
     app.add_error_handler(_error_handler)
     return app
