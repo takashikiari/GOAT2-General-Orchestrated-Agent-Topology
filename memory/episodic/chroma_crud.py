@@ -1,9 +1,4 @@
-"""ChromaCrudMixin — store, retrieve, delete for ChromaMemoryClient.
-
-Wraps ChromaDB CRUD operations with Redis sync for last-write tracking.
-Whenever an entry is stored, updates Redis key goat2:working:last_write:chromadb
-with the current ISO 8601 timestamp.
-"""
+"""ChromaCrudMixin — full CRUD + query + introspection for ChromaMemoryClient."""
 from __future__ import annotations
 
 import asyncio
@@ -12,10 +7,14 @@ from datetime import datetime, timezone
 from typing import Final
 
 from memory.episodic.chroma_helpers import (
-    _build_chroma_metadata, _doc_id, _now_iso, _now_ts, _str_to_tags,
+    _build_chroma_metadata, _collection_name, _doc_id, _has_all_tags,
+    _now_iso, _now_ts, _str_to_tags,
 )
-from memory.episodic.chroma_parsers import _parse_get_result
-from memory.episodic.chroma_types import ChromaGetResult
+from memory.episodic.chroma_parsers import _parse_get_result, _parse_query_result
+from memory.episodic.chroma_types import (
+    ChromaGetResult, ChromaQueryResult,
+    _COLLECTION_PREFIX, _LIST_FETCH_MAX, _SEARCH_TAG_OVERSAMPLE,
+)
 from memory.episodic.chromadb_base import ChromaBase
 from memory.shared.types import AgentRole, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey
 
@@ -24,20 +23,13 @@ _SOURCE: Final[str] = "chroma"
 
 
 class ChromaCrudMixin(ChromaBase):
-    """Store, retrieve, delete for ChromaMemoryClient with Redis last-write sync."""
+    """Store, retrieve, delete, search, list, health for ChromaMemoryClient."""
 
     async def store(
         self, agent_role: AgentRole, key: MemoryKey, content: str,
         *, metadata: MemoryEntryMetadata | None = None, ttl: int | None = None,
     ) -> MemoryEntry:
-        """Persist content to ChromaDB; also updates Redis last-write timestamp.
-
-        TTL is ignored for ChromaDB (persistent storage). Metadata tags are
-        stored as comma-separated string for filtering.
-
-        Redis sync: updates goat2:working:last_write:chromadb with ISO timestamp.
-        Fails silently if Redis is unavailable (does not block main write).
-        """
+        """Persist content to ChromaDB; updates Redis last-write timestamp."""
         ts = _now_ts()
         iso = _now_iso()
         meta = _build_chroma_metadata(agent_role, key, metadata, ts, iso)
@@ -55,7 +47,6 @@ class ChromaCrudMixin(ChromaBase):
             log.error("store(%s, %s) failed: %s", agent_role, key, exc)
             raise
 
-        # Sync last-write timestamp to Redis (non-blocking, fail-silent)
         await self._sync_last_write_to_redis()
 
         return MemoryEntry(
@@ -66,52 +57,19 @@ class ChromaCrudMixin(ChromaBase):
             created_at=iso, source=_SOURCE,
         )
 
-    
-    async def list(self, agent_role: str, limit: int = 50) -> list:
-        """Return up to `limit` most recent entries for agent_role from ChromaDB."""
-        try:
-            collection = self._get_collection(agent_role)
-            # ChromaDB nu are "list all" direct; folosim get() cu ids
-            results = collection.get()
-            if not results or not results.get("ids"):
-                return []
-            entries = []
-            for i, doc_id in enumerate(results["ids"][-limit:]):
-                entries.append(MemoryEntry(
-                    id=doc_id,
-                    agent_role=agent_role,
-                    key=results["metadatas"][i].get("key", doc_id) if results.get("metadatas") else doc_id,
-                    content=results["documents"][i] if results.get("documents") else "",
-                    metadata=results["metadatas"][i] if results.get("metadatas") else {},
-                    created_at=results["metadatas"][i].get("created_at", "") if results.get("metadatas") else "",
-                    source="chromadb",
-                ))
-            log.debug("chroma.list: role=%r → %d entries", agent_role, len(entries))
-            return entries
-        except Exception as exc:
-            log.warning("ChromaDB list() error: %s", exc)
-            return []
-
     async def _sync_last_write_to_redis(self) -> None:
-        """Update Redis last-write timestamp for chromadb tier.
-
-        Synchronous write — fails if Redis is down but does not block
-        the main ChromaDB write. Silent failure on Redis errors.
-        """
+        """Update Redis last-write timestamp for chromadb tier (fail-silent)."""
         try:
             from memory.working.redis_backend import RedisBackend
             redis = RedisBackend()
             r = await redis._get_redis()
             iso_now = datetime.now(timezone.utc).isoformat()
-            await r.set("goat2:working:last_write:chromadb", iso_now)  # type: ignore[union-attr]
+            await r.set("goat2:working:last_write:episodic", iso_now)  # type: ignore[union-attr]
             await redis.close()
-            log.debug("Redis last_write:chromadb updated to %s", iso_now)
         except Exception as exc:
             log.debug("Redis last-write sync failed (non-blocking): %s", exc)
 
-    async def retrieve(
-        self, agent_role: AgentRole, key: MemoryKey,
-    ) -> MemoryEntry | None:
+    async def retrieve(self, agent_role: AgentRole, key: MemoryKey) -> MemoryEntry | None:
         """Retrieve by exact key; None if not found."""
         doc_id = _doc_id(agent_role, key)
 
@@ -130,12 +88,7 @@ class ChromaCrudMixin(ChromaBase):
         return entries[0] if entries else None
 
     async def get(self, agent_role: AgentRole, key: MemoryKey) -> MemoryEntry | None:
-        """Protocol read path: retrieve by key and bump access stats.
-
-        Returns the entry (same as ``retrieve``) and, on a hit, best-effort
-        increments ``access_count`` and refreshes ``accessed_at_ts`` via a
-        re-upsert. ``retrieve`` stays pure (no write) for hot internal paths.
-        """
+        """Protocol read path: retrieve by key and bump access stats."""
         entry = await self.retrieve(agent_role, key)
         if entry is not None:
             await self._bump_access(agent_role, key)
@@ -184,3 +137,124 @@ class ChromaCrudMixin(ChromaBase):
         except Exception as exc:
             log.error("delete(%s, %s) failed: %s", agent_role, key, exc)
             return False
+
+    async def search(
+        self, agent_role: AgentRole, query: str,
+        *, limit: int = 5, tags: list[str] | None = None,
+    ) -> list[MemoryEntry]:
+        """Semantic search over agent_role's collection; optional tag filter."""
+        def _sync() -> ChromaQueryResult:
+            col = self._get_collection(agent_role)
+            count = col.count()
+            if count == 0:
+                return ChromaQueryResult(ids=[[]], documents=[[]], metadatas=[[]])  # type: ignore[typeddict-item]
+            n = min(limit * _SEARCH_TAG_OVERSAMPLE if tags else limit, count)
+            return col.query(  # type: ignore[return-value]
+                query_texts=[query], n_results=max(1, n),
+                where={"agent_role": str(agent_role)},
+                include=["documents", "metadatas"],
+            )
+
+        try:
+            result = await asyncio.to_thread(_sync)
+        except Exception as exc:
+            log.error("search(%s, %r) failed: %s", agent_role, query[:60], exc)
+            return []
+
+        entries = _parse_query_result(result, agent_role)
+        if tags:
+            entries = [e for e in entries if _has_all_tags(e, tags)]
+        return entries[:limit]
+
+    async def list(self, agent_role: AgentRole, limit: int = 20) -> list[MemoryEntry]:
+        """Return up to limit most-recent entries for agent_role, sorted by timestamp."""
+        def _sync() -> ChromaGetResult:
+            return self._get_collection(agent_role).get(  # type: ignore[return-value]
+                limit=_LIST_FETCH_MAX, include=["documents", "metadatas"]
+            )
+
+        try:
+            result = await asyncio.to_thread(_sync)
+        except Exception as exc:
+            log.error("list(%s) failed: %s", agent_role, exc)
+            return []
+
+        entries = _parse_get_result(result, agent_role)
+        entries.sort(
+            key=lambda e: float(e.metadata.get("created_at_ts") or 0), reverse=True
+        )
+        return entries[:limit]
+
+    async def clear(self, agent_role: AgentRole) -> int:
+        """Drop the entire collection for agent_role; returns count of removed docs."""
+        def _sync() -> int:
+            col = self._get_collection(agent_role)
+            count = col.count()
+            self._get_chroma().delete_collection(_collection_name(agent_role))
+            self._cols.pop(agent_role, None)
+            log.info("clear(%s): dropped collection (%d docs)", agent_role, count)
+            return count
+
+        try:
+            return await asyncio.to_thread(_sync)
+        except Exception as exc:
+            log.error("clear(%s) failed: %s", agent_role, exc)
+            return 0
+
+    async def health(self) -> bool:
+        """Return True if ChromaDB is reachable."""
+        def _sync() -> bool:
+            try:
+                self._get_chroma().list_collections()
+                return True
+            except Exception as exc:
+                log.warning("ChromaDB health check failed: %s", exc)
+                return False
+
+        return await asyncio.to_thread(_sync)
+
+    async def count(self, agent_role: AgentRole) -> int:
+        """Return total number of documents stored for agent_role."""
+        try:
+            count = await asyncio.to_thread(
+                lambda: self._get_collection(agent_role).count()
+            )
+            log.debug("chroma.count: role=%r → %d", agent_role, count)
+            return count
+        except Exception as exc:
+            log.warning("chroma.count: error for role=%r: %s", agent_role, exc)
+            return 0
+
+    async def collections(self) -> list[str]:
+        """Return names of all GOAT-owned ChromaDB collections (prefix goat2_)."""
+        try:
+            names = await asyncio.to_thread(
+                lambda: [
+                    c.name for c in self._get_chroma().list_collections()
+                    if c.name.startswith(_COLLECTION_PREFIX)
+                ]
+            )
+            log.debug("chroma.collections: %d collections", len(names))
+            return names
+        except Exception as exc:
+            log.warning("chroma.collections: error: %s", exc)
+            return []
+
+    async def get_embedding(
+        self, agent_role: AgentRole, key: MemoryKey,
+    ) -> list[float] | None:
+        """Retrieve the embedding vector for a stored document; None if missing."""
+        doc_id = _doc_id(agent_role, key)
+
+        def _sync() -> list[float] | None:
+            result = self._get_collection(agent_role).get(
+                ids=[doc_id], include=["embeddings"]
+            )
+            embeddings = result.get("embeddings") or []
+            return list(embeddings[0]) if embeddings else None
+
+        try:
+            return await asyncio.to_thread(_sync)
+        except Exception as exc:
+            log.warning("get_embedding(%s, %s) failed: %s", agent_role, key, exc)
+            return None

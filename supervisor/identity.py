@@ -233,6 +233,7 @@ async def conv_result(
         messages, profile, registry, summary, mem_ctx, style,
         turn=turn, onboarding_done=onboarding_done,
         goat_session_id=goat_session_id,
+        supervisor=supervisor,
     )
     return SupervisorResult(
         intent=intent, plan=Plan(tasks=[]), results={},

@@ -234,6 +234,18 @@ class MemoryManager(
         from memory.shared.memory_promote_turns import run_promote_turns
         await run_promote_turns(self, agent_role, turn_count)
 
+    async def _get_episodic_embedding(
+        self, agent_role: str, key: str,
+    ) -> list[float] | None:
+        """Return ChromaDB embedding vector for key; None if not found."""
+        return await self.episodic.get_embedding(agent_role, key)
+
+    async def _get_long_term_embedding(
+        self, agent_role: str, key: str,
+    ) -> list[float] | None:
+        """Letta does not expose embeddings; always returns None."""
+        return None
+
     def __repr__(self) -> str:
         return (
             f"MemoryManager(working={type(self.working).__name__}, "

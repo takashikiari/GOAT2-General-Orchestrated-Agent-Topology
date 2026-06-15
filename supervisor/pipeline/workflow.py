@@ -682,63 +682,106 @@ class WorkflowGraph:
                     t_start = time.monotonic()
                     try:
                         runner = _RUNNERS[task.role]
-                        # Phase 4: Pass registry to runner for dependency injection
-                        output = await runner(task, context, registry)
-                        duration = time.monotonic() - t_start
-                        # Capture source from task (set by runner during execution)
-                        # Extract tool_name from output if present
-                        import hashlib
-                        _tool_name = ""
-                        _raw_hash = ""
-                        if task.source and task.source != "generated" and task.source != "planner":
-                            _tool_name = task.source  # use source as tool_name fallback
-                        if output:
-                            _raw_hash = hashlib.sha256(output.encode()).hexdigest()[:16]
-                        results[tid] = AgentResult(
-                            task_id=tid,
-                            role=task.role,
-                            output=output,
-                            model="",
-                            duration_s=duration,
-                            error=None,
-                            source=task.source,
-                            tool_name=_tool_name,
-                            raw_output_hash=_raw_hash,
-                            tool_called=True,
+                        # Phase 4 + IMPROVEMENT 2: wrap the runner with the
+                        # retry helper. ``run_with_retry`` returns either a
+                        # normal ``output`` string, or a synthetic
+                        # ``TASK_ERROR: ...`` string when the retry budget
+                        # is exhausted. The wrapper also restores
+                        # ``task.prompt`` on return so subsequent tasks in
+                        # the DAG see the original prompt.
+                        from supervisor.pipeline.task_retry import (
+                            is_task_error, run_with_retry,
                         )
-                        if session_id and memory_manager:
-                            try:
-                                await _write_task_memory(memory_manager, session_id, tid, task.role, output)
-                                log.debug("dag:%s:task:%s written to Redis", session_id, tid)
-                            except Exception as _e:
-                                log.warning("Task memory write failed: %s", _e)
-                            try:
-                                await _write_task_status(
-                                    memory_manager, session_id, tid, task.role, output, "completed",
-                                )
-                            except Exception as _se:
-                                log.warning("Task status write failed: %s", _se)
-                        if verbose:
-                            log.debug(
-                                "Completed task %s: %s",
-                                tid,
-                                output[:80] if output else "",
+                        output, _agent_result, err = await run_with_retry(
+                            task, context, registry, runner,
+                        )
+                        task_failed_with_retry = bool(err and is_task_error(output))
+                        if task_failed_with_retry:
+                            # All retries exhausted — record a failed
+                            # AgentResult and let the downstream
+                            # propagation logic mark dependent tasks.
+                            duration = time.monotonic() - t_start
+                            log.warning(
+                                "Task %s exhausted retries: %s",
+                                tid, output[:200],
                             )
-
-                        # ── Critic fallback — re-execută upstream doar dacă severity e CRITICAL ──
-                        if task.role == "critic" and output:
-                            severity, _ = _parse_critic_severity(output)
-                            if severity == "CRITICAL":
-                                await self._re_execute_upstream_and_critic(
-                                    tid=tid,
-                                    task=task,
-                                    output=output,
-                                    results=results,
-                                    registry=registry,
-                                    verbose=verbose,
-                                    t_start=t_start,
-                                    memory_manager=memory_manager,
+                            results[tid] = AgentResult(
+                                task_id=tid,
+                                role=task.role,
+                                output="",
+                                model="",
+                                duration_s=duration,
+                                error=output,
+                                source=task.source,
+                                tool_called=True,
+                                tool_name="",
+                                raw_output_hash="",
+                            )
+                            failed_ids.add(tid)
+                            if session_id and memory_manager:
+                                try:
+                                    await _write_task_status(
+                                        memory_manager, session_id, tid, task.role,
+                                        output, "failed",
+                                    )
+                                except Exception as _fe:
+                                    log.warning("Task status write (failed) failed: %s", _fe)
+                        else:
+                            duration = time.monotonic() - t_start
+                            # Capture source from task (set by runner during execution)
+                            # Extract tool_name from output if present
+                            import hashlib
+                            _tool_name = ""
+                            _raw_hash = ""
+                            if task.source and task.source != "generated" and task.source != "planner":
+                                _tool_name = task.source  # use source as tool_name fallback
+                            if output:
+                                _raw_hash = hashlib.sha256(output.encode()).hexdigest()[:16]
+                            results[tid] = AgentResult(
+                                task_id=tid,
+                                role=task.role,
+                                output=output,
+                                model="",
+                                duration_s=duration,
+                                error=None,
+                                source=task.source,
+                                tool_name=_tool_name,
+                                raw_output_hash=_raw_hash,
+                                tool_called=True,
+                            )
+                            if session_id and memory_manager:
+                                try:
+                                    await _write_task_memory(memory_manager, session_id, tid, task.role, output)
+                                    log.debug("dag:%s:task:%s written to Redis", session_id, tid)
+                                except Exception as _e:
+                                    log.warning("Task memory write failed: %s", _e)
+                                try:
+                                    await _write_task_status(
+                                        memory_manager, session_id, tid, task.role, output, "completed",
+                                    )
+                                except Exception as _se:
+                                    log.warning("Task status write failed: %s", _se)
+                            if verbose:
+                                log.debug(
+                                    "Completed task %s: %s",
+                                    tid,
+                                    output[:80] if output else "",
                                 )
+
+                            # ── Critic fallback — re-execută upstream doar dacă severity e CRITICAL ──
+                            if task.role == "critic" and output:
+                                severity, _ = _parse_critic_severity(output)
+                                if severity == "CRITICAL":
+                                    await self._re_execute_upstream_and_critic(
+                                        tid=tid,
+                                        task=task,
+                                        output=output,
+                                        results=results,
+                                        registry=registry,
+                                        verbose=verbose,
+                                        t_start=t_start,
+                                        memory_manager=memory_manager,
+                                    )
 
                     except Exception as e:
                         duration = time.monotonic() - t_start

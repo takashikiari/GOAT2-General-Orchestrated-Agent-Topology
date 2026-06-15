@@ -59,11 +59,21 @@ class WorkingCrudMixin:
         ))
         stamp_on_write(record, now_ts, now_iso)
         await self.backend.set(str(agent_role), str(key), record, expires)
+        await self._sync_last_write_to_redis()
         log.debug("store(%s, %s) ttl=%s", agent_role, key, f"{ttl}s" if ttl else "none")
         return MemoryEntry(
             id=entry_id, agent_role=agent_role, key=key, content=content,
             metadata=typed_meta, created_at=now_iso, source=_SOURCE,
         )
+
+    async def _sync_last_write_to_redis(self) -> None:
+        """Update Redis last-write timestamp for working tier (fail-silent)."""
+        try:
+            r = await self.backend._get_redis()  # type: ignore[attr-defined]
+            iso_now = IsoTimestamp(datetime.now(timezone.utc).isoformat())
+            await r.set("goat2:working:last_write:working", iso_now)  # type: ignore[union-attr]
+        except Exception as exc:
+            log.debug("Working last-write sync failed (non-blocking): %s", exc)
 
     async def retrieve(
         self, agent_role: AgentRole, key: MemoryKey,
@@ -107,13 +117,17 @@ class WorkingCrudMixin:
         for key in keys[-limit:]:
             record = await self.backend.get(str(agent_role), str(key))
             if record:
+                meta = dict(record.get("metadata") or {})
+                # created_at_ts lives at the top level of RecordDict, not inside
+                # metadata. Mirror it into metadata so filter_by_time can use it.
+                meta.setdefault("created_at_ts", float(record.get("created_at_ts") or 0))
                 entries.append(MemoryEntry(
-                    id=str(uuid.uuid4()),
+                    id=str(record.get("id") or uuid.uuid4()),
                     agent_role=agent_role,
                     key=key,
                     content=record.get("content", ""),
-                    metadata=record.get("metadata") or {},
+                    metadata=meta,  # type: ignore[arg-type]
                     created_at=record.get("created_at", ""),
-                    source=record.get("source", "redis"),
+                    source=_SOURCE,
                 ))
         return entries

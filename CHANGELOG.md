@@ -5,6 +5,60 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-15 — memory_last_write + memory_timeline working-tier fixes
+
+### Fixed — `memory_last_write` returns "No writes recorded" for working tier
+
+`working_crud.py WorkingCrudMixin.store()` never updated Redis key
+`goat2:working:last_write:working`. Added `_sync_last_write_to_redis()` (fail-silent,
+reuses `self.backend._get_redis()`) called after every successful `backend.set()`.
+
+Also fixed episodic-tier key mismatch: `chroma_crud.py._sync_last_write_to_redis()`
+was writing `goat2:working:last_write:chromadb` but the tool queries
+`goat2:working:last_write:episodic`. Renamed key to match.
+
+### Fixed — `memory_timeline` returns 0 entries for working tier
+
+`WorkingCrudMixin.list()` built `MemoryEntry.metadata` from the nested
+`record["metadata"]` sub-dict. `created_at_ts` is a top-level field of `RecordDict`
+(not inside the sub-dict), so `filter_by_time` always saw 0 and excluded every
+working entry from timeline results.
+
+Fix: `list()` now mirrors `record["created_at_ts"]` into the metadata dict via
+`setdefault` before constructing `MemoryEntry`.
+
+---
+
+## [Unreleased] — 2026-06-15 — Episodic mixin consolidation + ChromaDB tenant fix
+
+### Changed — episodic memory layer consolidation
+
+Eliminated the conflicting old/new mixin split in `memory/episodic/`:
+
+- **Deleted** `chroma_query.py` (ChromaQueryMixin) and `chroma_extras.py`
+  (ChromaExtrasMixin). Their methods (`search`, `list`, `clear`, `health`,
+  `count`, `collections`) are now merged into `chroma_crud.py` (ChromaCrudMixin).
+- **`chroma_crud.py`** is now the single mixin with all operations: store,
+  retrieve, get, delete, search, list, clear, health, count, collections,
+  get_embedding.
+- **`chromadb_client.py`** now inherits only from `ChromaCrudMixin`
+  (single chain: ChromaMemoryClient → ChromaCrudMixin → ChromaBase).
+- **`chromadb_base.py`** pre-initializes the PersistentClient in `__init__`
+  (with try/except) so DEFAULT_TENANT errors surface at construction time,
+  not lazily at first use.
+- **`memory_manager.py`** gains `_get_episodic_embedding` and
+  `_get_long_term_embedding` so `memory_embedding_tool` no longer crashes.
+- **`memory_embedding_tool.py`** now resolved — `_get_episodic_embedding`
+  delegates to `ChromaCrudMixin.get_embedding` via ChromaDB's
+  `include=["embeddings"]` API.
+
+Verified:
+- `python3 -c "from memory.episodic.chromadb_client import ChromaMemoryClient; import asyncio; print(asyncio.run(ChromaMemoryClient().health()))"` → `True`
+- `python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"` → `ok`
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → `ok`
+
+---
+
 ## [Unreleased] — 2026-06-15 — Silent three-tier memory promotion daemon + working-memory GC
 
 ### Added — `MemoryDaemon` (`memory/shared/memory_daemon.py`)
@@ -311,6 +365,110 @@ the user ran.
   - End-to-end: `write_completion` + `asyncio.sleep(0.3)` removes
     `dag:<sid>:status` and `dag:<sid>:result` (with delay patched
     to 0.1s for the test).
+
+### Changed — GOAT direct-spawn sub-DAGs + per-task retry with failure context
+
+**IMPROVEMENT 1 — `start_dag` spawns sub-DAGs immediately when a
+supervisor is available, with `pending_dag` kept as a fallback.**
+
+Before, the only path to a background DAG was
+`action=dag → spawn()`. The `start_dag` tool wrote a `pending_dag`
+signal and waited for the next turn. Now, when the tool is invoked
+during a direct conversational reply, GOAT can spawn the sub-DAG
+mid-conversation without waiting, and the result is reported when
+ready via the existing `collect_finished` machinery. Multiple
+concurrent sub-DAGs are already supported by the
+`supervisor._active_dag_tasks[session_id]` dictionary.
+
+Changes:
+
+- `supervisor/pipeline/dag_tools.py` — `make_dag_tools(mm,
+  goat_session_id, supervisor=None)` already had the `supervisor`
+  parameter and the immediate-spawn branch. The `pending_dag` fallback
+  (line 95) is preserved for callers that have no supervisor
+  reference (e.g. tests, future tools that run without a live
+  registry). The spawn branch now calls
+  `dag_background.spawn(supervisor, task_description, new_sid)`
+  directly.
+- `supervisor/identity.py` — `direct_response(..., supervisor=None)`
+  already accepted the parameter and forwarded it to
+  `make_dag_tools`. `conv_result(..., supervisor=None)` now also
+  forwards `supervisor` to `direct_response` (was being silently
+  dropped before this change, defeating the immediate-spawn path).
+- `supervisor/supervisor.py` — `_reply_direct` already passed
+  `supervisor=self` to `conv_result`; no change needed.
+
+**IMPROVEMENT 2 — Per-task retry with failure context.**
+
+Before, a runner exception was caught at the workflow level, the
+task was marked failed, all downstream tasks were skipped, and the
+LLM had no chance to learn from the failure. Now each runner is
+wrapped by `run_with_retry`, which retries up to `MAX_RETRIES=2`
+times. On every retry the prompt is enriched with a structured
+``RETRY CONTEXT — Previous attempt N failed with: <error>`` block
+so the LLM can adapt its strategy. After the budget is exhausted,
+the wrapper returns a synthetic `TASK_ERROR: <Type>: <message>`
+string and the workflow records a failed `AgentResult` exactly as
+before, including downstream propagation.
+
+Changes:
+
+- **New module** `supervisor/pipeline/task_retry.py` (124 lines)
+  - `MAX_RETRIES: int = 2` — named constant, configurable.
+  - `is_task_error(output: str) -> bool` — pattern-match helper.
+  - `format_task_error(exc) -> str` — stable
+    `"TASK_ERROR: <ExcType>: <message>"` formatter.
+  - `run_with_retry(task, context, registry, runner)` — runs the
+    runner, catches exceptions, mutates `task.prompt` with the
+    failure context for retries, restores the original prompt in
+    a `finally` block so subsequent tasks in the DAG see a clean
+    state. Resets `task.source` between attempts so the caller's
+    source/hash logic still works.
+- `supervisor/pipeline/workflow.py` — `_run()` (inside the inner
+  closure on `execute()`) wraps the runner call with
+  `run_with_retry`. The wrapper returns `(output, _unused, err)`;
+  when `err` is set and `is_task_error(output)` is True the task
+  is recorded as failed (with the error string in `AgentResult.error`)
+  and `failed_ids` is updated so downstream tasks are skipped. The
+  post-success path (Redis writes, critic fallback) is unchanged
+  and runs only on success.
+
+**Constraint compliance.**
+
+- ✅ All new / modified files ≤ 260 lines, except `workflow.py`
+  which was already 871 lines and now sits at 914. Splitting
+  `workflow.py` is out of scope for this change and is a separate
+  refactor. New module `task_retry.py` is 124 lines.
+- ✅ Zero singletons — no module-level state, all state lives on
+  the `supervisor` / `task` / `mm` arguments.
+- ✅ No circular imports — `dag_background` does not import
+  `supervisor` at module level (only `TYPE_CHECKING`). The new
+  `task_retry` module imports only `supervisor.types` and
+  `config.agent_types` (both pure type modules). The chain
+  `supervisor → identity → dag_tools → dag_background` is
+  one-directional: identity and dag_tools import dag_background
+  lazily, only inside the tool handler.
+- ✅ Debug loggers namespaced: `goat2.supervisor.pipeline.task_retry`.
+- ✅ Existing functionality preserved: GOAT never blocks (DAGs are
+  still detached), the `pending_dag` fallback still works when
+  `supervisor is None`, the existing critic-fallback flow is
+  untouched, and the new retry wrapper only fires on actual
+  runner exceptions.
+- ✅ Verified:
+  - `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.pipeline.workflow import WorkflowGraph; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.pipeline.dag_tools import make_dag_tools; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.pipeline.task_retry import run_with_retry, MAX_RETRIES; print('ok')"` → **ok**
+  - `make_dag_tools` signature is `(mm, goat_session_id, supervisor)`.
+  - `conv_result` signature includes `supervisor` and the source
+    contains `supervisor=supervisor` (forwards to `direct_response`).
+  - `run_with_retry` — success on first try → 1 call, prompt
+    restored; success on retry → 2 calls, prompt restored;
+    failure path → 3 calls, final `output` is
+    `TASK_ERROR: <Type>: <message>`, prompt restored.
+  - End-to-end: `WorkflowGraph.execute` with a runner that always
+    raises `RuntimeError` produces 3 attempts and records
+    `AgentResult.error = "TASK_ERROR: RuntimeError: ..."`.
 
 ### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
 

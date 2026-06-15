@@ -36,6 +36,11 @@ class ChromaBase:
             "ChromaBase: initialised (persist_dir=%s has_embedding=%s)",
             self._persist_dir, self._embedding_fn is not None,
         )
+        # Pre-initialize client to catch DEFAULT_TENANT errors at construction time.
+        try:
+            self._get_chroma()
+        except Exception as exc:
+            log.error("ChromaBase: failed to pre-initialize ChromaDB client: %s", exc)
 
     def _get_chroma(self) -> chromadb.ClientAPI:
         """Lazily initialise the ChromaDB PersistentClient, creating the persist dir if needed."""
@@ -44,8 +49,7 @@ class ChromaBase:
             self._chroma = chromadb.PersistentClient(
                 path=self._persist_dir,
                 settings=chromadb.Settings(anonymized_telemetry=False),
-                tenant=chromadb.config.DEFAULT_TENANT,
-                database=chromadb.config.DEFAULT_DATABASE,
+
             )
             log.debug("ChromaDB initialised at %s", self._persist_dir)
         return self._chroma
