@@ -176,9 +176,11 @@ async def direct_response(
     from supervisor.pipeline.dag_tools import make_dag_tools
     _settings = registry.settings
     # GOAT conversational: 16 memory tools + web_search + dag monitor/control tools
+    # + 12 goat_skills computer-control tools (GOAT-only, NOT exposed to DAG agents).
     _memory_tools = registry.memory_tools
     _memory_manager = registry.memory_manager
     _dag_tools = make_dag_tools(_memory_manager, goat_session_id=goat_session_id, supervisor=supervisor)
+    _goat_skills_tools = registry.goat_skills_tools
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
@@ -194,7 +196,7 @@ async def direct_response(
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        _memory_tools + [WEB_SEARCH, READ_LOGS] + _dag_tools,
+        _memory_tools + [WEB_SEARCH, READ_LOGS] + _dag_tools + _goat_skills_tools,
         temperature=0.7,
         tool_choice="auto",
         memory_manager=_memory_manager,

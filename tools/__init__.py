@@ -89,6 +89,23 @@ from tools.web import WEB_SEARCH
 # Re-export from system/ subdirectory
 from tools.system import CALCULATOR, SHELL, THINK
 
+# Re-export from goat_skills/ subdirectory (GOAT-only computer control)
+from tools.goat_skills import (
+    APP_FOCUS,
+    APP_LIST,
+    BROWSER_OPEN,
+    CLIPBOARD_GET,
+    CLIPBOARD_SET,
+    GOAT_SKILLS_TOOLS,
+    KEYBOARD_HOTKEY,
+    KEYBOARD_TYPE,
+    MOUSE_CLICK,
+    MOUSE_MOVE,
+    SCREEN_CAPTURE,
+    SCREEN_READ_REGION,
+    SHELL_RUN,
+)
+
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
 
@@ -128,6 +145,20 @@ __all__ = [
     "MEMORY_PROMOTE",
     "MEMORY_AUTO_PROMOTE",
     "MEMORY_EMBEDDING",
+    # goat_skills tools (GOAT-only — wired into direct_response())
+    "SCREEN_CAPTURE",
+    "SCREEN_READ_REGION",
+    "MOUSE_CLICK",
+    "MOUSE_MOVE",
+    "KEYBOARD_TYPE",
+    "KEYBOARD_HOTKEY",
+    "SHELL_RUN",
+    "BROWSER_OPEN",
+    "CLIPBOARD_GET",
+    "CLIPBOARD_SET",
+    "APP_LIST",
+    "APP_FOCUS",
+    "GOAT_SKILLS_TOOLS",
     "_call_with_tools",
     # Convenience groups
     "DAG_MEMORY_TOOLS",

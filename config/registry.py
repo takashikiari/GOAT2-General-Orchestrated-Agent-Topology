@@ -38,6 +38,7 @@ SERVICES OWNED:
     - file_tools:         List of file operation ToolDefinitions
     - memory_tools:       List of memory operation ToolDefinitions
     - dag_memory_tools:   Restricted memory tools for DAG agents
+    - goat_skills_tools:  GOAT-only computer-control tools (direct_response)
     - agent_models:       AgentModels for per-role model configuration
     - letta_client:       Letta client (long-term memory)
     - agent_registry:     AgentRegistry with all 7 DAG runners pre-registered
@@ -82,6 +83,7 @@ class ServiceRegistry:
     - file_tools:      List of file operation ToolDefinitions
     - memory_tools:    List of memory operation ToolDefinitions
     - dag_memory_tools: Restricted memory tools for DAG agents
+    - goat_skills_tools: GOAT-only computer-control tools (direct_response)
     - agent_models:    AgentModels for per-role model configuration
     - letta_client:    Letta client for long-term memory
     - agent_registry:  AgentRegistry with all 7 DAG runners
@@ -105,6 +107,7 @@ class ServiceRegistry:
         "file_tools",
         "memory_tools",
         "dag_memory_tools",
+        "goat_skills_tools",
         "agent_models",
         "letta_client",
         "agent_registry",
@@ -162,14 +165,16 @@ class ServiceRegistry:
 
         # 6. Tool definitions imported from tools module
         #    These remain module constants in tools/__init__.py
-        from tools import FILE_TOOLS, MEMORY_TOOLS, DAG_MEMORY_TOOLS
+        from tools import FILE_TOOLS, GOAT_SKILLS_TOOLS, MEMORY_TOOLS, DAG_MEMORY_TOOLS
 
         self.file_tools: list[ToolDefinition] = FILE_TOOLS
         self.memory_tools: list[ToolDefinition] = MEMORY_TOOLS
         self.dag_memory_tools: list[ToolDefinition] = DAG_MEMORY_TOOLS
+        self.goat_skills_tools: list[ToolDefinition] = GOAT_SKILLS_TOOLS
         log.debug(
-            "ServiceRegistry: tools ready (file=%d, memory=%d, dag_memory=%d)",
+            "ServiceRegistry: tools ready (file=%d, memory=%d, dag_memory=%d, goat_skills=%d)",
             len(self.file_tools), len(self.memory_tools), len(self.dag_memory_tools),
+            len(self.goat_skills_tools),
         )
 
         # 7. Agent registry — lazy import of supervisor.registry.
@@ -189,13 +194,14 @@ class ServiceRegistry:
             "ServiceRegistry: initialized successfully — "
             "settings=%s, working_memory=%s, memory_manager=%s, "
             "file_tools=%d, memory_tools=%d, dag_memory_tools=%d, "
-            "agent_registry=%d runners",
+            "goat_skills_tools=%d, agent_registry=%d runners",
             type(self.settings).__name__,
             type(self.working_memory).__name__,
             type(self.memory_manager).__name__,
             len(self.file_tools),
             len(self.memory_tools),
             len(self.dag_memory_tools),
+            len(self.goat_skills_tools),
             len(self.agent_registry.roles()),
         )
 

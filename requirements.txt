@@ -26,3 +26,13 @@ pytest>=8.0.0
 
 # Development utilities
 python-dotenv>=1.0.0  # For .env file support
+
+# Optional: GOAT computer-control skills (direct_response only)
+# These power tools/goat_skills/ — used only by GOAT in conversational
+# mode, NEVER by DAG agents. All tools degrade gracefully when a
+# dependency is missing (returns "ERROR: <lib> not installed").
+pyautogui>=0.9.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+pyperclip>=1.8.0
+psutil>=5.9.0

@@ -7,6 +7,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-15 — Bug fixes: ChromaDB tenant, Letta PATCH, sliding window timeout, promote_all guard
 
+### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
+
+New package `tools/goat_skills/` exposes 12 `ToolDefinition`s that drive
+the host machine directly. They are wired **only** into
+`supervisor.identity.direct_response()` — DAG agents do NOT have access
+to them and keep their existing sandboxed tool surface
+(`FILE_TOOLS` + `DAG_MEMORY_TOOLS` + restricted `SHELL`).
+
+The 12 tools:
+
+| # | Tool             | Purpose                                          |
+|---|------------------|--------------------------------------------------|
+| 1 | screen_capture   | Capture full screen + OCR text                   |
+| 2 | screen_read_region | Capture (x, y, w, h) region + OCR text         |
+| 3 | mouse_click      | Click at screen coordinates                      |
+| 4 | mouse_move       | Move mouse to coordinates                        |
+| 5 | keyboard_type    | Type text at current cursor position             |
+| 6 | keyboard_hotkey  | Press key combination (e.g. ctrl+c)              |
+| 7 | shell_run        | Unrestricted shell — full host access (GOAT)     |
+| 8 | browser_open     | Open URL in default browser (xdg-open)           |
+| 9 | clipboard_get    | Read current clipboard contents                  |
+| 10 | clipboard_set   | Write text to clipboard                          |
+| 11 | app_list         | List running applications/processes (psutil)     |
+| 12 | app_focus        | Bring named window to foreground (wmctrl/xdotool) |
+
+**Security model:** `shell_run` is intentionally unrestricted for GOAT
+in conversational mode. The user is talking to GOAT interactively and
+has implicitly authorised it to drive the host. DAG agents continue to
+use the whitelisted, read-only `SHELL` tool in
+`tools/system/shell_tool.py`. `browser_open` validates the URL scheme
+(http/https/file only) to prevent argument injection.
+
+**Graceful fallbacks:** every tool that depends on an optional
+third-party library (pyautogui, Pillow, pytesseract, pyperclip, psutil,
+selenium) returns an `ERROR: <lib> not installed` string when the
+dependency is missing or no X display is available — never raises.
+
+**Wiring:**
+- New `tools/goat_skills/` package: 8 modules (`__init__.py`,
+  `_common.py`, `screen.py`, `input_control.py`, `shell.py`,
+  `browser.py`, `clipboard.py`, `screen_tools.py`, `host_tools.py`).
+- `config/registry.py` — new `goat_skills_tools` slot + attribute.
+- `supervisor/identity.py` — appends `registry.goat_skills_tools` to
+  the tool list in `direct_response()` only.
+- `tools/__init__.py` — re-exports all 12 tools + `GOAT_SKILLS_TOOLS`.
+- `requirements.txt` — adds 5 new optional deps (pyautogui, Pillow,
+  pytesseract, pyperclip, psutil) under a "GOAT computer-control"
+  comment block.
+
 ### Fixed — six production errors from system audit
 
 **ERROR 1+2 — `memory/episodic/chromadb_base.py`: ChromaDB tenant + get_tenant crash**
