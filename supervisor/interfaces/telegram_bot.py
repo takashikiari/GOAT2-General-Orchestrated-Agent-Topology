@@ -124,7 +124,7 @@ def build_app() -> Application:
     app = Application.builder().token(_TOKEN).build()
     # ── Only handle TEXT messages — ignore tool calls, media, etc. ──
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
-    app.post_shutdown(_shutdown)
+    
     # ── Global error handler so Application-level exceptions are never lost ──
     app.add_error_handler(_error_handler)
     return app
@@ -143,9 +143,14 @@ def main() -> None:
     )
     log.info("GOAT 2.0 Telegram bot starting.")
     # ── FIX: Only poll for text messages, not tool calls or other update types ──
-    build_app().run_polling(
-        allowed_updates=["message", "edited_message", "callback_query"]
-    )
+    app = build_app()
+    try:
+        app.run_polling(
+            allowed_updates=["message", "edited_message", "callback_query"]
+        )
+    finally:
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_shutdown(app))
 
 
 if __name__ == "__main__":
