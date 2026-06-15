@@ -11,6 +11,8 @@ EXPORTS:
 - DictBackend: In-memory dictionary implementation
 - RecordDict: Serialization wrapper
 - check_and_promote: LLM-scored promotion when working memory fills up
+- collect: Silent garbage-collector sweep (dag TTL + turn trim)
+- schedule_auto_collect: Predicate for periodic detached collection
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from memory.working.redis_backend import RedisBackend
 from memory.working.dict_backend import DictBackend
 from memory.working.working_record import RecordDict
 from memory.working.capacity import check_and_promote
+from memory.working.garbage_collector import collect, schedule_auto_collect
 
 log = logging.getLogger("goat2.memory.working")
 
@@ -34,4 +37,6 @@ __all__ = [
     "DictBackend",
     "RecordDict",
     "check_and_promote",
+    "collect",
+    "schedule_auto_collect",
 ]

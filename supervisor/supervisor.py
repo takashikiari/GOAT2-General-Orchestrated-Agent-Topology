@@ -73,6 +73,10 @@ class GoatSupervisor:
         # Detached DAGs (session_id → Task); set True after the first run() flush.
         self._active_dag_tasks: dict[str, asyncio.Task] = {}
         self._initialized: bool = False
+        # Set by supervisor.session.memory_housekeeping on first run().
+        self._memory_daemon = None
+        # Per-turn GC cadence (incremented in run()).
+        self._turn_counter: int = 0
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
         """Spawn the DAG as a detached background task — GOAT returns immediately."""
@@ -172,10 +176,11 @@ class GoatSupervisor:
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
 
-        # First-run init: fire-and-forget working-memory flush.
         if not self._initialized:
             self._initialized = True
             self._schedule_working_memory_flush()
+            from supervisor.session.memory_housekeeping import start_memory_daemon
+            start_memory_daemon(self)
 
         if self._history is None:
             self._user_profile, self._history, self._behavior_style, _ = await init_session(
@@ -211,24 +216,20 @@ class GoatSupervisor:
         decision = await decide(self.registry, intent, goat_ctx, clarity_ctx, hints)
         depth = classify_intent(decision)
         log.info("GOAT decision: action=%s → %s intent=%.80s", decision.action, depth.value, intent)
-        return await self._dispatch(intent, t0, mem_ctx, decision, goat_ctx)
+        result = await self._dispatch(intent, t0, mem_ctx, decision, goat_ctx)
+
+        from supervisor.session.memory_housekeeping import tick_gc
+        tick_gc(self)
+
+        return result
 
     async def finalize_session(self) -> None:
         """Analyze session turns and persist updated behavior profile to Letta."""
         self._behavior_style = await finalize_behavior(
             self.memory_manager, self._history, self._behavior_style, self.registry
         )
-        # Promote working memory to episodic and flush.
-        if self.memory_manager:
-            try:
-                from memory.working.capacity import check_and_promote
-                await check_and_promote(
-                    self.memory_manager.working.backend, self.memory_manager.episodic,
-                    "user_session", max_entries=100,
-                )
-                log.info("finalize_session: working memory promoted to episodic")
-            except Exception as e:
-                log.warning("finalize_session: promote failed: %s", e)
+        from supervisor.session.memory_housekeeping import finalize_memory
+        await finalize_memory(self)
 
     def register_agent(self, role: str, runner: AgentRunner) -> None:
         """Register a pre-built async runner under ``role``."""
@@ -240,20 +241,20 @@ class GoatSupervisor:
 
     async def pause_dag(self, session_id: str) -> None:
         """Pause a running DAG after its current wave."""
-        from supervisor.pipeline.dag_control import write_dag_control
-        await write_dag_control(self.memory_manager, session_id, "pause")
+        from supervisor.dag_control_methods import pause_dag as _pause
+        await _pause(self, session_id)
 
     async def resume_dag(self, session_id: str) -> None:
         """Resume a paused DAG."""
-        from supervisor.pipeline.dag_control import write_dag_control
-        await write_dag_control(self.memory_manager, session_id, "run")
+        from supervisor.dag_control_methods import resume_dag as _resume
+        await _resume(self, session_id)
 
     async def stop_dag(self, session_id: str) -> None:
         """Stop a running DAG after its current wave."""
-        from supervisor.pipeline.dag_control import write_dag_control
-        await write_dag_control(self.memory_manager, session_id, "stop")
+        from supervisor.dag_control_methods import stop_dag as _stop
+        await _stop(self, session_id)
 
     async def get_dag_updates(self, session_id: str) -> dict | None:
-        """Read dag:<session_id>:progress from working memory; returns the progress dict or None."""
-        from supervisor.pipeline.dag_awareness import read_dag_progress
-        return await read_dag_progress(self.registry, session_id)
+        """Read dag:<session_id>:progress; returns the progress dict or None."""
+        from supervisor.dag_control_methods import get_dag_updates as _updates
+        return await _updates(self, session_id)

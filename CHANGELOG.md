@@ -5,6 +5,103 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-15 — Silent three-tier memory promotion daemon + working-memory GC
+
+### Added — `MemoryDaemon` (`memory/shared/memory_daemon.py`)
+
+A silent background ``asyncio`` task that runs every 60s and walks the
+three memory tiers to enforce capacity. Never blocks GOAT, never uses
+DAG, never raises. Pure Python, no new dependencies, zero singletons.
+
+- **Tier 1 — working → episodic:** when working is at/above the soft
+  threshold (default 85/100), the oldest non-``dag:`` entries older
+  than 24h are forwarded to episodic via the existing
+  ``check_and_promote`` helper. ``dag:*`` entries are NEVER promoted
+  (they expire via TTL — collected separately by the GC).
+- **Tier 2 — episodic sliding window:** when episodic is at/above the
+  soft threshold (default 250/300), the existing ``check_and_slide``
+  helper scores the oldest non-permanent entries via LLM, with its
+  built-in 10s timeout + fallback (delete oldest 100).
+- **Tier 3 — permanent:** entries with ``metadata.permanent=True`` are
+  never touched. The daemon has no business with them.
+
+All thresholds are configurable via the ``MemoryDaemon(...)``
+constructor (interval, working_soft, working_max, episodic_soft,
+episodic_max, working_age_s, agent_role). The defaults match the
+existing constants in ``capacity.py`` / ``sliding_window.py`` /
+``compartments.py`` so behavior is unchanged for current callers.
+
+### Added — working-memory garbage collector (`memory/working/garbage_collector.py`)
+
+Pure-async helpers for the working tier:
+
+- ``collect(working_backend, agent_role) -> int`` — deletes ``dag:*``
+  entries older than 1h, then trims the ``turn:*`` namespace down to
+  the most recent 50 entries (sorted by ``created_at_ts``). Returns the
+  number of deletions. Never blocks.
+- ``schedule_auto_collect(backend, agent_role, turn_count, every_n=10)``
+  — pure predicate: returns ``True`` when ``turn_count % every_n == 0``.
+  Callers fire a detached ``asyncio.create_task(collect(...))`` on True.
+
+Exports added to ``memory/working/__init__.py``: ``collect`` and
+``schedule_auto_collect``.
+
+### Changed — supervisor integration
+
+- **`supervisor/session/memory_housekeeping.py`** (new, 115 lines) —
+  free functions operating on the live supervisor instance:
+  ``start_memory_daemon``, ``stop_memory_daemon``, ``tick_gc``,
+  ``finalize_memory``. Holds the daemon-start and final-promote logic
+  that used to live in ``GoatSupervisor``.
+- **`supervisor/dag_control_methods.py`** (new, 41 lines) — extracted
+  the four DAG public methods (``pause_dag``, ``resume_dag``,
+  ``stop_dag``, ``get_dag_updates``) so the supervisor file stays
+  under the 260-line ceiling.
+- **`supervisor/supervisor.py`** (260 lines, was 260 before this work
+  plus the daemon additions — kept under 260 by extracting the new
+  helpers into the modules above):
+  - ``__init__`` adds ``self._memory_daemon = None`` and
+    ``self._turn_counter = 0``.
+  - First call to ``run()`` now schedules ``start_memory_daemon(self)``
+    alongside the existing working-memory flush.
+  - After every ``run()`` call, ``tick_gc(self)`` increments the
+    counter and (every 10 turns) fires a detached ``collect(...)``.
+  - ``finalize_session()`` now delegates the memory half
+    (daemon stop + final working→episodic promote) to
+    ``finalize_memory(self)``.
+
+### Constraint compliance
+
+- ✅ All new code files ≤ 260 lines (largest: `memory_daemon.py` at 259).
+- ✅ Zero singletons — `MemoryDaemon` is a regular class; the supervisor
+  owns exactly one instance, the registry owns the `MemoryManager`.
+- ✅ Daemon loop catches ALL exceptions; never crashes.
+- ✅ Garbage collector never blocks GOAT — both run as detached
+  `asyncio.create_task` calls.
+- ✅ All thresholds configurable; no hardcoded values except
+  configurable defaults.
+- ✅ `dag:*` entries are NEVER promoted to episodic (TTL only, GC'd
+  by the new collector after 1h).
+- ✅ `check_and_promote` / `check_and_slide` behavior unchanged —
+  the daemon is a thin scheduler around them.
+- ✅ Existing ChromaDB integration, capacity.py, sliding_window.py,
+  supervisor/session/memory_daemon imports — all untouched.
+- ✅ Verified:
+  - `python3 -c "from memory.shared.memory_daemon import MemoryDaemon; print('ok')"` → **ok**
+  - `python3 -c "from memory.working.garbage_collector import collect; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+  - End-to-end smoke test: daemon start/stop loop, GC predicate,
+    `tick_gc` counter increment, idempotent stop, finalize with
+    no memory_manager — all pass.
+
+### Debug loggers
+
+- `goat2.memory.shared.daemon` — `memory/shared/memory_daemon.py`
+- `goat2.memory.working.garbage_collector` — `memory/working/garbage_collector.py`
+- `goat2.supervisor.session.memory_housekeeping` — `supervisor/session/memory_housekeeping.py`
+
+---
+
 ## [Unreleased] — 2026-06-15 — Bug fixes: ChromaDB tenant, Letta PATCH, sliding window timeout, promote_all guard
 
 ### Fixed — GOAT/DAG decoupling, SyntaxError, shell, memory, validator
