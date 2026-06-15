@@ -25,6 +25,10 @@ log = logging.getLogger("goat2.supervisor.pipeline.dag_background")
 
 __all__ = ["spawn", "write_completion", "collect_finished", "status"]
 
+# Per-call budget for reading a finished DAG's result from working memory.
+# Kept small so a slow Redis call cannot stall GOAT.
+_REDIS_READ_TIMEOUT_S: float = 1.0
+
 
 def spawn(supervisor: "GoatSupervisor", dag_instructions: str, session_id: str) -> "asyncio.Task":
     """Spawn the DAG as a detached background task and track it; return the Task.
@@ -77,16 +81,42 @@ async def write_completion(mm: "MemoryManager | None", session_id: str, summary:
 async def collect_finished(supervisor: "GoatSupervisor") -> str:
     """Surface finished background DAGs as a note and clear them from tracking.
 
-    For each completed task, reads its result from working memory, builds a
-    ``[DAG Update]`` block, and removes it from ``_active_dag_tasks``. Returns ''
-    when nothing finished, so GOAT only mentions DAGs that actually completed.
+    TRULY NON-BLOCKING: this function never awaits a still-running DAG task.
+    It iterates ``_active_dag_tasks`` and only touches tasks whose ``task.done()``
+    is already True (a synchronous, microsecond-level check). For each such
+    finished task it reads the result from working memory with a short timeout
+    so a single slow Redis call cannot stall GOAT. If no task is finished,
+    the function returns ``''`` without performing any I/O.
+
+    GOAT is the kernel and must respond immediately on every turn — even if
+    a background DAG is still running, this function will return promptly
+    and GOAT continues. Finished DAGs are surfaced as a ``[DAG Update]`` note
+    in the next turn's context.
     """
     notes: list[str] = []
+    # Fast path: synchronous inspection only. If nothing is finished, return ''.
+    finished_sids: list[str] = []
     for sid, task in list(supervisor._active_dag_tasks.items()):
-        if not task.done():
-            continue
-        result = await _read(supervisor.memory_manager, f"dag:{sid}:result") or "completed"
+        if task.done():  # synchronous, never awaits the running DAG
+            finished_sids.append(sid)
+    if not finished_sids:
+        return ""
+    # Slow path: read results from working memory for finished tasks, with
+    # a short timeout per read so a slow Redis call cannot stall GOAT.
+    for sid in finished_sids:
+        try:
+            result = await asyncio.wait_for(
+                _read(supervisor.memory_manager, f"dag:{sid}:result"),
+                timeout=_REDIS_READ_TIMEOUT_S,
+            ) or "completed"
+        except asyncio.TimeoutError:
+            log.warning("collect_finished: read timeout for session=%s", sid)
+            result = "(result read timed out)"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("collect_finished: read failed for session=%s: %s", sid, exc)
+            result = "(result read failed)"
         notes.append(f"- session {sid}: {result}")
+        # Remove from tracking *after* we have its result.
         supervisor._active_dag_tasks.pop(sid, None)
         log.info("collect_finished: surfaced and cleared session=%s", sid)
     return ("[DAG Update]\n" + "\n".join(notes)) if notes else ""

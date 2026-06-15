@@ -114,8 +114,7 @@ async def run_tool_verifier(
             ],
         )
         import re as _re
-        clean_raw = _re.sub(r"```(?:json)?
-?", "", raw).strip()
+        clean_raw = _re.sub(r"```(?:json)?\n?", "", raw).strip()
         data = _extract_json(clean_raw)
         return VerifierReport(
             passed=bool(data.get("passed", True)),

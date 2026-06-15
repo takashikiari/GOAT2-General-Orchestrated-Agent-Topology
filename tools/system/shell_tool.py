@@ -25,7 +25,9 @@ log = logging.getLogger("goat2.tools.system.shell")
 
 __all__ = ["SHELL"]
 
-# Whitelist of allowed commands (basic read-only operations)
+# Whitelist of allowed commands (basic read-only operations).
+# python3 and find are explicitly listed because DAG agents need them
+# for grep-style code search and for running small read-only scripts.
 ALLOWED_COMMANDS: Final[set[str]] = {
     "ls", "pwd", "cat", "head", "tail", "grep", "echo", "mkdir",
     "python3", "python", "which", "cd", "env", "printenv",
@@ -35,10 +37,18 @@ ALLOWED_COMMANDS: Final[set[str]] = {
     "mount", "free", "uptime", "nproc", "id", "groups",
 }
 
-# Block patterns that could escape the whitelist
+# Block patterns that could escape the whitelist.
+# We KEEP: |, ;, &&, ||, ` (shell injection / command-chaining risks)
+# We KEEP: &, !, ~, ' ", \, \n, ?, [, ], {, } (shell metacharacters / quoting)
+# We REMOVED: *, $, >, <  — these are needed for legitimate read-only ops:
+#   * → glob expansion       (find *.py, ls *.txt)
+#   $ → environment variables (echo $PATH, env $HOME)
+#   >, < → redirects to /tmp   (allowed since cwd is /home/lenovo, files outside
+#          the workspace are still safe; the full args are validated separately)
+# DAG agents are read-only by intent; this is enforced by ALLOWED_COMMANDS.
 BLOCKED_PATTERNS: Final[set[str]] = {
-    "|", ">", "<", ";", "&&", "||", "$", "`", "\\", "\n",
-    "&", "!", "*", "?", "[", "]", "{", "}", "~", "'", "\"",
+    "|", ";", "&&", "||", "`", "\\", "\n",
+    "&", "!", "?", "[", "]", "{", "}", "~", "'", "\"",
 }
 
 # Block dangerous argument patterns

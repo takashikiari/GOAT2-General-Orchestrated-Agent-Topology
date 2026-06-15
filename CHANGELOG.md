@@ -7,6 +7,66 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-06-15 — Bug fixes: ChromaDB tenant, Letta PATCH, sliding window timeout, promote_all guard
 
+### Fixed — GOAT/DAG decoupling, SyntaxError, shell, memory, validator
+
+**PROBLEM 1 — `supervisor.pipeline.dag_background.collect_finished` is now truly non-blocking.**
+- The function only inspects `task.done()` (a synchronous, microsecond check)
+  for each entry in `_active_dag_tasks`. If nothing is finished, it returns
+  `''` without performing any I/O — GOAT continues immediately.
+- For finished tasks, the per-task Redis read is wrapped in
+  `asyncio.wait_for(..., timeout=1.0)` so a single slow Redis call can never
+  stall the GOAT kernel.
+- The call site in `GoatSupervisor.run()` is also wrapped in a defensive
+  `asyncio.wait_for(..., timeout=1.0)` (the new `_COLLECT_FINISHED_TIMEOUT_S`).
+
+**PROBLEM 2 — `supervisor.pipeline.tool_verifier` SyntaxError fixed.**
+- Line 117 had a raw string literal `r"```(?:json)?\n?` followed by a
+  physical newline then `?", ""`. Raw strings cannot end with `\`, so the
+  literal never closed and the module failed to import.
+- Fixed to a single-line `r"```(?:json)?\n?"`.
+
+**PROBLEM 3 — Working memory flush on new session.**
+- `GoatSupervisor.__init__` now initialises `self._initialized: bool = False`.
+- `GoatSupervisor.run()` checks the flag on every turn; on the first call it
+  sets the flag and schedules a fire-and-forget working-memory flush via
+  `asyncio.create_task()` (the new `_schedule_working_memory_flush` method,
+  which delegates to the new module `supervisor.session_init_flush`).
+- The flush calls `check_and_promote(..., max_entries=0)` to promote every
+  working-memory entry to the episodic tier, then leaves working memory
+  empty. Failures are logged at WARNING and swallowed.
+
+**PROBLEM 4 — `check_and_promote` now exported from `memory.working`.**
+- `memory/working/__init__.py` imports `check_and_promote` from
+  `memory.working.capacity` and adds it to `__all__`.
+
+**PROBLEM 5 — Corroboration + GoatValidator loosened.**
+- `agent_corroboration._SYSTEM`: rewritten to require REAL contradictions
+  (opposite facts about the same entity) rather than any difference. The
+  LLM is now told explicitly: "consistent=true UNLESS at least one output
+  directly contradicts another" and "DO NOT flag different formatting,
+  verbosity, or wording as a contradiction".
+- `goat_validator._check_hallucination_llm`: added explicit rule
+  "Emoji in the output is valid and NOT hallucination". The existing
+  Romanian rule remains.
+- `auditor._SIMILARITY_THRESHOLD` stays at 0.15 per the spec.
+
+**PROBLEM 6 — `tools.system.shell_tool` relaxed for DAG agents.**
+- `BLOCKED_PATTERNS` removed: `*`, `$`, `>`, `<`. These are needed for
+  globs (`find *.py`), env-var expansion (`echo $PATH`), and redirects.
+- `BLOCKED_PATTERNS` still contains: `|`, `;`, `&&`, `||`, `` ` ``, `\`,
+  `\n`, `&`, `!`, `?`, `[`, `]`, `{`, `}`, `~`, `'`, `"` — all genuine
+  shell-injection / command-chaining risks.
+- `ALLOWED_COMMANDS` already includes `python3` and `find`; comments
+  added to make the explicit list visible.
+
+**PROBLEM 7 — `telegram_bot` error handler now notifies the user.**
+- The pre-existing `_error_handler` logged Application-level exceptions
+  but did not attempt to reply to the originating chat.
+- Updated to best-effort `await msg.reply_text(f"[error] {context.error}")`
+  after the log, so the user is never left wondering why their message
+  produced no response. Notification failure is itself caught and logged
+  at DEBUG — never propagates back to Telegram.
+
 ### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
 
 New package `tools/goat_skills/` exposes 12 `ToolDefinition`s that drive

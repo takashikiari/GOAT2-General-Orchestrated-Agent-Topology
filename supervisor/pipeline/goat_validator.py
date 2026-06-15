@@ -169,6 +169,7 @@ async def _check_hallucination_llm(
         "  - Incomplete sentences in summaries are acceptable, not hallucination\n"
         "  - Formal or polished language is NOT hallucination\n"
         "  - Romanian language responses are valid, NOT hallucination\n"
+        "  - Emoji in the output is valid and NOT hallucination\n"
         "  - Tool call outputs (DSML tags, JSON) are valid, NOT hallucination\n"
         "  - If output shows real file paths, timestamps, or system data — it is genuine"
     )

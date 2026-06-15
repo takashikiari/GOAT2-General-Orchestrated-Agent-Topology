@@ -1,9 +1,13 @@
 """GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md for full architecture.
 
 Single-call architecture: one GOAT decision LLM call (``goat_decision.decide``)
-replaces the former 6-call routing pipeline. Middleware only builds context (no
-LLM). Based on the decision's action the supervisor either replies directly
+replaces the former 6-call routing pipeline. Middleware only builds context
+(no LLM). Based on the decision's action the supervisor either replies directly
 (tool-enabled), asks a clarification, or runs the DAG (specialized agent LLMs).
+
+GOAT is the kernel — always responsive, never blocks. DAGs spawned via
+``spawn_dag_background`` are detached background tasks; they write
+status/result to working memory, GOAT reads on the next turn.
 """
 from __future__ import annotations
 import uuid
@@ -22,6 +26,7 @@ from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
 from supervisor.session.turn_persistence import store_and_promote
 from supervisor.session.routing_state import pop_pending_dag
+from supervisor.pipeline import dag_background
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
@@ -45,6 +50,9 @@ _DAG_CAPABILITIES_SUMMARY: str = (
 
 _FALLBACK_CLARIFICATION = "Could you provide more details about what you'd like me to do?"
 
+# Hard upper bound on the time GOAT waits for collect_finished(); purely defensive.
+_COLLECT_FINISHED_TIMEOUT_S: float = 1.0
+
 
 class GoatSupervisor:
     """GOAT 2.0 orchestrator — session, tiered memory, single-call routing, DAG execution."""
@@ -62,14 +70,19 @@ class GoatSupervisor:
         self._behavior_style: str = ""
         self._history: ConversationHistory | None = None
         self._session_id: str = str(uuid.uuid4())
-        # Detached background DAGs: session_id → asyncio.Task. GOAT (kernel) stays
-        # responsive while these run; they write status/result to working memory.
+        # Detached DAGs (session_id → Task); set True after the first run() flush.
         self._active_dag_tasks: dict[str, asyncio.Task] = {}
+        self._initialized: bool = False
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
         """Spawn the DAG as a detached background task — GOAT returns immediately."""
         from supervisor.pipeline import dag_background
         return dag_background.spawn(self, dag_instructions, session_id)
+
+    def _schedule_working_memory_flush(self) -> None:
+        """Fire-and-forget working-memory flush at session start."""
+        from supervisor.session_init_flush import schedule_working_memory_flush
+        schedule_working_memory_flush(self.registry)
 
     async def get_dag_status(self, session_id: str) -> dict:
         """Report a background DAG's status from its task state + working memory."""
@@ -86,15 +99,11 @@ class GoatSupervisor:
         )
 
     def _clarification_result(self, intent: str, t0: float, question: str) -> SupervisorResult:
-        """Build a SupervisorResult that surfaces a clarification question to the user."""
+        """Result that surfaces a clarification question to the user."""
         return SupervisorResult(
-            intent=intent,
-            plan=Plan(tasks=[]),
-            results={},
-            critique="",
+            intent=intent, plan=Plan(tasks=[]), results={}, critique="",
             summary=question or _FALLBACK_CLARIFICATION,
-            sources={"conv": "generated"},
-            total_duration_s=time.monotonic() - t0,
+            sources={"conv": "generated"}, total_duration_s=time.monotonic() - t0,
         )
 
     async def _reply_direct(self, intent: str, t0: float, mem_ctx: str) -> SupervisorResult:
@@ -107,10 +116,10 @@ class GoatSupervisor:
         )
         self._history.add_assistant(r.summary)
         await store_and_promote(self, len(self._history.messages), intent, r.summary)
-        # Check for pending DAG spawned by start_dag tool — spawn immediately
+        # Pending DAG from a start_dag tool call — spawn detached.
         pending = await pop_pending_dag(self.memory_manager, self._session_id)
         if pending:
-            log.info("GOAT: pending DAG session=%s — spawning background after direct reply", pending)
+            log.info("GOAT: pending DAG session=%s — spawning background", pending)
             self.spawn_dag_background(intent, pending)
         return r
 
@@ -129,7 +138,7 @@ class GoatSupervisor:
     async def _dispatch(
         self, intent: str, t0: float, mem_ctx: str, decision: "GoatDecision", goat_ctx=None,
     ) -> SupervisorResult:
-        """Execute GOAT's decision: dag → pipeline, clarify → question, direct → reply."""
+        """Execute GOAT's decision. dag → spawn background; clarify → question; direct → reply."""
         if decision.action == "dag":
             if self.memory_manager:
                 try:
@@ -140,7 +149,7 @@ class GoatSupervisor:
                     )
                 except Exception as e:
                     log.warning("write_dag_instructions failed: %s", e)
-            # Spawn the DAG detached and return immediately — GOAT never blocks.
+            # Spawn the DAG detached; GOAT never blocks.
             session_id = str(uuid.uuid4())
             dag_instr = decision.dag_instructions or intent
             if goat_ctx.workspace and goat_ctx.workspace not in dag_instr:
@@ -159,17 +168,15 @@ class GoatSupervisor:
         return await self._reply_direct(intent, t0, mem_ctx)
 
     async def run(self, intent: str) -> SupervisorResult:
-        """Handle one user message via the single GOAT decision call.
-
-        FLOW:
-        1. init session → add user turn → memory turn (memory subsystem).
-        2. pending-DAG fast path (start_dag tool).
-        3. build context (GoatContext, ClarityContext, hints) — pure, no LLM.
-        4. ONE GOAT decision call → {action, response, clarification, dag_instructions}.
-        5. dispatch: direct → tool-enabled reply; clarify → question; dag → pipeline.
-        """
+        """Handle one user message. GOAT is the kernel — must respond on every turn."""
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
+
+        # First-run init: fire-and-forget working-memory flush.
+        if not self._initialized:
+            self._initialized = True
+            self._schedule_working_memory_flush()
+
         if self._history is None:
             self._user_profile, self._history, self._behavior_style, _ = await init_session(
                 self.memory_manager
@@ -177,14 +184,18 @@ class GoatSupervisor:
         self._history.add_user(intent)
         mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
 
-        # Surface any background DAGs that finished since the last turn so GOAT can
-        # report them naturally; finished tasks are cleared from tracking here.
-        from supervisor.pipeline import dag_background
-        dag_update = await dag_background.collect_finished(self)
+        # Surface finished background DAGs (non-blocking by design).
+        try:
+            dag_update = await asyncio.wait_for(
+                dag_background.collect_finished(self), timeout=_COLLECT_FINISHED_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            log.warning("GOAT: collect_finished timed out")
+            dag_update = ""
         if dag_update:
             mem_ctx = f"{dag_update}\n{mem_ctx}" if mem_ctx else dag_update
 
-        # Pending DAG from a start_dag tool call — spawn detached, reply immediately.
+        # Pending DAG from a start_dag tool call — spawn detached.
         pending_dag_session = await pop_pending_dag(self.memory_manager, self._session_id)
         if pending_dag_session:
             log.info("GOAT: pending DAG session=%s — spawning background", pending_dag_session)
@@ -194,7 +205,7 @@ class GoatSupervisor:
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
 
-        # The ONE GOAT call decides everything from pure-built context.
+        # ONE GOAT call decides everything from pure-built context.
         goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)
         from supervisor.pipeline.goat_decision import decide
         decision = await decide(self.registry, intent, goat_ctx, clarity_ctx, hints)
@@ -207,27 +218,20 @@ class GoatSupervisor:
         self._behavior_style = await finalize_behavior(
             self.memory_manager, self._history, self._behavior_style, self.registry
         )
-        # Promote working memory to episodic and flush
+        # Promote working memory to episodic and flush.
         if self.memory_manager:
             try:
                 from memory.working.capacity import check_and_promote
                 await check_and_promote(
-                    self.memory_manager.working.backend,
-                    self.memory_manager.episodic,
-                    "user_session",
-                    max_entries=0,  # promote everything
+                    self.memory_manager.working.backend, self.memory_manager.episodic,
+                    "user_session", max_entries=0,
                 )
                 log.info("finalize_session: working memory promoted to episodic")
             except Exception as e:
                 log.warning("finalize_session: promote failed: %s", e)
 
     def register_agent(self, role: str, runner: AgentRunner) -> None:
-        """Register a pre-built async runner under a role name.
-
-        Args:
-            role: Role identifier (e.g., 'researcher', 'coder', 'critic')
-            runner: Async callable matching AgentRunner protocol
-        """
+        """Register a pre-built async runner under ``role``."""
         self.agent_registry.register(role, runner)
 
     def make_agent(self, role: str, model_key: str, system_prompt: str) -> AgentRunner:
@@ -235,25 +239,21 @@ class GoatSupervisor:
         return self.agent_registry.make_and_register(role, model_key, system_prompt)
 
     async def pause_dag(self, session_id: str) -> None:
-        """Write "pause" to dag:<session_id>:control — DAG halts after its current wave."""
+        """Pause a running DAG after its current wave."""
         from supervisor.pipeline.dag_control import write_dag_control
         await write_dag_control(self.memory_manager, session_id, "pause")
 
     async def resume_dag(self, session_id: str) -> None:
-        """Write "run" to dag:<session_id>:control — resumes a paused DAG."""
+        """Resume a paused DAG."""
         from supervisor.pipeline.dag_control import write_dag_control
         await write_dag_control(self.memory_manager, session_id, "run")
 
     async def stop_dag(self, session_id: str) -> None:
-        """Write "stop" to dag:<session_id>:control — DAG terminates after current wave."""
+        """Stop a running DAG after its current wave."""
         from supervisor.pipeline.dag_control import write_dag_control
         await write_dag_control(self.memory_manager, session_id, "stop")
 
     async def get_dag_updates(self, session_id: str) -> dict | None:
-        """Read dag:<session_id>:progress from working memory.
-
-        Returns:
-            Progress dict (wave, total_waves, completed_tasks, status) or None.
-        """
+        """Read dag:<session_id>:progress from working memory; returns the progress dict or None."""
         from supervisor.pipeline.dag_awareness import read_dag_progress
         return await read_dag_progress(self.registry, session_id)

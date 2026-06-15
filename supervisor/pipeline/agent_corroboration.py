@@ -40,19 +40,28 @@ class CorroborationReport:
 
 _SYSTEM: str = (
     "You are GOAT's cross-agent corroboration checker. Your job is to verify "
-    "that multiple agent outputs are consistent with each other and don't "
-    "contain contradictions.\n\n"
+    "that multiple agent outputs are mutually consistent and do not contain "
+    "DIRECT, MEANINGFUL CONTRADICTIONS.\n\n"
     "Return ONLY this JSON:\n"
     "{\n"
     '  "consistent": true,\n'
     '  "issues": ["issue 1 description", ...]\n'
     "}\n\n"
-    "Rules:\n"
-    "  - consistent is true only when outputs don't contradict each other\n"
-    "  - For each issue, describe which agents and what contradicts\n"
-    "  - If outputs are empty or few, return consistent=true, issues=[]\n"
-    "  - Base evaluation on semantic meaning, not exact wording\n"
-    "  - Consider: numeric values, file paths, success/failure claims, recommendations"
+    "Rules — IMPORTANT (only flag REAL contradictions, not differences):\n"
+    "  - consistent=true UNLESS at least one output directly contradicts another\n"
+    "  - A REAL contradiction = opposite factual claims about the SAME entity "
+    "(e.g. 'latency 200ms' vs 'latency 500ms'; 'file exists' vs 'file missing'; "
+    "'process running' vs 'process stopped'). Both must be asserted as fact.\n"
+    "  - DO NOT flag: different formatting of the same fact, different levels "
+    "of detail, different wording, different recommendations, or partial overlap.\n"
+    "  - DO NOT flag a missing claim as a contradiction — only an OPPOSITE claim.\n"
+    "  - DO NOT flag a single-source claim (one agent says X, others are silent) "
+    "as a contradiction; it is just uncorroborated, which is fine.\n"
+    "  - DO NOT flag output style, tone, or language (including Romanian) as a contradiction.\n"
+    "  - DO NOT flag length or verbosity differences.\n"
+    "  - For each REAL contradiction, describe which agents contradict and on what.\n"
+    "  - If outputs are empty or only a few, return consistent=true, issues=[].\n"
+    "  - Be conservative: when in doubt, prefer consistent=true."
 )
 
 

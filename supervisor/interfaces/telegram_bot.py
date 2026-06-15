@@ -97,7 +97,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log unhandled Application-level errors so they are never silently lost."""
+    """Log unhandled Application-level errors and try to notify the originating chat.
+
+    Telegram's Application-level exceptions (e.g. handler timeouts, network
+    errors) do not propagate to the per-message try/except. We log the full
+    traceback and attempt to reply to the chat that triggered the failure, so
+    the user is never left wondering why their message produced no response.
+    """
     import traceback as _tb
     log.error(
         "Unhandled exception in Telegram handler: %s\n%s",
@@ -105,6 +111,14 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
         "".join(_tb.format_exception(type(context.error), context.error, context.error.__traceback__))
         if context.error else "no traceback",
     )
+    # Best-effort user notification — Telegram's ``update`` is loosely typed
+    # at the Application level, so we duck-type our way to the chat/message.
+    try:
+        msg = getattr(update, "message", None) or getattr(update, "edited_message", None)
+        if msg is not None and context.error is not None:
+            await msg.reply_text(f"[error] {context.error}")
+    except Exception as notify_exc:  # noqa: BLE001
+        log.debug("error_handler: user notification failed: %s", notify_exc)
 
 
 async def _shutdown(app) -> None:
