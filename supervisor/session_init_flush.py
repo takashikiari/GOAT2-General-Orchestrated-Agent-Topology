@@ -39,7 +39,7 @@ def schedule_working_memory_flush(registry: "ServiceRegistry") -> None:
         try:
             from memory.working.capacity import check_and_promote
             await check_and_promote(
-                mm.working.backend, mm.episodic, "user_session", max_entries=0,
+                mm.working.backend, mm.episodic, "user_session", max_entries=100,
             )
             log.info("session init flush: working memory promoted to episodic")
         except Exception as exc:  # noqa: BLE001
