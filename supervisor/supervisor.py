@@ -153,7 +153,7 @@ class GoatSupervisor:
         else:
             r = SupervisorResult(
                 intent=intent, plan=Plan(tasks=[]), results={}, critique="",
-                summary=turn.response, sources={"conv": turn.source},
+                summary=summary, sources={"conv": turn.source},
                 total_duration_s=time.monotonic() - t0,
             )
         r.summary = self._strip_dsml(r.summary)

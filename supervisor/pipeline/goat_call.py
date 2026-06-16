@@ -185,7 +185,10 @@ async def goat_turn(
         )
 
     log.warning("goat_turn DEBUG: content=%r called=%s", (tagged.content or "")[:200], tagged.called_tools)
-    action, visible = _classify_response(tagged.content or "", tagged.called_tools)
+    raw_content = tagged.content or ""
+    if not raw_content.strip() and tagged.called_tools:
+        raw_content = f"Am executat: {', '.join(tagged.called_tools)}"
+    action, visible = _classify_response(raw_content, tagged.called_tools)
     if action not in ("direct", "clarify", "dag"):
         action = "direct"
     log.info(
