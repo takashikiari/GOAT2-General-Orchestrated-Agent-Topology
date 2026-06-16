@@ -10,6 +10,7 @@ GOAT is the kernel — always responsive, never blocks. DAGs spawned via
 status/result to working memory, GOAT reads on the next turn.
 """
 from __future__ import annotations
+import re
 import uuid
 
 import asyncio
