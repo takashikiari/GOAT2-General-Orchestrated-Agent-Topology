@@ -91,7 +91,6 @@ from supervisor.logging import (
 from agents.critique import critique_results, synthesize_results, CriticVerdict, parse_verdict
 from agents.planner_decompose import decompose_plan
 from tools.tool_runner import _call_with_tools
-from tools.file.file_op_response import file_op_result
 from utils.llm_utils import (
     _get_client,
     _call_llm,
@@ -191,7 +190,6 @@ __all__ = [
     "parse_verdict",
     "decompose_plan",
     "_call_with_tools",
-    "file_op_result",
     "_get_client",
     "_call_llm",
     "_extract_json",

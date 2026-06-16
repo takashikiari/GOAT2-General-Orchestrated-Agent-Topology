@@ -1,37 +1,28 @@
-"""GOAT 2.0 personality, user profile, and (legacy) tool-enabled reply.
+"""GOAT 2.0 personality, user profile, and onboarding helpers.
 
 The single GOAT LLM call lives in ``supervisor.pipeline.goat_call``
-and supersedes ``direct_response``/``conv_result`` for the
-turn-by-turn flow. The functions here are kept for any external
-caller that imports them; new code should use ``goat_call.goat_turn``.
-
-Tools used by the single call are wired in
-``goat_call._collect_goat_tools`` — the same set the old
-``direct_response`` had (memory, web, dag, goat_skills, dynamic).
+and supersedes the old two-call flow (decision + tool-enabled
+reply). This module retains everything that still has a caller:
+``GOAT_SYSTEM`` (the base system prompt), ``load_user_profile``,
+the ``_system_with_profile`` builder used by ``goat_call``,
+and the onboarding flag helpers (``check_onboarding_done`` /
+``set_onboarding_done``).
 """
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Final
 
 from config.roles import GOAT_ROLE
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
-    from config.registry import Registry
 
 log = logging.getLogger("goat2.supervisor.identity")
-
-from supervisor.logging.source_types import TaggedResult
-from tools.tool_runner import _call_with_tools
-from supervisor.types import Plan, SupervisorResult
 
 __all__ = [
     "GOAT_SYSTEM",
     "load_user_profile",
-    "direct_response",
-    "conv_result",
     "check_onboarding_done",
     "set_onboarding_done",
 ]
@@ -116,7 +107,14 @@ async def load_user_profile(mm: MemoryManager) -> str:
 
 
 def _system_with_profile(profile: str, summary: str = "", style: str = "") -> str:
-    """Build system prompt: GOAT identity + optional behavior style + filtered profile + summary."""
+    """Build system prompt: GOAT identity + optional behavior style + filtered profile + summary.
+
+    Used by ``supervisor.pipeline.goat_call._build_system_prompt``
+    to assemble the single GOAT LLM call's system message. The
+    onboarding block (welcome / adaptive hints) is appended by the
+    caller via ``identity_onboarding._build_welcome_message`` and
+    ``_build_adaptive_hint`` after this base is built.
+    """
     from supervisor.behavior.behavior_mirror import mirror_instruction
     import datetime as _dt
     _now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -135,119 +133,3 @@ def _system_with_profile(profile: str, summary: str = "", style: str = "") -> st
     if summary:
         parts.append(f"\nPrevious sessions:\n{summary}")
     return "".join(parts)
-
-
-async def direct_response(
-    messages: list[dict[str, str]],
-    profile: str,
-    registry: "Registry",
-    summary: str = "",
-    mem_ctx: str = "",
-    style: str = "",
-    turn: int = 1,
-    onboarding_done: bool = True,
-    goat_session_id: str = "",
-    supervisor=None,
-) -> TaggedResult:
-    """Tool-enabled conversational reply (legacy). See goat_call.goat_turn.
-
-    The LLM autonomously decides when to invoke tools. No keyword routing.
-
-    Kept for external callers; the single-call architecture in
-    goat_call supersedes this for the turn-by-turn flow.
-    """
-    from tools import WEB_SEARCH
-    from tools.system import READ_LOGS
-    from tools.dag import make_dag_tools
-    _settings = registry.settings
-    # GOAT conversational tool surface — clearly separated from DAG tools.
-    #
-    # GOAT CORE_TOOLS = goat_skills (mouse/keyboard/screen/shell/browser/clipboard)
-    #                 + memory_all_tiers (working + episodic + long_term)
-    #                 + web_search
-    #                 + read_logs
-    #                 + dag_tools (start_dag, query_dag_status, control_dag, list_dag_sessions)
-    #                 + dynamic_tools (hot-reloaded from tools/dynamic/)
-    #
-    # GOAT does NOT have file_tools directly — file operations go through
-    # the DAG (workflow.py injects FILE_TOOLS into DAG agents only).
-    #
-    # Hot-reload contract: the lists below are captured at call time
-    # (not at module init), but they reference the SAME list object
-    # that the registry exposes. The ToolsWatcher reloads by mutating
-    # the contents in place via ``ServiceRegistry.update_tools`` —
-    # ``slot[:] = new_tools`` — so the locals below stay valid across
-    # reloads. Do NOT rebind ``registry.memory_tools = ...`` from
-    # elsewhere; that would desync the captured reference.
-    _memory_tools      = registry.memory_tools
-    _memory_manager    = registry.memory_manager
-    _dag_tools         = make_dag_tools(_memory_manager, goat_session_id=goat_session_id, supervisor=supervisor)
-    _goat_skills_tools = registry.goat_skills_tools
-    _dynamic_tools     = getattr(registry, "dynamic_tools", []) or []
-    sys_content = _system_with_profile(profile, summary, style)
-    if mem_ctx:
-        sys_content = sys_content + "\n" + mem_ctx
-
-    # Append onboarding content to the system message
-    onboarding_content = _build_welcome_message(turn, onboarding_done)
-    if not onboarding_content:
-        onboarding_content = _build_adaptive_hint(turn, onboarding_done)
-    if onboarding_content:
-        sys_content = sys_content + onboarding_content
-
-    sys_msg = {"role": "system", "content": sys_content}
-    return await _call_with_tools(
-        _settings.agents.get("tool_caller"),
-        [sys_msg, *messages],
-        # GOAT CORE_TOOLS — no FILE_TOOLS, no DAG_MEMORY_TOOLS.
-        # File ops are dispatched via the DAG; DAG agents get the
-        # sandboxed working-tier memory tools only.
-        _memory_tools
-        + [WEB_SEARCH, READ_LOGS]
-        + _dag_tools
-        + _goat_skills_tools
-        + _dynamic_tools,
-        temperature=0.7,
-        tool_choice="auto",
-        memory_manager=_memory_manager,
-    )
-
-
-async def conv_result(
-    intent: str,
-    messages: list[dict[str, str]],
-    profile: str,
-    summary: str,
-    mem_ctx: str,
-    t0: float,
-    registry: "Registry",
-    style: str = "",
-    turn: int = 1,
-    onboarding_done: bool = True,
-    goat_session_id: str = "",
-    supervisor=None,
-) -> SupervisorResult:
-    """Return a SupervisorResult from a direct LLM response with full conversation history.
-
-    ONBOARDING (PHASE 5):
-    =====================
-    - First session (onboarding_done=False, turn=1): appends welcome message
-    - Turns 2-4 (onboarding_done=False): appends adaptive hints
-    - After turn 4: no hints (normal operation)
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter for dependency injection.
-    """
-    tagged = await direct_response(
-        messages, profile, registry, summary, mem_ctx, style,
-        turn=turn, onboarding_done=onboarding_done,
-        goat_session_id=goat_session_id,
-        supervisor=supervisor,
-    )
-    return SupervisorResult(
-        intent=intent, plan=Plan(tasks=[]), results={},
-        critique="", summary=tagged.content,
-        sources={"conv": tagged.source},
-        total_duration_s=time.monotonic() - t0,
-    )
