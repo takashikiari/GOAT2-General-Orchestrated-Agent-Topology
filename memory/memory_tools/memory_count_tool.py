@@ -23,7 +23,7 @@ log = logging.getLogger("goat2.memory.tools")
 
 from typing import TYPE_CHECKING
 
-from config.roles import GOAT_ROLE
+from config.roles import GOAT_ROLE, SESSION_ROLE
 from memory.memory_tools.memory_helpers import format_memory_error, make_tool
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ async def _count_handler(
         counts: dict[str, int] = {}
 
         if tier in ("working", "all"):
-            counts["working"] = await memory_manager.working.count(GOAT_ROLE)
+            counts["working"] = await memory_manager.working.count(SESSION_ROLE)
 
         if tier in ("episodic", "all"):
             counts["episodic"] = await memory_manager.episodic.count(GOAT_ROLE)
