@@ -85,6 +85,13 @@ class GoatSupervisor:
         from tools.dag import background as dag_background
         return dag_background.spawn(self, dag_instructions, session_id)
 
+    @staticmethod
+    def _strip_dsml(text: str) -> str:
+        """Remove DeepSeek DSML markers from text."""
+        text = re.sub(r'</?｜｜DSML｜｜[^>]*>', '', text)
+        text = re.sub(r'/DSML[A-Za-z_/]*', '', text)
+        return text.strip()
+
     def _schedule_working_memory_flush(self) -> None:
         """Fire-and-forget working-memory flush at session start."""
         from supervisor.session_init_flush import schedule_working_memory_flush
@@ -176,15 +183,19 @@ class GoatSupervisor:
             # Spawn the DAG detached; GOAT never blocks.
             self.spawn_dag_background(dag_instr, session_id)
             r = self._dag_started_result(intent, t0, session_id)
+            r.summary = self._strip_dsml(r.summary)
             self._history.add_assistant(r.summary)
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
         if decision.action == "clarify":
             r = self._clarification_result(intent, t0, decision.clarification)
+            r.summary = self._strip_dsml(r.summary)
             self._history.add_assistant(r.summary)
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
-        return await self._reply_direct(intent, t0, mem_ctx)
+        r = await self._reply_direct(intent, t0, mem_ctx)
+        r.summary = self._strip_dsml(r.summary)
+        return r
 
     async def run(self, intent: str) -> SupervisorResult:
         """Handle one user message. GOAT is the kernel — must respond on every turn."""
@@ -221,6 +232,7 @@ class GoatSupervisor:
             log.info("GOAT: pending DAG session=%s — spawning background", pending_dag_session)
             self.spawn_dag_background(intent, pending_dag_session)
             r = self._dag_started_result(intent, t0, pending_dag_session)
+            r.summary = self._strip_dsml(r.summary)
             self._history.add_assistant(r.summary)
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
