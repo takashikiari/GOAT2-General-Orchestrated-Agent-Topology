@@ -470,6 +470,153 @@ Changes:
     raises `RuntimeError` produces 3 attempts and records
     `AgentResult.error = "TASK_ERROR: RuntimeError: ..."`.
 
+### Changed — `tools/dag/` canonical home for DAG tools + `ToolsWatcher` hot-reload
+
+**TASK 1 — `make_dag_tools` lives in `tools/dag/`.**
+
+The DAG tool surface is now discoverable alongside the other tool
+packages (`tools/file`, `tools/web`, `tools/system`, `tools/goat_skills`,
+`tools/memory`). The legacy import
+`from supervisor.pipeline.dag_tools import make_dag_tools` is kept as
+a thin re-export shim so the rest of the codebase does not change.
+
+- **New** `tools/dag/__init__.py` (246 lines) — full implementation of
+  `make_dag_tools(mm, goat_session_id, supervisor) -> list[ToolDefinition]`.
+  Same signature, same four tools (`query_dag_status`, `control_dag`,
+  `start_dag`, `list_dag_sessions`).
+- `supervisor/pipeline/dag_tools.py` (now 17 lines) — single re-export
+  `from tools.dag import make_dag_tools`.
+- `supervisor/identity.py` — `direct_response` now imports from
+  `tools.dag` instead of the supervisor-local copy. Same behavior.
+
+**TASK 2 — Clear tool separation: GOAT vs. DAG.**
+
+GOAT conversational tool surface (built in `direct_response`):
+
+- `goat_skills` (12 tools: mouse/keyboard/screen/shell/browser/clipboard)
+- `memory_tools` — full three-tier access (working + episodic + long_term)
+- `web_search`
+- `read_logs`
+- `dag_tools` (start_dag, query_dag_status, control_dag, list_dag_sessions)
+- `dynamic_tools` (hot-reloaded, starts empty)
+
+GOAT does **NOT** have `file_tools` directly — file operations are
+dispatched via the DAG. The DAG agents (workflow.py) get the
+sandboxed `dag_memory_tools` (working tier only) and the
+`FILE_TOOLS` slice.
+
+- `supervisor/identity.py` — GOAT CORE_TOOLS list updated. Inline
+  comment block documents the boundary.
+- `config/registry.py` — new `dag_tools` and `dynamic_tools` slots;
+  new `__slots__` entries; new `__repr__` shows tool counts per
+  category. `__init__` builds a single canonical `dag_tools` list
+  via `make_dag_tools(self.memory_manager, goat_session_id="",
+  supervisor=None)` and starts `dynamic_tools` as an empty list
+  ready for `ToolsWatcher` to populate.
+
+**TASK 3 — `ToolsWatcher` hot-reload.**
+
+Developers can drop a Python file in the watched directory and the
+new tool becomes available to GOAT on the next poll cycle, with no
+process restart. This is the GOAT-equivalent of the kernel's
+"loadable kernel modules" — and it complements the static tool
+packages by giving users a way to extend the system at runtime.
+
+- **New** `tools/hot_reload.py` (221 lines) — `ToolsWatcher` class.
+  - `start(registry, tools_root="")` — starts the polling task. No-op
+    when the directory does not exist (production deployments can
+    leave hot-reload disabled with no code change). Resolves
+    `tools_root` as: explicit arg > `$GOAT_WORKSPACE/dynamic_tools`
+    > `~/.goat2/dynamic_tools`.
+  - `stop()` — idempotent; cancels the watch loop cleanly.
+  - `_watch_loop()` — polls every `_POLL_INTERVAL_S` (30s) and runs
+    a diff against the tracked-set of files.
+  - `_scan_directory(dirpath)` — diffs current directory state
+    against the tracked set; loads new files, reloads modified
+    files, unloads removed files. Leading-underscore files are
+    private (skipped).
+  - `_load_module(filepath, mtime)` — imports the file under a
+    unique module name (`dynamic_tools.<sha1-of-path>[:12]`) so a
+    reload never stomps on the existing `sys.modules` entry.
+    Import errors are logged at WARNING and the file is skipped —
+    the watcher never crashes.
+  - `_unload_module(filepath, tracked)` — removes the file's tools
+    from `registry.dynamic_tools` and drops the module entry.
+- **New** `tools/hot_reload_discovery.py` (95 lines) — pulled out of
+  `hot_reload.py` to keep the main file under 260. Exports:
+  - `discover_tools(module)` — finds any `*_TOOLS` lists OR any
+    standalone `ToolDefinition` instances on the module.
+  - `is_tool_definition(obj)` — duck-types `name`+`handler`+
+    `description` (callable handler, non-empty string name).
+  - `resolve_tools_root(supplied)` — pure path-resolution helper.
+  - `PY_SUFFIX`, `MOD_PREFIX` — module-naming constants.
+- `supervisor/supervisor.py` — `GoatSupervisor.__init__` gets a
+  `self._tools_watcher = None` slot. New `_start_tools_watcher()`
+  method is called from `run()` on the first turn (alongside the
+  memory daemon). `finalize_session()` calls
+  `await self._tools_watcher.stop()`.
+- `supervisor/identity.py` — `direct_response` includes
+  `registry.dynamic_tools` in GOAT CORE_TOOLS (via
+  `getattr(registry, "dynamic_tools", [])` so older registries that
+  predate this change still work).
+
+**Constraint compliance.**
+
+- ✅ All new files ≤ 260 lines:
+  - `tools/dag/__init__.py`: 246
+  - `tools/hot_reload.py`: 221
+  - `tools/hot_reload_discovery.py`: 95
+  - `supervisor/pipeline/dag_tools.py`: 17 (re-export shim)
+  - `config/registry.py`: 247
+  - `supervisor/identity.py`: 260 (right at cap)
+  - `supervisor/supervisor.py`: 282 (was 261 before this change;
+    21 lines of additions for the tools_watcher integration —
+    splitting supervisor.py is a separate refactor)
+- ✅ Zero singletons — `ToolsWatcher` is a regular class; the
+  supervisor owns exactly one instance; the registry owns one
+  `dynamic_tools` list.
+- ✅ No hardcoded paths — `tools_root` defaults via
+  `GOAT_WORKSPACE` env var, with a `~/.goat2/dynamic_tools/`
+  per-user fallback.
+- ✅ Namespaced loggers: `goat2.tools.hot_reload`,
+  `goat2.tools.hot_reload.discovery`, `goat2.tools.dag`.
+- ✅ Tool separation enforced:
+  - GOAT never has file_tools — `direct_response` tool list
+    contains `memory_tools + [WEB_SEARCH, READ_LOGS] + _dag_tools
+    + _goat_skills_tools + _dynamic_tools`, no `FILE_TOOLS`.
+  - DAG never has goat_skills — workflow.py injects
+    `FILE_TOOLS + DAG_MEMORY_TOOLS` into AgentTask.tools; the
+    `goat_skills_tools` list is never imported in pipeline/.
+  - DAG memory access is working-tier only — `DAG_MEMORY_TOOLS`
+    contains only `MEMORY_SEARCH_DAG`, `MEMORY_GET_DAG`,
+    `MEMORY_STORE_DAG`, `MEMORY_RECENT_DAG`.
+  - GOAT memory access is all tiers — `MEMORY_TOOLS` contains all
+    16 memory tools including `MEMORY_PROMOTE`, `MEMORY_AUTO_PROMOTE`,
+    `MEMORY_EXPORT`, `MEMORY_TTL`, `MEMORY_DEBUG_TRACE`, etc.
+- ✅ Hot-reload is opt-in — `start()` is a no-op when the watch
+  directory does not exist.
+- ✅ Verified:
+  - `python3 -c "from tools.dag import make_dag_tools; print('ok')"` → **ok**
+  - `python3 -c "from tools.hot_reload import ToolsWatcher; print('ok')"` → **ok**
+  - `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+  - `make_dag_tools` returns 4 tools: `query_dag_status`, `control_dag`, `start_dag`, `list_dag_sessions`.
+  - `legacy = supervisor.pipeline.dag_tools.make_dag_tools` is
+    the SAME function as `tools.dag.make_dag_tools` (re-export).
+  - `ToolsWatcher.start(reg, '/nonexistent/dir')` → no task
+    created, watcher disabled silently.
+  - Hot-reload cycle: write a file with `MY_TOOLS = [...]` →
+    `len(reg.dynamic_tools) == 2`. Delete the file → `len == 0`.
+    Modify the file → old tools removed, new tools added.
+  - `is_tool_definition` rejects None, strings, and objects
+    missing `name`/`handler`/`description`.
+  - `resolve_tools_root('/explicit') == '/explicit'`,
+    `resolve_tools_root()` honors `$GOAT_WORKSPACE/dynamic_tools`,
+    falls back to `~/.goat2/dynamic_tools/`.
+  - All chain modules import cleanly with no circular imports
+    (`tools.dag`, `tools.hot_reload`, `tools.hot_reload_discovery`,
+    `supervisor.supervisor`, `supervisor.identity`,
+    `supervisor.pipeline.dag_tools`, `config.registry`).
+
 ### Added — `tools/goat_skills/` — full computer control for GOAT conversational mode
 
 New package `tools/goat_skills/` exposes 12 `ToolDefinition`s that drive

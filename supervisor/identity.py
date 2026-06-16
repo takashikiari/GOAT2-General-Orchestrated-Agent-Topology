@@ -173,14 +173,24 @@ async def direct_response(
     """
     from tools import WEB_SEARCH
     from tools.system import READ_LOGS
-    from supervisor.pipeline.dag_tools import make_dag_tools
+    from tools.dag import make_dag_tools
     _settings = registry.settings
-    # GOAT conversational: 16 memory tools + web_search + dag monitor/control tools
-    # + 12 goat_skills computer-control tools (GOAT-only, NOT exposed to DAG agents).
-    _memory_tools = registry.memory_tools
-    _memory_manager = registry.memory_manager
-    _dag_tools = make_dag_tools(_memory_manager, goat_session_id=goat_session_id, supervisor=supervisor)
+    # GOAT conversational tool surface — clearly separated from DAG tools.
+    #
+    # GOAT CORE_TOOLS = goat_skills (mouse/keyboard/screen/shell/browser/clipboard)
+    #                 + memory_all_tiers (working + episodic + long_term)
+    #                 + web_search
+    #                 + read_logs
+    #                 + dag_tools (start_dag, query_dag_status, control_dag, list_dag_sessions)
+    #                 + dynamic_tools (hot-reloaded from tools/dynamic/)
+    #
+    # GOAT does NOT have file_tools directly — file operations go through
+    # the DAG (workflow.py injects FILE_TOOLS into DAG agents only).
+    _memory_tools      = registry.memory_tools
+    _memory_manager    = registry.memory_manager
+    _dag_tools         = make_dag_tools(_memory_manager, goat_session_id=goat_session_id, supervisor=supervisor)
     _goat_skills_tools = registry.goat_skills_tools
+    _dynamic_tools     = getattr(registry, "dynamic_tools", []) or []
     sys_content = _system_with_profile(profile, summary, style)
     if mem_ctx:
         sys_content = sys_content + "\n" + mem_ctx
@@ -196,7 +206,14 @@ async def direct_response(
     return await _call_with_tools(
         _settings.agents.get("tool_caller"),
         [sys_msg, *messages],
-        _memory_tools + [WEB_SEARCH, READ_LOGS] + _dag_tools + _goat_skills_tools,
+        # GOAT CORE_TOOLS — no FILE_TOOLS, no DAG_MEMORY_TOOLS.
+        # File ops are dispatched via the DAG; DAG agents get the
+        # sandboxed working-tier memory tools only.
+        _memory_tools
+        + [WEB_SEARCH, READ_LOGS]
+        + _dag_tools
+        + _goat_skills_tools
+        + _dynamic_tools,
         temperature=0.7,
         tool_choice="auto",
         memory_manager=_memory_manager,

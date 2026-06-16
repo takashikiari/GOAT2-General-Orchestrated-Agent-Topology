@@ -108,6 +108,8 @@ class ServiceRegistry:
         "memory_tools",
         "dag_memory_tools",
         "goat_skills_tools",
+        "dag_tools",
+        "dynamic_tools",
         "agent_models",
         "letta_client",
         "agent_registry",
@@ -163,26 +165,35 @@ class ServiceRegistry:
         )
         log.debug("ServiceRegistry: memory_manager ready (%s)", type(self.memory_manager).__name__)
 
-        # 6. Tool definitions imported from tools module
-        #    These remain module constants in tools/__init__.py
+        # 6. Tool definitions — CLEAR separation:
+        #    - file_tools:     DAG agents only
+        #    - memory_tools:   GOAT (all three tiers)
+        #    - dag_memory_tools: DAG (working tier only)
+        #    - goat_skills_tools: GOAT only
+        #    - dag_tools:      GOAT (start/query/control/list_dag_sessions)
+        #    - dynamic_tools:  starts empty, hot-reload populates
         from tools import FILE_TOOLS, GOAT_SKILLS_TOOLS, MEMORY_TOOLS, DAG_MEMORY_TOOLS
+        from tools.dag import make_dag_tools
 
-        self.file_tools: list[ToolDefinition] = FILE_TOOLS
-        self.memory_tools: list[ToolDefinition] = MEMORY_TOOLS
+        self.file_tools:       list[ToolDefinition] = FILE_TOOLS
+        self.memory_tools:     list[ToolDefinition] = MEMORY_TOOLS
         self.dag_memory_tools: list[ToolDefinition] = DAG_MEMORY_TOOLS
         self.goat_skills_tools: list[ToolDefinition] = GOAT_SKILLS_TOOLS
+        # Build dag_tools now so the registry owns one canonical list.
+        self.dag_tools:        list[ToolDefinition] = make_dag_tools(
+            self.memory_manager, goat_session_id="", supervisor=None,
+        )
+        self.dynamic_tools:    list[ToolDefinition] = []
         log.debug(
-            "ServiceRegistry: tools ready (file=%d, memory=%d, dag_memory=%d, goat_skills=%d)",
+            "ServiceRegistry: tools ready (file=%d, memory=%d, dag_memory=%d, "
+            "goat_skills=%d, dag=%d, dynamic=%d)",
             len(self.file_tools), len(self.memory_tools), len(self.dag_memory_tools),
-            len(self.goat_skills_tools),
+            len(self.goat_skills_tools), len(self.dag_tools), len(self.dynamic_tools),
         )
 
-        # 7. Agent registry — lazy import of supervisor.registry.
-        #    This is the ONLY cross-layer import in this module, and it
-        #    is performed inside __init__ (function-local) so that
-        #    `import config.registry` at startup does NOT pull in
-        #    supervisor/. AgentRegistry's __init__ self-registers all 7
-        #    runners, so no further wiring is required here.
+        # 7. Agent registry — lazy import of supervisor.registry. The
+        #    cross-layer import is INSIDE __init__ so `import config.registry`
+        #    at startup does NOT pull in supervisor/.
         from supervisor.registry import AgentRegistry
         self.agent_registry: AgentRegistry = AgentRegistry()
         log.debug(
@@ -194,7 +205,8 @@ class ServiceRegistry:
             "ServiceRegistry: initialized successfully — "
             "settings=%s, working_memory=%s, memory_manager=%s, "
             "file_tools=%d, memory_tools=%d, dag_memory_tools=%d, "
-            "goat_skills_tools=%d, agent_registry=%d runners",
+            "goat_skills_tools=%d, dag_tools=%d, dynamic_tools=%d, "
+            "agent_registry=%d runners",
             type(self.settings).__name__,
             type(self.working_memory).__name__,
             type(self.memory_manager).__name__,
@@ -202,6 +214,8 @@ class ServiceRegistry:
             len(self.memory_tools),
             len(self.dag_memory_tools),
             len(self.goat_skills_tools),
+            len(self.dag_tools),
+            len(self.dynamic_tools),
             len(self.agent_registry.roles()),
         )
 
@@ -227,5 +241,7 @@ class ServiceRegistry:
             f"ServiceRegistry(settings={type(self.settings).__name__}, "
             f"working_memory={type(self.working_memory).__name__}, "
             f"memory_manager={type(self.memory_manager).__name__}, "
-            f"agent_registry={len(self.agent_registry.roles())} runners)"
+            f"agent_registry={len(self.agent_registry.roles())} runners, "
+            f"tools=file:{len(self.file_tools)}+memory:{len(self.memory_tools)}+"
+            f"dag:{len(self.dag_tools)}+dynamic:{len(self.dynamic_tools)})"
         )

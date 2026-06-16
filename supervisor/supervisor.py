@@ -2,8 +2,8 @@
 
 Single-call architecture: one GOAT decision LLM call (``goat_decision.decide``)
 replaces the former 6-call routing pipeline. Middleware only builds context
-(no LLM). Based on the decision's action the supervisor either replies directly
-(tool-enabled), asks a clarification, or runs the DAG (specialized agent LLMs).
+(no LLM). Based on the decision's action the supervisor either replies
+directly (tool-enabled), asks a clarification, or runs the DAG.
 
 GOAT is the kernel — always responsive, never blocks. DAGs spawned via
 ``spawn_dag_background`` are detached background tasks; they write
@@ -77,6 +77,8 @@ class GoatSupervisor:
         self._memory_daemon = None
         # Per-turn GC cadence (incremented in run()).
         self._turn_counter: int = 0
+        # Hot-reload watcher for dynamic tools — started in run().
+        self._tools_watcher = None
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
         """Spawn the DAG as a detached background task — GOAT returns immediately."""
@@ -87,6 +89,21 @@ class GoatSupervisor:
         """Fire-and-forget working-memory flush at session start."""
         from supervisor.session_init_flush import schedule_working_memory_flush
         schedule_working_memory_flush(self.registry)
+
+    def _start_tools_watcher(self) -> None:
+        """Start the hot-reload watcher for user-defined dynamic tools.
+
+        Idempotent — only creates a new watcher the first time. ``start()``
+        is itself a no-op when the resolved watch directory does not
+        exist (production deployments can leave hot-reload disabled).
+        """
+        from tools.hot_reload import ToolsWatcher
+        if self._tools_watcher is None:
+            self._tools_watcher = ToolsWatcher()
+        asyncio.create_task(
+            self._tools_watcher.start(self.registry),
+            name="tools_watcher_start",
+        )
 
     async def get_dag_status(self, session_id: str) -> dict:
         """Report a background DAG's status from its task state + working memory."""
@@ -115,8 +132,7 @@ class GoatSupervisor:
         r = await conv_result(
             intent, self._history.messages, self._user_profile or "",
             self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
-            goat_session_id=self._session_id,
-            supervisor=self,
+            goat_session_id=self._session_id, supervisor=self,
         )
         self._history.add_assistant(r.summary)
         await store_and_promote(self, len(self._history.messages), intent, r.summary)
@@ -128,7 +144,7 @@ class GoatSupervisor:
         return r
 
     async def _build_context(self, intent: str, mem_ctx: str):
-        """Build all decision context — pure, NO LLM. Returns (goat_ctx, clarity_ctx, hints)."""
+        """Build decision context — pure, NO LLM. Returns (goat_ctx, clarity_ctx, hints)."""
         from supervisor.pipeline.goat_enrichment import build_goat_context
         from supervisor.pipeline.intent_clarity import build_clarity_context
         from supervisor.pipeline.behavioral_learning import recall_corrections
@@ -153,12 +169,11 @@ class GoatSupervisor:
                     )
                 except Exception as e:
                     log.warning("write_dag_instructions failed: %s", e)
-            # Spawn the DAG detached; GOAT never blocks.
             session_id = str(uuid.uuid4())
             dag_instr = decision.dag_instructions or intent
             if goat_ctx.workspace and goat_ctx.workspace not in dag_instr:
                 dag_instr = f"Workspace root: {goat_ctx.workspace}\n\n" + dag_instr
-
+            # Spawn the DAG detached; GOAT never blocks.
             self.spawn_dag_background(dag_instr, session_id)
             r = self._dag_started_result(intent, t0, session_id)
             self._history.add_assistant(r.summary)
@@ -181,7 +196,7 @@ class GoatSupervisor:
             self._schedule_working_memory_flush()
             from supervisor.session.memory_housekeeping import start_memory_daemon
             start_memory_daemon(self)
-
+            self._start_tools_watcher()
         if self._history is None:
             self._user_profile, self._history, self._behavior_style, _ = await init_session(
                 self.memory_manager
@@ -230,6 +245,12 @@ class GoatSupervisor:
         )
         from supervisor.session.memory_housekeeping import finalize_memory
         await finalize_memory(self)
+        # Stop the dynamic-tools watcher. Safe when never started.
+        if self._tools_watcher is not None:
+            try:
+                await self._tools_watcher.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("finalize_session: tools_watcher.stop failed: %s", exc)
 
     def register_agent(self, role: str, runner: AgentRunner) -> None:
         """Register a pre-built async runner under ``role``."""
@@ -239,22 +260,23 @@ class GoatSupervisor:
         """Build and register a simple LLM runner from a model key + system prompt."""
         return self.agent_registry.make_and_register(role, model_key, system_prompt)
 
+    # ── DAG control surface — thin pass-throughs to dag_control_methods. ──
     async def pause_dag(self, session_id: str) -> None:
         """Pause a running DAG after its current wave."""
-        from supervisor.dag_control_methods import pause_dag as _pause
-        await _pause(self, session_id)
+        from supervisor.dag_control_methods import pause_dag as _f
+        await _f(self, session_id)
 
     async def resume_dag(self, session_id: str) -> None:
         """Resume a paused DAG."""
-        from supervisor.dag_control_methods import resume_dag as _resume
-        await _resume(self, session_id)
+        from supervisor.dag_control_methods import resume_dag as _f
+        await _f(self, session_id)
 
     async def stop_dag(self, session_id: str) -> None:
         """Stop a running DAG after its current wave."""
-        from supervisor.dag_control_methods import stop_dag as _stop
-        await _stop(self, session_id)
+        from supervisor.dag_control_methods import stop_dag as _f
+        await _f(self, session_id)
 
     async def get_dag_updates(self, session_id: str) -> dict | None:
         """Read dag:<session_id>:progress; returns the progress dict or None."""
-        from supervisor.dag_control_methods import get_dag_updates as _updates
-        return await _updates(self, session_id)
+        from supervisor.dag_control_methods import get_dag_updates as _f
+        return await _f(self, session_id)
