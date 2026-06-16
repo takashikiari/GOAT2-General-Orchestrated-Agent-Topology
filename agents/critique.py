@@ -243,7 +243,7 @@ async def synthesize_results(
         context = f"[DAG Execution Result]\n{dag_detail}\n\n{context}"
 
     return await _call_llm(
-        _settings.agents.get("planner"),
+        _settings.agents.get("summarizer"),
         [
             {"role": "system", "content": (
                 f"{sys_base}{lang_sfx}\n\nDeliver a direct answer that mirrors the user's tone. "

@@ -5,6 +5,192 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-16 — LLM call reduction: 36 → 8
+
+### Changed — Validators moved into DAG pipeline, memory scoring pure Python
+
+**Root cause:** 36 LLM calls across the project — well above the target of 8 (1 per
+DAG agent + 1 GOAT). Validators lived in `supervisor/pipeline/` and were called by
+GOAT directly, making the DAG sequential and consuming LLM quota for tasks that are
+trivially expressible in pure Python.
+
+**Fix applied:**
+
+**`tools/dag/validators.py`** (new, 260 lines):
+- Created single module containing all four validators as pure Python (zero LLM calls).
+- `run_tool_verifier`: keyword match of outputs against `verification_criteria`; score = matched/total.
+- `validate_dag_result`: structural checks (role conformity, source tags, tool calls) + refusal-marker
+  hallucination detection (replaces LLM semantic check).
+- `validate_results`: task completion + source whitelist + keyword-based contradiction detection;
+  uses `_CONTRADICTIONS` dict (was undefined/buggy in old `dag_validator.py`).
+- `check_corroboration`: Jaccard similarity + contradiction keyword pairs; no LLM.
+
+**`supervisor/pipeline/tool_verifier.py`** (shim, 4 lines):
+**`supervisor/pipeline/goat_validator.py`** (shim, 7 lines):
+**`supervisor/pipeline/dag_validator.py`** (shim, 4 lines):
+**`supervisor/pipeline/agent_corroboration.py`** (shim, 4 lines):
+- Each file reduced to a backward-compat re-export shim.
+- All existing callers continue to work via `supervisor.pipeline.*` imports.
+
+**`tools/dag/execution.py`** (updated):
+- Updated three lazy imports to use `tools.dag.validators` directly.
+- Removed `registry` argument from `check_corroboration`, `validate_dag_result`,
+  and `run_tool_verifier` calls (no longer needed without LLM).
+
+**`agents/critique.py`** (updated):
+- `synthesize_results()`: changed model from `"planner"` to `"summarizer"` as intended.
+
+**`memory/working/capacity.py`** (rewritten, 117 lines):
+- Removed `_score_relevance()` LLM call entirely.
+- Pure-Python scoring: `recency * 0.6 + access * 0.4`.
+- score >= 0.5 → promote to episodic; score < 0.5 → drop.
+
+**`memory/episodic/sliding_window.py`** (rewritten, 125 lines):
+- Removed `_score_relevance()` LLM call entirely.
+- Same pure-Python formula; permanent=True entries never scored or deleted.
+- Existing thresholds preserved: delete < 0.3, permanent >= 0.7.
+
+**Verification:**
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- `python3 -c "from tools.dag.validators import run_tool_verifier; print('ok')"` → ok
+- `python3 -c "from memory.working.capacity import check_and_promote; print('ok')"` → ok
+- `python3 -c "from memory.episodic.sliding_window import check_and_slide; print('ok')"` → ok
+- 17 tests pass (pre-existing broken tests unrelated to these changes remain unchanged).
+
+---
+
+## [Unreleased] — 2026-06-16 — Single GOAT LLM call per turn
+
+### Changed — `goat_call.goat_turn` merges decision + reply into one LLM call
+
+`goat_decision.decide` and `identity.direct_response` were two
+separate LLM invocations per turn (one in JSON mode for routing,
+one with tool use for the actual reply). They are now merged into
+`supervisor.pipeline.goat_call.goat_turn` — a single
+tool-enabled LLM call that returns a `GoatTurnResult` containing
+the user-facing text and the routing action.
+
+The action is inferred from the tool-call trace and a tiny
+convention in the response:
+
+- `start_dag` was called → action = `dag` (the tool already
+  wrote instructions and spawned the DAG).
+- Response ends with `[CLARIFY]` → action = `clarify`
+  (marker is stripped from the visible text).
+- Otherwise → action = `direct` (the LLM's text IS the reply).
+
+`goat_decision.py` is now a thin re-export shim:
+`GoatDecision = GoatTurnResult` and `decide(...)` delegates to
+`goat_turn(...)`. Existing imports continue to work unchanged.
+
+### Changed — `lang_detect` is now pure middleware (no LLM)
+
+`supervisor.classification.lang_detect.detect_language` is now a
+heuristic over Romanian diacritics + small word lists. Returns
+short codes `"ro"` / `"en"` / `"mixed"`. The DAG language
+directive in `task_prep.py` is keyed on the new short codes;
+non-`"ro"` results skip the directive so the LLM answers in the
+user's own mix.
+
+### Changed — `info_extract` is now pure middleware (no LLM)
+
+`supervisor.behavior.info_extract.maybe_store_info` no longer
+calls an LLM. Three pattern families — key-value (`X is Y`,
+`X = Y`), preference (`I prefer X`, `vreau X`), and named-entity
+(capitalized multi-word sequences) — cover the common explicit
+facts the old LLM extractor found. Same external signature so
+`mem_inject.mem_turn` is unchanged. Routing to Letta / ChromaDB
+is preserved.
+
+### Changed — `behavior_analyzer` is now pure scoring (no LLM)
+
+`supervisor.behavior.behavior_analyzer.analyze_style` is now a
+deterministic scoring function over the same `BehaviorProfile`
+fields (formality / tone / vocabulary / language / humor / length
+/ notes). Same external signature; `registry` is unused but
+preserved. The function merges new scores with the existing
+profile so the user's evolving style grows incrementally.
+
+### Removed
+
+- `GoatSupervisor._reply_direct` — superseded by the merged
+  call. The supervisor's `_dispatch` now handles all three
+  actions directly.
+- `GoatSupervisor.{pause_dag, resume_dag, stop_dag,
+  get_dag_updates}` pass-throughs — dead code with no external
+  callers. Use `supervisor.dag_control_methods.{pause_dag, ...}`
+  directly.
+- The `_DAG_CAPABILITIES_SUMMARY` constant and the
+  `write_dag_instructions` call in `_dispatch` — the LLM writes
+  instructions via the `start_dag` tool, so the supervisor no
+  longer needs to pre-write them.
+
+### Verification
+
+```bash
+python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"
+python3 -c "from supervisor.pipeline.goat_decision import decide; print('ok')"
+```
+
+---
+
+## [Unreleased] — 2026-06-16 — ToolsWatcher monitors the whole `tools/` tree
+
+### Changed — `ToolsWatcher` now watches every `tools/<name>/` package
+
+`ToolsWatcher` no longer watches a single root. On `start()` it
+discovers every Python package under `tools/` (memory, file,
+goat_skills, dag, system, and any future `tools/<name>/`) and
+appends the external `dynamic_tools/` root when it resolves.
+Each category maps to a registry slot by a single uniform rule:
+`<dirname>_tools`. Adding a new tool package is a zero-code change
+for the watcher.
+
+Two reload strategies live side by side:
+
+- **package** — `importlib.reload` on the package. Used for every
+  `tools/<name>/` subdirectory. Helpers in the new
+  `tools.hot_reload_categories` module.
+- **file** — per-file diff against a flat directory. Used for the
+  external `dynamic_tools/` root. Helpers in
+  `tools.hot_reload_discovery` (extended; the file-by-file
+  scan/load/unload machinery that previously lived in
+  `ToolsWatcher` now lives here so the new category list is
+  uniform).
+
+Startup stability is preserved: the watcher *primes* each
+category's mtimes without forcing a reload, so the static
+`ServiceRegistry.__init__` path remains the source of truth at
+boot. Reloads fire only on real changes after that.
+
+### Added — `ServiceRegistry.update_tools(category, tools)`
+
+New method on `ServiceRegistry`. Replaces the contents of
+`registry.<category>` in place (`slot[:] = tools`) so callers
+that captured a reference to the list — most importantly
+`identity.direct_response`, which binds `registry.memory_tools`
+to a local at the top of every call — see the new tools on
+their next call without any extra plumbing. Unknown categories
+log a WARNING and skip; this keeps a future `tools/<name>/`
+package safe even if its slot has not been wired into the
+registry yet.
+
+### Added — `ServiceRegistry.system_tools`
+
+New slot. Initialized to `[CALCULATOR, SHELL, THINK, READ_LOGS]`
+at boot. The watcher refreshes the list in place on changes
+under `tools/system/`.
+
+### Changed — `identity.py` now documents the in-place mutation contract
+
+`direct_response` already read `registry.memory_tools`,
+`registry.goat_skills_tools`, and `registry.dynamic_tools` at
+call time. The new comment block next to those locals makes the
+"do not rebind the registry attribute" contract explicit so
+future edits don't accidentally desync the captured reference.
+
+---
+
 ## [Unreleased] — 2026-06-16 — DAG execution moved to `tools/dag/`
 
 ### Changed — DAG execution moved to `tools/dag/`

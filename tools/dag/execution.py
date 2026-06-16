@@ -115,8 +115,8 @@ async def run_dag_pipeline(
     # Unified verification: run all checks together for coherent reporting
     verification_summary = {"corroboration": None, "tool_verifier": None, "hallucination": None}
     try:
-        from supervisor.pipeline.agent_corroboration import check_corroboration
-        corr = await check_corroboration(results, supervisor.registry)
+        from tools.dag.validators import check_corroboration
+        corr = await check_corroboration(results)
         verification_summary["corroboration"] = {"consistent": corr.consistent, "issues": corr.issues}
         if not corr.consistent:
             log.warning("Corroboration check failed: %s", corr.issues)
@@ -127,13 +127,13 @@ async def run_dag_pipeline(
     if supervisor.memory_manager:
         try:
             from supervisor.pipeline.dag_bridge import DagBridge
-            from supervisor.pipeline.goat_validator import validate_dag_result
+            from tools.dag.validators import validate_dag_result
             dag_result = await DagBridge(supervisor.memory_manager).wait_for_result(
                 session_id, timeout=120
             )
             if dag_result:
                 dag_detail = dag_result
-                report = await validate_dag_result(dag_detail, results, supervisor.registry)
+                report = await validate_dag_result(dag_detail, results)
                 if report.passed:
                     dag_verified = True
                     log.info("GoatValidator: passed — dag_verified=True session=%s", session_id)
@@ -149,8 +149,8 @@ async def run_dag_pipeline(
     # Runs after GoatValidator (which is kept intact). Non-critical — never blocks pipeline.
     if dag_verified and dag_prompt and dag_prompt.verification_criteria:
         try:
-            from supervisor.pipeline.tool_verifier import run_tool_verifier
-            verifier_report = await run_tool_verifier(results, dag_prompt, supervisor.registry)
+            from tools.dag.validators import run_tool_verifier
+            verifier_report = await run_tool_verifier(results, dag_prompt)
             if not verifier_report.passed:
                 log.warning(
                     "ToolVerifier: %d unmet criteria — score=%.2f unmet=%s",

@@ -1,10 +1,11 @@
-"""Intent depth classifier — now a pure parser of GOAT's decision (NO LLM).
+"""Intent depth classifier — now a pure parser of GOAT's action (NO LLM).
 
-In the single-call architecture the routing judgment is made by the one GOAT
-decision call (``supervisor.pipeline.goat_decision.decide``). The classifier no
-longer makes its own LLM call, gathers no context, and applies no keywords/rules.
-It simply maps the already-made ``GoatDecision.action`` to the ``IntentDepth``
-enum that the rest of the supervisor understands:
+In the single-call architecture the routing judgment is made by the
+one GOAT call (``supervisor.pipeline.goat_call.goat_turn``). The
+classifier no longer makes its own LLM call, gathers no context,
+and applies no keywords/rules. It simply maps the already-made
+``GoatTurnResult.action`` (alias ``GoatDecision`` from
+``supervisor.pipeline.goat_decision``) to the ``IntentDepth`` enum:
 
   action=direct   → CONVERSATIONAL
   action=clarify  → CONVERSATIONAL
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 log = logging.getLogger("goat2.supervisor.classification.classifier")
 
 if TYPE_CHECKING:
-    from supervisor.pipeline.goat_decision import GoatDecision
+    from supervisor.pipeline.goat_call import GoatTurnResult
 
 __all__ = ["IntentDepth", "classify_intent"]
 
@@ -34,17 +35,17 @@ class IntentDepth(str, Enum):
     COMPLEX        = "complex"         # full DAG with planner, researcher, critic
 
 
-def classify_intent(decision: "GoatDecision") -> IntentDepth:
-    """Map GOAT's single-call decision to an IntentDepth — pure, no LLM.
+def classify_intent(turn: "GoatTurnResult") -> IntentDepth:
+    """Map GOAT's single-call action to an IntentDepth — pure, no LLM.
 
     Args:
-        decision: The GoatDecision produced by the single GOAT call.
+        turn: The GoatTurnResult produced by the single GOAT call.
 
     Returns:
         IntentDepth.COMPLEX when ``action == "dag"``, otherwise
         IntentDepth.CONVERSATIONAL (both ``direct`` and ``clarify`` are answered
         on the conversational path).
     """
-    depth = IntentDepth.COMPLEX if decision.action == "dag" else IntentDepth.CONVERSATIONAL
-    log.debug("classify_intent: action=%s → %s", decision.action, depth.value)
+    depth = IntentDepth.COMPLEX if turn.action == "dag" else IntentDepth.CONVERSATIONAL
+    log.debug("classify_intent: action=%s → %s", turn.action, depth.value)
     return depth

@@ -39,6 +39,7 @@ class GoatContext:
     available_tools: str
     memory_context: str
     dag_tools: list[str] = None
+    has_prior_knowledge: bool = False
 
     def to_prompt(self) -> str:
         """Render this context as a prompt block for the GOAT decision call."""
@@ -112,6 +113,7 @@ def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatCo
         dag_tools=[getattr(t, "name", "") for t in getattr(registry, "file_tools", []) if getattr(t, "name", "")],
         available_tools=_available_tools(registry),
         memory_context=mem_ctx or "",
+        has_prior_knowledge=bool(mem_ctx and len(mem_ctx) > 50),
     )
     log.debug("build_goat_context: workspace=%s agents=%d", workspace or "(unset)", len(ctx.available_agents))
     return ctx

@@ -1,22 +1,23 @@
-"""Episodic sliding window — capacity management via pure-LLM relevance scoring.
+"""Episodic sliding window — capacity management via pure-Python relevance scoring.
 
-Episodic memory has NO TTL; this sliding window is what bounds it. When the entry
-count reaches the limit, the oldest non-permanent entries are scored by the LLM
-and acted on:
+Episodic memory has NO TTL; this sliding window bounds it. When the entry count
+reaches the limit, the oldest non-permanent entries are scored and acted on:
 
-  - score < 0.3  → deleted (low value)
-  - score >= 0.7 → marked permanent (kept forever, skipped by future windows)
-  - 0.3 .. 0.7   → kept (eligible again next time)
+  recency_score  = 1.0 / (age_hours + 1)
+  access_score   = min(1.0, access_count / 10)
+  score          = recency_score * 0.6 + access_score * 0.4
 
-Relevance is pure LLM reasoning — no keywords, patterns, regex, or hardcoded
-relevance rules. If the LLM is unavailable the window falls back to deleting the
-oldest 20 entries so capacity is always enforced. Backends are passed in and must
-satisfy the episodic backend Protocol; no singletons, no module state.
+  score < 0.3    → deleted (low value)
+  score >= 0.7   → marked permanent (kept forever, skipped by future windows)
+  0.3 – 0.7      → kept (eligible again next time)
+
+permanent=True entries are never scored or deleted.
+Backends are passed in — no singletons, no module state.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -28,22 +29,10 @@ __all__ = ["check_and_slide"]
 
 MAX_ENTRIES: int = 300
 WARN_THRESHOLD: int = 280
-_SLIDE_BATCH: int = 100         # oldest entries scored per pass (and fallback delete count)
+_SLIDE_BATCH: int = 100
 _FETCH_MAX: int = 400
 _DELETE_BELOW: float = 0.3
 _PERMANENT_ABOVE: float = 0.7
-_CONTEXT_ENTRIES: int = 5
-_CONTEXT_CHARS: int = 300
-
-_RELEVANCE_SYSTEM: str = (
-    "You decide how relevant one stored memory entry is for keeping in long-term "
-    "episodic memory. Given the recent conversation and one entry, judge purely by "
-    "meaning whether it carries information likely to matter later (decisions, facts, "
-    "results, user preferences) versus transient chatter. Reason from content alone — "
-    "no fixed keywords or rules.\n\n"
-    "Return ONLY this JSON — no prose:\n"
-    '{"relevance_score": 0.0}'
-)
 
 
 def _field(entry, name: str, default=None):
@@ -59,31 +48,21 @@ def _meta(entry) -> dict:
     return m if isinstance(m, dict) else {}
 
 
-def _recent_context(entries: list) -> str:
-    """Build a short recent-conversation context from the newest entries."""
-    newest = entries[-_CONTEXT_ENTRIES:]
-    return "\n".join((_field(e, "content", "") or "")[:_CONTEXT_CHARS] for e in newest)
+def _score_entry(entry) -> float:
+    """Pure-Python relevance score from recency + access frequency."""
+    now = time.time()
+    created_ts = float(_meta(entry).get("created_at_ts") or _field(entry, "created_at_ts", now) or now)
+    age_hours = max(0.0, (now - created_ts) / 3600.0)
+    recency_score = 1.0 / (age_hours + 1)
 
+    access_count = int(_meta(entry).get("access_count", 0))
+    access_score = min(1.0, access_count / 10.0)
 
-async def _score_relevance(content: str, context: str) -> float:
-    """Score one entry's relevance via the LLM (raises on failure for fallback).
-
-    Uses the supervisor model spec from a locally constructed ``Settings`` (no
-    singleton) and the shared LLM helpers. Pure LLM — no keyword/regex rules.
-    """
-    from config.settings import Settings
-    from utils.llm_utils import _call_llm, _extract_json
-    spec = Settings().supervisor.model
-    raw = await _call_llm(spec, [
-        {"role": "system", "content": _RELEVANCE_SYSTEM},
-        {"role": "user", "content": f"Recent conversation:\n{context}\n\nEntry:\n{content}\n\nReturn JSON."},
-    ])
-    data = _extract_json(raw)
-    return max(0.0, min(1.0, float(data.get("relevance_score", 1.0))))
+    return recency_score * 0.6 + access_score * 0.4
 
 
 async def _fallback_delete(backend: "EpisodicMemoryBackend", agent_role: str, candidates: list) -> None:
-    """Delete the oldest ``_SLIDE_BATCH`` non-permanent entries (LLM-unavailable path)."""
+    """Delete the oldest ``_SLIDE_BATCH`` non-permanent entries (error fallback)."""
     removed = 0
     for entry in candidates[:_SLIDE_BATCH]:
         try:
@@ -97,11 +76,13 @@ async def _fallback_delete(backend: "EpisodicMemoryBackend", agent_role: str, ca
 async def check_and_slide(
     backend: "EpisodicMemoryBackend", agent_role: str, max_entries: int = MAX_ENTRIES
 ) -> None:
-    """Enforce the episodic capacity bound for ``agent_role`` via LLM relevance.
+    """Enforce the episodic capacity bound for ``agent_role`` via pure-Python scoring.
 
     WARNs as the count approaches ``max_entries``. At/above the limit, scores the
     oldest non-permanent entries and deletes/keeps/marks-permanent per the bands.
-    Falls back to deleting the oldest ``_SLIDE_BATCH`` on any LLM failure. Never raises.
+    Falls back to deleting the oldest ``_SLIDE_BATCH`` on any failure. Never raises.
+
+    permanent=True entries are never scored or deleted.
     """
     try:
         count = await backend.count(agent_role)
@@ -118,7 +99,6 @@ async def check_and_slide(
             return
 
         batch = candidates[: max(_SLIDE_BATCH, count - max_entries + 1)]
-        context = _recent_context(candidates)
         log.info("episodic(%s): at limit (%d/%d) — scoring %d oldest", agent_role, count, max_entries, len(batch))
 
         deleted = promoted = kept = 0
@@ -126,17 +106,8 @@ async def check_and_slide(
             key = _field(entry, "key", "")
             content = _field(entry, "content", "") or ""
             try:
-                score = await asyncio.wait_for(
-                    _score_relevance(content, context), timeout=10.0
-                )
+                score = _score_entry(entry)
                 log.debug("episodic relevance %s: score=%.2f", key, score)
-            except asyncio.TimeoutError:
-                log.error("episodic(%s): relevance LLM timed out — fallback delete oldest %d", agent_role, _SLIDE_BATCH)
-                return await _fallback_delete(backend, agent_role, candidates)
-            except Exception as exc:
-                log.error("episodic(%s): relevance LLM failed — fallback: %s", agent_role, exc)
-                return await _fallback_delete(backend, agent_role, candidates)
-            try:
                 if score < _DELETE_BELOW:
                     await backend.delete(agent_role, key)
                     deleted += 1
@@ -148,6 +119,7 @@ async def check_and_slide(
                     kept += 1
             except Exception as exc:
                 log.debug("episodic slide op failed for %s: %s", key, exc)
+
         log.info("episodic(%s): deleted=%d permanent=%d kept=%d", agent_role, deleted, promoted, kept)
     except Exception as exc:
         log.debug("check_and_slide failed: %s", exc)

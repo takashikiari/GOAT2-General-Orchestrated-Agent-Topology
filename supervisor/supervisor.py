@@ -1,9 +1,9 @@
-"""GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md for full architecture.
+"""GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md.
 
-Single-call architecture: one GOAT decision LLM call (``goat_decision.decide``)
-replaces the former 6-call routing pipeline. Middleware only builds context
-(no LLM). Based on the decision's action the supervisor either replies
-directly (tool-enabled), asks a clarification, or runs the DAG.
+ONE GOAT LLM call per turn (``goat_call.goat_turn``) combines routing AND
+tool-enabled response. Middleware only builds context (no LLM). The action
+(``direct`` / ``clarify`` / ``dag``) is inferred from the tool-call trace
+(``start_dag`` → dag) and a ``[CLARIFY]`` marker in the response.
 
 GOAT is the kernel — always responsive, never blocks. DAGs spawned via
 ``spawn_dag_background`` are detached background tasks; they write
@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from supervisor.types import AgentRunner, Plan, SupervisorResult
 from supervisor.session.history import ConversationHistory
-from supervisor.identity import conv_result
 from supervisor.classification.classifier import IntentDepth, classify_intent
 from supervisor.session.mem_inject import mem_turn
 from supervisor.session.session_init import init_session
@@ -33,21 +32,11 @@ if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from config.registry import ServiceRegistry
     from agents.critique import CriticVerdict
-    from supervisor.pipeline.goat_decision import GoatDecision
+    from supervisor.pipeline.goat_call import GoatTurnResult
 
 log = logging.getLogger("goat2.supervisor")
 
 __all__ = ["GoatSupervisor"]
-
-# Capability summary written into DAG instructions so DAG knows what agents can do.
-_DAG_CAPABILITIES_SUMMARY: str = (
-    "tool_caller: file_read, file_write, file_create, file_list, file_search, file_grep, "
-    "memory_recent, memory_get, memory_store, memory_search; "
-    "researcher: web_search, memory_search; "
-    "coder: file_read, file_write, file_create, shell(read-only); "
-    "critic: memory_recent, memory_get(read-only); "
-    "summarizer: memory_recent(read-only)"
-)
 
 _FALLBACK_CLARIFICATION = "Could you provide more details about what you'd like me to do?"
 
@@ -71,14 +60,10 @@ class GoatSupervisor:
         self._behavior_style: str = ""
         self._history: ConversationHistory | None = None
         self._session_id: str = str(uuid.uuid4())
-        # Detached DAGs (session_id → Task); set True after the first run() flush.
         self._active_dag_tasks: dict[str, asyncio.Task] = {}
         self._initialized: bool = False
-        # Set by supervisor.session.memory_housekeeping on first run().
         self._memory_daemon = None
-        # Per-turn GC cadence (incremented in run()).
         self._turn_counter: int = 0
-        # Hot-reload watcher for dynamic tools — started in run().
         self._tools_watcher = None
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
@@ -99,11 +84,12 @@ class GoatSupervisor:
         schedule_working_memory_flush(self.registry)
 
     def _start_tools_watcher(self) -> None:
-        """Start the hot-reload watcher for user-defined dynamic tools.
+        """Start the hot-reload watcher for every tools package.
 
-        Idempotent — only creates a new watcher the first time. ``start()``
-        is itself a no-op when the resolved watch directory does not
-        exist (production deployments can leave hot-reload disabled).
+        Monitors every Python package under ``tools/`` plus the external
+        ``dynamic_tools/`` root. Idempotent — only creates a new watcher
+        the first time. ``start()`` is itself a no-op when no categories
+        are discoverable.
         """
         from tools.hot_reload import ToolsWatcher
         if self._tools_watcher is None:
@@ -135,22 +121,6 @@ class GoatSupervisor:
             sources={"conv": "generated"}, total_duration_s=time.monotonic() - t0,
         )
 
-    async def _reply_direct(self, intent: str, t0: float, mem_ctx: str) -> SupervisorResult:
-        """Generate a tool-enabled conversational reply (memory/web available)."""
-        r = await conv_result(
-            intent, self._history.messages, self._user_profile or "",
-            self._history.summary, mem_ctx, t0, self.registry, self._behavior_style,
-            goat_session_id=self._session_id, supervisor=self,
-        )
-        self._history.add_assistant(r.summary)
-        await store_and_promote(self, len(self._history.messages), intent, r.summary)
-        # Pending DAG from a start_dag tool call — spawn detached.
-        pending = await pop_pending_dag(self.memory_manager, self._session_id)
-        if pending:
-            log.info("GOAT: pending DAG session=%s — spawning background", pending)
-            self.spawn_dag_background(intent, pending)
-        return r
-
     async def _build_context(self, intent: str, mem_ctx: str):
         """Build decision context — pure, NO LLM. Returns (goat_ctx, clarity_ctx, hints)."""
         from supervisor.pipeline.goat_enrichment import build_goat_context
@@ -164,38 +134,31 @@ class GoatSupervisor:
         return goat_ctx, clarity_ctx, hints
 
     async def _dispatch(
-        self, intent: str, t0: float, mem_ctx: str, decision: "GoatDecision", goat_ctx=None,
+        self, intent: str, t0: float, mem_ctx: str, turn: "GoatTurnResult", goat_ctx=None,
     ) -> SupervisorResult:
-        """Execute GOAT's decision. dag → spawn background; clarify → question; direct → reply."""
-        if decision.action == "dag":
-            if self.memory_manager:
-                try:
-                    from supervisor.session.session import write_dag_instructions
-                    await write_dag_instructions(
-                        self.memory_manager, self._session_id,
-                        decision.dag_instructions or intent, mem_ctx, _DAG_CAPABILITIES_SUMMARY,
-                    )
-                except Exception as e:
-                    log.warning("write_dag_instructions failed: %s", e)
-            session_id = str(uuid.uuid4())
-            dag_instr = decision.dag_instructions or intent
-            if goat_ctx.workspace and goat_ctx.workspace not in dag_instr:
-                dag_instr = f"Workspace root: {goat_ctx.workspace}\n\n" + dag_instr
-            # Spawn the DAG detached; GOAT never blocks.
-            self.spawn_dag_background(dag_instr, session_id)
-            r = self._dag_started_result(intent, t0, session_id)
-            r.summary = self._strip_dsml(r.summary)
-            self._history.add_assistant(r.summary)
-            await store_and_promote(self, len(self._history.messages), intent, r.summary)
-            return r
-        if decision.action == "clarify":
-            r = self._clarification_result(intent, t0, decision.clarification)
-            r.summary = self._strip_dsml(r.summary)
-            self._history.add_assistant(r.summary)
-            await store_and_promote(self, len(self._history.messages), intent, r.summary)
-            return r
-        r = await self._reply_direct(intent, t0, mem_ctx)
+        """Execute the single-call turn's action.
+
+        ``dag`` → "DAG started, monitoring in background…" (the LLM
+        already spawned the DAG via start_dag). ``clarify`` → the LLM's
+        question. ``direct`` → the LLM's reply (with tool use already
+        accounted for in the single call). All three strip DSML markers
+        and persist the turn.
+        """
+        if turn.action == "dag":
+            r = self._dag_started_result(intent, t0, "")
+        elif turn.action == "clarify":
+            r = self._clarification_result(
+                intent, t0, turn.clarification or turn.response or _FALLBACK_CLARIFICATION,
+            )
+        else:
+            r = SupervisorResult(
+                intent=intent, plan=Plan(tasks=[]), results={}, critique="",
+                summary=turn.response, sources={"conv": turn.source},
+                total_duration_s=time.monotonic() - t0,
+            )
         r.summary = self._strip_dsml(r.summary)
+        self._history.add_assistant(r.summary)
+        await store_and_promote(self, len(self._history.messages), intent, r.summary)
         return r
 
     async def run(self, intent: str) -> SupervisorResult:
@@ -238,18 +201,38 @@ class GoatSupervisor:
             await store_and_promote(self, len(self._history.messages), intent, r.summary)
             return r
 
-        # ONE GOAT call decides everything from pure-built context.
+        # Build pure middleware context — no LLM.
         goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)
-        from supervisor.pipeline.goat_decision import decide
-        decision = await decide(self.registry, intent, goat_ctx, clarity_ctx, hints)
-        depth = classify_intent(decision)
-        log.info("GOAT decision: action=%s → %s intent=%.80s", decision.action, depth.value, intent)
-        result = await self._dispatch(intent, t0, mem_ctx, decision, goat_ctx)
+
+        # ONE GOAT call decides AND responds in the same pass.
+        from supervisor.pipeline.goat_call import goat_turn
+        turn = await goat_turn(
+            self.registry, intent, goat_ctx, clarity_ctx, hints,
+            self._history.messages, mem_ctx,
+            profile=self._user_profile or "",
+            summary=self._history.summary,
+            style=self._behavior_style,
+            turn=len(self._history.messages),
+            onboarding_done=await self._onboarding_done(),
+            goat_session_id=self._session_id,
+            supervisor=self,
+        )
+        depth = classify_intent(turn)
+        log.info(
+            "GOAT turn: action=%s → %s intent=%.80s",
+            turn.action, depth.value, intent,
+        )
+        result = await self._dispatch(intent, t0, mem_ctx, turn, goat_ctx)
 
         from supervisor.session.memory_housekeeping import tick_gc
         tick_gc(self)
 
         return result
+
+    async def _onboarding_done(self) -> bool:
+        """Read the onboarding flag from working memory; default True when missing."""
+        from supervisor.identity import check_onboarding_done
+        return await check_onboarding_done(self.memory_manager)
 
     async def finalize_session(self) -> None:
         """Analyze session turns and persist updated behavior profile to Letta."""
@@ -272,24 +255,3 @@ class GoatSupervisor:
     def make_agent(self, role: str, model_key: str, system_prompt: str) -> AgentRunner:
         """Build and register a simple LLM runner from a model key + system prompt."""
         return self.agent_registry.make_and_register(role, model_key, system_prompt)
-
-    # ── DAG control surface — thin pass-throughs to dag_control_methods. ──
-    async def pause_dag(self, session_id: str) -> None:
-        """Pause a running DAG after its current wave."""
-        from supervisor.dag_control_methods import pause_dag as _f
-        await _f(self, session_id)
-
-    async def resume_dag(self, session_id: str) -> None:
-        """Resume a paused DAG."""
-        from supervisor.dag_control_methods import resume_dag as _f
-        await _f(self, session_id)
-
-    async def stop_dag(self, session_id: str) -> None:
-        """Stop a running DAG after its current wave."""
-        from supervisor.dag_control_methods import stop_dag as _f
-        await _f(self, session_id)
-
-    async def get_dag_updates(self, session_id: str) -> dict | None:
-        """Read dag:<session_id>:progress; returns the progress dict or None."""
-        from supervisor.dag_control_methods import get_dag_updates as _f
-        return await _f(self, session_id)

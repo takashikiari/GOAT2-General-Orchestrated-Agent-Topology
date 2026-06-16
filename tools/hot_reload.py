@@ -1,40 +1,57 @@
-"""Hot-reload watcher for user-defined dynamic tools.
+"""Hot-reload watcher for the entire GOAT tools surface.
 
-``ToolsWatcher`` polls a directory (default: ``GOAT_WORKSPACE`` env var,
-or the workspace root) every ``_POLL_INTERVAL_S`` seconds, looking for
-Python files that export one or more ``ToolDefinition`` objects. New
-files are imported and their tools are appended to
-``registry.dynamic_tools``. Modified files are reloaded (the previous
-exports are removed, the new ones appended). Deleted files are
-unloaded. Import errors never crash the watcher — they are logged at
-WARNING and the file is skipped.
+``ToolsWatcher`` polls every Python package under ``tools/``
+(memory, file, goat_skills, dag, system, …) and the external
+``dynamic_tools/`` root. On every change it reloads the affected
+category and pushes the new ``ToolDefinition`` exports into the
+matching registry slot — ``memory_tools``, ``file_tools``,
+``goat_skills_tools``, ``dag_tools``, ``system_tools``,
+``dynamic_tools``, or any future ``tools/<name>/`` package whose
+slot follows the ``<dirname>_tools`` convention.
 
 NO-OP WHEN DISABLED:
-    If the resolved tools directory does not exist, ``start()`` is a
-    silent no-op. This is the safe default for production deployments
-    where dynamic tools are not wanted.
+    ``start()`` is a silent no-op when no categories are
+    discoverable (no Python packages under ``tools/`` and no
+    external ``dynamic_tools/`` root). This is the safe default
+    for production deployments.
 
-Tool discovery + path resolution live in
-``tools.hot_reload_discovery`` to keep this module under the 260-line
-ceiling.
+MAPPING RULE:
+    The category → registry-slot mapping is a single uniform
+    rule: ``<dirname>_tools``. There are no per-category branches
+    here — adding a new ``tools/<name>/`` package is a zero-code
+    change for the watcher. The registry's ``update_tools``
+    method performs the in-place mutation that keeps captured
+    references valid.
+
+DISCOVERY + SCAN LAYOUT:
+    - Static categories (every ``tools/<name>/`` package) use the
+      ``package`` reload strategy — ``importlib.reload`` on the
+      package. Helpers live in ``tools.hot_reload_categories``.
+    - The external ``dynamic_tools/`` root uses the ``file``
+      strategy — add/modify/remove per ``.py`` file. Helpers live
+      in ``tools.hot_reload_discovery`` (next to the original
+      tool-discovery helpers to keep them together).
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import importlib.util
 import logging
 import os
-import sys
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tools.hot_reload_categories import (
+    discover_static_categories,
+    reload_package_category,
+)
 from tools.hot_reload_discovery import (
-    PY_SUFFIX, MOD_PREFIX, discover_tools, resolve_tools_root,
+    prime_category,
+    resolve_tools_root,
+    scan_file_category,
 )
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry
-    from agents.base_agent import ToolDefinition
 
 log = logging.getLogger("goat2.tools.hot_reload")
 
@@ -43,14 +60,35 @@ __all__ = ["ToolsWatcher", "_POLL_INTERVAL_S"]
 # Polling cadence. 30s balances responsiveness against CPU cost.
 _POLL_INTERVAL_S: float = 30.0
 
+# Category kinds. "package" reloads via importlib.reload; "file"
+# diffs the .py files inside the category directory.
+_KIND_PACKAGE: str = "package"
+_KIND_FILE: str = "file"
+
+
+@dataclass
+class _Category:
+    """One watched directory and the registry slot it updates.
+
+    ``tracked`` is a per-category state dict: for ``package`` it
+    holds ``{absolute_path: mtime}`` (mtime-only — the reload
+    itself is whole-package via importlib). For ``file`` it holds
+    ``{absolute_path: (mtime, module_name, [tool_name, ...])}``
+    so a single file's tools can be unloaded on edit / remove.
+    """
+    directory: str
+    slot: str
+    kind: str
+    tracked: dict = field(default_factory=dict)
+
 
 class ToolsWatcher:
-    """Poll a directory for new / modified / removed tool files.
+    """Poll every ``tools/<name>/`` package + the external ``dynamic_tools/`` root.
 
     Lifecycle::
 
         watcher = ToolsWatcher()
-        await watcher.start(registry, tools_root="/path/to/dynamic")
+        await watcher.start(registry)
         # ... watches in background ...
         await watcher.stop()
 
@@ -59,17 +97,12 @@ class ToolsWatcher:
     watch loop never raises into the asyncio task.
     """
 
-    __slots__ = (
-        "_registry", "_tools_root", "_task",
-        # Absolute path -> (mtime, module_name, [tool_name, ...])
-        "_tracked", "_stopped",
-    )
+    __slots__ = ("_registry", "_categories", "_task", "_stopped")
 
     def __init__(self) -> None:
         self._registry: "ServiceRegistry | None" = None
-        self._tools_root: str = ""
+        self._categories: list[_Category] = []
         self._task: asyncio.Task | None = None
-        self._tracked: dict[str, tuple[float, str, list[str]]] = {}
         self._stopped: bool = False
 
     async def start(
@@ -77,39 +110,35 @@ class ToolsWatcher:
         registry: "ServiceRegistry",
         tools_root: str = "",
     ) -> None:
-        """Start the polling task. No-op if the directory is missing or already running.
+        """Start the polling task. No-op if no categories are discoverable.
 
-        Args:
-            registry: ServiceRegistry that owns ``dynamic_tools``. The
-                watcher appends/removes ``ToolDefinition`` objects from
-                this list as files change.
-            tools_root: Directory to watch. When empty, ``GOAT_WORKSPACE``
-                or ``~/.goat2/dynamic_tools/`` is used. When the
-                resolved directory does not exist, ``start()`` is a
-                silent no-op.
+        Discovers every Python package under the ``tools/`` root and
+        (when present) appends the external ``dynamic_tools/``
+        directory resolved from ``tools_root`` / ``GOAT_WORKSPACE``
+        / ``~/.goat2/dynamic_tools``. Each category's per-file
+        mtimes are primed so the first poll does not fire a reload.
         """
         if self._task is not None and not self._task.done():
             log.debug("ToolsWatcher: already running — start() is a no-op")
             return
         self._registry = registry
-        self._tools_root = resolve_tools_root(tools_root)
-        if not self._tools_root or not os.path.isdir(self._tools_root):
-            log.debug(
-                "ToolsWatcher: disabled (tools_root=%r not a directory)",
-                self._tools_root,
-            )
-            return
         self._stopped = False
-        # Prime the tracked set with the current directory state so
-        # the first poll does not re-import everything.
-        self._scan_directory(self._tools_root)
+        self._categories = self._discover_categories(tools_root)
+        if not self._categories:
+            log.debug("ToolsWatcher: disabled (no categories discoverable)")
+            return
+        # Prime mtimes so the first poll does not fire a reload.
+        for cat in self._categories:
+            cat.tracked = prime_category(cat.directory)
         self._task = asyncio.get_event_loop().create_task(
-            self._watch_loop(), name="tools_hot_reload"
+            self._watch_loop(), name="tools_hot_reload",
         )
         log.info(
-            "ToolsWatcher: started (root=%s, tracked=%d, interval=%.0fs)",
-            self._tools_root, len(self._tracked), _POLL_INTERVAL_S,
+            "ToolsWatcher: started (categories=%d, interval=%.0fs)",
+            len(self._categories), _POLL_INTERVAL_S,
         )
+        for cat in self._categories:
+            log.debug("ToolsWatcher: watching %s → %s", cat.directory, cat.slot)
 
     async def stop(self) -> None:
         """Stop the polling task. Idempotent — safe to call from any context."""
@@ -125,97 +154,84 @@ class ToolsWatcher:
         self._task = None
         log.debug("ToolsWatcher: stopped")
 
+    def _discover_categories(self, tools_root: str) -> "list[_Category]":
+        """Build the per-category list at startup.
+
+        Static categories come from ``discover_static_categories``
+        (one per Python package under ``tools/`` minus the
+        excluded hot-reload modules). The external dynamic
+        ``tools_root`` is added as a single ``file``-kind
+        category when it resolves to an existing directory.
+        """
+        cats: list[_Category] = []
+        for directory, slot in discover_static_categories():
+            cats.append(_Category(directory=directory, slot=slot, kind=_KIND_PACKAGE))
+        dyn_root = resolve_tools_root(tools_root)
+        if dyn_root and os.path.isdir(dyn_root):
+            cats.append(_Category(directory=dyn_root, slot="dynamic_tools", kind=_KIND_FILE))
+        return cats
+
     async def _watch_loop(self) -> None:
-        """Poll the directory on a fixed interval. Never raises into the task."""
+        """Poll each category on a fixed interval. Never raises into the task."""
         try:
             while not self._stopped:
                 await asyncio.sleep(_POLL_INTERVAL_S)
                 if self._stopped:
                     break
                 try:
-                    self._scan_directory(self._tools_root)
+                    self._scan_all()
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("ToolsWatcher: scan failed: %s", exc)
+                    log.warning("ToolsWatcher: scan_all failed: %s", exc)
         except asyncio.CancelledError:
             log.debug("ToolsWatcher: watch loop cancelled")
         except Exception as exc:  # noqa: BLE001
             log.warning("ToolsWatcher: watch loop crashed: %s", exc)
 
-    def _scan_directory(self, dirpath: str) -> None:
-        """Diff the current directory state against the tracked set; apply changes."""
-        try:
-            entries = os.listdir(dirpath)
-        except OSError as exc:
-            log.warning("ToolsWatcher: listdir(%s) failed: %s", dirpath, exc)
-            return
-        current_paths: set[str] = set()
-        for name in entries:
-            # Convention: leading-underscore files are private.
-            if not name.endswith(PY_SUFFIX) or name.startswith("_"):
-                continue
-            full = os.path.join(dirpath, name)
-            if not os.path.isfile(full):
-                continue
-            current_paths.add(full)
-            try:
-                mtime = os.path.getmtime(full)
-            except OSError:
-                continue
-            tracked = self._tracked.get(full)
-            if tracked is None:
-                self._load_module(full, mtime)
-            elif tracked[0] != mtime:
-                # File changed — unload the old module first, then load.
-                self._unload_module(full, tracked)
-                self._load_module(full, mtime)
-        # Detect removals.
-        for stale in list(self._tracked.keys()):
-            if stale not in current_paths:
-                self._unload_module(stale, self._tracked[stale])
-                self._tracked.pop(stale, None)
+    def _scan_all(self) -> None:
+        """Iterate every category, scan it for changes, and reload on transition.
 
-    def _load_module(self, filepath: str, mtime: float) -> None:
-        """Import a single .py file and add its discovered tools to the registry.
-
-        Never raises — import / discovery errors are logged at WARNING
-        and the file is left untracked so a subsequent edit can retry.
+        A single bad category never blocks the others: each
+        category is wrapped in its own try/except. ``file``
+        categories use the per-file diff from
+        ``hot_reload_discovery.scan_file_category``;
+        ``package`` categories reload the whole package on any
+        file change inside the directory.
         """
         if self._registry is None:
             return
-        mod_name = MOD_PREFIX + hashlib.sha1(filepath.encode()).hexdigest()[:12]
-        spec = importlib.util.spec_from_file_location(mod_name, filepath)
-        if spec is None or spec.loader is None:
-            log.warning("ToolsWatcher: could not build spec for %s", filepath)
-            return
-        module = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(module)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ToolsWatcher: import failed for %s: %s", filepath, exc)
-            return
-        tools = discover_tools(module)
-        if not tools:
-            log.debug("ToolsWatcher: no tools discovered in %s", filepath)
-            return
-        # Register and track the tool names so we can clean up on unload.
-        names = [getattr(t, "name", "") for t in tools]
-        self._registry.dynamic_tools.extend(tools)
-        self._tracked[filepath] = (mtime, mod_name, names)
-        log.info(
-            "ToolsWatcher: loaded %d tool(s) from %s (%s)",
-            len(tools), filepath, ", ".join(n for n in names if n),
-        )
+        for cat in self._categories:
+            try:
+                if cat.kind == _KIND_FILE:
+                    scan_file_category(cat.directory, cat.slot, self._registry, cat.tracked)
+                else:
+                    self._scan_package_category(cat)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "ToolsWatcher: scan failed for %s (%s): %s",
+                    cat.slot, cat.directory, exc,
+                )
 
-    def _unload_module(self, filepath: str, tracked: tuple) -> None:
-        """Remove the file's tools from the registry and drop the module from sys.modules."""
+    def _scan_package_category(self, cat: _Category) -> None:
+        """Reload a ``package``-kind category when any file under it changed.
+
+        The tracked dict holds ``{absolute_path: mtime}`` so the
+        per-poll diff is a single ``os.listdir`` + mtime
+        comparison. When a change is detected, the whole package
+        is reloaded (one ``importlib.reload`` per change) — this
+        is the standard idiom for reloading a package and keeps
+        the watcher's per-file state cheap.
+        """
         if self._registry is None:
             return
-        _mtime, mod_name, names = tracked
-        keep = [t for t in self._registry.dynamic_tools
-                if getattr(t, "name", "") not in set(names)]
-        removed = len(self._registry.dynamic_tools) - len(keep)
-        self._registry.dynamic_tools = keep
-        sys.modules.pop(mod_name, None)
+        current = prime_category(cat.directory)
+        if current == cat.tracked:
+            return  # No file added, removed, or modified.
+        # Update the mtime set to the latest snapshot before the
+        # reload so a follow-up exception does not leave stale
+        # state pointing at changed files.
+        cat.tracked = current
+        count = reload_package_category(cat.directory, cat.slot, self._registry)
         log.info(
-            "ToolsWatcher: unloaded %d tool(s) from %s", removed, filepath,
+            "ToolsWatcher: reloaded %s — %d tool(s) now in registry",
+            cat.slot, count,
         )

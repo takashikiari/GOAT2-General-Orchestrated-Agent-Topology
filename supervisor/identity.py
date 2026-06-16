@@ -1,18 +1,13 @@
-"""GOAT 2.0 personality, user profile loading, and conversational response handler.
+"""GOAT 2.0 personality, user profile, and (legacy) tool-enabled reply.
 
-All conversational responses have CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) available.
-The LLM autonomously decides when to invoke tools based on semantic intent —
-no keyword-based routing, all messages have equal tool access.
+The single GOAT LLM call lives in ``supervisor.pipeline.goat_call``
+and supersedes ``direct_response``/``conv_result`` for the
+turn-by-turn flow. The functions here are kept for any external
+caller that imports them; new code should use ``goat_call.goat_turn``.
 
-REGISTRY INJECTION (PHASE 4):
-=============================
-direct_response() and conv_result() now require `registry` parameter.
-Uses registry.settings.agents.get("tool_caller") and registry tools.
-
-ONBOARDING (PHASE 5):
-=====================
-First-session users receive a welcome message + adaptive hints for the first 3 turns.
-A persistent flag `onboarding_done` in working memory prevents repeated welcome.
+Tools used by the single call are wired in
+``goat_call._collect_goat_tools`` — the same set the old
+``direct_response`` had (memory, web, dag, goat_skills, dynamic).
 """
 from __future__ import annotations
 
@@ -154,22 +149,12 @@ async def direct_response(
     goat_session_id: str = "",
     supervisor=None,
 ) -> TaggedResult:
-    """Conversational reply with CORE_TOOLS (FILE_TOOLS + MEMORY_TOOLS) always available.
+    """Tool-enabled conversational reply (legacy). See goat_call.goat_turn.
 
-    The LLM autonomously decides when to invoke tools based on semantic intent.
-    No keyword-based routing — all messages have equal tool access regardless of formatting.
-    This enables proper handling of conversational requests like 'Goat! Cite\u0219te changelogs...'
-    which require file_read access even without explicit command syntax.
+    The LLM autonomously decides when to invoke tools. No keyword routing.
 
-    ONBOARDING (PHASE 5):
-    =====================
-    - First session (onboarding_done=False, turn=1): appends welcome message
-    - Turns 2-4 (onboarding_done=False): appends adaptive hints
-    - After turn 4: no hints (normal operation)
-
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings and registry tools.
+    Kept for external callers; the single-call architecture in
+    goat_call supersedes this for the turn-by-turn flow.
     """
     from tools import WEB_SEARCH
     from tools.system import READ_LOGS
@@ -186,6 +171,14 @@ async def direct_response(
     #
     # GOAT does NOT have file_tools directly — file operations go through
     # the DAG (workflow.py injects FILE_TOOLS into DAG agents only).
+    #
+    # Hot-reload contract: the lists below are captured at call time
+    # (not at module init), but they reference the SAME list object
+    # that the registry exposes. The ToolsWatcher reloads by mutating
+    # the contents in place via ``ServiceRegistry.update_tools`` —
+    # ``slot[:] = new_tools`` — so the locals below stay valid across
+    # reloads. Do NOT rebind ``registry.memory_tools = ...`` from
+    # elsewhere; that would desync the captured reference.
     _memory_tools      = registry.memory_tools
     _memory_manager    = registry.memory_manager
     _dag_tools         = make_dag_tools(_memory_manager, goat_session_id=goat_session_id, supervisor=supervisor)
