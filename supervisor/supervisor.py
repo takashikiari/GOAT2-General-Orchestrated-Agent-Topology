@@ -26,7 +26,7 @@ from supervisor.session.session_init import init_session
 from supervisor.behavior.behavior_session import finalize_behavior
 from supervisor.session.turn_persistence import store_and_promote
 from supervisor.session.routing_state import pop_pending_dag
-from supervisor.pipeline import dag_background
+from tools.dag import background as dag_background
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
@@ -82,7 +82,7 @@ class GoatSupervisor:
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
         """Spawn the DAG as a detached background task — GOAT returns immediately."""
-        from supervisor.pipeline import dag_background
+        from tools.dag import background as dag_background
         return dag_background.spawn(self, dag_instructions, session_id)
 
     def _schedule_working_memory_flush(self) -> None:
@@ -107,7 +107,7 @@ class GoatSupervisor:
 
     async def get_dag_status(self, session_id: str) -> dict:
         """Report a background DAG's status from its task state + working memory."""
-        from supervisor.pipeline import dag_background
+        from tools.dag import background as dag_background
         return await dag_background.status(self, session_id)
 
     def _dag_started_result(self, intent: str, t0: float, session_id: str) -> SupervisorResult:

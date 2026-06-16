@@ -43,7 +43,20 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.tools.dag")
 
-__all__ = ["make_dag_tools"]
+# Re-export the canonical DAG execution surface. The shim modules
+# supervisor.pipeline.dag_background and supervisor.pipeline.dag_execution
+# re-export the same names for backward compatibility, but new code should
+# import them from here.
+from tools.dag.background import spawn, collect_finished, write_completion
+from tools.dag.execution import run_dag_pipeline
+
+__all__ = [
+    "make_dag_tools",
+    "spawn",
+    "collect_finished",
+    "write_completion",
+    "run_dag_pipeline",
+]
 
 
 def make_dag_tools(
@@ -119,7 +132,7 @@ def make_dag_tools(
             log.debug("start_dag: wrote instructions session=%s", new_sid)
             if supervisor is not None:
                 # Immediate spawn — no pending_dag middleman.
-                from supervisor.pipeline.dag_background import spawn
+                from tools.dag.background import spawn
                 spawn(supervisor, task_description, new_sid)
                 log.info("start_dag: spawned background DAG session=%s", new_sid)
             elif goat_session_id:

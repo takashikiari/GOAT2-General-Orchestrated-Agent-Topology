@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-16 — DAG execution moved to `tools/dag/`
+
+### Changed — DAG execution moved to `tools/dag/`
+
+`supervisor.pipeline.dag_background` and `supervisor.pipeline.dag_execution`
+are now thin re-export shims. The canonical implementations live in
+`tools.dag.background` and `tools.dag.execution`. `supervisor.pipeline.dag_tools`
+is deleted — its single re-export of `make_dag_tools` is now served by
+`tools.dag` directly. `tools.dag.__init__` re-exports `spawn`,
+`collect_finished`, `write_completion`, and `run_dag_pipeline`, giving
+one canonical import path for the DAG package.
+
+The supervisor pipeline keeps the internal DAG primitives
+(`workflow.py`, `dag_bridge.py`, `goat_decision.py`, `runners.py`) in
+place — they are not GOAT tool surface and remain where the supervisor
+lives. `supervisor/supervisor.py` now imports `dag_background` from
+`tools.dag` instead of `supervisor.pipeline`.
+
+---
+
 ## [Unreleased] — 2026-06-15 — memory_last_write + memory_timeline working-tier fixes
 
 ### Fixed — `memory_last_write` returns "No writes recorded" for working tier
