@@ -151,9 +151,12 @@ class GoatSupervisor:
                 intent, t0, turn.clarification or turn.response or _FALLBACK_CLARIFICATION,
             )
         else:
+            _summary = turn.response
+            if not _summary.strip():
+                _summary = f"Am executat: {', '.join(turn.source) if isinstance(turn.source, (list, tuple)) else str(turn.source or 'done')}"
             r = SupervisorResult(
                 intent=intent, plan=Plan(tasks=[]), results={}, critique="",
-                summary=turn.response, sources={"conv": turn.source},
+                summary=_summary, sources={"conv": turn.source},
                 total_duration_s=time.monotonic() - t0,
             )
         r.summary = self._strip_dsml(r.summary)
