@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from typing import Final
 
 from telegram import Update
@@ -41,37 +40,19 @@ def _supervisor_for(chat_id: int) -> GoatSupervisor:
     return _sessions[chat_id]
 
 
-def _clean_dsml_tags(text: str) -> str:
-    """Strip DSML tags (invoke, tool_calls, etc.) from text."""
-    if not text:
-        return ""
-    # Remove DSML blocks with different opening/closing tags
-    clean = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
-    # Remove mixed pairs
-    clean = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', clean, flags=re.DOTALL)
-    # Remove orphaned tags
-    clean = re.sub(r'</? \｜｜DSML｜｜[^>]*>', '', clean)
-    clean = re.sub(r"/DSML[A-Za-z_]*", "", clean).strip()
-    # If everything was stripped, try harder: remove angle-bracket noise
-    if not clean:
-        clean = re.sub(r"[<｜>]+", "", text).strip()
-    return clean
-
-
-def _has_tool_calls(text: str) -> bool:
-    """Check if text contains DSML tool call tags."""
-    return bool(re.search(r'<\｜｜DSML｜｜invoke>', text) or re.search(r'<\｜｜DSML｜｜tool_calls>', text))
-
-
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route incoming text to GoatSupervisor and reply with the result summary.
 
-    Tool calls are executed internally in a loop — GOAT can make multiple
-    tool call rounds without waiting for user input between them. Only the
-    final text response (with no tool calls) is sent to the chat.
+    Only processes messages that have text content. Messages containing only
+    tool calls (no text) are silently ignored — tool calls are executed
+    internally by _call_with_tools() and never exposed as separate messages.
     """
-    # ── Ignore messages without text ──
-    if not update.message or not update.message.text:
+    # ── FIX: Ignore messages without text (e.g. tool calls, media, stickers) ──
+    if not update.message:
+        return
+    if not update.message.text:
+        # This is a non-text update (tool call, sticker, photo, etc.)
+        # Tool calls are handled internally by _call_with_tools() — never surface them
         log.debug("Ignoring non-text update type=%s", type(update.message).__name__)
         return
 
@@ -81,74 +62,114 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     chat_id = update.message.chat_id
     sv = _supervisor_for(chat_id)
-
+    # No lock: each message is processed independently. GOAT stays responsive even
+    # while a DAG runs in the background, so messages never queue or block.
     log.debug("chat=%d processing intent=%.80s", chat_id, intent)
 
     try:
         result = await sv.run(intent)
-        raw_text = str(result.summary or "").strip()
-
-        # ── Internal tool call loop ──
-        # If the response contains tool calls, execute them and re-enter GOAT
-        # with the results, without sending anything to the chat.
-        max_rounds = 10  # safety limit
-        for _ in range(max_rounds):
-            if not _has_tool_calls(raw_text):
-                break
-            # Feed the response back as if it were user input
-            result = await sv.run(raw_text)
-            raw_text = str(result.summary or "").strip()
-
-        # ── Final response ──
-        text = mask_sensitive(raw_text)
+        text = mask_sensitive(str(result.summary or "").strip())
         if not text:
             text = "..."
-
-        clean_text = _clean_dsml_tags(text)
+        # Filter out tool calls from response (both wrapper and individual invoke tags)
+        import re
+        # Match DSML tags with DIFFERENT content: <｜｜DSML｜｜invoke>...</｜｜DSML｜｜tool_calls>
+        # The opening and closing tags have different content (invoke vs tool_calls)
+        clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
+        # Also match mixed pairs: <tag1>...</tag2> where content differs
+        clean_text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', clean_text, flags=re.DOTALL)
+        # Also strip any orphaned opening/closing tags
+        clean_text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', clean_text)
+        clean_text = re.sub(r'</\｜｜DSML｜｜[^>]*>', '', clean_text)
+        clean_text = re.sub(r"/DSML[A-Za-z_]*", "", clean_text).strip()
         if not clean_text or clean_text.strip() == "":
-            clean_text = "..."
-
+            clean_text = re.sub(r"[<｜>]+", "", text).strip() or "..."
+        
         # Telegram message limit: 4096 characters
         MAX_TELEGRAM_LEN = 4096
         if len(clean_text) > MAX_TELEGRAM_LEN:
             clean_text = clean_text[:MAX_TELEGRAM_LEN - 3] + "..."
-
         await update.message.reply_text(clean_text)
-
     except Exception as exc:
         import traceback
         log.error("chat=%d error: %s\n%s", chat_id, exc, traceback.format_exc())
+        await update.message.reply_text(f"[error] {exc}")
+
+
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log unhandled Application-level errors and try to notify the originating chat.
+
+    Telegram's Application-level exceptions (e.g. handler timeouts, network
+    errors) do not propagate to the per-message try/except. We log the full
+    traceback and attempt to reply to the chat that triggered the failure, so
+    the user is never left wondering why their message produced no response.
+    """
+    import traceback as _tb
+    log.error(
+        "Unhandled exception in Telegram handler: %s\n%s",
+        context.error,
+        "".join(_tb.format_exception(type(context.error), context.error, context.error.__traceback__))
+        if context.error else "no traceback",
+    )
+    # Best-effort user notification — Telegram's ``update`` is loosely typed
+    # at the Application level, so we duck-type our way to the chat/message.
+    try:
+        msg = getattr(update, "message", None) or getattr(update, "edited_message", None)
+        if msg is not None and context.error is not None:
+            await msg.reply_text(f"[error] {context.error}")
+    except Exception as notify_exc:  # noqa: BLE001
+        log.debug("error_handler: user notification failed: %s", notify_exc)
+
+
+async def _shutdown(app) -> None:
+    """Finalize all sessions on shutdown — promote working memory to episodic."""
+    for chat_id, sv in _sessions.items():
         try:
-            await update.message.reply_text("...")
-        except Exception:
-            pass
+            await sv.finalize_session()
+            log.info("finalize_session: chat=%d done", chat_id)
+        except Exception as e:
+            log.warning("finalize_session: chat=%d failed: %s", chat_id, e)
 
 
-def _build_app() -> Application:
-    """Build and return the Telegram Application (no polling started)."""
+def build_app() -> Application:
+    """Build and configure the Telegram Application."""
+    if not _TOKEN:
+        raise RuntimeError("channels.telegram_token is not set in config/goat.toml")
     app = Application.builder().token(_TOKEN).build()
+    # ── Only handle TEXT messages — ignore tool calls, media, etc. ──
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    
+    # ── Global error handler so Application-level exceptions are never lost ──
+    app.add_error_handler(_error_handler)
     return app
 
 
-def run_polling() -> None:
-    """Start polling (blocking)."""
-    app = _build_app()
-    log.info("Starting polling for Telegram bot ...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-async def run_webhook(
-    app: Application,
-    webhook_url: str,
-    webhook_port: int,
-    secret_token: str | None = None,
-) -> None:
-    """Set up webhook (non-blocking, requires running Application)."""
-    log.info("Setting webhook to %s (port %d)", webhook_url, webhook_port)
-    await app.bot.set_webhook(
-        url=webhook_url,
-        secret_token=secret_token,
-        allowed_updates=Update.ALL_TYPES,
+def main() -> None:
+    """Entry point — start GOAT Telegram bot with long-polling."""
+    import os
+    os.makedirs("/home/lenovo/workspace/goat2/logs", exist_ok=True)
+    file_handler = logging.FileHandler("/home/lenovo/workspace/goat2/logs/goat2.log")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s  %(name)-24s  %(levelname)s  %(message)s"))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
+        handlers=[logging.StreamHandler(), file_handler],
     )
-    log.info("Webhook set successfully")
+    log.info("GOAT 2.0 Telegram bot starting.")
+    # ── FIX: Only poll for text messages, not tool calls or other update types ──
+    app = build_app()
+    try:
+        app.run_polling(
+            allowed_updates=["message", "edited_message", "callback_query"]
+        )
+    finally:
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(_shutdown(app))
+
+
+if __name__ == "__main__":
+    main()
+
+
+if __name__ == "__main__":
+    run_polling()
