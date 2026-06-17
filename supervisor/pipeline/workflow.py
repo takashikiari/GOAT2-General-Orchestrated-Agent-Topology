@@ -692,9 +692,26 @@ class WorkflowGraph:
                         from supervisor.pipeline.task_retry import (
                             is_task_error, run_with_retry,
                         )
-                        output, _agent_result, err = await run_with_retry(
-                            task, context, registry, runner,
-                        )
+                        from supervisor.pipeline.timeouts import TASK_TIMEOUT_S
+                        # PROBLEM 1: cap each task's wall-clock at TASK_TIMEOUT_S.
+                        # asyncio.wait_for is layered on top of the retry helper
+                        # so a runaway LLM/tool call is killed before it can
+                        # exhaust the retry budget. TimeoutError is converted
+                        # into a TASK_ERROR-shaped string so the existing
+                        # is_task_error branch records a failed AgentResult
+                        # and downstream tasks are skipped.
+                        try:
+                            output, _agent_result, err = await asyncio.wait_for(
+                                run_with_retry(task, context, registry, runner),
+                                timeout=TASK_TIMEOUT_S,
+                            )
+                        except asyncio.TimeoutError:
+                            log.warning(
+                                "Task %s (role=%s) timed out after %.1fs",
+                                tid, task.role, TASK_TIMEOUT_S,
+                            )
+                            output = f"TASK_ERROR: TimeoutError: timeout:{TASK_TIMEOUT_S:.0f}s"
+                            err = output
                         task_failed_with_retry = bool(err and is_task_error(output))
                         if task_failed_with_retry:
                             # All retries exhausted — record a failed
@@ -808,8 +825,22 @@ class WorkflowGraph:
                             except Exception as _fe:
                                 log.warning("Task status write (failed) failed: %s", _fe)
 
-            # Execute all tasks in this wave concurrently
-            await asyncio.gather(*[_run(tid) for tid in filtered_wave])
+            # Execute all tasks in this wave concurrently.
+            # WAVE_TIMEOUT_S caps the entire wave so a single hanging task
+            # can never freeze the DAG (PROBLEM 1 — reliability). On timeout
+            # we log + continue; partial task failures are already recorded
+            # by each _run coroutine above.
+            from supervisor.pipeline.timeouts import WAVE_TIMEOUT_S
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*[_run(tid) for tid in filtered_wave]),
+                    timeout=WAVE_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "WorkflowGraph: wave %d timed out after %.1fs — continuing with partial results",
+                    wave_idx, WAVE_TIMEOUT_S,
+                )
 
             # ── DAG CONTROL CHECK — after every wave ──
             # GOAT may write "pause" or "stop" to dag:<session_id>:control.

@@ -32,8 +32,10 @@ log = logging.getLogger("goat2.supervisor.pipeline.task_retry")
 __all__ = ["MAX_RETRIES", "run_with_retry", "format_task_error", "is_task_error"]
 
 # Maximum number of retries after the initial attempt. Total attempts
-# per task = 1 + MAX_RETRIES. Named constant so tests can read it.
-MAX_RETRIES: int = 2
+# per task = 1 + MAX_RETRIES. Now sourced from config.limits so the
+# value is overridable via the MAX_RETRIES env var. Re-exported under
+# the same name so existing callers keep working.
+from config.limits import MAX_RETRIES  # noqa: E402,F401  (re-export)
 
 # Prefix used to mark a synthetic error string so callers can detect
 # the wrapper's own failure responses (distinct from genuine output).

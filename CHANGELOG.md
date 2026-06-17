@@ -5,6 +5,54 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Reliability: timeouts, retries, health
+
+### Added
+- `config/limits.py`: `DAG_TIMEOUT=300s`, `WAVE_TIMEOUT=120s`,
+  `TASK_TIMEOUT=30s`, `MAX_RETRIES=2`, `HEALTH_TIMEOUT=5.0s`,
+  `SEARXNG_URL`, `SEARXNG_TIMEOUT=10s`, `LOG_LEVEL=INFO`. All read
+  from env var first, then hard-coded defaults. No toml coupling
+  inside `limits.py` (the leaf module stays import-clean).
+- `supervisor/pipeline/timeouts.py`: float re-exports of the integer
+  limits for `asyncio.wait_for` (`DAG_TIMEOUT_S`, `WAVE_TIMEOUT_S`,
+  `TASK_TIMEOUT_S`).
+- `supervisor/health.py`: `health_check(registry, *, timeout_s=None) -> dict`
+  — parallel probes of Redis (`backend.ping()`), ChromaDB
+  (`memory_manager.episodic.health()`), Letta (`letta_client.health()`),
+  and SearXNG (HTTP `GET /healthz`). 5 s per-service ceiling, defensive
+  outer `wait_for` on the gather, never raises — any error becomes
+  `False` in the report and is logged at WARNING.
+- `tools/memory/memory_health_tool.py`: `MEMORY_HEALTH` tool so GOAT
+  can report service status conversationally. Wired into
+  `tools/memory/__init__.py` so it's auto-exposed via `MEMORY_TOOLS`.
+- `config/toml_loader.py`: typed accessors `timeouts_int(key, default)`,
+  `health_int(key, default)`, `health_str(key, default)` for the new
+  `[timeouts]` and `[health]` sections.
+
+### Changed
+- `supervisor/pipeline/workflow.py`: each wave is wrapped in
+  `asyncio.wait_for(timeout=WAVE_TIMEOUT_S)`; each task in
+  `asyncio.wait_for(timeout=TASK_TIMEOUT_S)`. On `TimeoutError` the
+  task is marked failed with `error="TASK_ERROR: TimeoutError: timeout:<n>s"`
+  and the DAG continues (downstream tasks are skipped via the existing
+  upstream-failure propagation).
+- `supervisor/pipeline/task_retry.py`: `MAX_RETRIES` now imported from
+  `config.limits` (single source of truth). Re-exported for backward
+  compatibility — external callers see the same symbol.
+- `config/goat.toml`: new `[timeouts]` (`dag=300`, `wave=120`, `task=30`)
+  and `[health]` (`timeout_s=5`, `searxng_url`) sections with documented
+  defaults. `env > toml > default` precedence preserved.
+
+### Fixed
+- DAG no longer hangs when a single task or tool call blocks
+  indefinitely. A runaway LLM call is now killed at `TASK_TIMEOUT`
+  before it can consume the retry budget; a stuck wave is killed at
+  `WAVE_TIMEOUT` before the supervisor itself blocks.
+- `MAX_RETRIES` no longer drift-prone — there's exactly one definition
+  (in `config.limits.py`) and one re-export (in `task_retry.py`).
+
+---
+
 ## [Unreleased] — 2026-06-17 — Memory tool role fixes (count, direct_query, Letta search)
 
 ### Fixed — three memory tool bugs + role consistency audit

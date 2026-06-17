@@ -166,3 +166,33 @@ enabled = true
 searxng_url = "http://localhost:7777"
 timeout = 30
 max_results = 10
+
+# =============================================================================
+# RELIABILITY — DAG timeouts (per wave / per task / per DAG)
+# =============================================================================
+#
+# Read by `config/limits.py`. Each can be overridden by an env var of the
+# same name (env var wins over toml). Used by `supervisor/pipeline/workflow.py`
+# to wrap waves + tasks with `asyncio.wait_for`, so a single hanging tool
+# call can no longer freeze the entire DAG.
+#
+# =============================================================================
+
+[timeouts]
+dag  = 300  # hard upper bound on the entire DAG run (seconds)
+wave = 120  # hard upper bound on a single wave's gather (seconds)
+task = 30   # hard upper bound on a single task run (seconds)
+
+# =============================================================================
+# HEALTH PROBES — supervisor.health checks Redis/ChromaDB/Letta/SearXNG
+# =============================================================================
+#
+# `timeout_s` is the per-service ceiling; each probe that exceeds it
+# is reported DOWN. `searxng_url` is the same URL the web search tool
+# uses; double-config so health.py doesn't have to import the tools layer.
+#
+# =============================================================================
+
+[health]
+timeout_s   = 5
+searxng_url = "http://localhost:7777"

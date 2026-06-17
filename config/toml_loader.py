@@ -43,6 +43,12 @@ class TomlConfig:
         self._keys     = raw.get("api_keys", {})
         self._memory   = raw.get("memory",   {})
         self._channels = raw.get("channels", {})
+        # Reliability: timeouts and health probes.
+        # Both are optional — when the section is absent, the accessors
+        # fall back to the caller-provided default (limits.py then
+        # resolves env var > default). No toml failure can break startup.
+        self._timeouts = raw.get("timeouts", {})
+        self._health   = raw.get("health",   {})
 
     def model(self, key: str, default: str = "") -> str:
         """Return a value from [model]; empty string when key is absent."""
@@ -73,6 +79,33 @@ class TomlConfig:
         """Return a boolean value from [channels]."""
         v = self._channels.get(key)
         return bool(v) if v is not None else default
+
+    def timeouts_int(self, key: str, default: int = 0) -> int:
+        """Return an int value from [timeouts]; ``default`` when absent or unparseable."""
+        v = self._timeouts.get(key)
+        if v is None:
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            log.warning("toml.timeouts.%s=%r not an int — using default %d", key, v, default)
+            return default
+
+    def health_int(self, key: str, default: int = 0) -> int:
+        """Return an int value from [health]; ``default`` when absent or unparseable."""
+        v = self._health.get(key)
+        if v is None:
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            log.warning("toml.health.%s=%r not an int — using default %d", key, v, default)
+            return default
+
+    def health_str(self, key: str, default: str = "") -> str:
+        """Return a string value from [health]; ``default`` when absent."""
+        v = self._health.get(key)
+        return str(v) if v is not None else default
 
 
 def load_toml() -> TomlConfig:
