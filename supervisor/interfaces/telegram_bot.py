@@ -70,7 +70,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         result = await sv.run(intent)
         text = mask_sensitive(str(result.summary or "").strip())
         if not text:
-            text = "DAG returned empty result. Unverified."
+            text = "..."
         # Filter out tool calls from response (both wrapper and individual invoke tags)
         import re
         # Match DSML tags with DIFFERENT content: <｜｜DSML｜｜invoke>...</｜｜DSML｜｜tool_calls>

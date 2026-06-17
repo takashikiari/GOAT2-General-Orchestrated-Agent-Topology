@@ -108,7 +108,7 @@ class GoatSupervisor:
         """Immediate result returned the moment a background DAG is spawned."""
         return SupervisorResult(
             intent=intent, plan=Plan(tasks=[]), results={}, critique="",
-            summary="DAG started, monitoring in background...",
+            summary=turn.response or "DAG pornit, monitorizez...",
             sources={"conv": "generated"}, session_id=session_id,
             total_duration_s=time.monotonic() - t0,
         )
