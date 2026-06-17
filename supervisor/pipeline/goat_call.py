@@ -173,7 +173,7 @@ async def goat_turn(
     try:
         tagged = await _call_with_tools(
             spec, messages, tools,
-            temperature=0.7, tool_choice="auto",
+            temperature=registry.settings.supervisor.temperature, tool_choice="auto",
             memory_manager=registry.memory_manager,
         )
     except Exception as exc:
@@ -185,6 +185,9 @@ async def goat_turn(
         )
 
     raw_content = tagged.content or ""
+    # Strip DeepSeek DSML markers
+    raw_content = re.sub(r"</?｜｜DSML｜｜[^>]*>", "", raw_content)
+    raw_content = re.sub(r"/DSML[A-Za-z_]*", "", raw_content).strip()
     if not raw_content.strip() and tagged.called_tools:
         raw_content = f"Am executat: {', '.join(tagged.called_tools)}"
     action, visible = _classify_response(raw_content, tagged.called_tools)

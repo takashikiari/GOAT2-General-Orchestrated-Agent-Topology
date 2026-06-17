@@ -11,6 +11,16 @@ memory is the only shared channel — the DAG writes, GOAT reads.
 Canonical home: ``tools.dag.background``. The legacy import path
 ``supervisor.pipeline.dag_background`` re-exports from this module for
 backward compatibility.
+
+STALENESS CHECK (file-hash tracking):
+=====================================
+``write_completion`` writes both the DAG result text and an MD5 hash of
+that text to working memory (``dag:<sid>:result_hash``). ``collect_finished``
+calls ``check_staleness`` (in ``tools.dag.staleness``) to verify the live
+result still matches the recorded hash; if not, the result is prefixed
+with ``[STALE]`` so GOAT knows to re-verify before acting on it. This
+catches a concurrent DAG overwriting the same key, the auto-clean task
+running prematurely, or any external write to ``dag:<sid>:result``.
 """
 from __future__ import annotations
 
@@ -20,6 +30,7 @@ import time
 from typing import TYPE_CHECKING
 
 from config.roles import SESSION_ROLE
+from tools.dag.staleness import STALE_PREFIX, check_staleness, compute_result_hash
 
 if TYPE_CHECKING:
     from supervisor.supervisor import GoatSupervisor
@@ -27,7 +38,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.tools.dag.background")
 
-__all__ = ["spawn", "write_completion", "collect_finished", "status"]
+__all__ = [
+    "spawn", "write_completion", "collect_finished", "status",
+    "check_staleness", "STALE_PREFIX",
+]
 
 # Per-call budget for reading a finished DAG's result from working memory.
 # Kept small so a slow Redis call cannot stall GOAT.
@@ -81,13 +95,13 @@ async def _dag_runner(supervisor: "GoatSupervisor", session_id: str, dag_instruc
 
 
 async def write_completion(mm: "MemoryManager | None", session_id: str, summary: str) -> None:
-    """Write the DAG's final result and 'complete' status to working memory.
+    """Write the DAG's final result, its MD5 hash, and 'complete' status to working memory.
 
-    After the result is persisted, schedules a detached auto-clean task that
-    removes every ``dag:<session_id>:*`` key from working memory after a
-    short delay. The delay lets GOAT's next turn read the result first.
+    The MD5 hash is written to ``dag:<session_id>:result_hash``; subsequent
+    staleness checks (in ``collect_finished``) recompute it and compare.
     """
     await _write(mm, f"dag:{session_id}:result", summary)
+    await _write(mm, f"dag:{session_id}:result_hash", compute_result_hash(summary))
     await _write(mm, f"dag:{session_id}:status", "complete")
     log.debug("write_completion: session=%s summary=%.80s", session_id, summary)
     # Detached auto-clean — never blocks the caller. Failures are swallowed.
@@ -169,11 +183,32 @@ async def collect_finished(supervisor: "GoatSupervisor") -> str:
         except Exception as exc:  # noqa: BLE001
             log.warning("collect_finished: read failed for session=%s: %s", sid, exc)
             result = "(result read failed)"
+        # Staleness check: prefix result with [STALE] if the live text no
+        # longer matches the MD5 the DAG wrote. Bounded so a slow hash
+        # recomputation never blocks GOAT.
+        is_stale_result = await _safe_staleness_check(supervisor.memory_manager, sid)
+        if is_stale_result and not result.startswith("("):
+            result = f"{STALE_PREFIX} {result}"
         notes.append(f"- session {sid}: {result}")
-        # Remove from tracking *after* we have its result.
         supervisor._active_dag_tasks.pop(sid, None)
-        log.info("collect_finished: surfaced and cleared session=%s", sid)
+        log.info("collect_finished: surfaced and cleared session=%s (stale=%s)", sid, is_stale_result)
     return ("[DAG Update]\n" + "\n".join(notes)) if notes else ""
+
+
+async def _safe_staleness_check(mm, sid: str) -> bool:
+    """Run check_staleness with the same per-task budget as the result read.
+
+    Returns True (assume stale) on timeout or any error — safer than
+    returning False and surfacing unverified text.
+    """
+    try:
+        return await asyncio.wait_for(check_staleness(mm, sid), timeout=_REDIS_READ_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log.warning("collect_finished: staleness check timed out for session=%s", sid)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("collect_finished: staleness check failed for session=%s: %s", sid, exc)
+        return True
 
 
 async def status(supervisor: "GoatSupervisor", session_id: str) -> dict:

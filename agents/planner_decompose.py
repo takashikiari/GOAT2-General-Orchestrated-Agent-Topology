@@ -96,6 +96,7 @@ async def decompose_plan(
             {"role": "user",   "content": user_content},
         ],
         json_mode=(spec.provider == Provider.OPENAI),
+        temperature=_settings.get_agent_temperature("planner", default=0.2),
     )
     try:
         data  = _extract_json(raw)
@@ -161,4 +162,5 @@ async def _run_planner(
             {"role": "user",   "content": f"{context}\n\nIntent: {task.prompt}".strip()},
         ],
         json_mode=True,
+        temperature=_settings.get_agent_temperature("planner", default=0.2),
     )

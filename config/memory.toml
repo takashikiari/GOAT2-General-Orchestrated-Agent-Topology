@@ -1,0 +1,30 @@
+# GOAT 2.0 — memory subsystem configuration
+#
+# Resolution order: env var > config/memory.toml > config/limits.py fallback
+# Each module reads ONLY this file. No cross-module config dependencies.
+#
+# Sections:
+#   [working]   - Working memory (Redis): capacity, thresholds, GC cadence, DAG TTL
+#   [episodic]  - Episodic memory (ChromaDB): capacity, scoring thresholds, permanence
+#   [daemon]    - MemoryDaemon: sweep interval, age cutoffs for tier-1/2 promotion
+#
+# =============================================================================
+
+[working]
+max_entries         = 100  # hard cap for working entries (per agent_role)
+warn_threshold      = 85   # log WARNING when count >= this
+gc_interval_turns   = 10   # tick the GC every N turns
+dag_ttl_seconds     = 3600 # TTL for dag:* coordination keys (1h)
+flush_on_session_start = true # schedule working-memory flush on session start
+
+[episodic]
+max_entries              = 300 # hard cap for episodic entries (per agent_role)
+warn_threshold           = 250 # log WARNING when count >= this
+promote_threshold        = 0.5 # score >= this → promote (working → episodic)
+drop_threshold           = 0.3 # score <  this → drop (delete from working)
+permanent_never_delete   = true # metadata.permanent=True entries are NEVER touched
+
+[daemon]
+interval_seconds   = 60   # sweep every N seconds
+tier1_age_hours    = 24  # only promote working entries older than this
+tier2_age_hours    = 48  # episodic sliding window considers entries this old

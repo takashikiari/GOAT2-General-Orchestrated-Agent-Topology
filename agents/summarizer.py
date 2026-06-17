@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.agents.summarizer")
 
-__all__ = ["SummarizerAgent"]
+__all__ = ["SummarizerAgent", "run_summarizer"]
 
 _SYSTEM_PROMPT = """\
 You are a synthesis agent in GOAT 2.0, a multi-agent AI system.
@@ -45,7 +45,7 @@ class SummarizerAgent(BaseAgent):
         super().__init__(
             spec=spec or Settings().agents.get("summarizer"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.3,
+            temperature=Settings().get_agent_temperature("summarizer", default=0.2),
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
@@ -60,3 +60,19 @@ class SummarizerAgent(BaseAgent):
         output = await self._chat(messages, tools=[])
         log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
         return output
+
+
+async def run_summarizer(
+    task: "AgentTask",
+    context: dict[str, "AgentResult"],
+    registry,
+) -> str:
+    """Module-level runner — instantiates SummarizerAgent from the registry and runs it.
+
+    Thin convenience alias; mirrors ``agents.researcher.run_researcher``.
+    """
+    agent = SummarizerAgent(spec=registry.settings.agents.get("summarizer"))
+    log.debug("run_summarizer: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
+    output = await agent.execute(task, context)
+    task.source = "generated"
+    return output

@@ -1,0 +1,17 @@
+# GOAT 2.0 — tools subsystem configuration
+#
+# Resolution order: env var > config/tools.toml > config/limits.py fallback
+# Read by `tools/hot_reload.py` (and individual tool modules). Each
+# tool family owns its own section; the only universal one is
+# [hot_reload], read by the watcher.
+#
+# =============================================================================
+
+[hot_reload]
+interval_seconds   = 30   # polling cadence for the tools watcher
+
+[shell]
+default_timeout_seconds = 30   # asyncio.wait_for ceiling for shell.run
+
+[web_search]
+default_results    = 5          # max snippets returned by web_search

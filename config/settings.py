@@ -307,6 +307,17 @@ class Settings:
         default_factory=lambda: _e("DEFAULT_PROVIDER", _toml.model("provider"))
     )
 
+    def get_agent_temperature(self, agent_name: str, default: float = 0.2) -> float:
+        """Return temperature for agent_name from [agents.temperature] in goat.toml."""
+        temps = _toml._agents.get("temperature", {})
+        v = temps.get(agent_name)
+        if v is None:
+            return default
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
     @property
     def is_production(self) -> bool:
         """Return True if running in production environment.

@@ -1,4 +1,4 @@
-"""Working memory capacity management — max 100 entries, pure-Python scoring.
+"""Working memory capacity management — configurable via ``config/memory.toml``.
 
 When working memory is full, the oldest non-``dag:`` entries are candidates for
 promotion to the episodic tier. Each candidate is scored by recency and access
@@ -8,11 +8,18 @@ frequency — no LLM call, no external dependencies.
   access_score   = min(1.0, access_count / 10)
   score          = recency_score * 0.6 + access_score * 0.4
 
-  score >= 0.5   → promote to episodic + remove from working
-  score < 0.3    → drop (remove from working only)
-  0.3 – 0.5      → drop (do not promote)
+  score >= EPISODIC_PROMOTE_THRESHOLD   → promote to episodic + remove from working
+  score <  EPISODIC_DROP_THRESHOLD      → drop (remove from working only)
 
 ``dag:`` entries are never promoted or scored.
+
+CONFIG:
+    Reads ``[working].max_entries`` and ``[working].warn_threshold`` from
+    ``config/memory.toml`` at import time. Falls back to
+    ``WORKING_MAX_ENTRIES`` / ``WORKING_WARN_THRESHOLD`` from
+    ``config.fallbacks`` when the toml is absent. Promote/drop
+    thresholds come from ``EPISODIC_PROMOTE_THRESHOLD`` /
+    ``EPISODIC_DROP_THRESHOLD`` (scoring bands, not capacity).
 """
 from __future__ import annotations
 
@@ -20,13 +27,30 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from config.fallbacks import (
+    EPISODIC_DROP_THRESHOLD,
+    EPISODIC_PROMOTE_THRESHOLD,
+    WORKING_MAX_ENTRIES,
+    WORKING_WARN_THRESHOLD,
+)
+from config.modular_loader import load_memory_config
+
 if TYPE_CHECKING:
     from memory.working.backend_protocol import WorkingMemoryBackend
 
 log = logging.getLogger("goat2.memory.working.capacity")
 
-MAX_ENTRIES: int = 100
-WARN_THRESHOLD: int = 90
+# Section-level defaults pulled from ``config/memory.toml`` at import
+# time. When the toml is missing these stay at the fallback values.
+_working = load_memory_config().get("working", {})
+MAX_ENTRIES: int = int(_working.get("max_entries", WORKING_MAX_ENTRIES))
+WARN_THRESHOLD: int = int(_working.get("warn_threshold", WORKING_WARN_THRESHOLD))
+del _working
+
+# Promote/drop bands are part of the scoring vocabulary, not the
+# working-capacity cap, but they live here too for caller convenience.
+PROMOTE_THRESHOLD: float = EPISODIC_PROMOTE_THRESHOLD
+DROP_THRESHOLD: float = EPISODIC_DROP_THRESHOLD
 
 
 async def get_promotable_entries(backend: "WorkingMemoryBackend", agent_role: str) -> list[dict]:
@@ -94,7 +118,7 @@ async def check_and_promote(
             key = entry.get("key", "")
             content = entry.get("content", "")
             score = _score_entry(entry)
-            promote = score >= 0.5
+            promote = score >= PROMOTE_THRESHOLD
             log.debug("capacity(%s): key=%s score=%.2f promote=%s", agent_role, key, score, promote)
             try:
                 if promote and episodic_backend and content:

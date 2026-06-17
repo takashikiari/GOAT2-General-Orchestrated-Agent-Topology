@@ -5,6 +5,224 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Modular config split (memory/dag/behavioral/tools)
+
+### Added
+- `config/memory.toml` — `[working]` (max_entries, warn_threshold,
+  gc_interval_turns, dag_ttl_seconds, flush_on_session_start),
+  `[episodic]` (max_entries, warn_threshold, promote_threshold,
+  drop_threshold, permanent_never_delete), `[daemon]`
+  (interval_seconds, tier1_age_hours, tier2_age_hours).
+- `config/dag.toml` — `[execution]` (max_waves,
+  wave_timeout_seconds, task_timeout_seconds, max_retries,
+  auto_clean_delay_seconds, dag_total_timeout_seconds).
+- `config/behavioral.toml` — `[learning]` (min_turns_to_learn,
+  max_turns_to_analyze, correction_sensitivity), `[style]`
+  (humor_threshold, formality_threshold, directness_threshold,
+  verbosity_default).
+- `config/tools.toml` — `[hot_reload]` (interval_seconds),
+  `[shell]` (default_timeout_seconds), `[web_search]`
+  (default_results).
+- `config/modular_loader.py` — `load_memory_config()`,
+  `load_dag_config()`, `load_behavioral_config()`,
+  `load_tools_config()`. One function per toml file, pure-Python
+  stdlib (tomllib / tomli), no caching, no singletons.
+- `config/fallbacks.py` — 24 Python fallback constants mirroring the
+  four toml files. Re-exported through `config.limits` for backward
+  compatibility with existing call sites.
+
+### Changed
+- `memory/working/capacity.py` — `MAX_ENTRIES` / `WARN_THRESHOLD` /
+  `PROMOTE_THRESHOLD` / `DROP_THRESHOLD` now source from
+  `[working]` / `[episodic]` sections of `config/memory.toml`.
+- `memory/episodic/sliding_window.py` — `MAX_ENTRIES` /
+  `WARN_THRESHOLD` now source from `[episodic]` of `memory.toml`.
+- `memory/shared/memory_daemon.py` — all constructor defaults
+  (interval, working/episodic soft+max, working_age_s) source
+  from `memory.toml`. The toml-loader helpers were extracted to
+  the new `memory/shared/memory_daemon_config.py` to keep the
+  daemon file under the 260-line ceiling.
+- `supervisor/pipeline/workflow.py` — `_MAX_CRITIC_RERUNS` now
+  sources from `[execution].max_retries` of `config/dag.toml`
+  (default 2; was hardcoded 1).
+- `tools/hot_reload.py` — `_POLL_INTERVAL_S` now sources from
+  `[hot_reload].interval_seconds` of `config/tools.toml`.
+- `supervisor/behavior/behavior_analyzer.py` — all threshold
+  constants (`_MIN_TURNS`, `_MAX_TURNS`, `_CORRECTION_SENSITIVITY`,
+  `_HUMOR_THRESHOLD`, `_FORMALITY_THRESHOLD`, `_DIRECTNESS_THRESHOLD`,
+  `_VERBOSITY_DEFAULT`) now source from `config/behavioral.toml`.
+- `config/limits.py` — re-exports the 24 modular fallback
+  constants from `config.fallbacks` so existing call sites that
+  import from `config.limits` keep working. The legacy TTL +
+  env-driven timeout constants stay in `limits.py` unchanged.
+
+### Strict rules
+- Each module reads ONLY its own config file. No cross-module
+  config dependencies.
+- Fallback to `config.fallbacks` (re-exported through
+  `config.limits`) when the toml is missing.
+- Every new/edited file ≤ 260 lines:
+    - `config/fallbacks.py` (164)
+    - `config/limits.py` (179, re-exports preserved)
+    - `config/modular_loader.py` (88)
+    - `config/memory.toml` (~40)
+    - `config/dag.toml` (~25)
+    - `config/behavioral.toml` (~30)
+    - `config/tools.toml` (~20)
+    - `memory/shared/memory_daemon.py` (230)
+    - `memory/shared/memory_daemon_config.py` (66)
+    - `memory/working/capacity.py` (141)
+    - `memory/episodic/sliding_window.py` (146)
+
+---
+
+## [Unreleased] — 2026-06-17 — Config-driven agent temperatures
+
+### Added
+- `Settings.get_agent_temperature(agent_name, default)` — reads temperatures from
+  `[agents.temperature]` in `config/goat.toml`; falls back to `default` when absent.
+- Module-level `run_*` convenience aliases in every agent module so
+  callers can import a single callable symbol rather than instantiating
+  the agent class:
+  `agents.researcher.run_researcher`, `agents.coder.run_coder`,
+  `agents.critic.run_critic`, `agents.summarizer.run_summarizer`,
+  `agents.tool_caller.run_tool_caller`, `agents.memory_agent.run_memory`.
+  Each takes `(task, context, registry)`, instantiates the agent from
+  the registry, runs `agent.execute(...)`, and sets `task.source`. The
+  canonical `_run_<role>` lives in `supervisor/pipeline/runners.py`.
+
+### Changed
+- `config/goat.toml` — merged duplicate `[agents]` sections (was invalid TOML);
+  consolidated `[agents.temperature]` sub-table now holds all per-agent values.
+- `agents/tool_caller.py`, `agents/summarizer.py`, `agents/coder.py`,
+  `agents/researcher.py`, `agents/memory_agent.py`, `agents/critique.py` —
+  replaced all hardcoded `temperature=` literals with
+  `Settings().get_agent_temperature(...)` (or `registry.settings.get_agent_temperature`
+  where `registry` is already in scope). Zero hardcoded temperatures remain in agents/.
+- `agents/critic.py` — replaced hardcoded `temperature=0.3` with
+  `Settings().get_agent_temperature("critic", default=0.2)`. The
+  single source of truth for critic temperature is now
+  `[agents.temperature]` in `config/goat.toml`.
+- `agents/planner.py` — same change: `temperature=0.3` →
+  `Settings().get_agent_temperature("planner", default=0.2)`.
+- `agents/critique.py` — `critique_results` and `synthesize_results`
+  now pass an explicit `temperature=` to `_call_llm` (previously
+  relied on the helper's default of 0.2 — same value but no longer
+  implicit). Both call sites read from `get_agent_temperature`.
+- `agents/planner_decompose.py` — `decompose_plan` and `_run_planner`
+  now pass an explicit `temperature=` to `_call_llm`, reading from
+  `get_agent_temperature("planner", default=0.2)`.
+
+### Verified (already in place from prior work)
+- `Settings.get_agent_temperature(agent_name, default=0.2)` is
+  defined at `config/settings.py:310` and reads from the
+  `[agents.temperature]` section in `config/goat.toml`.
+- `config/goat.toml` already has the `[agents.temperature]` section
+  with the canonical values: planner=0.2, researcher=0.2, coder=0.1,
+  critic=0.2, summarizer=0.2, tool_caller=0.1, memory=0.1.
+- GOAT supervisor temperature stays at 0.5 (was already
+  config-driven via `Settings.supervisor.temperature`).
+
+---
+
+## [Unreleased] — 2026-06-17 — Slim GOAT_SYSTEM + freshness/source scoring + active profile
+
+### Changed
+- `supervisor/identity.GOAT_SYSTEM` reduced from ~750 chars of
+  personality + tool enumeration to **5 lines of operational rules**
+  (454 chars). All personality / style / capabilities now flow
+  dynamically from three sources (no hard-coded identity):
+    - **Personality** comes from the Letta core-memory `persona`
+      block (per-conversation, built from the user's turns).
+    - **Style** comes from the behavior-style profile (per-session
+      tone / language, loaded fresh on every GOAT call).
+    - **Capabilities** come from `GoatContext.available_tools`
+      (per-registry, dynamic — no manual tool list to maintain).
+  The 5 rules: (1) never invent; report from `[Memory]` block
+  directly when present, (2) use tools for retrieval — never
+  training data, (3) respond in the user's language, (4) never
+  repeat / echo / end with a question, (5) always write a visible
+  text response after tool calls.
+- `supervisor/session/mem_inject.working_memory_block` now renders
+  every line with a **freshness + source score** prefix so GOAT
+  can decide trust per entry:
+    - freshness: `[FRESH]` (< 5 min), `[RECENT]` (5-60 min),
+      `[OLD]` (> 60 min or unparseable timestamp).
+    - source: `[DAG]`, `[CONV]`, `[GOAT]`, `[LIVE]`, `[OTHER]`.
+  Each line now looks like
+  ``- [FRESH][CONV] conv:turn:1 (2026-06-17 18:23): hello`` —
+  the labels are stable strings GOAT can pattern-match cheaply.
+- `supervisor/pipeline/goat_enrichment.build_goat_context` is now
+  **async** (was sync) so it can load the active behavior-style
+  profile from Letta. The profile is rendered as a
+  `[User Style Profile]` block and appended to `memory_context`.
+  `GoatSupervisor._build_context` updated to await it.
+- `supervisor/pipeline/goat_enrichment` gained `_format_profile_block`
+  — pure-Python renderer for the `BehaviorProfile` dict (formality,
+  tone, vocabulary, language, humor, length, notes).
+
+### Added
+- `supervisor/behavior/behavior_session.get_profile(mm)` — async
+  load of the active `BehaviorProfile` from the Letta `persona`
+  block. Returns `empty_profile()` on any failure (mm None, Letta
+  unreachable, or no recognized fields). Never raises.
+- `supervisor/session/mem_inject._source_label` and
+  `_freshness_label` — small pure-Python helpers used by the
+  rewriter of `working_memory_block`.
+
+### Fixed
+- GOAT_SYSTEM no longer hard-codes the list of memory tools (which
+  became stale the moment a tool was added/renamed). Capabilities
+  now come from the live `GoatContext.available_tools` string,
+  built dynamically from the registry.
+
+---
+
+## [Unreleased] — 2026-06-17 — DAG namespace separation + result staleness check
+
+### Added
+- `tools/dag/staleness.py` (new, 73 lines) — pure-Python MD5 staleness
+  check. `compute_result_hash(text)` returns the hex digest;
+  `check_staleness(mm, session_id)` returns True when the live
+  `dag:<sid>:result` no longer matches its recorded hash.
+  `STALE_PREFIX = "[STALE]"` is the string callers prepend so GOAT
+  can see at a glance that the text it is about to surface is no
+  longer what the DAG originally produced.
+- `tools/dag/background.write_completion` now also writes
+  `dag:<session_id>:result_hash` (the MD5 of the result) alongside
+  the result itself. `collect_finished` calls `check_staleness`
+  (bounded by `_REDIS_READ_TIMEOUT_S`) and prefixes the result with
+  `[STALE]` when the live text no longer matches — so a concurrent
+  DAG overwriting the same key, the auto-clean task running
+  prematurely, or any external write to `dag:<sid>:result` is
+  flagged for GOAT to re-verify before acting on it.
+
+### Changed
+- `supervisor/session/mem_inject.py` — `working_memory_block` now
+  applies a namespace filter: `dag:*` keys are EXCLUDED by default
+  (they are DAG coordination entries, not conversational context)
+  and `conv:* / live:* / goat:*` keys are ALWAYS included. Unknown
+  prefixes are kept (treated as conversational until classified).
+  The filter is opt-in via the new `include_dag=False` keyword — the
+  few callers that need the unfiltered view (e.g. the dag-update
+  path) pass `True` explicitly.
+  - New helpers: `_is_dag_key`, `_is_conversational_key`,
+    `_partition_keys` (single pass, no regex, no LLM).
+
+### Fixed
+- DAG results and status never leak into the conversational
+  `[Working Memory]` block — they live in their own `dag:*`
+  namespace and are surfaced through the dedicated
+  `collect_finished` channel instead. This was a latent risk: prior
+  versions rendered every `dag:*` key into the GOAT prompt,
+  polluting the conversational context with task coordination data
+  the user never asked about.
+- GOAT now knows when a DAG result has been modified after the DAG
+  finished, and is told to re-verify before trusting it. The
+  `[STALE]` prefix is the signal.
+
+---
+
 ## [Unreleased] — 2026-06-17 — Clean rewrite: supervisor + Telegram bot
 
 ### Changed

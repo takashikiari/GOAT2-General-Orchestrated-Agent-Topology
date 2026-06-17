@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.agents.coder")
 
-__all__ = ["CoderAgent"]
+__all__ = ["CoderAgent", "run_coder"]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -89,7 +89,7 @@ class CoderAgent(BaseAgent):
         super().__init__(
             spec=spec or Settings().agents.get("coder"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.2,
+            temperature=Settings().get_agent_temperature("coder", default=0.1),
             tools=_file_tools,
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
@@ -165,3 +165,21 @@ class CoderAgent(BaseAgent):
                 return f"JSONDecodeError at line {exc.lineno} col {exc.colno}: {exc.msg}"
 
         return f"Unsupported language '{language}'. Supported: python, json"
+
+
+async def run_coder(
+    task: "AgentTask",
+    context: dict[str, "AgentResult"],
+    registry,
+) -> str:
+    """Module-level runner — instantiates CoderAgent from the registry and runs it.
+
+    Thin convenience alias so callers can import a single callable
+    symbol rather than instantiating the agent class. Mirrors
+    ``agents.researcher.run_researcher`` and friends.
+    """
+    agent = CoderAgent(spec=registry.settings.agents.get("coder"))
+    log.debug("run_coder: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
+    output = await agent.execute(task, context)
+    task.source = "generated"
+    return output

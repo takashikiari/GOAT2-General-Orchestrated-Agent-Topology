@@ -210,7 +210,10 @@ class GoatSupervisor:
         from supervisor.pipeline.behavioral_learning import recall_corrections
         from supervisor.pipeline.goat_enrichment import build_goat_context
         from supervisor.pipeline.intent_clarity import build_clarity_context
-        goat_ctx = build_goat_context(self.registry, mem_ctx)
+        # build_goat_context is async — it loads the active behavior-style
+        # profile from Letta and appends it to memory_context so GOAT
+        # adapts to the learned profile on every call.
+        goat_ctx = await build_goat_context(self.registry, mem_ctx)
         history_text = format_dialogue(self._history.messages) if self._history else ""
         clarity_ctx = build_clarity_context(history_text, mem_ctx)
         hints = await recall_corrections(self.registry, limit=3)

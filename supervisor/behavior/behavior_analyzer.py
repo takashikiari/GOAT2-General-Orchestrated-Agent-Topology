@@ -32,6 +32,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Final
 
+from supervisor.behavior.behavior_analyzer_config import BEHAVIORAL_DEFAULTS
 from supervisor.behavior.behavior_profile import (
     BehaviorProfile, deserialize, empty_profile, serialize,
 )
@@ -43,8 +44,12 @@ __all__ = ["analyze_style"]
 
 log = logging.getLogger("goat2.supervisor.behavior")
 
-_MIN_TURNS: Final[int] = 2
-_MAX_TURNS: Final[int] = 20
+# Resolved once at import time from ``config/behavioral.toml`` via
+# ``behavior_analyzer_config``. The names below are kept for backward
+# compatibility — every score function still references them.
+_MIN_TURNS: int = BEHAVIORAL_DEFAULTS["min_turns_to_learn"]
+_MAX_TURNS: int = BEHAVIORAL_DEFAULTS["max_turns_to_analyze"]
+del BEHAVIORAL_DEFAULTS
 
 # Politeness markers — raise formality.
 _POLITE: Final[frozenset[str]] = frozenset({

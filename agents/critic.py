@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.agents.critic")
 
-__all__ = ["CriticAgent"]
+__all__ = ["CriticAgent", "run_critic"]
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -94,7 +94,7 @@ class CriticAgent(BaseAgent):
         super().__init__(
             spec=spec or Settings().agents.get("critic"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.3,  # low: reviews should be consistent, not creative
+            temperature=Settings().get_agent_temperature("critic", default=0.2),
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
@@ -153,3 +153,19 @@ class CriticAgent(BaseAgent):
         if verdict == "REJECT":
             return True
         return "CRITICAL" in critique.upper()
+
+
+async def run_critic(
+    task: "AgentTask",
+    context: dict[str, "AgentResult"],
+    registry,
+) -> str:
+    """Module-level runner — instantiates CriticAgent from the registry and runs it.
+
+    Thin convenience alias; mirrors ``agents.researcher.run_researcher``.
+    """
+    agent = CriticAgent(spec=registry.settings.agents.get("critic"))
+    log.debug("run_critic: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
+    output = await agent.execute(task, context)
+    task.source = "generated"
+    return output

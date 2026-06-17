@@ -1,0 +1,20 @@
+# GOAT 2.0 — DAG execution configuration
+#
+# Resolution order: env var > config/dag.toml > config/limits.py fallback
+# Read by `supervisor/pipeline/workflow.py`. Replaces the hardcoded
+# `_MAX_CRITIC_RERUNS` / `_UPSTREAM_REEXEC_TIMEOUT` / `_CRITIC_RERUN_TIMEOUT`
+# constants that previously lived at the top of workflow.py.
+#
+# The wave/task timeouts are still sourced from `config/limits.py`
+# (the `DAG_TIMEOUT / WAVE_TIMEOUT / TASK_TIMEOUT` constants live
+# there) — this file is the *DAG-specific* complement.
+#
+# =============================================================================
+
+[execution]
+max_waves                   = 10   # hard cap on the number of topological waves
+wave_timeout_seconds        = 120  # per-wave gather() ceiling
+task_timeout_seconds        = 30   # per-task asyncio.wait_for ceiling
+max_retries                 = 2    # 1 + max_retries = total attempts per task
+auto_clean_delay_seconds    = 60   # delay before dag:* keys are auto-deleted
+dag_total_timeout_seconds   = 300  # hard upper bound on the entire DAG run

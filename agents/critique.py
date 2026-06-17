@@ -190,6 +190,7 @@ async def critique_results(
                         f"Original intent: {intent}\n\n{context}\n\nProvide a critical review."
                     )},
                 ],
+                temperature=_settings.get_agent_temperature("critic", default=0.2),
             ),
             timeout=TURN_TIMEOUT,
         )
@@ -213,15 +214,9 @@ async def critique_results(
 
 
 async def synthesize_results(
-    intent: str,
-    results: dict[str, AgentResult],
-    critique: str,
-    registry: "Registry",
-    profile: str = "",
-    style: str = "",
-    lang: str = "",
-    session_summary: str = "",
-    dag_detail: str = "",
+    intent: str, results: dict[str, AgentResult], critique: str, registry: "Registry",
+    profile: str = "", style: str = "", lang: str = "",
+    session_summary: str = "", dag_detail: str = "",
 ) -> str:
     """Synthesize agent outputs into a terse, persona-matched final answer.
 
@@ -256,5 +251,5 @@ async def synthesize_results(
                 f"Critique notes: {critique}"
             )},
         ],
-        temperature=0.5,
+        temperature=registry.settings.get_agent_temperature("summarizer", default=0.2),
     )

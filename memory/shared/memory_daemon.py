@@ -1,36 +1,17 @@
 """Memory daemon — silent three-tier background promotion.
 
-Runs as a detached ``asyncio`` task. Every ``interval_s`` seconds it walks the
-three memory tiers and applies the promotion/sliding-window rules:
+Runs as a detached ``asyncio`` task. Every ``interval_s`` seconds it walks
+the three memory tiers and applies the promotion/sliding-window rules
+(Tier 1: working → episodic when near capacity, Tier 2: episodic
+sliding window when at capacity, Tier 3: permanent entries never
+touched). Never blocks GOAT; never uses DAG; pure Python; zero
+singletons; loop catches ALL exceptions.
 
-  Tier 1 (working → episodic):
-    When working is near capacity, the oldest non-``dag:`` entries (that are
-    also at least ``working_age_s`` old) are forwarded to episodic via the
-    existing ``check_and_promote`` helper. ``dag:*`` entries are NEVER
-    promoted — they expire via TTL.
-
-  Tier 2 (episodic sliding window):
-    When episodic is at capacity, the oldest non-permanent entries are LLM
-    scored via the existing ``check_and_slide`` helper. Low scores are
-    dropped, high scores are marked permanent, mid scores are kept. A
-    sliding-window timeout triggers the helper's built-in fallback
-    (delete oldest batch).
-
-  Tier 3 (permanent):
-    Entries with ``metadata.permanent=True`` are NEVER deleted. The daemon
-    does not touch them.
-
-Design rules (per task spec):
-  - Never blocks GOAT: the daemon runs as ``asyncio.create_task``; every
-    operation is async and short. If GOAT dies the daemon is cancelled.
-  - Never uses DAG.
-  - Pure Python — no new dependencies.
-  - All thresholds are configurable via ``__init__``; the defaults match
-    the existing constants in ``capacity.py`` / ``sliding_window.py``.
-  - The daemon loop catches ALL exceptions — it never crashes. Failures
-    are logged and the loop continues on the next tick.
-  - Zero singletons: the daemon is a regular class; the supervisor owns
-    exactly one instance and passes backends in.
+CONFIG:
+    All thresholds default from ``config/memory.toml`` at import time
+    (sections ``[daemon]``, ``[working]``, ``[episodic]``) via the
+    ``memory_daemon_config`` helper module. Falls back to
+    ``config.fallbacks`` constants when the toml is missing.
 """
 from __future__ import annotations
 
@@ -38,6 +19,8 @@ import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING
+
+from memory.shared.memory_daemon_config import MEMORY_DAEMON_DEFAULTS
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry
@@ -51,26 +34,26 @@ __all__ = ["MemoryDaemon"]
 class MemoryDaemon:
     """Silent three-tier background promotion daemon.
 
-    Owns nothing at construction; ``start`` takes the live ``MemoryManager``
-    and ``ServiceRegistry`` and creates a single background task. ``stop``
-    cancels it cleanly.
-
-    All thresholds have sensible defaults that match the existing capacity
-    and sliding-window constants, but every one is overridable for tests
-    and tuning.
+    Owns nothing at construction; ``start`` takes the live MemoryManager
+    + ServiceRegistry and creates one background task. ``stop`` cancels
+    it cleanly. All thresholds default from ``config/memory.toml``
+    and are overridable for tests and tuning.
     """
 
     def __init__(
         self,
-        interval_s: float = 60.0,
-        working_soft: int = 85,
-        working_max: int = 100,
-        episodic_soft: int = 250,
-        episodic_max: int = 300,
-        working_age_s: float = 24 * 3600.0,
+        interval_s: float = MEMORY_DAEMON_DEFAULTS["interval_s"],
+        working_soft: int = MEMORY_DAEMON_DEFAULTS["working_soft"],
+        working_max: int = MEMORY_DAEMON_DEFAULTS["working_max"],
+        episodic_soft: int = MEMORY_DAEMON_DEFAULTS["episodic_soft"],
+        episodic_max: int = MEMORY_DAEMON_DEFAULTS["episodic_max"],
+        working_age_s: float = MEMORY_DAEMON_DEFAULTS["tier1_age_hours"] * 3600.0,
         agent_role: str = "user_session",
     ) -> None:
         """Configure the daemon. No I/O happens here.
+
+        Defaults are sourced from ``config/memory.toml``; fall back to
+        ``config.fallbacks`` when the toml is missing.
 
         Args:
             interval_s: Sleep between promotion/sliding-window sweeps.
@@ -110,10 +93,8 @@ class MemoryDaemon:
         """Begin the background sweep loop. Idempotent.
 
         Args:
-            memory_manager: The live ``MemoryManager`` (provides ``working``
-                and ``episodic`` backends).
-            registry: The live ``ServiceRegistry`` — kept for future hooks
-                (metrics, config overrides) but unused today.
+            memory_manager: The live MemoryManager (provides working + episodic).
+            registry: The live ServiceRegistry — kept for future hooks.
         """
         if self._task is not None and not self._task.done():
             log.debug("MemoryDaemon: start() called but already running — ignoring")
@@ -170,17 +151,11 @@ class MemoryDaemon:
     async def _check_working(self) -> None:
         """Tier 1: working → episodic promotion when near capacity.
 
-        Uses the existing ``check_and_promote`` helper, which already:
-          - excludes ``dag:*`` entries,
-          - LLM-scores candidates (falling back to promote-all on error),
-          - is itself a no-op below the soft threshold.
-
-        The ``working_age_s`` filter is enforced here at the candidate-set
-        level: ``check_and_promote`` does not currently gate on age, so we
-        sample the working keys first, drop the too-recent ones, and only
-        invoke the helper if there is anything eligible.
-
-        No-op silently when the manager or working backend is unavailable.
+        Delegates to ``check_and_promote`` (excludes dag:*, LLM-scores,
+        no-op below soft). The age filter is enforced here at the
+        candidate-set level because ``check_and_promote`` does not
+        currently gate on age. No-op silently when the backend is
+        unavailable.
         """
         if self._manager is None:
             return
@@ -228,13 +203,9 @@ class MemoryDaemon:
     async def _check_episodic(self) -> None:
         """Tier 2: episodic sliding window when near capacity.
 
-        Delegates to the existing ``check_and_slide`` helper, which already:
-          - skips ``permanent`` entries,
-          - LLM-scores the oldest non-permanent batch,
-          - on timeout/error falls back to deleting the oldest batch,
-          - is itself a no-op below the soft threshold.
-
-        No-op silently when the manager or episodic backend is unavailable.
+        Delegates to ``check_and_slide`` (skips permanent, LLM-scores,
+        falls back to deleting the oldest batch on error, no-op below
+        soft). No-op silently when the episodic backend is unavailable.
         """
         if self._manager is None:
             return

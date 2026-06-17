@@ -102,16 +102,56 @@ _RUNNERS: dict[str, callable] = {
 if TYPE_CHECKING:
     from supervisor.types import AgentTask
     from memory.shared import MemoryManager
+from config.fallbacks import (
+    CRITIC_RERUNS_MAX,
+    CRITIC_RERUN_TIMEOUT_S,
+    DAG_AUTO_CLEAN_DELAY_S,
+    UPSTREAM_REEXEC_TIMEOUT_S,
+)
+from config.modular_loader import load_dag_config
+
+if TYPE_CHECKING:
     from config.registry import Registry
+    from memory.shared import MemoryManager
+    from supervisor.types import AgentTask
 
 log = logging.getLogger("goat2.supervisor.pipeline")
 
 __all__ = ["WorkflowGraph"]
 
-# ── Constante pentru fallback-ul criticului ──
-_MAX_CRITIC_RERUNS: int = 1          # maxim o re-executare per critic task
-_UPSTREAM_REEXEC_TIMEOUT: float = 30.0  # timeout per upstream task re-execution
-_CRITIC_RERUN_TIMEOUT: float = 30.0     # timeout per critic re-run
+# Critic-fallback constants are sourced from ``config/dag.toml`` at import
+# time, falling back to ``config.fallbacks``. The runtime wave/task
+# timeouts (WAVE_TIMEOUT_S / TASK_TIMEOUT_S) live in
+# ``supervisor.pipeline.timeouts`` and are loaded separately.
+_dag_cfg = load_dag_config().get("execution", {})
+
+
+def _cfg_int(section: dict, key: str, default: int) -> int:
+    raw = section.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_float(section: dict, key: str, default: float) -> float:
+    raw = section.get(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+_MAX_CRITIC_RERUNS: int = _cfg_int(_dag_cfg, "max_retries", CRITIC_RERUNS_MAX)
+_UPSTREAM_REEXEC_TIMEOUT: float = _cfg_float(_dag_cfg, "task_timeout_seconds", UPSTREAM_REEXEC_TIMEOUT_S)
+_CRITIC_RERUN_TIMEOUT: float = _cfg_float(_dag_cfg, "task_timeout_seconds", CRITIC_RERUN_TIMEOUT_S)
+_AUTO_CLEAN_DELAY_S_FALLBACK: float = _cfg_float(_dag_cfg, "auto_clean_delay_seconds", DAG_AUTO_CLEAN_DELAY_S)
+_MAX_WAVES_FALLBACK: int = _cfg_int(_dag_cfg, "max_waves", 10)
+del _dag_cfg
 
 
 def _parse_critic_severity(output: str) -> tuple[str, str]:

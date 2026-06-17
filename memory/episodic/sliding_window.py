@@ -7,18 +7,33 @@ reaches the limit, the oldest non-permanent entries are scored and acted on:
   access_score   = min(1.0, access_count / 10)
   score          = recency_score * 0.6 + access_score * 0.4
 
-  score < 0.3    → deleted (low value)
-  score >= 0.7   → marked permanent (kept forever, skipped by future windows)
-  0.3 – 0.7      → kept (eligible again next time)
+  score < EPISODIC_DROP_THRESHOLD                  → deleted (low value)
+  score >= EPISODIC_PERMANENT_THRESHOLD (=0.7)    → marked permanent (kept forever, skipped by future windows)
+  EPISODIC_DROP_THRESHOLD ≤ score < permanent      → kept (eligible again next time)
 
 permanent=True entries are never scored or deleted.
 Backends are passed in — no singletons, no module state.
+
+CONFIG:
+    Reads ``[episodic].max_entries`` and ``[episodic].warn_threshold`` from
+    ``config/memory.toml`` at import time. Falls back to the constants
+    in ``config.fallbacks``. The scoring bands (``EPISODIC_DROP_THRESHOLD``
+    / permanent-above threshold) are local because they belong to the
+    scoring algorithm itself, not the episodic config — the permanent
+    threshold stays at 0.7 (a deliberate band above the toml promote
+    threshold of 0.5; only entries in the top band earn permanence).
 """
 from __future__ import annotations
 
 import logging
 import time
 from typing import TYPE_CHECKING
+
+from config.fallbacks import (
+    EPISODIC_MAX_ENTRIES,
+    EPISODIC_WARN_THRESHOLD,
+)
+from config.modular_loader import load_memory_config
 
 if TYPE_CHECKING:
     from memory.episodic.backend_protocol import EpisodicMemoryBackend
@@ -27,8 +42,14 @@ log = logging.getLogger("goat2.memory.episodic.sliding_window")
 
 __all__ = ["check_and_slide"]
 
-MAX_ENTRIES: int = 300
-WARN_THRESHOLD: int = 280
+# Section-level defaults pulled from ``config/memory.toml`` at import
+# time. The permanent-above threshold (0.7) is a local band — entries
+# only earn permanence when they score in the top band, well above
+# the promote-to-episodic threshold (0.5) that lives in capacity.py.
+_episodic = load_memory_config().get("episodic", {})
+MAX_ENTRIES: int = int(_episodic.get("max_entries", EPISODIC_MAX_ENTRIES))
+WARN_THRESHOLD: int = int(_episodic.get("warn_threshold", EPISODIC_WARN_THRESHOLD))
+del _episodic
 _SLIDE_BATCH: int = 100
 _FETCH_MAX: int = 400
 _DELETE_BELOW: float = 0.3

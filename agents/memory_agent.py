@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.agents.memory")
 
-__all__ = ["MemoryAgent"]
+__all__ = ["MemoryAgent", "run_memory"]
 
 _SYSTEM_PROMPT = """\
 You are a working memory agent in GOAT 2.0, a multi-agent AI system.
@@ -56,7 +56,7 @@ class MemoryAgent(BaseAgent):
         super().__init__(
             spec=spec or Settings().agents.get("tool_caller"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.1,
+            temperature=Settings().get_agent_temperature("memory", default=0.1),
             tools=_tools,
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
@@ -72,3 +72,19 @@ class MemoryAgent(BaseAgent):
         output = await self._chat(messages)
         log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
         return output
+
+
+async def run_memory(
+    task: "AgentTask",
+    context: dict[str, "AgentResult"],
+    registry,
+) -> str:
+    """Module-level runner — instantiates MemoryAgent from the registry and runs it.
+
+    Thin convenience alias; mirrors ``agents.researcher.run_researcher``.
+    """
+    agent = MemoryAgent(spec=registry.settings.agents.get("memory"))
+    log.debug("run_memory: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
+    output = await agent.execute(task, context)
+    task.source = "generated"
+    return output

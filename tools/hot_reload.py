@@ -40,6 +40,8 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from config.fallbacks import HOT_RELOAD_INTERVAL_S
+from config.modular_loader import load_tools_config
 from tools.hot_reload_categories import (
     discover_static_categories,
     reload_package_category,
@@ -57,8 +59,16 @@ log = logging.getLogger("goat2.tools.hot_reload")
 
 __all__ = ["ToolsWatcher", "_POLL_INTERVAL_S"]
 
-# Polling cadence. 30s balances responsiveness against CPU cost.
-_POLL_INTERVAL_S: float = 30.0
+# Polling cadence. Sourced from ``config/tools.toml [hot_reload]`` at
+# import time; falls back to ``HOT_RELOAD_INTERVAL_S`` from
+# ``config.fallbacks`` when the toml is missing.
+_tools_cfg = load_tools_config().get("hot_reload", {})
+_raw_interval = _tools_cfg.get("interval_seconds", HOT_RELOAD_INTERVAL_S)
+try:
+    _POLL_INTERVAL_S: float = float(_raw_interval)
+except (TypeError, ValueError):
+    _POLL_INTERVAL_S = HOT_RELOAD_INTERVAL_S
+del _tools_cfg, _raw_interval
 
 # Category kinds. "package" reloads via importlib.reload; "file"
 # diffs the .py files inside the category directory.

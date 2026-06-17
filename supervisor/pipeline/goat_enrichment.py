@@ -97,31 +97,76 @@ def _available_agents(registry: "ServiceRegistry") -> list[str]:
         return []
 
 
-def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatContext:
+def _format_profile_block(profile: dict) -> str:
+    """Render a BehaviorProfile dict as a 4-line '[User Style Profile]' block.
+
+    Pure-Python; no LLM. Returns '' when the profile is empty so the
+    caller can skip the header entirely.
+    """
+    if not profile:
+        return ""
+    lines = ["[User Style Profile]"]
+    for field in ("formality", "tone", "vocabulary", "language", "humor", "length"):
+        value = profile.get(field)
+        if value:
+            lines.append(f"- {field}: {value}")
+    notes = profile.get("notes")
+    if notes:
+        lines.append(f"- notes: {notes}")
+    return "\n".join(lines)
+
+
+async def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatContext:
     """Assemble the GoatContext for this turn — pure, no LLM.
 
     Args:
-        registry: ServiceRegistry for dynamic role/tool discovery.
+        registry: ServiceRegistry for dynamic role/tool discovery and
+            for loading the active behavior-style profile from Letta.
         mem_ctx: Pre-computed memory context string for this turn.
 
     Returns:
-        A populated GoatContext.
+        A populated GoatContext with the active profile appended to
+        ``memory_context`` as a ``[User Style Profile]`` block. The
+        profile is loaded via ``behavior_session.get_profile``; when
+        Letta is unreachable or the profile is empty, no block is
+        added (GOAT falls back to default tone).
     """
     workspace = os.environ.get("GOAT_WORKSPACE", "")
-    # Build project structure
+    # Build project structure (pure-Python file walk; no LLM).
     try:
         result = subprocess.run(["find", workspace or ".", "-name", "*.py", "-not", "-path", "*/__pycache__/*"], capture_output=True, text=True, timeout=5)
         proj_struct = result.stdout.strip()[:2000] if result.returncode == 0 else ""
     except Exception:
         proj_struct = ""
+
+    # Load the active behavior-style profile (formality / tone / language /
+    # vocabulary / humor / length / notes) and append it to memory_context
+    # so GOAT adapts every response to the user's learned style. Pure read
+    # against Letta; never raises (returns empty_profile() on any failure).
+    mm = getattr(registry, "memory_manager", None)
+    profile_block = ""
+    try:
+        from supervisor.behavior.behavior_session import get_profile
+        profile = await get_profile(mm)
+        profile_block = _format_profile_block(profile)
+    except Exception as exc:  # noqa: BLE001 — profile is enhancement, not critical
+        log.debug("build_goat_context: profile load failed — %s", exc)
+        profile_block = ""
+
+    augmented_mem_ctx = mem_ctx or ""
+    if profile_block:
+        augmented_mem_ctx = f"{augmented_mem_ctx}\n\n{profile_block}" if augmented_mem_ctx else profile_block
+
     ctx = GoatContext(
         workspace=workspace,
         available_agents=_available_agents(registry),
         dag_tools=[getattr(t, "name", "") for t in getattr(registry, "file_tools", []) if getattr(t, "name", "")],
         available_tools=_available_tools(registry),
-        memory_context=mem_ctx or "",
-        has_prior_knowledge=bool(mem_ctx and len(mem_ctx) > 50),
+        memory_context=augmented_mem_ctx,
+        has_prior_knowledge=bool(augmented_mem_ctx and len(augmented_mem_ctx) > 50),
         project_structure=proj_struct,
     )
-    log.debug("build_goat_context: workspace=%s agents=%d", workspace or "(unset)", len(ctx.available_agents))
+    log.debug("build_goat_context: workspace=%s agents=%d profile=%s",
+              workspace or "(unset)", len(ctx.available_agents),
+              "yes" if profile_block else "no")
     return ctx

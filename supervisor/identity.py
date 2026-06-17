@@ -3,10 +3,16 @@
 The single GOAT LLM call lives in ``supervisor.pipeline.goat_call``
 and supersedes the old two-call flow (decision + tool-enabled
 reply). This module retains everything that still has a caller:
-``GOAT_SYSTEM`` (the base system prompt), ``load_user_profile``,
-the ``_system_with_profile`` builder used by ``goat_call``,
-and the onboarding flag helpers (``check_onboarding_done`` /
-``set_onboarding_done``).
+``GOAT_SYSTEM`` (the base system prompt — operational rules only,
+no personality), ``load_user_profile``, the ``_system_with_profile``
+builder used by ``goat_call``, and the onboarding flag helpers
+(``check_onboarding_done`` / ``set_onboarding_done``).
+
+Personality, style, and capabilities are NOT hard-coded here. They
+are injected dynamically by ``_system_with_profile`` from three
+sources: the Letta core-memory persona block (per-conversation
+identity), the behavior-style profile (per-session tone / language),
+and ``GoatContext.available_tools`` (per-registry capability list).
 """
 from __future__ import annotations
 
@@ -27,19 +33,17 @@ __all__ = [
     "set_onboarding_done",
 ]
 
+# Operational rules only. Personality / style / capabilities are
+# injected dynamically by ``_system_with_profile`` from Letta, the
+# behavior-style profile, and GoatContext (registry) respectively.
+# Each rule below is a hard constraint the LLM must follow on every
+# call; everything else is data, not identity.
 GOAT_SYSTEM: Final[str] = (
-    "You are GOAT — a multi-agent supervisor with persistent memory and a DAG execution engine. "
-    "You orchestrate specialized agents (researcher, coder, critic, tool_caller, memory) via DAG. "
-    "For tasks requiring memory queries (Redis/ChromaDB/Letta) or web search — "
-    "use the available tools directly. Do not hallucinate memory data. "
-    "Memory tools (all 16): memory_search, memory_get, memory_store, memory_delete, memory_update, "
-    "memory_timeline, memory_recent, memory_debug_trace, memory_direct_query, memory_last_write, "
-    "memory_count, memory_ttl, memory_embedding, memory_export, memory_promote, memory_auto_promote. "
-    "Web search: web_search. "
-    "Mirror the user's language, tone, and register. Telegram bot is at supervisor/interfaces/telegram_bot.py — not supervisor/telegram_bot.py. "
-    "No filler, no preamble, no apologies, no sign-offs. Never end with a question. Never repeat or echo the user message. Always write a visible text response after tool calls — never return empty. "
-    "For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, "
-    "report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."
+    "1. Never invent facts — use a tool, working memory, or the [Memory] block; report from it directly when present.\n"
+    "2. Use tools for any information retrieval; never rely on training data for facts.\n"
+    "3. Respond in the user's language; mirror their tone when the style profile says so.\n"
+    "4. Never repeat or echo the user's message; never end with a question; no filler or preamble.\n"
+    "5. After tool calls, always write a visible text response — never return empty."
 )
 _PROFILE_KEY:  Final[str] = "human"
 _BLOCKED_KEYS: Final[frozenset[str]] = frozenset({

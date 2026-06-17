@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.agents.researcher")
 
-__all__ = ["ResearcherAgent"]
+__all__ = ["ResearcherAgent", "run_researcher"]
 
 
 class ResearcherAgent(BaseAgent):
@@ -33,7 +33,7 @@ class ResearcherAgent(BaseAgent):
         super().__init__(
             spec=spec or Settings().agents.get("researcher"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=0.3,
+            temperature=Settings().get_agent_temperature("researcher", default=0.2),
             tools=[WEB_SEARCH, MEMORY_SEARCH_DAG],
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
@@ -50,3 +50,23 @@ class ResearcherAgent(BaseAgent):
         output = await self._chat(messages, tools=tool_override)
         log.debug("%s.execute done task_id=%s output_len=%d", self.__class__.__name__, task.id, len(output))
         return output
+
+
+async def run_researcher(
+    task: "AgentTask",
+    context: dict[str, "AgentResult"],
+    registry,
+) -> str:
+    """Module-level runner — instantiates ResearcherAgent from the registry and runs it.
+
+    Provided so callers (tests, ad-hoc scripts, the supervisor's
+    pipeline) can import a single callable symbol rather than
+    instantiating the agent class themselves. The supervisor's
+    pipeline owns the canonical ``_run_researcher`` in
+    ``supervisor/pipeline/runners.py``; this is a thin convenience alias.
+    """
+    agent = ResearcherAgent(spec=registry.settings.agents.get("researcher"))
+    log.debug("run_researcher: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
+    output = await agent.execute(task, context)
+    task.source = "net" if agent.spec.tool_calling else "generated"
+    return output

@@ -1,9 +1,17 @@
-"""Session-end behavior lifecycle: analyze user turns and persist updated style profile.
+"""Session behavior lifecycle: profile load + session-end style persistence.
 
 REGISTRY INJECTION (PHASE 4):
 =============================
 finalize_behavior() now requires `registry` parameter.
 Uses registry.settings.letta.base_url for logging.
+
+PROFILE LOADING:
+================
+``get_profile(mm)`` returns the active ``BehaviorProfile`` (the parsed
+'dict' form) from the Letta 'persona' block, or ``empty_profile()``
+when Letta is unreachable / the block is the initial agent description.
+This is the per-conversation identity that GoatContext injects into
+the working-memory block — GOAT adapts to it on every call.
 """
 from __future__ import annotations
 
@@ -11,16 +19,47 @@ import logging
 from typing import TYPE_CHECKING
 
 from supervisor.behavior.behavior_analyzer import analyze_style
-from supervisor.behavior.behavior_store import save_style
+from supervisor.behavior.behavior_profile import BehaviorProfile, empty_profile
+from supervisor.behavior.behavior_store import load_style, save_style
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
     from supervisor.session.history import ConversationHistory
     from config.registry import Registry
 
-__all__ = ["finalize_behavior"]
+__all__ = ["finalize_behavior", "get_profile"]
 
 log = logging.getLogger("goat2.supervisor.behavior")
+
+
+async def get_profile(mm: "MemoryManager | None") -> BehaviorProfile:
+    """Return the active ``BehaviorProfile`` from the Letta 'persona' block.
+
+    The profile is the parsed-form dict (``{formality, tone, ...}``)
+    ready to inject into GoatContext. Returns ``empty_profile()``
+    when mm is None, Letta is unreachable, or the block holds the
+    initial agent description (no recognized fields).
+
+    Pure read; never raises. The raw text is loaded via
+    ``behavior_store.load_style`` and parsed via
+    ``behavior_profile.deserialize``.
+    """
+    if mm is None:
+        return empty_profile()
+    try:
+        text = await load_style(mm)
+        if not text:
+            return empty_profile()
+        from supervisor.behavior.behavior_profile import deserialize
+        profile = deserialize(text)
+        if not profile:
+            log.debug("get_profile: no recognized fields — returning empty")
+            return empty_profile()
+        log.debug("get_profile: %d field(s) loaded", len(profile))
+        return profile
+    except Exception as exc:  # noqa: BLE001 — never raise from a profile read
+        log.warning("get_profile: load failed — %s", exc)
+        return empty_profile()
 
 
 async def finalize_behavior(

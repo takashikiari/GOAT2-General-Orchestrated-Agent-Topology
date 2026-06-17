@@ -63,9 +63,18 @@ planner     = "deepseek-r1"
 researcher  = "deepseek-chat"
 coder       = "deepseek-coder"
 critic      = "deepseek-chat"
-summarizer  = "llama-3.1–8b"
+summarizer  = "llama-3.1-8b"
 tool_caller = "deepseek-chat"
 memory      = "llama-3.1-8b"
+
+[agents.temperature]
+planner     = 0.2
+researcher  = 0.2
+coder       = 0.1
+critic      = 0.2
+summarizer  = 0.2
+tool_caller = 0.1
+memory      = 0.1
 
 [api_keys]
 # ⚠️ LEAVE BLANK to rely solely on environment variables (RECOMMENDED)
