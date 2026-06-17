@@ -5,6 +5,50 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Memory tool role fixes (count, direct_query, Letta search)
+
+### Fixed — three memory tool bugs + role consistency audit
+
+**PROBLEM 1 — `memory_count` episodic always returned 0**
+
+`memory_count_tool.py` called `episodic.count(GOAT_ROLE)`, which queried the
+`goat2_goat` ChromaDB collection. All session episodic data lives in the
+`goat2_user_session` collection (keyed by SESSION_ROLE). Fixed: line 69 changed
+to `SESSION_ROLE`.
+
+**PROBLEM 2 — `memory_direct_query` on Letta searched message history**
+
+`letta_client.search()` was hitting `GET /v1/agents/{id}/messages` (message
+history), not archival memory. Archival memory is the correct store and lives
+at `GET /v1/agents/{id}/archival-memory?search=...`. Fixed: endpoint updated;
+response parsing aligned with the existing `retrieve()` / `list()` archival
+format (list-or-dict, `text`/`id`/`created_at`/`tags` fields).
+
+**PROBLEM 3 — Inconsistent agent_role across memory tools**
+
+Added `role_for_tier(tier: str) -> str` to `memory_helpers.py`:
+- `"long_term"` / `"letta"` → `GOAT_ROLE`
+- everything else → `SESSION_ROLE`
+
+Applied consistently across all memory tools:
+
+| File | Change |
+|------|--------|
+| `memory_count_tool.py` | episodic count: GOAT_ROLE → SESSION_ROLE |
+| `memory_direct_query.py` | tier-based role: letta→GOAT_ROLE, chromadb/working→SESSION_ROLE |
+| `memory_tools.py` | search/get/store: GOAT_ROLE → role_for_tier(tier) |
+| `memory_temporal_tools.py` | timeline: GOAT_ROLE → role_for_tier(tier) |
+| `memory_promote_tool.py` | promote: GOAT_ROLE → role_for_tier(from_tier) |
+| `memory_update_tool.py` | locate/store: GOAT_ROLE → role_for_tier(tier) |
+| `memory_delete_tool.py` | delete: GOAT_ROLE → role_for_tier(tier) |
+
+**Verification:**
+- `python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"` → ok
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- All changed modules import cleanly; `role_for_tier` unit assertions pass.
+
+---
+
 ## [Unreleased] — 2026-06-16 — LLM call reduction: 36 → 8
 
 ### Changed — Validators moved into DAG pipeline, memory scoring pure Python

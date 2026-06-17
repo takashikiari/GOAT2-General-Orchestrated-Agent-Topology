@@ -17,7 +17,7 @@ log = logging.getLogger("goat2.memory.tools")
 from typing import TYPE_CHECKING
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
-from memory.memory_tools.memory_helpers import format_memory_error, validate_tier, ALL_TIERS, make_tool
+from memory.memory_tools.memory_helpers import format_memory_error, validate_tier, ALL_TIERS, make_tool, role_for_tier
 
 if TYPE_CHECKING:
     from memory.shared.memory_manager import MemoryManager
@@ -61,7 +61,7 @@ async def _delete_handler(
 
     try:
         deleted = await memory_manager.delete(
-            GOAT_ROLE, key, memory_type=tier
+            role_for_tier(tier), key, memory_type=tier
         )
         if deleted:
             return f"Deleted {key!r} from {tier}"

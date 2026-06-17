@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from config.roles import GOAT_ROLE
 from memory.shared.validation import sanitize_content, validate_memory_write
 from memory.memory_tools.memory_helpers import (
     make_tool,
@@ -33,7 +32,8 @@ from memory.memory_tools.memory_helpers import (
     format_entries,
     format_memory_error,
     format_no_results,
-    validate_tier
+    role_for_tier,
+    validate_tier,
 )
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ async def _search_handler(
     try:
         kw = {} if tier == "any" else {"memory_type": tier}
         entries = await memory_manager.search(
-            GOAT_ROLE,
+            role_for_tier(tier),
             query,
             limit=limit,
             start_datetime=start_datetime,
@@ -110,7 +110,7 @@ async def _get_handler(
 
     try:
         kw = {} if tier == "any" else {"memory_type": tier}
-        entry = await memory_manager.locate(GOAT_ROLE, key, **kw)
+        entry = await memory_manager.locate(role_for_tier(tier), key, **kw)
     except Exception as exc:
         return format_memory_error("memory_get", exc)
 
@@ -144,7 +144,7 @@ async def _store_handler(
         return f"ERROR: validation failed: {exc}"
 
     try:
-        await memory_manager.store(GOAT_ROLE, key, value, memory_type=tier)
+        await memory_manager.store(role_for_tier(tier), key, value, memory_type=tier)
     except Exception as exc:
         return format_memory_error("memory_store", exc)
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from config.roles import GOAT_ROLE, SESSION_ROLE
+from config.roles import SESSION_ROLE
 from config.tiers import ANY
 from memory.memory_tools.memory_helpers import (
     make_tool,
@@ -32,7 +32,8 @@ from memory.memory_tools.memory_helpers import (
     format_entries,
     format_memory_error,
     format_no_results,
-    validate_tier
+    role_for_tier,
+    validate_tier,
 )
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ async def _timeline_handler(
 
     try:
         entries = await memory_manager.timeline(
-            GOAT_ROLE,
+            role_for_tier(tier),
             start_datetime,
             end_datetime,
             tier=tier,

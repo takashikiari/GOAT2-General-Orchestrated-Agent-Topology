@@ -21,14 +21,14 @@ log = logging.getLogger("goat2.memory.tools")
 
 from typing import TYPE_CHECKING
 
-from config.roles import GOAT_ROLE
 from memory.shared.validation import sanitize_content, validate_memory_write
 from memory.memory_tools.memory_helpers import (
     make_tool,
     ALL_TIERS,
     format_memory_error,
     format_no_results,
-    validate_tier
+    role_for_tier,
+    validate_tier,
 )
 
 if TYPE_CHECKING:
@@ -75,11 +75,12 @@ async def _update_handler(
         memory_manager = registry.memory_manager
 
     # Check if entry exists
-    existing = await memory_manager.locate(GOAT_ROLE, key, memory_type=tier)
+    role = role_for_tier(tier)
+    existing = await memory_manager.locate(role, key, memory_type=tier)
     action = "Updated" if existing else "Created"
 
     try:
-        await memory_manager.store(GOAT_ROLE, key, value, memory_type=tier)
+        await memory_manager.store(role, key, value, memory_type=tier)
         return f"{action} {key!r} in {tier}"
     except Exception as exc:
         return format_memory_error("memory_update", exc)

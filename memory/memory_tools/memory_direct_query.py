@@ -21,7 +21,7 @@ from typing import Final, TYPE_CHECKING
 
 from memory.memory_tools.memory_helpers import make_tool
 
-from config.roles import GOAT_ROLE
+from config.roles import GOAT_ROLE, SESSION_ROLE
 
 if TYPE_CHECKING:
     from memory.shared.memory_manager import MemoryManager
@@ -128,8 +128,8 @@ async def _handler(
         return f"ERROR: query parsing failed: {exc}"
 
     try:
-        # GOAT uses GOAT_ROLE for full access to all tiers
-        role = GOAT_ROLE
+        # long_term/letta uses GOAT_ROLE; working/chromadb use SESSION_ROLE
+        role = GOAT_ROLE if tier == "letta" else SESSION_ROLE
 
         if tier == "letta":
             # Query Letta archival memory via keyword search

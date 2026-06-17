@@ -17,9 +17,8 @@ log = logging.getLogger("goat2.memory.tools")
 
 from typing import TYPE_CHECKING
 
-from config.roles import GOAT_ROLE
 from config.tiers import WORKING, EPISODIC, LONG_TERM
-from memory.memory_tools.memory_helpers import format_memory_error, format_entries, ANY_TIERS, make_tool
+from memory.memory_tools.memory_helpers import format_memory_error, format_entries, ANY_TIERS, make_tool, role_for_tier
 
 if TYPE_CHECKING:
     from memory.shared.memory_manager import MemoryManager
@@ -66,17 +65,19 @@ async def _promote_handler(
 
     try:
         # Handle long_term source with query-based promotion
+        role = role_for_tier(from_tier)
+
         if from_tier == LONG_TERM and (query or key):
             search_query = query or key
             entries = await memory_manager.search(
-                GOAT_ROLE, search_query, limit=1, memory_type=LONG_TERM
+                role, search_query, limit=1, memory_type=LONG_TERM
             )
             if not entries:
                 return f"ERROR: no entry found in long_term for query: {search_query!r}"
             entry = entries[0]
             # Promote using the found entry's key
             result = await memory_manager.promote(
-                GOAT_ROLE,
+                role,
                 entry.key,
                 from_type=from_tier,
                 to_type=to_tier,
@@ -88,7 +89,7 @@ async def _promote_handler(
 
         # Standard key-based promotion for working/episodic
         result = await memory_manager.promote(
-            GOAT_ROLE,
+            role,
             key,
             from_type=from_tier,
             to_type=to_tier,

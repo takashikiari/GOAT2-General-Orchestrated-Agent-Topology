@@ -41,6 +41,7 @@ __all__ = [
     "SESSION_ROLE",
     "ALL_TIERS",
     "ANY_TIERS",
+    "role_for_tier",
     "format_memory_error",
     "format_entries",
     "format_no_results",
@@ -66,6 +67,20 @@ ANY_TIERS: Final[tuple[str, ...]] = (ANY,) + ALL_TIERS
 
 The 'any' tier searches across all available tiers and merges results.
 """
+
+# ---------------------------------------------------------------------------
+# Role helpers
+# ---------------------------------------------------------------------------
+
+
+def role_for_tier(tier: str) -> str:
+    """Return the correct agent_role for a given memory tier.
+
+    - "long_term" / "letta"  → GOAT_ROLE  (Letta stores agent-level data)
+    - everything else         → SESSION_ROLE (working/episodic store session data)
+    """
+    return GOAT_ROLE if tier in ("long_term", "letta") else SESSION_ROLE
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers

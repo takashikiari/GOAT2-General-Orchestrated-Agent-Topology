@@ -162,19 +162,19 @@ class LettaClient(MemoryLayer):
         limit: int = 5,
         tags: list[str] | None = None,
     ) -> list[MemoryEntry]:
-        """Search Letta agent messages by semantic query.
+        """Search Letta archival memory by keyword/semantic query.
 
-        Uses Letta's message history API. Falls back to empty list
-        if Letta is unavailable or endpoint doesn't exist.
+        Uses the archival-memory endpoint (GET /v1/agents/{id}/archival-memory?search=...).
+        Falls back to in-context store if Letta is unavailable or endpoint is missing.
 
         Args:
             agent_role: The agent role identifier
-            query: Semantic search query
+            query: Search query forwarded to Letta's archival-memory search param
             limit: Maximum results to return
             tags: Optional tag filters (not supported by Letta API)
 
         Returns:
-            List of MemoryEntry objects from search results
+            List of MemoryEntry objects from archival memory
         """
         if not await self._probe.is_available():
             log.debug("Letta unavailable for search; returning empty")
@@ -184,38 +184,36 @@ class LettaClient(MemoryLayer):
             agent_id = await self._registry.get_agent_id(agent_role)
             client = await self._get_http_client()
 
-            # Get message history (Letta v0.5+ API)
+            # Search archival memory (Letta v0.5+ API)
             response = await client.get(
-                f"/v1/agents/{agent_id}/messages",
-                params={"limit": limit},
+                f"/v1/agents/{agent_id}/archival-memory",
+                params={"search": query or "", "limit": limit},
             )
 
             if response.status_code == 404:
-                log.debug("Letta messages endpoint not available; using fallback")
+                log.debug("Letta archival-memory endpoint not available; using fallback")
                 return self._fallback.search(agent_role, query, limit, tags)
 
             response.raise_for_status()
-            data = response.json()
+            raw = response.json()
 
-            # Convert Letta messages to MemoryEntry format
+            # Letta returns a list or {"results": [...]} / {"passages": [...]}
+            passages = (
+                raw if isinstance(raw, list)
+                else raw.get("results", raw.get("passages", []))
+            )
+
             entries = []
-            # Letta 0.16.8 returns a list directly, not a dict
-            if isinstance(data, list):
-                messages = data
-            else:
-                messages = data.get("messages", [])
-            for msg in messages[:limit]:
-                content = msg.get("content", "")
-                if isinstance(content, dict):
-                    content = str(content.get("text", content))
+            for passage in passages[:limit]:
+                text = passage.get("text", "")
                 entries.append(MemoryEntry(
-                    id=msg.get("id", ""),
+                    id=str(passage.get("id", "")),
                     agent_role=agent_role,
-                    key=msg.get("id", ""),
-                    content=content,
+                    key=str(passage.get("id", "")),
+                    content=text,
                     source="letta",
-                    created_at=msg.get("created_at", ""),
-                    metadata={"tags": msg.get("tags", [])},
+                    created_at=passage.get("created_at", ""),
+                    metadata={"tags": passage.get("tags", [])},
                 ))
             return entries
 

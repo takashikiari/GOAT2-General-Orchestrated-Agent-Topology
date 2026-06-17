@@ -66,7 +66,7 @@ async def _count_handler(
             counts["working"] = await memory_manager.working.count(SESSION_ROLE)
 
         if tier in ("episodic", "all"):
-            counts["episodic"] = await memory_manager.episodic.count(GOAT_ROLE)
+            counts["episodic"] = await memory_manager.episodic.count(SESSION_ROLE)
 
         if tier in ("long_term", "all"):
             # Letta doesn't have a simple count - approximate via search
