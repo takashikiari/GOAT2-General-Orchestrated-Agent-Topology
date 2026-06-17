@@ -184,7 +184,6 @@ async def goat_turn(
             clarification="Could you provide more details about what you'd like me to do?",
         )
 
-    log.warning("goat_turn DEBUG: content=%r called=%s", (tagged.content or "")[:200], tagged.called_tools)
     raw_content = tagged.content or ""
     if not raw_content.strip() and tagged.called_tools:
         raw_content = f"Am executat: {', '.join(tagged.called_tools)}"
