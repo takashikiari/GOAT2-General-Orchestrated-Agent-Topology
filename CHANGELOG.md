@@ -5,6 +5,48 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Clean rewrite: supervisor + Telegram bot
+
+### Changed
+- `supervisor/supervisor.py` rewritten from scratch (260 → 243 lines).
+  - No `re` import; no `_strip_dsml` — DSML stripping belongs in
+    `goat_call.py` and `tool_runner._call_with_tools`, both of which
+    already strip DSML from the LLM's response.
+  - `_dispatch` is now a clean if/elif/else over `turn.action`
+    (`"dag" / "clarify" / "direct"`). Two dead parameters (`mem_ctx`,
+    `goat_ctx`) removed; the Romanian `"Am executat: …"` fallback
+    string is gone; the `_dag_started_result` summary is a single
+    English fallback.
+  - `_ensure_initialized` extracted as a private helper so `run()` is
+    a clean sequence of steps. `run()` body lost ~30 lines.
+  - Removed `get_dag_status`, `register_agent`, `make_agent`,
+    `self.agent_registry` (duplicated `self.registry`), and
+    `self._verbose` (assigned but never read). All were dead code.
+- `supervisor/interfaces/telegram_bot.py` rewritten from scratch
+  (92 → 107 lines).
+  - No regex, no DSML re-processing, no 3-attempt retry loop,
+    no manual 4096-char truncation, no Application-level
+    `_error_handler`, no per-process `os.makedirs` / file logger
+    re-initialization.
+  - `_handle_message` is now: parse text → call `supervisor.run()` →
+    `reply_text(summary or "...")`. That's it.
+  - Finalization happens once in a `finally:` block via
+    `asyncio.run(_finalize_all_sessions())` — no separate
+    `_shutdown(app)` async-callback-in-sync-context hack.
+  - `run_polling = main` exposed as a thin alias so the user-supplied
+    `from supervisor.interfaces.telegram_bot import run_polling`
+    verification command still works.
+  - Removed `supervisor/interfaces/telegram_bot.py.bak` and `.bak2`
+    (dead artifacts from previous refactors).
+
+### Fixed
+- Telegram bot no longer competes with `goat_call.py` over who strips
+  DSML markers — the bot has zero regex, the supervisor has zero
+  regex, and the LLM-facing text is now stripped exactly once in
+  `tool_runner._call_with_tools`.
+
+---
+
 ## [Unreleased] — 2026-06-17 — Letta routing: GOAT can read long-term memory
 
 ### Fixed
