@@ -81,7 +81,7 @@ async def check_and_promote(
         count = len(await working_backend.keys(agent_role))
         if count >= WARN_THRESHOLD:
             log.warning("capacity(%s): approaching limit (%d/%d)", agent_role, count, max_entries)
-        if count < max_entries:
+        if max_entries > 0 and count < max_entries:
             log.debug("capacity(%s): under limit (%d/%d) — no promotion", agent_role, count, max_entries)
             return 0
         log.info("capacity(%s): at limit (%d/%d) — scoring oldest for promotion", agent_role, count, max_entries)
