@@ -29,9 +29,12 @@ from memory.memory_tools.memory_helpers import (
     make_tool,
     ANY_TIERS,
     ALL_TIERS,
+    SEARCH_TIERS,
     format_entries,
     format_memory_error,
     format_no_results,
+    letta_search_safe,
+    normalize_tier,
     role_for_tier,
     validate_tier,
 )
@@ -65,21 +68,39 @@ async def _search_handler(
         from tools.registry_accessor import get_registry
         memory_manager = get_registry().memory_manager
 
-    error = validate_tier(tier, ANY_TIERS)
+    error = validate_tier(tier, SEARCH_TIERS)
     if error:
         return error
-    log.debug("memory_search: tier=%s query=%r limit=%d", tier, query[:60], limit)
+    # Normalise user-facing tier aliases before touching MemoryManager.
+    # "letta" -> "long_term" (the only valid MemoryType for Letta);
+    # "all" -> "any" (triggers MemoryManager's 3-tier fan-out).
+    normalized = normalize_tier(tier)
+    log.debug(
+        "memory_search: tier=%s (normalised=%s) query=%r limit=%d",
+        tier, normalized, query[:60], limit,
+    )
 
     try:
-        kw = {} if tier == "any" else {"memory_type": tier}
-        entries = await memory_manager.search(
-            role_for_tier(tier),
-            query,
-            limit=limit,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            **kw,
-        )
+        if normalized == "any":
+            # memory_type=None triggers MemoryManager._fan_out_search
+            # which queries all three tiers in parallel and dedupes.
+            entries = await memory_manager.search(
+                role_for_tier(tier), query, limit=limit,
+                start_datetime=start_datetime, end_datetime=end_datetime,
+            )
+        elif normalized == "long_term":
+            # Direct Letta call through the 10 s safety wrapper.
+            # role_for_tier("long_term") already returns GOAT_ROLE; the
+            # wrapper uses GOAT_ROLE internally as well.
+            entries = await letta_search_safe(memory_manager, query, limit)
+        else:
+            # working / episodic — single-tier search via the manager so
+            # temporal filtering / dedup logic applies.
+            entries = await memory_manager.search(
+                role_for_tier(tier), query, limit=limit,
+                memory_type=normalized,
+                start_datetime=start_datetime, end_datetime=end_datetime,
+            )
     except Exception as exc:
         return format_memory_error("memory_search", exc)
 
@@ -181,7 +202,7 @@ MEMORY_SEARCH = make_tool(
             },
             "tier": {
                 "type": "string",
-                "enum": list(ANY_TIERS),
+                "enum": list(SEARCH_TIERS),
                 "description": "Tier to search (default: 'any').",
                 "default": "any",
             },

@@ -40,6 +40,7 @@ class GoatContext:
     memory_context: str
     dag_tools: list[str] = None
     has_prior_knowledge: bool = False
+    project_structure: str = ""
 
     def to_prompt(self) -> str:
         """Render this context as a prompt block for the GOAT decision call."""
@@ -107,6 +108,12 @@ def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatCo
         A populated GoatContext.
     """
     workspace = os.environ.get("GOAT_WORKSPACE", "")
+    # Build project structure
+    try:
+        result = subprocess.run(["find", workspace or ".", "-name", "*.py", "-not", "-path", "*/__pycache__/*"], capture_output=True, text=True, timeout=5)
+        proj_struct = result.stdout.strip()[:2000] if result.returncode == 0 else ""
+    except Exception:
+        proj_struct = ""
     ctx = GoatContext(
         workspace=workspace,
         available_agents=_available_agents(registry),
@@ -114,6 +121,7 @@ def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatCo
         available_tools=_available_tools(registry),
         memory_context=mem_ctx or "",
         has_prior_knowledge=bool(mem_ctx and len(mem_ctx) > 50),
+        project_structure=proj_struct,
     )
     log.debug("build_goat_context: workspace=%s agents=%d", workspace or "(unset)", len(ctx.available_agents))
     return ctx

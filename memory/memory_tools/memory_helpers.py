@@ -1,30 +1,15 @@
 """Memory tool helpers — shared utilities for memory CRUD operations.
 
-This module extracts common logic used by memory_tools.py and
-memory_temporal_tools.py to keep those files under 200 lines.
-
-MEMORY ACCESS ARCHITECTURE:
-===========================
-- GOAT (supervisor): Full tier access with GOAT_ROLE from config.roles
-- DAG agents: Working tier only with SESSION_ROLE from config.roles
-- Validation: Tier restrictions enforced in tool handlers
-
-Provides:
-- Role imports from config.roles for memory access control
-- Tier imports from config.tiers for memory tier constants
-- Error formatting helpers
-- Entry formatting for consistent output
-- Validation helpers for memory operations
-
-TOOL WIRING:
-============
-All memory tools accept an optional 'role' parameter:
-- Default: GOAT_ROLE for supervisor
-- DAG agents: SESSION_ROLE
-- Tier restrictions automatically enforced based on role
+Extracts common logic used by memory_tools.py and
+memory_temporal_tools.py. GOAT supervisor uses GOAT_ROLE for full tier
+access; DAG agents use SESSION_ROLE and are restricted to the working
+tier. Provides role/tier constants, error/entry formatting, validation,
+the ToolDefinition factory, plus the Letta normaliser and timeout
+wrappers added when GOAT's read of long-term memory was fixed.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
@@ -33,20 +18,17 @@ from config.tiers import WORKING, EPISODIC, LONG_TERM, ANY
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
+    from memory.shared.memory_manager import MemoryManager
 
 log = logging.getLogger("goat2.memory.tools")
 
 __all__ = [
-    "GOAT_ROLE",
-    "SESSION_ROLE",
-    "ALL_TIERS",
-    "ANY_TIERS",
-    "role_for_tier",
-    "format_memory_error",
-    "format_entries",
-    "format_no_results",
-    "validate_tier",
-    "make_tool",
+    "GOAT_ROLE", "SESSION_ROLE",
+    "ALL_TIERS", "ANY_TIERS", "SEARCH_TIERS",
+    "role_for_tier", "format_memory_error", "format_entries",
+    "format_no_results", "validate_tier", "make_tool",
+    "LETA_CALL_TIMEOUT_S", "normalize_tier",
+    "letta_search_safe", "letta_list_safe",
 ]
 
 # ---------------------------------------------------------------------------
@@ -67,6 +49,12 @@ ANY_TIERS: Final[tuple[str, ...]] = (ANY,) + ALL_TIERS
 
 The 'any' tier searches across all available tiers and merges results.
 """
+
+# Search/read tier set with the user-facing aliases the tool layer accepts.
+# The handler normalises them via normalize_tier() before they reach
+# MemoryManager; the JSON-schema enum and validate_tier() both use this set
+# so the tool never rejects "letta" or "all" at the door.
+SEARCH_TIERS: Final[tuple[str, ...]] = ANY_TIERS + ("letta", "all")
 
 # ---------------------------------------------------------------------------
 # Role helpers
@@ -208,3 +196,65 @@ def make_tool(
         parameters=parameters,
         handler=handler,
     )
+
+
+# ---------------------------------------------------------------------------
+# Letta routing helpers — GOAT can read long-term memory (PROBLEM fix)
+# ---------------------------------------------------------------------------
+#
+# Before this section, tool handlers (memory_search, memory_recent,
+# memory_direct_query, memory_count) accepted tier="letta" but then
+# passed the raw string to MemoryManager.search(memory_type=...),
+# which calls MemoryType(tier). MemoryType only knows "working" /
+# "episodic" / "long_term", so "letta" raised ValueError. The helpers
+# below normalise the tier name and wrap Letta calls in a 10 s ceiling.
+# ---------------------------------------------------------------------------
+
+
+LETA_CALL_TIMEOUT_S: float = 10.0
+"""Per-call ceiling for any Letta operation surfaced through a tool (seconds)."""
+
+
+def normalize_tier(tier: str) -> str:
+    """Translate user-facing tier aliases to internal MemoryType values.
+
+    Mapping:
+        "letta" -> "long_term"   (Letta IS the long_term backend)
+        "all"   -> "any"         (fan-out trigger in MemoryManager.search)
+        anything else (working / episodic / long_term / any) -> unchanged
+    """
+    if tier == "letta":
+        return "long_term"
+    if tier == "all":
+        return "any"
+    return tier
+
+
+async def letta_search_safe(mm: "MemoryManager", query: str, limit: int) -> list:
+    """Search Letta with a hard 10 s ceiling. Never raises."""
+    try:
+        return await asyncio.wait_for(
+            mm.long_term.search(GOAT_ROLE, query, limit=limit),
+            timeout=LETA_CALL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        log.warning("memory_helpers: letta search timed out after %.1fs", LETA_CALL_TIMEOUT_S)
+        return []
+    except Exception as exc:  # noqa: BLE001 — tool wrapper must never raise
+        log.warning("memory_helpers: letta search failed: %s", exc)
+        return []
+
+
+async def letta_list_safe(mm: "MemoryManager", limit: int) -> list:
+    """List Letta entries with a hard 10 s ceiling. Never raises."""
+    try:
+        return await asyncio.wait_for(
+            mm.long_term.list(GOAT_ROLE, limit=limit),
+            timeout=LETA_CALL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        log.warning("memory_helpers: letta list timed out after %.1fs", LETA_CALL_TIMEOUT_S)
+        return []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("memory_helpers: letta list failed: %s", exc)
+        return []

@@ -46,17 +46,21 @@ def _clean_dsml_tags(text: str) -> str:
     if not text:
         return ""
     # Remove DSML blocks with different opening/closing tags
-    clean = re.sub(r'<\s*invoke[^>]*>.*?</\s*invoke\s*>', '', text, flags=re.DOTALL)
-    # Remove any remaining angle-bracket noise that looks like DSML
-    clean = re.sub(r'<\s*/\s*[a-zA-Z]*\s*>', '', clean)
-    clean = re.sub(r'<\s*[a-zA-Z]*\s*>', '', clean)
-    clean = clean.strip()
-    # If everything was stripped, return empty (caller handles fallback)
+    clean = re.sub(r'<\｜｜DSML｜｜[^>]*>.*?</\｜｜DSML｜｜[^>]*>', '', text, flags=re.DOTALL)
+    # Remove mixed pairs
+    clean = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', clean, flags=re.DOTALL)
+    # Remove orphaned tags
+    clean = re.sub(r'</? \｜｜DSML｜｜[^>]*>', '', clean)
+    clean = re.sub(r"/DSML[A-Za-z_]*", "", clean).strip()
+    # If everything was stripped, try harder: remove angle-bracket noise
+    if not clean:
+        clean = re.sub(r"[<｜>]+", "", text).strip()
     return clean
 
 
 def _has_tool_calls(text: str) -> bool:
-    return bool(re.search(r'<\s*invoke[^>]*>', text))
+    """Check if text contains DSML tool call tags."""
+    return bool(re.search(r'<\｜｜DSML｜｜invoke>', text) or re.search(r'<\｜｜DSML｜｜tool_calls>', text))
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

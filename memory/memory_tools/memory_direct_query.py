@@ -11,6 +11,7 @@ DAG agents are restricted to working tier only with SESSION_ROLE from config.rol
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 log = logging.getLogger("goat2.memory.tools")
@@ -19,7 +20,7 @@ import json
 import re
 from typing import Final, TYPE_CHECKING
 
-from memory.memory_tools.memory_helpers import make_tool
+from memory.memory_tools.memory_helpers import LETA_CALL_TIMEOUT_S, make_tool
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
 
@@ -36,7 +37,8 @@ _BLOCKED_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bUNION\b", re.IGNORECASE),
 )
 
-_ALLOWED_TIERS: Final[tuple[str, ...]] = ("letta", "chromadb", "working")
+# "long_term" is an accepted synonym for "letta" — same backend.
+_ALLOWED_TIERS: Final[tuple[str, ...]] = ("letta", "long_term", "chromadb", "working")
 
 _SCHEMA = {
     "type": "object",
@@ -128,14 +130,27 @@ async def _handler(
         return f"ERROR: query parsing failed: {exc}"
 
     try:
-        # long_term/letta uses GOAT_ROLE; working/chromadb use SESSION_ROLE
-        role = GOAT_ROLE if tier == "letta" else SESSION_ROLE
+        # long_term/letta uses GOAT_ROLE; working/chromadb use SESSION_ROLE.
+        # Both "letta" and "long_term" keywords route to the Letta client.
+        role = GOAT_ROLE if tier in ("letta", "long_term") else SESSION_ROLE
 
-        if tier == "letta":
-            # Query Letta archival memory via keyword search
-            results = await memory_manager.long_term.search(
-                role, where_clause or "*", limit=limit, tags=None
-            )
+        if tier in ("letta", "long_term"):
+            # Query Letta archival memory via keyword search, capped at
+            # LETA_CALL_TIMEOUT_S so an unreachable server can't pin GOAT.
+            try:
+                results = await asyncio.wait_for(
+                    memory_manager.long_term.search(
+                        role, where_clause or "*", limit=limit, tags=None
+                    ),
+                    timeout=LETA_CALL_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                return json.dumps({
+                    "tier": tier, "count": 0, "results": [],
+                    "warning": f"letta timed out after {LETA_CALL_TIMEOUT_S}s",
+                })
+            except Exception as exc:
+                return f"ERROR: letta query failed: {exc}"
         elif tier == "chromadb":
             # Query ChromaDB episodic memory
             results = await memory_manager.episodic.search(

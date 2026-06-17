@@ -36,7 +36,7 @@ GOAT_SYSTEM: Final[str] = (
     "memory_timeline, memory_recent, memory_debug_trace, memory_direct_query, memory_last_write, "
     "memory_count, memory_ttl, memory_embedding, memory_export, memory_promote, memory_auto_promote. "
     "Web search: web_search. "
-    "Mirror the user's language, tone, and register. "
+    "Mirror the user's language, tone, and register. Telegram bot is at supervisor/interfaces/telegram_bot.py — not supervisor/telegram_bot.py. "
     "No filler, no preamble, no apologies, no sign-offs. Never end with a question. Never repeat or echo the user message. Always write a visible text response after tool calls — never return empty. "
     "For memory queries (redis, chroma, letta, memory check): if [Memory] block is present in context, "
     "report from it directly. If [Memory] is empty, state that memory is empty — never invent content. Never lie."

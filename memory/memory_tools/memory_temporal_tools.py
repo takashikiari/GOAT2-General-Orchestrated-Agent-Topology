@@ -29,9 +29,12 @@ from config.tiers import ANY
 from memory.memory_tools.memory_helpers import (
     make_tool,
     ANY_TIERS,
+    SEARCH_TIERS,
     format_entries,
     format_memory_error,
     format_no_results,
+    letta_list_safe,
+    normalize_tier,
     role_for_tier,
     validate_tier,
 )
@@ -73,7 +76,7 @@ async def _timeline_handler(
         registry = get_registry()
         memory_manager = registry.memory_manager
 
-    error = validate_tier(tier, ANY_TIERS)
+    error = validate_tier(tier, SEARCH_TIERS)
     if error:
         return error
     log.debug(
@@ -123,17 +126,29 @@ async def _recent_handler(
         registry = get_registry()
         memory_manager = registry.memory_manager
 
-    error = validate_tier(tier, ANY_TIERS)
+    error = validate_tier(tier, SEARCH_TIERS)
     if error:
         return error
-    log.debug("memory_recent: tier=%s limit=%d", tier, limit)
+    # Normalise user-facing tier aliases ("letta" -> "long_term",
+    # "all" -> "any") before reaching gather_tier_list, which would
+    # otherwise raise ValueError on "letta" via MemoryType().
+    normalized = normalize_tier(tier)
+    log.debug("memory_recent: tier=%s (normalised=%s) limit=%d", tier, normalized, limit)
 
     try:
-        entries = await memory_manager.recent(
-            SESSION_ROLE,
-            limit=limit,
-            tier=tier,
-        )
+        if normalized == "long_term":
+            # Direct Letta call through the 10 s safety wrapper — bypasses
+            # gather_tier_list entirely so MemoryType() coercion is never hit.
+            entries = await letta_list_safe(memory_manager, limit)
+        else:
+            # working / episodic / any → existing gather_tier_list path.
+            # "any" / "all" already fan out across all three tiers there,
+            # so the user gets results from every tier in one call.
+            entries = await memory_manager.recent(
+                SESSION_ROLE,
+                limit=limit,
+                tier=normalized,
+            )
     except Exception as exc:
         return format_memory_error("memory_recent", exc)
 
@@ -164,7 +179,7 @@ MEMORY_TIMELINE = make_tool(
             },
             "tier": {
                 "type": "string",
-                "enum": list(ANY_TIERS),
+                "enum": list(SEARCH_TIERS),
                 "default": ANY,
             },
             "limit": {
@@ -208,7 +223,7 @@ MEMORY_RECENT = make_tool(
             },
             "tier": {
                 "type": "string",
-                "enum": list(ANY_TIERS),
+                "enum": list(SEARCH_TIERS),
                 "default": ANY,
             },
         },

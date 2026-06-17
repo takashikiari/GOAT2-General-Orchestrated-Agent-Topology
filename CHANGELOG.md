@@ -5,6 +5,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Letta routing: GOAT can read long-term memory
+
+### Fixed
+- `memory_search` no longer crashes on `tier="letta"` or `tier="all"`.
+  Tier is now normalised via `memory_helpers.normalize_tier`
+  (`"letta" → "long_term"`, `"all" → "any"`) before being passed to
+  `MemoryManager.search`. The `"any"` branch (and therefore `"all"`)
+  now correctly triggers a 3-tier fan-out via the existing
+  `_fan_out_search` helper.
+- `memory_recent` no longer crashes on `tier="letta"`. Same
+  normalisation; the `long_term` branch uses the new `letta_list_safe`
+  helper to bypass the `MemoryType(tier)` coercion in
+  `gather_tier_list`.
+- `memory_direct_query` now accepts both `letta` and `long_term` as
+  the tier keyword (previously only `letta` worked). The underlying
+  call is wrapped in `asyncio.wait_for(timeout=LETA_CALL_TIMEOUT_S=10s)`
+  so an unreachable Letta server returns a structured warning instead
+  of hanging.
+- `memory_count` for the long_term tier no longer returns `"unknown"`
+  or `"?"`. Uses `mm.long_term.list(limit=1000)` (via `letta_list_safe`)
+  and returns the actual length, capped at 1000.
+
+### Added
+- `memory_helpers.LETA_CALL_TIMEOUT_S = 10.0` — hard ceiling for any
+  Letta call surfaced through a tool.
+- `memory_helpers.normalize_tier(tier)` — single source of truth for
+  the `"letta" → "long_term"` / `"all" → "any"` translation used by
+  every tool handler.
+- `memory_helpers.letta_search_safe(mm, query, limit)` and
+  `letta_list_safe(mm, limit)` — timeout + try/except wrappers around
+  `mm.long_term.search/list`. Never raise; on failure they return `[]`
+  and log at WARNING.
+
+---
+
 ## [Unreleased] — 2026-06-17 — Reliability: timeouts, retries, health
 
 ### Added

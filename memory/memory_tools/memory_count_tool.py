@@ -24,7 +24,11 @@ log = logging.getLogger("goat2.memory.tools")
 from typing import TYPE_CHECKING
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
-from memory.memory_tools.memory_helpers import format_memory_error, make_tool
+from memory.memory_tools.memory_helpers import (
+    format_memory_error,
+    letta_list_safe,
+    make_tool,
+)
 
 if TYPE_CHECKING:
     from memory.shared.memory_manager import MemoryManager
@@ -69,14 +73,11 @@ async def _count_handler(
             counts["episodic"] = await memory_manager.episodic.count(SESSION_ROLE)
 
         if tier in ("long_term", "all"):
-            # Letta doesn't have a simple count - approximate via search
-            try:
-                results = await memory_manager.long_term.search(
-                    GOAT_ROLE, "", limit=1
-                )
-                counts["long_term"] = getattr(results, 'total', 'unknown')
-            except Exception:
-                counts["long_term"] = "?"
+            # Letta has no count() method — approximate via list(limit=1000).
+            # letta_list_safe wraps the call in a 10 s ceiling and returns
+            # [] on timeout/error instead of raising.
+            entries = await letta_list_safe(memory_manager, limit=1000)
+            counts["long_term"] = len(entries)
 
         if tier == "all":
             lines = [f"Entry count per tier for {GOAT_ROLE}:"]
