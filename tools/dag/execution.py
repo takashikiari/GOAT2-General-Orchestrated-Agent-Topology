@@ -107,7 +107,7 @@ async def run_dag_pipeline(
     # Write active DAG session_id to working memory so GOAT can control it.
     await write_active_dag(supervisor.memory_manager, supervisor._session_id, session_id)
     results = await WorkflowGraph(plan.tasks).execute(
-        supervisor.registry.agent_registry, supervisor._semaphore,
+        supervisor.registry, supervisor._semaphore,
         verbose=supervisor._verbose, memory_manager=supervisor.memory_manager,
         session_id=session_id,
     )
