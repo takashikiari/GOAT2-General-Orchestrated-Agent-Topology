@@ -41,7 +41,7 @@ __all__ = ["GoatTurnResult", "goat_turn"]
 
 _CLARIFY_MARKER: Final[str] = "[CLARIFY]"
 _START_DAG_TOOL: Final[str] = "start_dag"
-_CLARIFY_MAX_CHARS: Final[int] = 400
+_CLARIFY_MAX_CHARS: Final[int] = 100
 _TRAILING_QUESTION_RE: Final[re.Pattern[str]] = re.compile(r"\?\s*$")
 _MAX_INTENT_CHARS: Final[int] = 4_000
 

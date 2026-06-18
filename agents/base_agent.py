@@ -49,8 +49,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from openai import AsyncOpenAI
-
 from config.settings import ModelSpec, Provider, PROVIDER_BASE_URLS, Settings
 
 if TYPE_CHECKING:
@@ -123,22 +121,13 @@ def tool(
 
 
 # ---------------------------------------------------------------------------
-# LLM client cache — independent from supervisor's module-level cache
+# LLM client cache — use the shared cache from utils.llm_utils so that
+# every call site (supervisor + agents) shares a single AsyncOpenAI
+# client per provider. Avoids per-call TLS handshakes / connection
+# pressure.
 # ---------------------------------------------------------------------------
 
-_clients: dict[str, AsyncOpenAI] = {}
-
-
-def _get_client(spec: ModelSpec) -> AsyncOpenAI:
-    key = spec.provider.value
-    if key not in _clients:
-        # Import Settings on demand to avoid circular imports
-        from config.settings import Settings
-        _clients[key] = AsyncOpenAI(
-            api_key=Settings().api_keys.for_provider(spec.provider),
-            base_url=PROVIDER_BASE_URLS[key],
-        )
-    return _clients[key]
+from utils.llm_utils import _get_client
 
 
 # ---------------------------------------------------------------------------

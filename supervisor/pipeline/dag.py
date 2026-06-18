@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
+
+from config.agent_types import TaskStatus
 
 log = logging.getLogger("goat2.supervisor.pipeline.dag")
 
@@ -21,16 +22,6 @@ __all__ = [
     "DAGraph",
     "ValidationError",
 ]
-
-
-class TaskStatus(Enum):
-    """Execution status of a single DAG node."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    DONE = "done"
-    FAILED = "failed"
-    SKIPPED = "skipped"
 
 
 @dataclass(frozen=True)

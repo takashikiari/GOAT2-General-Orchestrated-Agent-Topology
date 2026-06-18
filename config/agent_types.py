@@ -27,6 +27,7 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     DONE    = "done"
     FAILED  = "failed"
+    SKIPPED = "skipped"
 
 
 @dataclass
