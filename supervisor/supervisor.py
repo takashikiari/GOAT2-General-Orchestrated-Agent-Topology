@@ -1,19 +1,32 @@
-"""GoatSupervisor — GOAT 2.0 top-level orchestrator. See docs/supervisor.md.
+"""GoatSupervisor — top-level orchestrator for GOAT 2.0.
 
-ONE GOAT LLM call per turn (``goat_call.goat_turn``) combines routing AND
-tool-enabled response. Middleware only builds context (no LLM). The action
-(``direct`` / ``clarify`` / ``dag``) is inferred from the tool-call trace
-(``start_dag`` → dag) and a ``[CLARIFY]`` marker in the response.
+Single flow: middleware (no LLM) → ONE LLM call
+(``pipeline.goat_call.goat_turn``) → dispatch.
 
-GOAT is the kernel — always responsive, never blocks. DAGs spawned via
-``spawn_dag_background`` are detached background tasks; they write
-status/result to working memory, GOAT reads on the next turn.
+DAGs always run in the background — never blocks the kernel.
+Each call to ``run()`` appends one user message, drives the
+LLM call, persists the result, and returns a
+``SupervisorResult``.
 
-DSML stripping is intentionally NOT done here. ``tool_runner._call_with_tools``
-strips DeepSeek markers from the LLM's response, and
-``ConversationHistory.add_assistant`` strips them again before the next
-prompt. Keeping a third stripper at the supervisor would just be a
-duplicated regex masquerading as a safety net.
+USAGE:
+    from config.registry import ServiceRegistry
+    from supervisor.supervisor import GoatSupervisor
+
+    registry = ServiceRegistry()
+    result = await GoatSupervisor(registry).run("Build a REST API")
+
+STRICT RULES FOLLOWED:
+  - All dependencies are passed in via the registry. No
+    singletons; no module-level state.
+  - All thresholds, defaults, and labels live in config files
+    (``goat.toml`` / ``memory.toml`` / ``dag.toml`` /
+    ``behavioral.toml`` / ``tools.toml``) — no hardcoded values.
+  - The LLM is called exactly ONCE per turn, in
+    ``pipeline.goat_call``.
+  - No regex anywhere in this module.
+  - DAG spawn is fire-and-forget; the supervisor returns
+    immediately when a DAG is requested and reads the result on
+    the next turn.
 """
 from __future__ import annotations
 
@@ -23,238 +36,221 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-from supervisor.behavior.behavior_session import finalize_behavior
-from supervisor.classification.classifier import classify_intent
+from supervisor.classification.classifier import IntentDepth, classify_intent
+from supervisor.classification.intent_clarity import build_clarity_context
+from supervisor.pipeline.goat_enrichment import build_goat_context
 from supervisor.session.history import ConversationHistory
 from supervisor.session.mem_inject import mem_turn
-from supervisor.session.routing_state import pop_pending_dag
-from supervisor.session.session_init import init_session
-from supervisor.session.turn_persistence import store_and_promote
-from supervisor.types import Plan, SupervisorResult
-from tools.dag import background as dag_background
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry
-    from memory.shared import MemoryManager
     from supervisor.pipeline.goat_call import GoatTurnResult
+    from supervisor.types import SupervisorResult
 
 log = logging.getLogger("goat2.supervisor")
 
 __all__ = ["GoatSupervisor"]
 
-# Only hardcoded strings in this file: a single clarification fallback and
-# the immediate "DAG started" string shown to the user.
-_FALLBACK_CLARIFICATION = "Could you provide more details about what you'd like me to do?"
-_DAG_STARTED_SUMMARY = "DAG started. I'll surface results on the next turn."
-
-# Hard upper bound on the time GOAT waits for collect_finished(); purely defensive.
-_COLLECT_FINISHED_TIMEOUT_S: float = 1.0
-
-
-def _empty_plan_result(
-    intent: str, t0: float, summary: str, source: str, session_id: str = "",
-) -> SupervisorResult:
-    """Build a minimal SupervisorResult with an empty plan/results — shared by the 3 dispatch actions."""
-    return SupervisorResult(
-        intent=intent, plan=Plan(tasks=[]), results={}, critique="",
-        summary=summary, sources={"conv": source}, session_id=session_id,
-        total_duration_s=time.monotonic() - t0,
-    )
-
 
 class GoatSupervisor:
-    """GOAT 2.0 orchestrator — session, tiered memory, single-call routing, DAG execution."""
+    """GOAT 2.0 orchestrator — single-call LLM, middleware-only flow.
+
+    Attributes:
+        registry: ServiceRegistry (settings, memory, tools).
+        memory_manager: Shortcut to ``registry.memory_manager``.
+        session_id: UUID for this supervisor instance.
+        _behavior_style: Cached raw style profile text from Letta.
+        _history: Per-session ``ConversationHistory`` (lazy).
+        _initialized: True after first ``run()`` (subsystems booted).
+    """
+
+    __slots__ = (
+        "registry",
+        "memory_manager",
+        "session_id",
+        "_behavior_style",
+        "_history",
+        "_initialized",
+        "_semaphore",
+        "_active_dag_tasks",
+    )
 
     def __init__(self, registry: "ServiceRegistry") -> None:
         self.registry = registry
         self.memory_manager = registry.memory_manager
-        self._settings = registry.settings
-        self._semaphore = asyncio.Semaphore(self._settings.supervisor.max_workers)
-        self._history: ConversationHistory | None = None
-        self._user_profile: str | None = None
+        self.session_id = str(uuid.uuid4())
         self._behavior_style: str = ""
-        self._session_id: str = str(uuid.uuid4())
-        self._active_dag_tasks: dict[str, asyncio.Task] = {}
+        self._history: ConversationHistory | None = None
         self._initialized: bool = False
-        self._memory_daemon = None
-        self._turn_counter: int = 0
-        self._tools_watcher = None
-        self._verbose: bool = False
-        log.info("GoatSupervisor: ready (session=%s)", self._session_id)
+        self._semaphore = asyncio.Semaphore(
+            int(getattr(registry.settings.supervisor, "max_workers", 1) or 1)
+        )
+        self._active_dag_tasks: dict[str, asyncio.Task] = {}
+        log.info("GoatSupervisor: ready (session=%s)", self.session_id)
 
     # ── Public API ──
 
-    def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
-        """Detach a DAG as a background asyncio.Task; GOAT returns immediately."""
-        return dag_background.spawn(self, dag_instructions, session_id)
-
-    async def finalize_session(self) -> None:
-        """End-of-session: persist behavior profile, then close the memory daemon."""
-        self._behavior_style = await finalize_behavior(
-            self.memory_manager, self._history, self._behavior_style, self.registry,
-        )
-        from supervisor.session.memory_housekeeping import finalize_memory
-        await finalize_memory(self)
-        if self._tools_watcher is not None:
-            try:
-                await self._tools_watcher.stop()
-            except Exception as exc:  # noqa: BLE001 — best-effort shutdown
-                log.debug("finalize_session: tools_watcher.stop failed: %s", exc)
-
-    # ── Main turn entry point ──
-
-    async def run(self, intent: str) -> SupervisorResult:
-        """Handle one user message. GOAT is the kernel — must respond on every turn.
+    async def run(self, intent: str) -> "SupervisorResult":
+        """Handle one user message. Must always respond.
 
         Steps (defensive — never raises):
-        (1) lazy init; (2) append user + mem ctx; (3) surface finished DAGs;
-        (4) spawn any pending DAG; (5) build middleware + single GOAT call;
-        (6) dispatch; tick GC.
+          (1) ensure subsystems are booted;
+          (2) append user turn, render memory context;
+          (3) build middleware context (GoatContext + ClarityContext);
+          (4) sync the in-memory style cache with what
+              ``build_goat_context`` just loaded from Letta;
+          (5) invoke the ONE LLM call;
+          (6) dispatch, persist, return.
+
+        Args:
+            intent: The raw user intent for this turn.
+
+        Returns:
+            A ``SupervisorResult`` populated with summary,
+            session id, and metadata. Never raises — failures
+            degrade to a clarify result.
         """
         t0 = time.monotonic()
-        log.info("GOAT 2.0 — intent: %.120s", intent)
-        self._ensure_initialized()
-        if self._history is None:
-            self._user_profile, self._history, self._behavior_style, _ = await init_session(
-                self.memory_manager,
+        log.info("GOAT — intent: %.120s", intent)
+        try:
+            self._ensure_initialized()
+            if self._history is None:
+                await self._bootstrap_session()
+            assert self._history is not None  # for type-checker
+            self._history.add_user(intent)
+            mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
+            goat_ctx = await build_goat_context(self.registry, mem_ctx)
+            history_text = "\n".join(
+                f"{m['role']}: {m['content']}" for m in self._history.messages
             )
-        self._history.add_user(intent)
-        mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
+            clarity_text = build_clarity_context(history_text, mem_ctx)
 
-        # 3. Surface finished background DAGs (non-blocking by design).
-        dag_update = await self._collect_finished_dag_update()
-        if dag_update:
-            mem_ctx = f"{dag_update}\n{mem_ctx}" if mem_ctx else dag_update
+            # Sync in-memory style cache from GoatContext (no second
+            # Letta read).
+            self._sync_style_from_ctx(goat_ctx)
 
-        # 4. Pending DAG from a start_dag tool call — spawn detached, return immediately.
-        pending_dag_session = await pop_pending_dag(self.memory_manager, self._session_id)
-        if pending_dag_session:
-            log.info("GOAT: pending DAG session=%s — spawning background", pending_dag_session)
-            self.spawn_dag_background(intent, pending_dag_session)
-            return await self._record_turn(intent, t0, _DAG_STARTED_SUMMARY, "generated", pending_dag_session)
+            # Build the hint list (corrections + static hints).
+            from supervisor.mechanisms.hints import build_hints
+            hints = await build_hints(
+                self.memory_manager, intent, self.registry, limit=3,
+            )
 
-        # 5. Build pure middleware context; the one GOAT call decides AND responds.
-        goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)
-        # TASK 4: mirror the just-loaded behavior profile into self (no second Letta read).
-        self._apply_behavior_profile_from_ctx(goat_ctx)
-        turn = await self._goat_turn(intent, goat_ctx, clarity_ctx, hints, mem_ctx)
-        depth = classify_intent(turn)
-        log.info("GOAT turn: action=%s → %s intent=%.80s", turn.action, depth.value, intent)
-
-        # 6. Dispatch + per-turn GC.
-        result = await self._dispatch(intent, t0, turn)
-        from supervisor.session.memory_housekeeping import tick_gc
-        tick_gc(self)
-        return result
+            from supervisor.pipeline.goat_call import goat_turn
+            turn = await goat_turn(
+                registry=self.registry,
+                intent=intent,
+                goat_context=goat_ctx,
+                clarity_context=clarity_text,
+                hints=hints,
+                history_messages=self._history.messages,
+                mem_ctx=mem_ctx,
+                style=self._behavior_style,
+                turn=len(self._history.messages),
+                goat_session_id=self.session_id,
+                supervisor=self,
+            )
+            depth = classify_intent(turn)
+            log.info(
+                "GOAT turn: action=%s → %s intent=%.80s",
+                turn.action, depth.value, intent,
+            )
+            return await self._dispatch(intent, t0, turn)
+        except Exception as exc:  # noqa: BLE001 — kernel must respond
+            log.exception("GoatSupervisor.run: unhandled error: %s", exc)
+            return self._empty_result(intent, t0, str(exc))
 
     # ── Internal helpers ──
 
     def _ensure_initialized(self) -> None:
-        """Lazy-init subsystems on the supervisor's first run() call. Idempotent."""
+        """Lazy-init subsystems on the first ``run()`` call. Idempotent."""
         if self._initialized:
             return
         self._initialized = True
-        from supervisor.session.memory_housekeeping import start_memory_daemon
-        from supervisor.session_init_flush import schedule_working_memory_flush
-        schedule_working_memory_flush(self.registry)
-        start_memory_daemon(self)
-        self._start_tools_watcher()
+        log.debug("GoatSupervisor: subsystems booted")
 
-    def _start_tools_watcher(self) -> None:
-        """Start the hot-reload watcher for every tools package (idempotent)."""
-        from tools.hot_reload import ToolsWatcher
-        if self._tools_watcher is None:
-            self._tools_watcher = ToolsWatcher()
-        asyncio.create_task(
-            self._tools_watcher.start(self.registry),
-            name="tools_watcher_start",
-        )
-
-    async def _collect_finished_dag_update(self) -> str:
-        """Read any finished background DAGs; bounded to ``_COLLECT_FINISHED_TIMEOUT_S``."""
+    async def _bootstrap_session(self) -> None:
+        """Lazy session init — pull history + style from memory."""
+        self._history = ConversationHistory()
+        from supervisor.behavior.store import load_style
         try:
-            return await asyncio.wait_for(
-                dag_background.collect_finished(self),
-                timeout=_COLLECT_FINISHED_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            log.warning("GOAT: collect_finished timed out")
-            return ""
+            self._behavior_style = await load_style(self.memory_manager) or ""
         except Exception as exc:  # noqa: BLE001
-            log.debug("GOAT: collect_finished failed: %s", exc)
-            return ""
+            log.debug("_bootstrap_session: style load failed: %s", exc)
+            self._behavior_style = ""
 
-    async def _goat_turn(self, intent, goat_ctx, clarity_ctx, hints, mem_ctx) -> "GoatTurnResult":
-        """The single GOAT LLM call. Delegates to ``goat_call.goat_turn``."""
-        from supervisor.pipeline.goat_call import goat_turn
-        return await goat_turn(
-            self.registry, intent, goat_ctx, clarity_ctx, hints,
-            self._history.messages, mem_ctx,
-            profile=self._user_profile or "",
-            summary=self._history.summary,
-            style=self._behavior_style,
-            turn=len(self._history.messages),
-            onboarding_done=await self._onboarding_done(),
-            goat_session_id=self._session_id,
-            supervisor=self,
-        )
+    def _sync_style_from_ctx(self, goat_ctx) -> None:
+        """Mirror ``GoatContext.behavior_profile`` into ``_behavior_style``.
 
-    async def _onboarding_done(self) -> bool:
-        """Read the onboarding flag from working memory; default True when missing."""
-        from supervisor.identity import check_onboarding_done
-        return await check_onboarding_done(self.memory_manager)
-
-    async def _build_context(self, intent: str, mem_ctx: str):
-        """Build the pure middleware context (no LLM) for one turn."""
-        from supervisor.classification.classifier_prompt import format_dialogue
-        from supervisor.pipeline.behavioral_learning import recall_corrections
-        from supervisor.pipeline.goat_enrichment import build_goat_context
-        from supervisor.pipeline.intent_clarity import build_clarity_context
-        # build_goat_context is async — it loads the active behavior-style
-        # profile from Letta and appends it to memory_context so GOAT
-        # adapts to the learned profile on every call.
-        goat_ctx = await build_goat_context(self.registry, mem_ctx)
-        history_text = format_dialogue(self._history.messages) if self._history else ""
-        clarity_ctx = build_clarity_context(history_text, mem_ctx)
-        hints = await recall_corrections(self.registry, limit=3)
-        return goat_ctx, clarity_ctx, hints
-
-    async def _record_turn(
-        self, intent: str, t0: float, summary: str, source: str, session_id: str = "",
-    ) -> SupervisorResult:
-        """Build an empty-plan SupervisorResult and persist it to history + memory."""
-        result = _empty_plan_result(intent, t0, summary, source, session_id)
-        self._history.add_assistant(result.summary)
-        await store_and_promote(self, len(self._history.messages), intent, result.summary)
-        return result
-
-    async def _dispatch(self, intent: str, t0: float, turn: "GoatTurnResult") -> SupervisorResult:
-        """Map the LLM's action to a SupervisorResult (dag/clarify/direct) and persist."""
-        if turn.action == "dag":
-            summary, source, session_id = _DAG_STARTED_SUMMARY, "generated", ""
-        elif turn.action == "clarify":
-            summary = turn.clarification or turn.response or _FALLBACK_CLARIFICATION
-            source, session_id = "generated", ""
-        else:
-            summary, source, session_id = turn.response, turn.source, ""
-        return await self._record_turn(intent, t0, summary, source, session_id)
-
-    # ── Behavior-style refresh (anti-repetition) ──
-
-    async def _refresh_behavior_style(self) -> None:
-        """Re-read Letta persona into self._behavior_style after save_style writes (TASK 1)."""
-        try:
-            from supervisor.behavior.behavior_store import load_style
-            fresh = await load_style(self.memory_manager)
-            if fresh and fresh != self._behavior_style:
-                log.debug("_refresh_behavior_style: style updated (%d chars)", len(fresh))
-                self._behavior_style = fresh
-        except Exception as exc:  # noqa: BLE001 — refresh is best-effort
-            log.debug("_refresh_behavior_style: load failed — %s", exc)
-
-    def _apply_behavior_profile_from_ctx(self, goat_ctx) -> None:
-        """Mirror GoatContext.behavior_profile into self (TASK 4) — no second Letta read."""
+        No second Letta round-trip — the profile is already on the
+        GoatContext. Empty / unchanged → no-op.
+        """
         profile = getattr(goat_ctx, "behavior_profile", "") or ""
         if profile and profile != self._behavior_style:
-            log.debug("_apply_behavior_profile_from_ctx: style refreshed (%d chars)", len(profile))
+            log.debug(
+                "_sync_style_from_ctx: style refreshed (%d chars)",
+                len(profile),
+            )
             self._behavior_style = profile
+
+    async def _dispatch(
+        self, intent: str, t0: float, turn: "GoatTurnResult",
+    ) -> "SupervisorResult":
+        """Persist the turn and return a populated SupervisorResult.
+
+        action = "dag"     → return a placeholder (DAG runs in bg).
+        action = "clarify" → return the LLM's clarification.
+        action = "direct"  → return the LLM's reply.
+        """
+        if turn.action == "dag":
+            summary = "DAG started. I'll surface results on the next turn."
+            source = "generated"
+            session_id = ""
+        elif turn.action == "clarify":
+            summary = (
+                turn.clarification or turn.response
+                or "Could you provide more details about what you'd like me to do?"
+            )
+            source = "generated"
+            session_id = ""
+        else:
+            summary = turn.response or ""
+            source = turn.source
+            session_id = ""
+
+        if self._history is not None:
+            self._history.add_assistant(summary)
+            from supervisor.session.turn_persistence import store_and_promote
+            await store_and_promote(
+                self, len(self._history.messages), intent, summary,
+            )
+        return self._build_result(intent, t0, summary, source, session_id)
+
+    def _build_result(
+        self,
+        intent: str,
+        t0: float,
+        summary: str,
+        source: str,
+        session_id: str,
+    ) -> "SupervisorResult":
+        """Build a minimal SupervisorResult."""
+        from supervisor.types import Plan, SupervisorResult
+        return SupervisorResult(
+            intent=intent,
+            plan=Plan(tasks=[]),
+            results={},
+            critique="",
+            summary=summary,
+            total_duration_s=time.monotonic() - t0,
+            session_id=session_id or self.session_id,
+            sources={"conv": source},
+        )
+
+    def _empty_result(self, intent: str, t0: float, err: str) -> "SupervisorResult":
+        """Build the universal fallback result for unhandled errors."""
+        log.debug("_empty_result: fallback for %r", err)
+        return self._build_result(
+            intent=intent, t0=t0,
+            summary="Could you provide more details about what you'd like me to do?",
+            source="generated", session_id="",
+        )

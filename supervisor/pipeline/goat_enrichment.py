@@ -1,15 +1,25 @@
-"""GoatContext — pure context builder (NO LLM) of the facts GOAT needs to decide.
+"""GoatContext — pure context builder (NO LLM) of the facts GOAT
+needs to decide. Part of the single-call architecture: the
+middleware only assembles context; the one GOAT decision call
+(``pipeline.goat_call.goat_turn``) does the reasoning.
 
-Part of the single-call architecture: middleware only assembles context; the one
-GOAT decision call (``goat_decision.decide``) does the reasoning. This module
-gathers the facts GOAT needs — the workspace root, the agent roles and tools that
-actually exist in the registry, and the current memory context — and packages
-them into a ``GoatContext``. There is no LLM call, no scoring, and no hardcoded
-rules here: roles/tools come dynamically from the registry, the workspace from the
-environment.
+Gathers:
+  - workspace root from env
+  - available agent roles + tools (dynamic from the registry)
+  - the project-structure scan (pure-Python, no LLM)
+  - memory context (working memory + episodic recall)
+  - the raw style profile text (so the supervisor can refresh
+    its in-memory cache without a second Letta read)
+
+USAGE:
+    from supervisor.pipeline.goat_enrichment import build_goat_context
+
+    goat_ctx = await build_goat_context(registry, mem_ctx)
+    user_prompt = goat_ctx.to_prompt()
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -23,42 +33,40 @@ log = logging.getLogger("goat2.supervisor.pipeline.goat_enrichment")
 
 __all__ = ["GoatContext", "build_goat_context"]
 
+# Hard upper bound on the project-structure scan (seconds).
+# Pure-Python defensive ceiling; in normal use the scan finishes
+# well under 1 s.
+_PROJECT_SCAN_TIMEOUT_S: int = 5
+# Hard cap on the rendered project-structure text (chars).
+# Keeps the prompt bounded even on very large repos.
+_PROJECT_SCAN_MAX_CHARS: int = 2_000
+
 
 @dataclasses.dataclass
 class GoatContext:
-    """Facts GOAT needs to make its single decision (pure context, no judgment).
+    """Pure context the GOAT LLM call sees (no judgment, no decision)."""
 
-    Attributes:
-        workspace: Workspace root path from the ``GOAT_WORKSPACE`` env (or "").
-        available_agents: Agent roles registered in the registry (dynamic).
-        available_tools: Human-readable roles + tool names string (dynamic).
-        memory_context: Pre-computed working/episodic memory context for this turn.
-        behavior_profile: Raw style profile text from Letta's ``persona``
-            block. Empty when Letta is unreachable or no profile is set.
-            Carried back to the supervisor so it can refresh the
-            in-memory ``self._behavior_style`` *without* a second Letta
-            read (avoids the mid-session style-update delay that was
-            amplifying the GOAT-repetition feedback loop).
-    """
-
-    workspace: str
-    available_agents: list[str]
-    available_tools: str
-    memory_context: str
-    behavior_profile: str = ""
-    dag_tools: list[str] = None
-    has_prior_knowledge: bool = False
-    project_structure: str = ""
+    workspace:            str
+    available_agents:     list[str]
+    available_tools:      str
+    memory_context:       str
+    project_structure:    str   = ""
+    behavior_profile:     str   = ""
+    has_prior_knowledge:  bool  = False
+    dag_tools:            list[str] = dataclasses.field(default_factory=list)
 
     def to_prompt(self) -> str:
-        """Render this context as a prompt block for the GOAT decision call."""
+        """Render the context as a prompt block for the GOAT decision call."""
         lines = ["[GOAT capabilities]"]
         if self.workspace:
             lines.append(f"Workspace root (use this exact path): {self.workspace}")
         if self.available_agents:
             lines.append("DAG agent roles: " + ", ".join(self.available_agents))
         if self.dag_tools:
-            lines.append("DAG tool_caller tools (file operations): " + ", ".join(self.dag_tools))
+            lines.append(
+                "DAG tool_caller tools (file operations): "
+                + ", ".join(self.dag_tools)
+            )
         if self.available_tools:
             lines.append(self.available_tools)
         if self.memory_context:
@@ -67,25 +75,26 @@ class GoatContext:
 
 
 def _available_tools(registry: "ServiceRegistry") -> str:
-    """Build a human-readable list of available agent roles and tool names.
+    """Build a human-readable list of available agent roles + tool names.
 
-    Derived dynamically from the registry — no hardcoded agent or tool list.
-    Pulls registered DAG roles and the file/memory ToolDefinition names.
-
-    Args:
-        registry: ServiceRegistry exposing agent_registry and tool lists.
-
-    Returns:
-        A compact descriptive string of available capabilities.
+    Reads ``registry.agent_registry.roles()`` for agents and
+    several ``registry.<slot>`` lists for tools. Defensive: any
+    failure is logged at DEBUG and the section is omitted.
     """
     parts: list[str] = []
     try:
         roles = registry.agent_registry.roles()
         if roles:
             parts.append("Agent roles: " + ", ".join(sorted(roles)))
-    except Exception as exc:  # noqa: BLE001 — context-building must never raise
+    except Exception as exc:  # noqa: BLE001
         log.debug("_available_tools: roles() failed: %s", exc)
-    for label, attr in (("file tools", "file_tools"), ("memory tools", "memory_tools")):
+    for label, attr in (
+        ("file tools", "file_tools"),
+        ("memory tools", "memory_tools"),
+        ("dag tools", "dag_tools"),
+        ("system tools", "system_tools"),
+        ("goat skills", "goat_skills_tools"),
+    ):
         try:
             tools = getattr(registry, attr, None) or []
             names = [getattr(t, "name", "") for t in tools if getattr(t, "name", "")]
@@ -97,7 +106,7 @@ def _available_tools(registry: "ServiceRegistry") -> str:
 
 
 def _available_agents(registry: "ServiceRegistry") -> list[str]:
-    """Return the registered DAG agent roles (sorted), or [] on any error."""
+    """Sorted list of DAG agent roles from the registry."""
     try:
         return sorted(registry.agent_registry.roles())
     except Exception as exc:  # noqa: BLE001
@@ -105,88 +114,92 @@ def _available_agents(registry: "ServiceRegistry") -> list[str]:
         return []
 
 
-def _format_profile_block(profile: dict) -> str:
-    """Render a BehaviorProfile dict as a 4-line '[User Style Profile]' block.
+def _scan_project(root: str) -> str:
+    """Pure-Python project scan: list ``*.py`` files, capped.
 
-    Pure-Python; no LLM. Returns '' when the profile is empty so the
-    caller can skip the header entirely.
+    Uses ``subprocess.run`` with a hard timeout. Returns ``""``
+    on any failure (no ``find`` available, timeout, non-zero
+    return code). The output is trimmed to a fixed char cap so
+    a huge monorepo cannot blow the prompt.
     """
-    if not profile:
+    if not root:
         return ""
-    lines = ["[User Style Profile]"]
-    for field in ("formality", "tone", "vocabulary", "language", "humor", "length"):
-        value = profile.get(field)
-        if value:
-            lines.append(f"- {field}: {value}")
-    notes = profile.get("notes")
-    if notes:
-        lines.append(f"- notes: {notes}")
-    return "\n".join(lines)
+    try:
+        result = subprocess.run(
+            ["find", root, "-name", "*.py", "-not", "-path", "*/__pycache__/*"],
+            capture_output=True, text=True,
+            timeout=_PROJECT_SCAN_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_scan_project: subprocess failed: %s", exc)
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()[:_PROJECT_SCAN_MAX_CHARS]
 
 
-async def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> GoatContext:
-    """Assemble the GoatContext for this turn — pure, no LLM.
+async def build_goat_context(
+    registry: "ServiceRegistry",
+    mem_ctx: str = "",
+) -> GoatContext:
+    """Assemble the GoatContext — pure, no LLM.
+
+    The behavior profile is read here (Letta) and attached to
+    the GoatContext as ``behavior_profile`` so the supervisor
+    can refresh its in-memory cache without a second Letta
+    round-trip. ``build_goat_context`` is async for exactly
+    that one Letta read; everything else is sync.
 
     Args:
-        registry: ServiceRegistry for dynamic role/tool discovery and
-            for loading the active behavior-style profile from Letta.
-        mem_ctx: Pre-computed memory context string for this turn.
+        registry: ServiceRegistry (dynamic role/tool discovery).
+        mem_ctx: Pre-computed memory context string (from
+            ``session.mem_inject.mem_turn``).
 
     Returns:
-        A populated GoatContext with the active profile appended to
-        ``memory_context`` as a ``[User Style Profile]`` block. The
-        profile is loaded via ``behavior_session.get_profile``; when
-        Letta is unreachable or the profile is empty, no block is
-        added (GOAT falls back to default tone).
+        A populated ``GoatContext``. Defensive: any Letta or
+        subprocess failure is logged at DEBUG and reflected as
+        an empty / partial field.
     """
     workspace = os.environ.get("GOAT_WORKSPACE", "")
-    # Build project structure (pure-Python file walk; no LLM).
-    try:
-        result = subprocess.run(["find", workspace or ".", "-name", "*.py", "-not", "-path", "*/__pycache__/*"], capture_output=True, text=True, timeout=5)
-        proj_struct = result.stdout.strip()[:2000] if result.returncode == 0 else ""
-    except Exception:
-        proj_struct = ""
 
-    # Load the active behavior-style profile (formality / tone / language /
-    # vocabulary / humor / length / notes) and append it to memory_context
-    # so GOAT adapts every response to the user's learned style. Pure read
-    # against Letta; never raises (returns empty_profile() on any failure).
-    # The raw text is also attached to the GoatContext so the supervisor
-    # can refresh its in-memory _behavior_style without a second Letta
-    # read (closes the mid-session style-update delay).
-    mm = getattr(registry, "memory_manager", None)
-    profile_block = ""
-    behavior_profile_text = ""
-    try:
-        from supervisor.behavior.behavior_session import get_profile
-        from supervisor.behavior.behavior_store import load_style
-        profile = await get_profile(mm)
-        profile_block = _format_profile_block(profile)
-        # load_style returns the raw 'key: value' text used by
-        # _system_with_profile → mirror_instruction; get_profile returns
-        # the parsed dict used for the [User Style Profile] block. The
-        # supervisor needs the raw text, so fetch it here once.
-        behavior_profile_text = await load_style(mm)
-    except Exception as exc:  # noqa: BLE001 — profile is enhancement, not critical
-        log.debug("build_goat_context: profile load failed — %s", exc)
-        profile_block = ""
-        behavior_profile_text = ""
-
-    augmented_mem_ctx = mem_ctx or ""
-    if profile_block:
-        augmented_mem_ctx = f"{augmented_mem_ctx}\n\n{profile_block}" if augmented_mem_ctx else profile_block
+    # Project scan (sync) + profile load (async) run concurrently.
+    scan_task = asyncio.to_thread(_scan_project, workspace or ".")
+    profile_task = _load_behavior_text(getattr(registry, "memory_manager", None))
+    proj_struct, behavior_text = await asyncio.gather(scan_task, profile_task)
 
     ctx = GoatContext(
         workspace=workspace,
         available_agents=_available_agents(registry),
-        dag_tools=[getattr(t, "name", "") for t in getattr(registry, "file_tools", []) if getattr(t, "name", "")],
+        dag_tools=[
+            getattr(t, "name", "")
+            for t in getattr(registry, "file_tools", [])
+            if getattr(t, "name", "")
+        ],
         available_tools=_available_tools(registry),
-        memory_context=augmented_mem_ctx,
-        behavior_profile=behavior_profile_text or "",
-        has_prior_knowledge=bool(augmented_mem_ctx and len(augmented_mem_ctx) > 50),
-        project_structure=proj_struct,
+        memory_context=mem_ctx or "",
+        project_structure=proj_struct or "",
+        behavior_profile=behavior_text or "",
+        has_prior_knowledge=bool(mem_ctx and len(mem_ctx) > 50),
     )
-    log.debug("build_goat_context: workspace=%s agents=%d profile=%s",
-              workspace or "(unset)", len(ctx.available_agents),
-              "yes" if profile_block else "no")
+    log.debug(
+        "build_goat_context: workspace=%s agents=%d profile=%s",
+        workspace or "(unset)",
+        len(ctx.available_agents),
+        "yes" if behavior_text else "no",
+    )
     return ctx
+
+
+async def _load_behavior_text(mm) -> str:
+    """Read the GOAT ``persona`` block; return raw ``key: value`` text.
+
+    Defensive: any exception → ``""``.
+    """
+    if mm is None:
+        return ""
+    try:
+        from supervisor.behavior.store import load_style
+        return await load_style(mm) or ""
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_load_behavior_text failed: %s", exc)
+        return ""

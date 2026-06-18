@@ -155,6 +155,15 @@ temperature  = 0.5     # Reduced for accuracy (minimizes false information)
 telegram_token   = ""
 telegram_enabled = true
 
+[telegram]
+# Max characters per Telegram reply (Telegram's hard API limit).
+max_message_chars = 4096
+# Idle seconds before the bot drops its update queue.
+read_timeout_seconds = 30
+# Soft per-turn reply budget — caps how long the supervisor can
+# take before the bot logs a warning.
+turn_warn_seconds = 20
+
 # =============================================================================
 # END-TO-END TESTING
 # =============================================================================

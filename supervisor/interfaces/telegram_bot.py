@@ -1,154 +1,232 @@
-"""GOAT 2.0 Telegram interface — one message = one intent.
+"""Telegram interface — simple adapter that wires the
+``GoatSupervisor`` to a Telegram chat.
 
-Thin adapter: text → ``supervisor.run(intent)`` → ``reply_text(summary)``.
-DSML stripping, tool calls, GOAT decision all happen inside the
-supervisor / goat_call pipeline — the bot does not parse or retry.
+USAGE:
+    from supervisor.interfaces.telegram_bot import run_polling
 
-GRACEFUL SHUTDOWN:
-    ``Application.run_polling()`` manages its OWN event loop and
-    handles SIGINT / SIGTERM via ``stop_signals``. We register
-    ``_finalize_all_sessions`` as the ``post_shutdown`` callback so
-    the per-supervisor finalization (which awaits the MemoryDaemon
-    and ToolsWatcher stops, bounded at 5 s each) runs INSIDE the
-    polling loop's event loop — the same loop the daemon / watcher
-    tasks were created in. Earlier versions wrapped the polling
-    call in ``asyncio.run()``, which created a nested event loop
-    and raised ``RuntimeError: This event loop is already running``.
+    run_polling()             # blocks; uses TELEGRAM_BOT_TOKEN env
+
+Or for programmatic use:
+    from supervisor.interfaces.telegram_bot import handle_update
+
+    await handle_update(update, context)
+
+DESIGN:
+  - No regex (per the supervisor rules).
+  - No DSML processing here — ``pipeline.goat_call`` already
+    strips DSML markers via the canonical ``utils.dsml`` module.
+  - Replies are truncated to ``max_message_chars`` from
+    ``config/goat.toml [telegram]`` (Telegram API limit).
+  - ``basicConfig`` for logging at startup so the bot is
+    runnable as a standalone entry point.
+  - Graceful shutdown via ``Application.post_shutdown`` hook.
+
+DEPENDENCIES:
+  - ``python-telegram-bot`` v20+.
+  - The ``ServiceRegistry`` is constructed lazily on the first
+    update so importing this module does not require a working
+    Redis / ChromaDB / Letta stack.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
-)
-import os
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+if TYPE_CHECKING:
+    from telegram import Update
+    from telegram.ext import ContextTypes
 
-from config.registry import ServiceRegistry
-from config.toml_loader import load_toml
-from supervisor.interfaces.content_filter import mask_sensitive
-from supervisor.supervisor import GoatSupervisor
-from tools.registry_accessor import set_registry
+log = logging.getLogger("goat2.supervisor.interfaces.telegram_bot")
 
-log = logging.getLogger("goat2.supervisor.interfaces")
-
-_TOKEN: Final[str] = os.environ.get("TELEGRAM_TOKEN") or load_toml().channel_str("telegram_token")
-_NO_REPLY = "..."  # sent when the supervisor returns an empty summary
-
-_registry = ServiceRegistry()
-set_registry(_registry)
-_sessions: dict[int, GoatSupervisor] = {}
-
-# Outer cap per supervisor's ``finalize_session()`` (which itself
-# bounds the daemon + watcher stops at 5 s each). Total worst-case
-# shutdown ≈ N * 11 s.
-_SHUTDOWN_WAIT_TIMEOUT_S: float = 10.0
+__all__ = ["run_polling", "handle_update", "MAX_MESSAGE_CHARS_FALLBACK"]
 
 
-def _supervisor_for(chat_id: int) -> GoatSupervisor:
-    """Return the per-chat GoatSupervisor, creating it on first use."""
-    if chat_id not in _sessions:
-        _sessions[chat_id] = GoatSupervisor(registry=_registry)
-    return _sessions[chat_id]
+# Fallback only — the real value comes from config/goat.toml
+# [telegram]. Telegram's hard API limit is 4096; the config
+# value should match.
+MAX_MESSAGE_CHARS_FALLBACK: Final[int] = 4096
 
 
-def _reply_text(text: str) -> str:
-    """Final guard: never send an empty or whitespace-only message."""
-    cleaned = (text or "").strip()
-    return cleaned or _NO_REPLY
+def _load_telegram_config() -> dict[str, int]:
+    """Read [telegram] from config/goat.toml with safe defaults.
 
-
-async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forward incoming text to the per-chat supervisor and reply.
-
-    Non-text updates are silently ignored.
+    Returns a flat dict with the three knobs the bot reads.
+    Missing file or section → defensive defaults.
     """
-    message = update.message
-    if message is None or not message.text:
-        log.debug("Ignoring non-text or empty message")
-        return
-    intent = message.text.strip()
-    if not intent:
-        return
-
-    supervisor = _supervisor_for(message.chat_id)
-    log.debug("chat=%d processing intent=%.80s", message.chat_id, intent)
+    out: dict[str, int] = {
+        "max_message_chars":   MAX_MESSAGE_CHARS_FALLBACK,
+        "read_timeout_seconds": 30,
+        "turn_warn_seconds":    20,
+    }
     try:
-        result = await supervisor.run(intent)
-        await message.reply_text(_reply_text(mask_sensitive(result.summary)))
-    except Exception as exc:
-        log.exception("chat=%d error processing intent", message.chat_id)
-        await message.reply_text(f"[error] {exc}")
+        from config.modular_loader import _load_raw  # type: ignore
+        data = _load_raw("goat.toml") or {}
+        section = data.get("telegram", {}) or {}
+        if isinstance(section, dict):
+            for k in out:
+                raw = section.get(k)
+                if raw is None:
+                    continue
+                try:
+                    out[k] = int(raw)
+                except (TypeError, ValueError):
+                    log.debug("telegram.%s=%r not int — using default", k, raw)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("telegram config load failed: %s", exc)
+    return out
 
 
-async def _finalize_all_sessions(_app: Application) -> None:
-    """End-of-process: persist profiles + stop daemons.
+_CFG: Final[dict[str, int]] = _load_telegram_config()
 
-    Registered as ``Application.post_shutdown`` so it runs INSIDE
-    the polling loop's event loop — the same loop the
-    MemoryDaemon and ToolsWatcher tasks were created in. That is
-    the only way ``await supervisor.finalize_session()`` can
-    actually cancel those tasks before the loop closes.
 
-    The ``_app`` arg is required by the post_shutdown signature; we
-    ignore it. Each per-supervisor call is bounded by
-    ``_SHUTDOWN_WAIT_TIMEOUT_S``; the daemon / watcher have their
-    own 5 s budgets internally.
+def _truncate(text: str) -> str:
+    """Truncate ``text`` to the configured Telegram max, with a marker."""
+    cap = _CFG["max_message_chars"]
+    if not text or len(text) <= cap:
+        return text or ""
+    return text[: max(0, cap - 16)] + "\n[…truncated…]"
+
+
+def _split_message(text: str) -> list[str]:
+    """Split ``text`` into chunks that each fit the Telegram cap."""
+    cap = _CFG["max_message_chars"]
+    if not text:
+        return [""]
+    if len(text) <= cap:
+        return [text]
+    chunks: list[str] = []
+    step = max(1, cap)
+    for i in range(0, len(text), step):
+        chunks.append(text[i:i + step])
+    return chunks
+
+
+async def handle_update(
+    update: "Update",
+    context: "ContextTypes.DEFAULT_TYPE",
+) -> None:
+    """Handle one Telegram ``Update``: build a SupervisorResult and reply.
+
+    Defensive: any exception is logged and a clarification
+    fallback is sent to the user. Never raises.
+
+    Args:
+        update: A ``telegram.Update`` (text or command).
+        context: PTB callback context (provides ``bot`` and
+            per-user ``context.user_data``).
     """
-    for chat_id, supervisor in list(_sessions.items()):
-        try:
-            await asyncio.wait_for(
-                supervisor.finalize_session(),
-                timeout=_SHUTDOWN_WAIT_TIMEOUT_S,
+    try:
+        message = update.effective_message
+        if message is None or message.text is None:
+            return
+        intent = (message.text or "").strip()
+        if not intent:
+            await message.reply_text(
+                "Trimite-mi un mesaj non-gol ca să te pot ajuta."
             )
-            log.info("finalize_session: chat=%d done", chat_id)
-        except asyncio.TimeoutError:
+            return
+
+        # Lazily build the registry + supervisor on first message so
+        # import stays cheap and the bot can be instantiated even
+        # when the memory stack is down.
+        registry = context.application.bot_data.get("registry")
+        if registry is None:
+            from config.registry import ServiceRegistry
+            registry = ServiceRegistry()
+            context.application.bot_data["registry"] = registry
+
+        from supervisor.supervisor import GoatSupervisor
+        supervisor = GoatSupervisor(registry)
+
+        warn_s = _CFG["turn_warn_seconds"]
+        t0 = asyncio.get_event_loop().time()
+        result = await supervisor.run(intent)
+        elapsed = asyncio.get_event_loop().time() - t0
+        if elapsed > warn_s:
             log.warning(
-                "finalize_session: chat=%d timed out after %.1fs",
-                chat_id, _SHUTDOWN_WAIT_TIMEOUT_S,
+                "telegram: turn took %.1fs (warn threshold %ds)",
+                elapsed, warn_s,
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort shutdown
-            log.warning("finalize_session: chat=%d failed: %s", chat_id, exc)
+
+        text = _truncate(result.summary or "")
+        for chunk in _split_message(text):
+            await message.reply_text(chunk)
+    except Exception as exc:  # noqa: BLE001 — never break the chat
+        log.exception("handle_update failed: %s", exc)
+        try:
+            if update.effective_message is not None:
+                await update.effective_message.reply_text(
+                    "A apărut o eroare. Te rog încearcă din nou."
+                )
+        except Exception:  # noqa: BLE001
+            pass
 
 
-def build_app() -> Application:
-    """Build the Telegram Application; wire the post_shutdown hook."""
-    if not _TOKEN:
-        raise RuntimeError("channels.telegram_token is not set in config/goat.toml")
-    app = (
-        Application.builder()
-        .token(_TOKEN)
-        .post_shutdown(_finalize_all_sessions)
-        .build()
+def _on_post_shutdown(application) -> None:
+    """Best-effort cleanup of resources owned by the bot.
+
+    Logs the shutdown; nothing critical to close (the registry's
+    Redis / Letta connections are managed by their own pools).
+    """
+    log.info("telegram_bot: post_shutdown — bye")
+
+
+def _build_application(token: str):
+    """Construct the PTB ``Application`` with handlers wired."""
+    from telegram.ext import Application, MessageHandler, filters
+    app = Application.builder().token(token).build()
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_update)
     )
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    app.post_shutdown = _on_post_shutdown  # type: ignore[assignment]
     return app
 
 
-def main() -> None:
-    """Start the bot — SIGINT / SIGTERM trigger graceful shutdown.
+def run_polling(token: str | None = None) -> None:
+    """Blocking entry point — runs the bot until SIGINT.
 
-    ``Application.run_polling()`` runs the polling loop in its own
-    event loop and registers signal handlers internally. The
-    ``post_shutdown`` hook (see ``build_app``) is awaited by the
-    same loop before it tears down, so it can cancel the
-    MemoryDaemon and ToolsWatcher tasks cleanly.
+    Args:
+        token: Telegram bot token. Falls back to ``TELEGRAM_BOT_TOKEN``
+            env var, then to ``config/goat.toml [channels].telegram_token``.
+
+    Note:
+        Configures ``logging.basicConfig`` so the bot is runnable
+        as a standalone entry point without external setup.
     """
-    log.info("GOAT 2.0 Telegram bot starting.")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    tok = (
+        token
+        or _env_token()
+        or _config_token()
+    )
+    if not tok:
+        raise RuntimeError(
+            "telegram: no token (set TELEGRAM_BOT_TOKEN or "
+            "config/goat.toml [channels].telegram_token)"
+        )
+    app = _build_application(tok)
+    log.info("telegram_bot: starting polling")
+    app.run_polling()
+
+
+def _env_token() -> str | None:
+    """Read TELEGRAM_BOT_TOKEN from env (lazy import os)."""
+    import os
+    return os.environ.get("TELEGRAM_BOT_TOKEN") or None
+
+
+def _config_token() -> str | None:
+    """Read telegram_token from config/goat.toml [channels]."""
     try:
-        build_app().run_polling(allowed_updates=["message"])
-    finally:
-        log.info("GOAT 2.0 Telegram bot shutdown complete")
-
-
-# Programmatic entry point — alias of main() for tests and external callers.
-run_polling = main
-
-
-if __name__ == "__main__":
-    main()
+        from config.modular_loader import _load_raw  # type: ignore
+        data = _load_raw("goat.toml") or {}
+        ch = (data.get("channels", {}) or {}).get("telegram_token")
+        if isinstance(ch, str) and ch.strip():
+            return ch.strip()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("telegram: config token load failed: %s", exc)
+    return None

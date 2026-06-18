@@ -1,51 +1,64 @@
-"""Intent depth classifier — now a pure parser of GOAT's action (NO LLM).
+"""Intent classification — pure-Python routing of a turn's
+action. Routes one of:
 
-In the single-call architecture the routing judgment is made by the
-one GOAT call (``supervisor.pipeline.goat_call.goat_turn``). The
-classifier no longer makes its own LLM call, gathers no context,
-and applies no keywords/rules. It simply maps the already-made
-``GoatTurnResult.action`` (alias ``GoatDecision`` from
-``supervisor.pipeline.goat_decision``) to the ``IntentDepth`` enum:
+  - ``direct``  — GOAT answered in chat, no DAG needed.
+  - ``clarify`` — GOAT asked a clarifying question.
+  - ``dag``     — GOAT spawned a DAG (detected from called_tools).
 
-  action=direct   → CONVERSATIONAL
-  action=clarify  → CONVERSATIONAL
-  action=dag      → COMPLEX
+The classifier is a thin wrapper over a
+``supervisor.pipeline.goat_call.GoatTurnResult``. It reads the
+``action`` field which the call pipeline already populated.
 
-The ``IntentDepth`` enum is unchanged so existing importers keep working.
+USAGE:
+    from supervisor.classification.classifier import classify_intent
+
+    depth = classify_intent(turn_result)
+    if depth is IntentDepth.DAG:
+        ...collect results later...
+
+WHY A SEPARATE MODULE:
+    The action is decided inside the one LLM call. Other layers
+    (the supervisor, the Telegram interface, the audit log) all
+    want to know "what kind of turn was that?" without coupling
+    to the LLM call. This module is the single source of truth
+    for that answer.
 """
 from __future__ import annotations
 
-import logging
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import Final
 
-log = logging.getLogger("goat2.supervisor.classification.classifier")
-
-if TYPE_CHECKING:
-    from supervisor.pipeline.goat_call import GoatTurnResult
-
-__all__ = ["IntentDepth", "classify_intent"]
+__all__ = ["IntentDepth", "DIRECT", "CLARIFY", "DAG", "classify_intent"]
 
 
 class IntentDepth(str, Enum):
-    """Three-tier routing depth used by GoatSupervisor.run()."""
+    """Routing depth for one turn."""
 
-    CONVERSATIONAL = "conversational"  # direct LLM reply with tools available
-    ANALYTICAL     = "analytical"      # lightweight DAG, ≤2 tasks
-    COMPLEX        = "complex"         # full DAG with planner, researcher, critic
+    DIRECT  = "direct"   # chat reply, no DAG
+    CLARIFY = "clarify"  # clarifying question
+    DAG     = "dag"      # DAG spawned (or in flight)
 
 
-def classify_intent(turn: "GoatTurnResult") -> IntentDepth:
-    """Map GOAT's single-call action to an IntentDepth — pure, no LLM.
+# Convenient string aliases — callers can use either.
+DIRECT:  Final[str] = IntentDepth.DIRECT.value
+CLARIFY: Final[str] = IntentDepth.CLARIFY.value
+DAG:     Final[str] = IntentDepth.DAG.value
+
+
+def classify_intent(turn) -> IntentDepth:
+    """Map a ``GoatTurnResult`` to its routing depth.
 
     Args:
-        turn: The GoatTurnResult produced by the single GOAT call.
+        turn: Any object exposing ``.action`` (str) — typically a
+            ``GoatTurnResult``. The classifier tolerates missing
+            attributes and defaults to DIRECT.
 
     Returns:
-        IntentDepth.COMPLEX when ``action == "dag"``, otherwise
-        IntentDepth.CONVERSATIONAL (both ``direct`` and ``clarify`` are answered
-        on the conversational path).
+        The ``IntentDepth`` for the turn.
     """
-    depth = IntentDepth.COMPLEX if turn.action == "dag" else IntentDepth.CONVERSATIONAL
-    log.debug("classify_intent: action=%s → %s", turn.action, depth.value)
-    return depth
+    raw = getattr(turn, "action", None)
+    if raw == "dag":
+        return IntentDepth.DAG
+    if raw == "clarify":
+        return IntentDepth.CLARIFY
+    return IntentDepth.DIRECT

@@ -1,104 +1,96 @@
-"""Detect the dominant natural language of a user intent — pure middleware.
+"""Language detection — pure-Python heuristics over Unicode
+diacritics + word-frequency. No LLM, no regex, no third-party
+language-detection library.
 
-NO LLM. Heuristics:
+USAGE:
+    from supervisor.classification.lang_detect import detect_language
 
-  - Count Romanian diacritics (ă â î ș ț, with both comma and cedilla
-    forms of ș/ț). High share → ``ro``.
-  - Match against a small common-words list for Romanian and English.
-  - Mixed signals (both languages present in non-trivial amounts) →
-    ``mixed``.
-  - Default to ``en`` when no signal is found at all.
+    code = detect_language("Buna ziua, ce mai faci?")
+    # → "ro"
+    code = detect_language("Hello, how are you?")
+    # → "en"
+    code = detect_language("Salut, how ești tu astăzi?")
+    # → "mixed"
 
-Returns one of three short codes so the caller can branch on a
-single, stable identifier: ``"ro"`` | ``"en"`` | ``"mixed"``. The
-old LLM-based implementation returned an English-language name
-(``"English"`` / ``"Romanian"`` / …) which was brittle and slow;
-the new heuristic answer is enough for the language directive
-that ``task_prep.prepare_tasks`` prepends to each DAG task prompt.
+The decision rule:
+  - Count Romanian diacritics (ăâîșț – 5 chars). Each diacritic
+    counts as a Romanian signal.
+  - Match common Romanian function words ("si", "sunt", "este",
+    "pentru", "acest", "ce", "cu", "la", "de", "nu", "da") —
+    each hit is a Romanian signal.
+  - Match common English function words ("the", "is", "are",
+    "and", "you", "this", "that", "for", "with", "on") —
+    each hit is an English signal.
+  - If both are nonzero and within 30 % of each other → "mixed".
+  - Else pick the higher-count language.
+  - Else default to "en".
 """
 from __future__ import annotations
 
-import logging
-import re
-import unicodedata
 from typing import Final
 
-log = logging.getLogger("goat2.supervisor.classification")  # legacy logger name
+__all__ = ["detect_language", "RO_DIACRITICS", "RO_WORDS", "EN_WORDS"]
 
-__all__ = ["detect_language", "LANG_RO", "LANG_EN", "LANG_MIXED"]
+# Romanian diacritics. Case-sensitive on purpose — the function
+# lowercases input before matching.
+RO_DIACRITICS: Final[str] = "ăâîșț"
 
-LANG_RO: Final[str] = "ro"
-LANG_EN: Final[str] = "en"
-LANG_MIXED: Final[str] = "mixed"
-
-# Romanian diacritics. ș/ț appear in both the comma-below form and
-# the cedilla form in real-world text; treat both as Romanian.
-_RO_DIACRITICS: Final[str] = "ăâîșț"
-_RO_DIACRITICS_NFC: Final[str] = unicodedata.normalize("NFC", _RO_DIACRITICS)
-
-# Common Romanian words — longer, higher-precision words. Short
-# function words ("are", "a", "in", "pe") overlap with English
-# and add noise, so we skip them. The diacritic check below
-# provides the high-precision short-word signal.
-_RO_WORDS: Final[frozenset[str]] = frozenset({
-    "vreau", "trebuie", "mulțumesc", "multumesc", "săptămână",
-    "saptamana", "acest", "această", "acestei", "acestor",
-    "acolo", "aici", "salut", "bună", "buna", "noapte",
-    "merge", "facem", "facut", "făcut", "făcut", "faci", "gândesc",
-    "gindesc", "gândire", "când", "cand", "atunci", "deci",
-    "totuși", "totusi", "însă", "insa", "aproape", "departe",
-    "întrebare", "intrebare", "răspuns", "raspuns", "fiecare",
-    "oricum", "oricând", "oricand", "ziua", "noapte",
-    "merge", "astăzi", "astazi", "mâine", "mainе", "ieri",
+# Common function words. Lower-case. Multi-word phrases (none
+# here, kept simple) would require token-level matching; this
+# list is enough for the conversational-style signals we care
+# about.
+RO_WORDS: Final[frozenset[str]] = frozenset({
+    "si", "sunt", "este", "suntem", "sunteti", "pentru",
+    "acest", "aceasta", "aceste", "acela", "ce", "cu", "la",
+    "de", "nu", "da", "din", "pe", "in", "sau", "dar", "mai",
+    "foarte", "cum", "unde", "cand", "dece", "fara", "doar",
+    "toate", "tot", "ta", "tau", "meu", "mea", "nostru",
+    "vostru", "lor", "sau", "aici", "acolo", "acum", "azi",
+    "ieri", "maine", "bine", "rau", "multumesc", "te", "rog",
 })
 
-# Common English words — only 4+ character words to avoid the
-# short-word overlap (e.g. "are" / "in" / "on" are valid in both
-# languages). The diacritic check is what catches Romanian at the
-# short-word level.
-_EN_WORDS: Final[frozenset[str]] = frozenset({
-    "hello", "thanks", "please", "what", "when", "where",
-    "which", "this", "that", "these", "those", "your", "have",
-    "would", "could", "should", "might", "about", "there",
-    "their", "they", "with", "from", "just", "like", "make",
-    "know", "think", "want", "need", "help", "okay",
-    "today", "tomorrow", "yesterday",
+EN_WORDS: Final[frozenset[str]] = frozenset({
+    "the", "is", "are", "was", "were", "and", "you", "this",
+    "that", "for", "with", "on", "in", "at", "by", "of",
+    "to", "from", "as", "or", "but", "not", "no", "yes",
+    "i", "we", "they", "he", "she", "it", "my", "your",
+    "our", "their", "his", "her", "its", "have", "has", "had",
+    "do", "does", "did", "will", "would", "can", "could",
+    "should", "may", "might", "must", "shall",
 })
 
-# Whitespace + basic punctuation tokenizer.
-_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[\wăâîșțĂÂÎȘȚ]+", re.UNICODE)
 
+def detect_language(text: str) -> str:
+    """Return ``"ro"``, ``"en"``, or ``"mixed"`` for ``text``.
 
-def detect_language(intent: str) -> str:
-    """Return ``"ro"`` / ``"en"`` / ``"mixed"`` for ``intent``.
+    Args:
+        text: Source text (any length). Empty → ``"en"``.
 
-    Pure heuristic. No LLM. Empty / whitespace-only input
-    defaults to ``"en"`` (no signal → no language directive
-    prepended in ``task_prep``).
+    Returns:
+        ISO-like 2-letter code; ``"mixed"`` when both languages
+        are detected in roughly equal proportion.
     """
-    if not intent or not intent.strip():
-        return LANG_EN
-    text = unicodedata.normalize("NFC", intent.lower())
-    tokens = [t for t in _TOKEN_RE.findall(text) if len(t) > 1]
-    if not tokens:
-        return LANG_EN
-    ro_diacritics = sum(1 for ch in text if ch in _RO_DIACRITICS_NFC)
-    ro_hits = sum(1 for t in tokens if t in _RO_WORDS)
-    en_hits = sum(1 for t in tokens if t in _EN_WORDS)
-    log.debug(
-        "detect_language: ro_diacritics=%d ro_hits=%d en_hits=%d tokens=%d",
-        ro_diacritics, ro_hits, en_hits, len(tokens),
-    )
-    if ro_diacritics >= 2 or ro_hits >= 2:
-        # Strong Romanian signal. If the English count is also
-        # non-trivial, the message is mixed.
-        if en_hits >= 2:
-            return LANG_MIXED
-        return LANG_RO
-    if en_hits >= 1 and ro_hits == 0 and ro_diacritics == 0:
-        return LANG_EN
-    if ro_hits >= 1 and en_hits >= 1:
-        return LANG_MIXED
-    # No signal — default to English so the caller does not
-    # prepend a Romanian directive for unknown content.
-    return LANG_EN
+    if not text:
+        return "en"
+    lower = text.lower()
+    ro_diac = sum(1 for c in lower if c in RO_DIACRITICS)
+    tokens = lower.split()
+    ro_hits = sum(1 for w in tokens if w in RO_WORDS)
+    en_hits = sum(1 for w in tokens if w in EN_WORDS)
+    # Combine diacritic + word hits (diacritics are stronger signal).
+    ro_score = ro_diac * 2 + ro_hits
+    en_score = en_hits
+    if ro_score == 0 and en_score == 0:
+        return "en"
+    if ro_score == 0:
+        return "en"
+    if en_score == 0:
+        return "ro"
+    # Within ~50 % of each other → mixed. Tighter thresholds
+    # make the detector too reluctant to call a clearly bilingual
+    # turn "mixed".
+    lo = min(ro_score, en_score)
+    hi = max(ro_score, en_score)
+    if hi > 0 and lo / hi >= 0.5:
+        return "mixed"
+    return "ro" if ro_score > en_score else "en"

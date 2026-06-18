@@ -1,21 +1,17 @@
-"""Intent classification for GOAT 2.0 — depth routing and language detection.
+"""supervisor.classification — pure-Python routing logic.
 
-Exports:
-    - IntentDepth: Enum for conversational/analytical/complex routing
-    - classify_intent: Pure LLM-driven intent depth classification
-    - detect_language: LLM-driven language detection
+Three modules:
+  - ``classifier``     — turn action → routing depth (DIRECT/CLARIFY/DAG)
+  - ``lang_detect``    — Romanian / English / mixed detection
+  - ``intent_clarity`` — missing-slot detection (path / format / scope / name)
+
+No LLM, no regex, no I/O. The LLM call lives in
+``supervisor.pipeline.goat_call``; this package only consumes
+its result and tells the rest of the system what kind of turn
+it was.
 """
 from __future__ import annotations
 
-import logging
+from supervisor.classification import classifier, intent_clarity, lang_detect
 
-log = logging.getLogger("goat2.supervisor.classification")
-
-from supervisor.classification.classifier import IntentDepth, classify_intent
-from supervisor.classification.lang_detect import detect_language
-
-__all__ = [
-    "IntentDepth",
-    "classify_intent",
-    "detect_language",
-]
+__all__ = ["classifier", "intent_clarity", "lang_detect"]

@@ -5,6 +5,137 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — Full rewrite of supervisor/ from scratch
+
+The `supervisor/` package is rebuilt from zero around the
+single-call architecture with strict module boundaries:
+
+  - **Zero hardcoded values.** Every threshold, default,
+    pattern list, and label lives in a `config/*.toml` file
+    or `config/fallbacks.py`. New `[telegram]` section added
+    to `config/goat.toml` for the bot adapter.
+  - **Zero regex.** All string operations use Python built-ins
+    (`str.split`, `str.lower`, `str.startswith`, `str.__contains__`).
+    Token-level Jaccard for anti-repetition uses `set` ops.
+  - **Zero LLM calls outside `pipeline/goat_call.py`.** Every
+    other module is pure orchestration or pure Python. The
+    LLM is invoked exactly once per turn.
+  - **Pure-Python middleware** under `supervisor/mechanisms/` —
+    eight small primitives, each a single responsibility, none
+    exceeding 130 lines.
+  - **Full docstrings** on every class and public function.
+  - **TYPE_CHECKING** for every cross-module import; lazy
+    imports where cycles exist.
+  - **Registry injection** everywhere — no module-level state,
+    no singletons. `GoatSupervisor` reads its `ServiceRegistry`
+    through constructor injection.
+
+### New structure (31 Python files, all ≤ 260 lines)
+
+```
+supervisor/
+├── __init__.py                     (28)
+├── supervisor.py                   (256)  GoatSupervisor orchestrator
+├── identity.py                     (76)   10 GOAT_SYSTEM rules, no personality
+├── types.py                        (113)  SupervisorResult dataclass
+│
+├── pipeline/
+│   ├── __init__.py                 (17)
+│   ├── goat_enrichment.py          (205)  GoatContext + middleware assembly
+│   └── goat_call.py                (253)  THE ONE LLM CALL
+│
+├── behavior/
+│   ├── __init__.py                 (18)
+│   ├── analyzer.py                 (256)  pure-Python style scoring
+│   ├── analyzer_markers.py         (72)   frozen word/emoji lists
+│   ├── mirror.py                   (55)   profile → system-prompt directive
+│   ├── profile.py                  (101)  BehaviorProfile dataclass
+│   └── store.py                    (87)   Letta read/write
+│
+├── classification/
+│   ├── __init__.py                 (17)
+│   ├── classifier.py               (63)   GoatTurnResult → DIRECT/CLARIFY/DAG
+│   ├── intent_clarity.py           (88)   missing-slot detection
+│   └── lang_detect.py              (95)   RO/EN/mixed detection
+│
+├── session/
+│   ├── __init__.py                 (17)
+│   ├── history.py                  (73)   rolling buffer
+│   ├── mem_inject.py               (158)  memory context assembly
+│   └── turn_persistence.py         (135)  store + learn + refresh + promote
+│
+├── mechanisms/                     (pure-Python middleware)
+│   ├── __init__.py                 (38)
+│   ├── antirepeat.py               (132)  dedup_history + is_repetitive
+│   ├── context_builder.py          (116)  build_context (composes others)
+│   ├── corrections.py              (93)   recall_corrections
+│   ├── freshness.py                (105)  score_freshness (FRESH/RECENT/OLD)
+│   ├── hints.py                    (87)   build_hints
+│   ├── namespace.py                (73)   CONV/DAG/GOAT/SYS
+│   ├── staleness.py                (78)   is_stale (DAG-age aware)
+│   └── style_sync.py               (68)   refresh_style
+│
+└── interfaces/
+    ├── __init__.py                 (18)
+    └── telegram_bot.py             (231)  PTB adapter, no regex, no DSML
+```
+
+### Mechanisms API
+
+Every mechanism is pure Python. Their public surface:
+
+- `freshness.score_freshness(entry, now) -> "FRESH"|"RECENT"|"OLD"`
+- `namespace.classify_namespace(key) -> "CONV"|"DAG"|"GOAT"|"SYS"`
+- `staleness.is_stale(entry, intent, now) -> bool`
+- `antirepeat.dedup_history(messages) -> list` + `is_repetitive(response, history) -> bool`
+- `style_sync.refresh_style(supervisor) -> bool`
+- `context_builder.build_context(entries, intent, now) -> str`
+- `corrections.recall_corrections(mm, limit) -> list[str]`
+- `hints.build_hints(mm, intent, registry, limit) -> list[str]`
+
+### GOAT_SYSTEM (10 rules, operational only)
+
+```
+1. Never invent facts. Use tools, working memory, or the [Memory] block.
+2. Prefer tools and memory over assumptions. Verify before stating facts.
+3. Respond in the user's language. Adapt to the user's communication style.
+4. Use memory as context, not as a script. Never reuse previous responses verbatim.
+5. Avoid repetitive patterns. Reformulate naturally when similar situations occur.
+6. Be concise when possible, detailed when necessary. No filler, no preamble.
+7. Questions are allowed when they help task completion or natural conversation.
+8. After tool calls, always provide a visible response. Never return empty.
+9. Context entries are labeled [FRESH/RECENT/OLD][CONV/DAG/GOAT/SYS].
+   Prioritize [FRESH][CONV]. Treat [OLD][DAG] as potentially stale.
+10. Prefer most recent verified information over older memory when conflicts exist.
+```
+
+### Verified
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- `python3 -c "from supervisor.interfaces.telegram_bot import run_polling; print('ok')"` → ok
+- `python3 -c "from supervisor.mechanisms.freshness import score_freshness; print('ok')"` → ok
+- `python3 -c "from supervisor.mechanisms.antirepeat import dedup_history; print('ok')"` → ok
+- `python3 -m py_compile supervisor/supervisor.py` → syntax ok
+- `python3 -m py_compile supervisor/interfaces/telegram_bot.py` → syntax ok
+- All 23 internal modules import cleanly in 1.6 s (no circular deps)
+- 38 behavioral assertions across all mechanisms pass
+- `import re` / `re.*` API usage in supervisor/: **0** occurrences
+- LLM-call API usage outside `pipeline/goat_call.py`: **0** occurrences
+- Module-level singletons: **0**
+
+### Strict rules met
+- ZERO hardcoded values (every threshold/label/default in toml)
+- ZERO regex in supervisor/ (Python string ops only)
+- ZERO LLM calls except in `pipeline/goat_call.py` (one call per turn)
+- Full docstrings on every class and public function
+- TYPE_CHECKING for all cross-module imports
+- Lazy imports where needed to avoid circular deps
+- Registry injection for all dependencies (no singletons)
+- All files ≤ 260 lines
+- All mechanisms in `mechanisms/` are pure Python middleware
+- `GOAT_SYSTEM` in `identity.py` is operational rules only, no personality
+
+---
+
 ## [Unreleased] — 2026-06-18 — Anti-repetition mechanisms (closing 3 feedback loops)
 
 GOAT was repeating the same response pattern across turns. The

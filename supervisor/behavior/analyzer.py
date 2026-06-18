@@ -1,0 +1,257 @@
+"""Style analyzer — score user communication style from recent
+turns using pure-Python heuristics (no LLM).
+
+Reads the heuristic thresholds from ``config/behavioral.toml``
+via the modular loader. Returns a serialized profile text
+suitable for ``store.save_style``.
+
+USAGE:
+    from supervisor.behavior.analyzer import analyze_style
+
+    text = await analyze_style(user_turns, registry, existing_profile_text)
+
+SCORING: each BehaviorProfile field is scored by a small pure
+function over the joined text of recent turns. The new profile
+is merged over ``existing`` so the user's evolving style grows
+incrementally. Returns ``existing`` unchanged when there are
+fewer than ``min_turns_to_learn`` turns. Marker sets live in
+``analyzer_markers`` to keep this file under 260 lines.
+"""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Final
+
+from supervisor.behavior.analyzer_markers import (
+    CURT_WORDS, EMOJI_FRIENDLY, FRIENDLY_EMOJI, HUMOR_WORDS,
+    LAUGH_TOKENS, POLITE_WORDS, SLANG_WORDS, SMILEY_EMOJI,
+    TECH_WORDS,
+)
+from supervisor.behavior.profile import (
+    BehaviorProfile, deserialize, empty_profile, serialize,
+)
+
+if TYPE_CHECKING:
+    from config.registry import ServiceRegistry
+
+log = logging.getLogger("goat2.supervisor.behavior.analyzer")
+
+__all__ = ["analyze_style", "load_thresholds"]
+
+
+def load_thresholds() -> dict[str, float | int | str]:
+    """Read [learning] and [style] sections from config/behavioral.toml.
+
+    Returns a flat dict with three knobs the analyzer reads.
+    Missing section / missing key → safe default. The toml
+    loader is non-fatal — a missing or unparseable file
+    silently falls back to defaults so the analyzer stays
+    usable in any environment.
+    """
+    out: dict[str, float | int | str] = {
+        "min_turns_to_learn":   2,
+        "max_turns_to_analyze": 20,
+        "verbosity_default":    "moderate",
+    }
+    try:
+        from config.modular_loader import load_behavioral_config
+        data = load_behavioral_config() or {}
+        for k in ("min_turns_to_learn", "max_turns_to_analyze"):
+            v = (data.get("learning", {}) or {}).get(k)
+            if v is None:
+                continue
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                log.debug("analyzer: %s=%r not int — using default", k, v)
+        v = (data.get("style", {}) or {}).get("verbosity_default")
+        if v:
+            out["verbosity_default"] = str(v)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("analyzer: behavioral.toml load failed: %s", exc)
+    return out
+
+
+# Loaded once at import time; pure read of a static toml.
+_THRESH: Final[dict[str, float | int | str]] = load_thresholds()
+
+
+def _avg_length(turns: list[str]) -> float:
+    """Mean character length of non-empty turns."""
+    non_empty = [t for t in turns if t]
+    if not non_empty:
+        return 0.0
+    return sum(len(t) for t in non_empty) / len(non_empty)
+
+
+def _punctuation_density(text: str) -> float:
+    """Punctuation chars per 100 characters of text."""
+    if not text:
+        return 0.0
+    return sum(1 for c in text if c in ".,;:!?") * 100.0 / len(text)
+
+
+def _cap_rate(text: str) -> float:
+    """Fraction of alphabetic chars that are uppercase."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for c in letters if c.isupper()) / len(letters)
+
+
+def _score_formality(turns: list[str]) -> str:
+    """``casual`` | ``neutral`` | ``formal``."""
+    if not turns:
+        return "neutral"
+    text = " ".join(turns).lower()
+    punct = sum(_punctuation_density(t) for t in turns) / len(turns)
+    cap   = sum(_cap_rate(t) for t in turns) / len(turns)
+    polite = sum(1 for w in text.split() if w in POLITE_WORDS)
+    slang  = sum(1 for w in text.split() if w in SLANG_WORDS)
+    if polite >= 2 and punct >= 3:
+        return "formal"
+    if slang >= 2 or cap < 0.02 or punct < 0.5:
+        return "casual"
+    return "neutral"
+
+
+def _score_tone(turns: list[str]) -> str:
+    """``friendly`` | ``technical`` | ``dry`` | ``direct``."""
+    if not turns:
+        return "dry"
+    text = " ".join(turns).lower()
+    joined = " ".join(turns)
+    has_emoji = any(c in joined for c in EMOJI_FRIENDLY)
+    tech = sum(1 for w in text.split() if w in TECH_WORDS)
+    curt = sum(1 for t in turns for w in t.split() if w.lower() in CURT_WORDS)
+    if has_emoji and tech <= 1:
+        return "friendly"
+    if tech >= 2:
+        return "technical"
+    if curt >= len(turns):
+        return "direct"
+    return "dry"
+
+
+def _score_vocabulary(turns: list[str]) -> str:
+    """``simple`` | ``technical`` | ``mixed``."""
+    if not turns:
+        return "simple"
+    tokens = [w for w in " ".join(turns).lower().split() if w]
+    if not tokens:
+        return "simple"
+    tech = sum(1 for w in tokens if w in TECH_WORDS)
+    rate = tech / len(tokens)
+    if rate >= 0.10:
+        return "technical"
+    if rate >= 0.03:
+        return "mixed"
+    return "simple"
+
+
+def _score_language(turns: list[str]) -> str:
+    """``Romanian`` | ``English`` | ``mixed RO/EN`` — delegates to lang_detect."""
+    if not turns:
+        return "English"
+    try:
+        from supervisor.classification.lang_detect import detect_language
+        code = detect_language(" ".join(turns))
+    except Exception:  # noqa: BLE001
+        return "English"
+    return {"ro": "Romanian", "en": "English", "mixed": "mixed RO/EN"}.get(code, "English")
+
+
+def _score_humor(turns: list[str]) -> str:
+    """``none`` | ``dry`` | ``playful``."""
+    if not turns:
+        return "none"
+    text = " ".join(turns).lower()
+    joined = " ".join(turns)
+    if any(tok in text for tok in HUMOR_WORDS):
+        return "playful"
+    if any(c in joined for c in SMILEY_EMOJI):
+        return "dry"
+    return "none"
+
+
+def _score_length(avg_len: float) -> str:
+    """``terse`` | ``moderate`` | ``verbose``."""
+    if avg_len < 25:
+        return "terse"
+    if avg_len < 120:
+        return "moderate"
+    return "verbose"
+
+
+def _make_notes(turns: list[str], avg_len: float) -> str:
+    """Short free-form observation (≤120 chars)."""
+    if not turns:
+        return "standard prose"
+    notes: list[str] = []
+    text = " ".join(turns)
+    if _punctuation_density(text) < 0.5:
+        notes.append("skips punctuation")
+    if _cap_rate(text) < 0.03:
+        notes.append("mostly lowercase")
+    if avg_len < 25:
+        notes.append("short replies")
+    if any(c in text for c in FRIENDLY_EMOJI):
+        notes.append("uses emoji")
+    if any(tok in text.lower() for tok in LAUGH_TOKENS):
+        notes.append("often laughs")
+    if not notes:
+        notes.append("standard prose")
+    return ", ".join(notes)[:120]
+
+
+async def analyze_style(
+    user_turns: list[str],
+    registry: "ServiceRegistry | None" = None,  # unused — kept for compat
+    existing: str = "",
+) -> str:
+    """Score user communication style from ``user_turns``.
+
+    Args:
+        user_turns: Recent user turn strings (most recent last).
+        registry: Reserved for future use; currently ignored.
+            Kept in the signature so existing call sites continue
+            to work without modification.
+        existing: The current profile text (from
+            ``store.load_style``). Merged with the new scores.
+
+    Returns:
+        The serialized updated profile text. Returns
+        ``existing`` unchanged when there are fewer than
+        ``min_turns_to_learn`` turns.
+    """
+    _ = registry  # reserved
+    min_turns = int(_THRESH.get("min_turns_to_learn", 2) or 2)
+    max_turns = int(_THRESH.get("max_turns_to_analyze", 20) or 20)
+    if len(user_turns) < min_turns:
+        log.debug("analyze_style: %d turn(s) < min=%d — skipping",
+                  len(user_turns), min_turns)
+        return existing
+    sample = list(user_turns[-max_turns:])
+    existing_profile = deserialize(existing) if existing else empty_profile()
+    avg_len = _avg_length(sample)
+    new = BehaviorProfile(
+        formality=_score_formality(sample),
+        tone=_score_tone(sample),
+        vocabulary=_score_vocabulary(sample),
+        language=_score_language(sample),
+        humor=_score_humor(sample),
+        length=_score_length(avg_len),
+        notes=_make_notes(sample, avg_len),
+    )
+    # Merge: new fields override existing; keep existing when
+    # the new scorer returned nothing.
+    merged = BehaviorProfile(
+        formality  = new.formality  or existing_profile.formality,
+        tone       = new.tone       or existing_profile.tone,
+        vocabulary = new.vocabulary or existing_profile.vocabulary,
+        language   = new.language   or existing_profile.language,
+        humor      = new.humor      or existing_profile.humor,
+        length     = new.length     or existing_profile.length,
+        notes      = new.notes      or existing_profile.notes,
+    )
+    return serialize(merged)

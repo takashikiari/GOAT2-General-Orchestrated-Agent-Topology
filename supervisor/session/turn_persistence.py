@@ -1,28 +1,31 @@
-"""Turn persistence & memory-tier promotion for GoatSupervisor.
+"""Turn persistence — store a completed turn to working memory,
+trigger style analysis, schedule tier promotion, refresh the
+in-memory style cache. Free functions over the live supervisor
+instance (no singletons, no module-level state).
 
-Free functions that store a completed conversation turn into the working and
-episodic tiers, trigger behavioral-style learning, and schedule promotion of
-turns through the memory tiers as a background task. Extracted from
-GoatSupervisor so the supervisor class stays focused on orchestration.
+USAGE (from the supervisor):
+    from supervisor.session.turn_persistence import store_and_promote
 
-Each function takes the live ``supervisor`` instance for state access (history,
-session id, registry, memory_manager) — no singletons, no module-level state.
-All steps degrade quietly on error so a memory hiccup never breaks the turn.
+    await store_and_promote(supervisor, turn_count, intent, summary)
 
-BEHAVIOR-STYLE REFRESH (anti-repetition):
-=========================================
-After ``save_style`` writes an updated profile to Letta's ``persona`` block,
-the supervisor's in-memory ``_behavior_style`` would otherwise stay stale
-until session end (mid-session style changes are invisible to the system
-prompt — one of the three reinforcing loops causing GOAT to repeat
-itself). The callback below re-reads the Letta block immediately so the
-next turn's system prompt carries the freshest profile.
+WHAT IT DOES:
+  1. Stores the turn in working memory as a structured record
+     (``turn:<n>`` key).
+  2. Analyzes recent user turns and persists an updated style
+     profile to Letta's ``persona`` block.
+  3. If the style was actually written, refreshes the
+     supervisor's in-memory ``_behavior_style`` so the next
+     turn's system prompt sees the freshest style.
+  4. Schedules the background tier-promotion task.
+
+All steps degrade quietly on error so a memory hiccup never
+breaks the turn.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from config.roles import SESSION_ROLE
 
@@ -33,54 +36,100 @@ log = logging.getLogger("goat2.supervisor.session.turn_persistence")
 
 __all__ = ["store_and_promote", "schedule_promotion"]
 
+# How many recent working-memory entries the analyzer reads.
+# Small window keeps the analyzer fast (O(n) scoring on a
+# bounded list) and avoids stale turn influence.
+_ANALYZER_WINDOW: Final[int] = 10
+
 
 async def store_and_promote(
-    supervisor: "GoatSupervisor", turn_count: int, intent: str, summary: str
+    supervisor: "GoatSupervisor",
+    turn_count: int,
+    intent: str,
+    summary: str,
 ) -> None:
-    """Store the turn (structured) in working memory, learn style, schedule promotion."""
-    mm = supervisor.memory_manager
-    if not mm:
+    """Persist the turn, learn style, refresh cache, schedule promotion.
+
+    Args:
+        supervisor: The live GoatSupervisor (source of mm, registry).
+        turn_count: 1-based turn number (``len(history.messages)``).
+        intent: The raw user intent for this turn.
+        summary: The assistant's user-facing summary for this turn.
+
+    Returns:
+        None. Best-effort; never raises.
+    """
+    mm = getattr(supervisor, "memory_manager", None)
+    if mm is None:
         return
     try:
-        # Persist this exchange to working memory as a structured turn record.
-        from supervisor.session.session import store_turn
-        await store_turn(mm, turn_count, intent, summary)
+        # 1. Persist this exchange to working memory.
+        await _store_turn(mm, turn_count, intent, summary)
         log.debug("store_and_promote: turn %d persisted", turn_count)
-        # Behavioral learning: analyze recent turns from working memory and persist style.
-        style_was_written = False
-        try:
-            from config.roles import SESSION_ROLE
-            from supervisor.behavior.behavior_analyzer import analyze_style
-            from supervisor.behavior.behavior_store import save_style
-            from supervisor.behavior.behavior_profile import serialize
-            entries = await mm.working.list(SESSION_ROLE, limit=10)
-            user_turns = [e.content for e in entries if e.content]
-            if user_turns:
-                profile = await analyze_style(user_turns, supervisor.registry)
-                if profile:
-                    written = await save_style(mm, serialize(profile))
-                    style_was_written = bool(written)
-        except Exception as e:
-            log.debug("behavior analysis skipped: %s", e)
-        # Refresh the supervisor's in-memory style from Letta *immediately*
-        # so the next turn's system prompt sees the freshest profile.
-        # Closed-loop: write-then-read with no session-end wait.
+
+        # 2. Behavioral learning — analyze + write + cache refresh.
+        style_was_written = await _learn_and_persist(supervisor, mm)
         if style_was_written:
-            try:
-                await supervisor._refresh_behavior_style()
-            except Exception as e:  # noqa: BLE001 — refresh is best-effort
-                log.debug("behavior-style refresh skipped: %s", e)
-        asyncio.create_task(schedule_promotion(supervisor, turn_count))
-    except Exception as e:
-        log.warning("Memory storage skipped: %s", e)
+            # 3. Refresh the in-memory style cache so the next
+            #    turn's system prompt sees the freshest profile.
+            from supervisor.mechanisms.style_sync import refresh_style
+            await refresh_style(supervisor)
+
+        # 4. Schedule the background tier promotion.
+        asyncio.create_task(
+            schedule_promotion(supervisor, turn_count),
+            name="turn-promotion",
+        )
+    except Exception as exc:  # noqa: BLE001 — never break the turn
+        log.warning("store_and_promote failed: %s", exc)
+
+
+async def _store_turn(
+    mm,
+    turn_count: int,
+    intent: str,
+    summary: str,
+) -> None:
+    """Store one turn as a structured working-memory record."""
+    try:
+        payload = (
+            f"turn={turn_count}\n"
+            f"intent={intent}\n"
+            f"summary={summary}"
+        )
+        await mm.store(SESSION_ROLE, f"turn:{turn_count}", payload)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_store_turn failed: %s", exc)
+
+
+async def _learn_and_persist(supervisor: "GoatSupervisor", mm) -> bool:
+    """Run the analyzer, write to Letta, return True on successful write."""
+    try:
+        from supervisor.behavior.analyzer import analyze_style
+        from supervisor.behavior.store import save_style
+        entries = await mm.working.list(SESSION_ROLE, limit=_ANALYZER_WINDOW)
+        user_turns = [e.content for e in entries if e and e.content]
+        if not user_turns:
+            return False
+        new_text = await analyze_style(user_turns, supervisor.registry)
+        if not new_text:
+            return False
+        return bool(await save_style(mm, new_text))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_learn_and_persist failed: %s", exc)
+        return False
 
 
 async def schedule_promotion(supervisor: "GoatSupervisor", turn_count: int) -> None:
-    """Promote conversation turns through memory tiers (background task)."""
-    mm = supervisor.memory_manager
-    if not mm:
+    """Promote conversation turns through memory tiers (background task).
+
+    Detached: errors are logged and swallowed — promotion is a
+    background hygiene task and must never affect the turn path.
+    """
+    mm = getattr(supervisor, "memory_manager", None)
+    if mm is None:
         return
     try:
         await mm.promote_turns(SESSION_ROLE, turn_count)
-    except Exception as e:
-        log.warning("Promotion task failed (non-critical): %s", e)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("schedule_promotion failed (non-critical): %s", exc)

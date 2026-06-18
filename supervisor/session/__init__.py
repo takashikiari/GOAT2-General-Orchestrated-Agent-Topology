@@ -1,33 +1,17 @@
-"""Session management for GOAT 2.0 — turn storage, history, and memory injection.
+"""supervisor.session — conversation state and memory plumbing.
 
-Exports:
-    - store_turn: Persist conversation turn to Redis
-    - store_dag_result: Store DAG execution result to Redis with TTL
-    - retrieve_dag_result: Retrieve DAG result from Redis
-    - ConversationHistory: In-session message history
-    - load_session_summary: Load cross-session summary from ChromaDB
-    - init_session: Concurrent session startup (profile, summary, style, onboarding)
-    - mem_turn: Fan-out memory recall and fact extraction per turn
-    - recall_context: Cross-tier memory recall
+Three modules, each a single responsibility:
+
+  - ``history``           — in-memory rolling buffer (no I/O)
+  - ``mem_inject``        — render the working-memory context block
+  - ``turn_persistence``  — store turn + trigger style learning
+
+The cross-tier memory fan-out itself lives in
+``MemoryManager.recall``; this package orchestrates the call
+and renders the result through the ``mechanisms/`` primitives.
 """
 from __future__ import annotations
 
-import logging
+from supervisor.session import history, mem_inject, turn_persistence
 
-log = logging.getLogger("goat2.supervisor.session")
-
-from supervisor.session.session import store_turn, store_dag_result, retrieve_dag_result
-from supervisor.session.history import ConversationHistory, load_session_summary
-from supervisor.session.session_init import init_session
-from supervisor.session.mem_inject import mem_turn, recall_context
-
-__all__ = [
-    "store_turn",
-    "store_dag_result",
-    "retrieve_dag_result",
-    "ConversationHistory",
-    "load_session_summary",
-    "init_session",
-    "mem_turn",
-    "recall_context",
-]
+__all__ = ["history", "mem_inject", "turn_persistence"]
