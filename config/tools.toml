@@ -14,4 +14,6 @@ interval_seconds   = 30   # polling cadence for the tools watcher
 default_timeout_seconds = 30   # asyncio.wait_for ceiling for shell.run
 
 [web_search]
-default_results    = 5          # max snippets returned by web_search
+url              = "http://localhost:7777"   # SEARXNG_URL env var overrides
+timeout_seconds  = 10.0                       # request timeout (SEARCH_TIMEOUT env var overrides)
+default_results  = 5                          # max snippets returned by web_search

@@ -7,7 +7,7 @@
 #   [working]   - Working memory (Redis): capacity, thresholds, GC cadence, DAG TTL
 #   [episodic]  - Episodic memory (ChromaDB): capacity, scoring thresholds, permanence
 #   [daemon]    - MemoryDaemon: sweep interval, age cutoffs for tier-1/2 promotion
-#
+#   [redis]     - Redis connection: URL, pool size, socket timeout
 # =============================================================================
 
 [working]
@@ -28,3 +28,8 @@ permanent_never_delete   = true # metadata.permanent=True entries are NEVER touc
 interval_seconds   = 60   # sweep every N seconds
 tier1_age_hours    = 24  # only promote working entries older than this
 tier2_age_hours    = 48  # episodic sliding window considers entries this old
+
+[redis]
+url              = "redis://localhost:6379/0"  # env: REDIS_URL overrides
+max_connections  = 10                            # env: REDIS_MAX_CONNECTIONS overrides
+socket_timeout   = 5.0                           # env: REDIS_SOCKET_TIMEOUT overrides (seconds)

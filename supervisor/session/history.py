@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import TYPE_CHECKING
 
-log = logging.getLogger("goat2.supervisor.session")
-
 from config.roles import SESSION_ROLE
+from utils.llm_utils import strip_dsml
+
+log = logging.getLogger("goat2.supervisor.session")
 
 if TYPE_CHECKING:
     from memory.shared import MemoryManager
@@ -26,15 +26,6 @@ _COMPARTMENT_LABELS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _strip_dsml(text: str) -> str:
-    """Remove DeepSeek DSML markers from text to prevent LLM confusion."""
-    # Match full wrapper tags with different content: <tag1>...</tag2>
-    text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', text, flags=re.DOTALL)
-    # Strip orphaned opening tags
-    text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
-    return text.strip()
-
-
 class ConversationHistory:
     """Maintains role/content message pairs for the current session."""
 
@@ -48,7 +39,7 @@ class ConversationHistory:
 
     def add_assistant(self, content: str) -> None:
         """Append an assistant turn, stripping DSML markers to prevent LLM confusion."""
-        clean = _strip_dsml(content)
+        clean = strip_dsml(content)
         self._msgs.append({"role": "assistant", "content": clean})
 
     @property

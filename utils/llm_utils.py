@@ -28,7 +28,13 @@ if TYPE_CHECKING:
 __all__ = [
     "_get_client", "_call_llm", "_extract_json",
     "_format_dep_context", "_model_label",
+    "strip_dsml",
 ]
+
+# Re-export strip_dsml from its dedicated module so existing
+# `from utils.llm_utils import strip_dsml` import sites keep working
+# while the regex set lives in a single-responsibility file.
+from utils.dsml import strip_dsml  # noqa: E402, F401
 
 log = logging.getLogger("goat2.utils.llm_utils")
 

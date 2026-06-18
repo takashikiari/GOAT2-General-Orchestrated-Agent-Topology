@@ -20,6 +20,147 @@ Followed the audit's recommendations for the import-safe subset. Each
 deletion was preceded by a `grep` for live importers; files with even
 one live consumer were skipped (reported below).
 
+### Implemented — 2026-06-18 audit cleanup batch 2 (P2-1, P2-2, P2-9, P3 batch)
+
+Continued the audit cleanup. No code was deleted this round; all
+changes are consolidations / dead-reference fixes inside the existing
+file set. Each change was preceded by a `grep` for live importers;
+no imports were broken.
+
+#### Fixed (P2 — duplicate / scattered logic)
+
+- **P2-1 — `TaskStatus` reconciliation**: added the missing
+  `SKIPPED = "skipped"` member to the canonical
+  `config/agent_types.py::TaskStatus` (the `str, Enum` flavour) and
+  turned `supervisor/pipeline/dag.py::TaskStatus` into a re-export
+  `from config.agent_types import TaskStatus`. Verified no other
+  `class TaskStatus` definitions remain. `from config.agent_types
+  import TaskStatus`, `from supervisor.pipeline.dag import
+  TaskStatus`, and `from supervisor.pipeline import TaskStatus` all
+  return the same class object — pre-existing
+  `TaskStatus.PENDING` / `.RUNNING` / `.DONE` / `.FAILED` value
+  identities preserved.
+- **P2-2 — Single `AsyncOpenAI` client cache**: removed the
+  duplicate `_clients: dict[str, AsyncOpenAI]` and the local
+  `_get_client()` function from `agents/base_agent.py`. The base
+  agent now imports `_get_client` from `utils.llm_utils`, so every
+  call site (supervisor + agents) shares one client per provider.
+  Verified with `assert ba_get is llm_get` and a live round-trip:
+  two calls return the same client object and the cache contains a
+  single entry. The unused `from openai import AsyncOpenAI` import
+  was also removed from `base_agent.py`.
+- **P2-9 — Single DSML stripping function**: added
+  `strip_dsml()` to `utils/dsml.py` (single-responsibility module
+  so `utils/llm_utils.py` stays under the 260-line limit) and
+  re-exported it from `utils/llm_utils.py`. Replaced the inline
+  regex in `supervisor/pipeline/goat_call.py` and removed the
+  private `_strip_dsml()` helpers from
+  `supervisor/session/history.py` and `supervisor/__main__.py`.
+  The canonical function strips all four DSML forms (paired
+  wrappers, orphan opening, orphan closing, and bare `/DSMLxxx`
+  tails) — strictly more than each individual implementation did.
+  `import re` retained in `goat_call.py` for the trailing-question
+  regex used by `_classify_response`.
+
+#### Fixed (P3 — hardcoded values)
+
+- **P3-18 — Redis connection from config**:
+  `memory/working/redis_conn.py` now reads `url`,
+  `max_connections`, and `socket_timeout` from a new
+  `config/memory.toml [redis]` section. Resolution order is
+  explicit kwarg > env var (`REDIS_URL`,
+  `REDIS_MAX_CONNECTIONS`, `REDIS_SOCKET_TIMEOUT`) > toml > module
+  default. Defaults preserved (redis://localhost:6379/0 / 10 / 5.0s).
+- **P3-25 — `web_search` from config**: extended the existing
+  `config/tools.toml [web_search]` section with `url` and
+  `timeout_seconds` keys. `tools/web/web_search.py` now reads all
+  three knobs (url, timeout, default results) from there, with the
+  same env-var > toml > default priority as P3-18. Existing
+  `SEARXNG_URL` and `SEARCH_TIMEOUT` env-var overrides preserved.
+
+#### Fixed (P3 — Redis bypass)
+
+- **P3-29/30/31/32 — registry-owned Redis backend**: added
+  `memory/shared/last_write.py` with two async helpers —
+  `sync_last_write(tier, *, working_backend=None, iso_format=False)`
+  and `read_last_write(tier, *, working_backend=None)` — both of
+  which resolve the working backend through the registry (via
+  `tools.registry_accessor.get_registry().memory_manager.working.backend`)
+  when no explicit backend is passed, with a silent skip when the
+  registry isn't initialised (tests, ad-hoc scripts). Replaced the
+  per-module patterns:
+  - `memory/shared/memory_crud.py::MemoryCrudMixin.store` no longer
+    instantiates `RedisBackend()` — uses `sync_last_write(tier,
+    working_backend=self.working.backend)`.
+  - `memory/episodic/chroma_crud.py::_sync_last_write_to_redis`
+    no longer creates a fresh `RedisBackend()` — delegates to
+    `sync_last_write("episodic", iso_format=True)`.
+  - `memory/working/working_crud.py::_sync_last_write_to_redis`
+    no longer calls the private `self.backend._get_redis()` —
+    delegates to `sync_last_write("working", working_backend=self.backend,
+    iso_format=True)`.
+  - `memory/memory_tools/memory_last_write.py` no longer creates a
+    fresh `RedisBackend()` per call — delegates to `read_last_write(tier)`.
+
+  Verified: zero `RedisBackend()` calls and zero `_get_redis` calls
+  remain in the four target files (only docstring mentions of
+  "no fresh … instance" describe the absence).
+
+#### P1 cleanup
+
+- Confirmed `memory/memory_promoter.py`, `agents/planner.py`, and
+  `agents/prompts/__init__.py` were NOT deleted in the previous
+  cleanup round (each has live importers — see prior CHANGELOG
+  entry). No dead imports to remove this round.
+
+#### File-size rule
+
+- `utils/llm_utils.py` is 239 lines (under 260).
+- `utils/dsml.py` (new) is 50 lines (under 260).
+- `supervisor/pipeline/dag.py` is 265 lines (5 over the 260 cap).
+  This was already over the cap before this round (the change made
+  it 10 lines shorter by removing the duplicated `TaskStatus`
+  class); bringing it fully under the cap is a separate task that
+  would touch the unrelated DAG data classes.
+- `agents/base_agent.py` is 454 lines (over 260). Unchanged this
+  round; out of scope.
+
+#### Verification (post-cleanup)
+
+All four audit-mandated verifications pass:
+
+```text
+python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"  → ok
+python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"  → ok
+python3 -c "from tools.tool_runner import _call_with_tools; print('ok')"  → ok
+python3 -c "from agents.critique import critique_results; print('ok')"  → ok
+```
+
+Plus targeted assertions:
+
+```text
+config.agent_types.TaskStatus is supervisor.pipeline.dag.TaskStatus is
+supervisor.pipeline.TaskStatus                               → True
+agents.base_agent._get_client is utils.llm_utils._get_client → True
+utils.dsml.strip_dsml is utils.llm_utils.strip_dsml is
+supervisor.pipeline.goat_call.strip_dsml is
+supervisor.session.history.strip_dsml is
+supervisor.__main__.strip_dsml                               → True
+memory.working.redis_conn._REDIS_CONFIG == {'url': 'redis://localhost:6379/0',
+                                              'max_connections': 10,
+                                              'socket_timeout': 5.0}
+tools.web.web_search._WEB_SEARCH_CONFIG == {'url': 'http://localhost:7777',
+                                              'timeout_seconds': 10.0,
+                                              'default_results': 5}
+memory.shared.last_write.sync_last_write (no registry) → False (skip)
+memory.shared.last_write.read_last_write (no registry) → None  (skip)
+```
+
+Plus the 17 previously-passing tests in
+`tests/test_memory_validation.py` still pass (the other 4 test files
+that fail to collect are pre-existing P0-4/P0-5/P0-7/P0-8 issues, not
+in scope for this batch).
+
 #### Fixed (P0 — broken references)
 
 - **P0-2 — `supervisor/session/turn_persistence.py:44`**: removed

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Final, TYPE_CHECKING
 
 from config.limits import WORKING_MEMORY_TTL
+from memory.shared.last_write import sync_last_write
 from memory.shared.types import (
     AgentRole, EntryId, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey,
 )
@@ -67,11 +68,14 @@ class WorkingCrudMixin:
         )
 
     async def _sync_last_write_to_redis(self) -> None:
-        """Update Redis last-write timestamp for working tier (fail-silent)."""
+        """Update Redis last-write timestamp for working tier (fail-silent).
+
+        Delegates to ``memory.shared.last_write.sync_last_write`` so the
+        same registry-owned backend is used everywhere — no parallel
+        ``RedisBackend()`` instance and no private ``_get_redis()`` call.
+        """
         try:
-            r = await self.backend._get_redis()  # type: ignore[attr-defined]
-            iso_now = IsoTimestamp(datetime.now(timezone.utc).isoformat())
-            await r.set("goat2:working:last_write:working", iso_now)  # type: ignore[union-attr]
+            await sync_last_write("working", working_backend=self.backend, iso_format=True)
         except Exception as exc:
             log.debug("Working last-write sync failed (non-blocking): %s", exc)
 

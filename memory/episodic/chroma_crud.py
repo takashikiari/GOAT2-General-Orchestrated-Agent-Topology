@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 from typing import Final
 
 from memory.episodic.chroma_helpers import (
@@ -16,6 +15,7 @@ from memory.episodic.chroma_types import (
     _COLLECTION_PREFIX, _LIST_FETCH_MAX, _SEARCH_TAG_OVERSAMPLE,
 )
 from memory.episodic.chromadb_base import ChromaBase
+from memory.shared.last_write import sync_last_write
 from memory.shared.types import AgentRole, IsoTimestamp, MemoryEntry, MemoryEntryMetadata, MemoryKey
 
 log = logging.getLogger("goat2.memory.chroma")
@@ -58,16 +58,16 @@ class ChromaCrudMixin(ChromaBase):
         )
 
     async def _sync_last_write_to_redis(self) -> None:
-        """Update Redis last-write timestamp for chromadb tier (fail-silent)."""
+        """Update Redis last-write timestamp for chromadb tier (fail-silent).
+
+        Delegates to ``memory.shared.last_write.sync_last_write`` which
+        resolves the registry-owned working backend — no fresh backend
+        instance is created here.
+        """
         try:
-            from memory.working.redis_backend import RedisBackend
-            redis = RedisBackend()
-            r = await redis._get_redis()
-            iso_now = datetime.now(timezone.utc).isoformat()
-            await r.set("goat2:working:last_write:episodic", iso_now)  # type: ignore[union-attr]
-            await redis.close()
+            await sync_last_write("episodic", iso_format=True)
         except Exception as exc:
-            log.debug("Redis last-write sync failed (non-blocking): %s", exc)
+            log.debug("Chroma last-write sync failed (non-blocking): %s", exc)
 
     async def retrieve(self, agent_role: AgentRole, key: MemoryKey) -> MemoryEntry | None:
         """Retrieve by exact key; None if not found."""

@@ -81,14 +81,12 @@ class MemoryCrudMixin:
                 await check_and_slide(layer, agent_role)
             except Exception as exc:
                 log.debug("store: episodic sliding window skipped: %s", exc)
+        # Update last-write timestamp via the registry-owned working
+        # backend (no parallel RedisBackend() instance).
         try:
-            import time
-            from memory.working.redis_backend import RedisBackend
-            redis = RedisBackend()
-            r = await redis._get_redis()
+            from memory.shared.last_write import sync_last_write
             tier = str(memory_type.value if hasattr(memory_type, "value") else memory_type)
-            await r.set(f"goat2:working:last_write:{tier}", str(time.time()))
-            await redis.close()
+            await sync_last_write(tier, working_backend=self.working.backend)
         except Exception:
             pass
         return entry

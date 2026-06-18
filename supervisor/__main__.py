@@ -13,6 +13,7 @@ import sys
 
 from config.registry import ServiceRegistry
 from supervisor.supervisor import GoatSupervisor
+from utils.llm_utils import strip_dsml
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,16 +31,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Log each agent turn")
     parser.add_argument("--json",    action="store_true", help="Print full result as JSON")
     return parser.parse_args()
-
-
-def _strip_dsml(text: str) -> str:
-    """Remove DeepSeek DSML markers from text to prevent clutter in CLI output."""
-    import re
-    # Match full wrapper tags with different content: <tag1>...</tag2>
-    text = re.sub(r'<\｜｜DSML｜｜\w+>[^<]*</\｜｜DSML｜｜\w+>', '', text, flags=re.DOTALL)
-    # Strip orphaned opening tags
-    text = re.sub(r'<\｜｜DSML｜｜[^>]*>', '', text)
-    return text.strip()
 
 
 def main() -> None:
@@ -63,7 +54,7 @@ def main() -> None:
         return
 
     # Strip DSML markers from summary before printing
-    clean_summary = _strip_dsml(result.summary)
+    clean_summary = strip_dsml(result.summary)
 
     width = 64
     print("\n" + "═" * width)

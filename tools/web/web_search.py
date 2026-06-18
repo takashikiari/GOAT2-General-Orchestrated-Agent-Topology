@@ -3,9 +3,11 @@
 Provides a single ToolDefinition (WEB_SEARCH) that sends a search query to
 a local SearXNG instance and returns formatted text snippets.
 
-Configuration (via environment variables):
-- SEARXNG_URL: Full URL of SearXNG instance (default: http://localhost:7777)
-- SEARCH_TIMEOUT: Request timeout in seconds (default: 10.0)
+Configuration resolution (highest priority first):
+  1. SEARXNG_URL env var        → overrides ``[web_search].url``
+  2. SEARCH_TIMEOUT env var     → overrides ``[web_search].timeout_seconds``
+  3. config/tools.toml          → ``[web_search]`` section
+  4. module-level fallback      → http://localhost:7777 / 10.0s / 5 results
 """
 
 from __future__ import annotations
@@ -26,9 +28,53 @@ log = logging.getLogger("goat2.tools.web.search")
 
 __all__ = ["WEB_SEARCH"]
 
-_DEFAULT_URL: Final[str] = "http://localhost:7777"
-_TIMEOUT: Final[float] = 10.0
-_DEFAULT_N: Final[int] = 5
+# Defaults — overridden by config/tools.toml [web_search] at import time.
+_DEFAULTS: Final[dict[str, object]] = {
+    "url":             "http://localhost:7777",
+    "timeout_seconds": 10.0,
+    "default_results": 5,
+}
+
+
+def _load_web_search_config() -> dict[str, object]:
+    """Read [web_search] from config/tools.toml with env-var override.
+
+    The toml loader is non-fatal — a missing or unparseable file
+    silently falls back to the module defaults, so the tool stays
+    usable in any environment.
+
+    Returns:
+        dict with keys ``url`` (str), ``timeout_seconds`` (float),
+        ``default_results`` (int). Values are post-resolution.
+    """
+    cfg: dict[str, object] = dict(_DEFAULTS)
+    try:
+        from config.modular_loader import load_tools_config
+        toml_cfg = load_tools_config()
+        section = toml_cfg.get("web_search", {}) or {}
+        for key in ("url", "timeout_seconds", "default_results"):
+            if key in section and section[key] is not None:
+                cfg[key] = section[key]
+    except Exception as exc:
+        log.debug("web_search: tools.toml [web_search] load skipped: %s", exc)
+    # Env-var overrides.
+    if os.environ.get("SEARXNG_URL"):
+        cfg["url"] = os.environ["SEARXNG_URL"]
+    if os.environ.get("SEARCH_TIMEOUT"):
+        try:
+            cfg["timeout_seconds"] = float(os.environ["SEARCH_TIMEOUT"])
+        except ValueError:
+            log.warning(
+                "web_search: SEARCH_TIMEOUT=%r not a float — using default",
+                os.environ["SEARCH_TIMEOUT"],
+            )
+    return cfg
+
+
+_WEB_SEARCH_CONFIG: Final[dict[str, object]] = _load_web_search_config()
+_DEFAULT_URL: Final[str] = str(_WEB_SEARCH_CONFIG["url"])
+_TIMEOUT: Final[float] = float(_WEB_SEARCH_CONFIG["timeout_seconds"])
+_DEFAULT_N: Final[int] = int(_WEB_SEARCH_CONFIG["default_results"])
 
 _SCHEMA = {
     "type": "object",
@@ -105,7 +151,7 @@ WEB_SEARCH = make_tool(
     name="web_search",
     description=(
         "Search the web via local SearXNG instance and return text snippets. "
-        f"Configure via SEARXNG_URL env var (default: {_DEFAULT_URL})."
+        f"Configure via SEARXNG_URL env var or [web_search].url in tools.toml (default: {_DEFAULT_URL})."
     ),
     parameters=_SCHEMA,
     handler=_handler,
