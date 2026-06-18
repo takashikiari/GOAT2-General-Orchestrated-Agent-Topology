@@ -166,7 +166,7 @@ async def goat_turn(
     ]
     # Append the prior conversation so the LLM has context for
     # follow-ups. The current user turn is already in user_prompt.
-    for m in (history_messages or [])[:-1]:
+    for m in (history_messages or [])[:-2]:
         if m.get("role") in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m["content"]})
 

@@ -5,6 +5,45 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Graceful shutdown for the Telegram bot
+
+### Fixed
+- "Task was destroyed but it is pending!" warning on bot exit.
+  The polling loop used to close while the MemoryDaemon and
+  ToolsWatcher background tasks were still bound to it; the new
+  graceful-shutdown flow keeps everything in one event loop so
+  the supervisor's ``finalize_session()`` (which stops the daemon
+  + watcher) can actually ``await`` them before the loop closes.
+
+### Changed
+- `memory/shared/memory_daemon.py` — `stop()` now waits up to
+  ``_STOP_WAIT_TIMEOUT_S = 5 s`` for the background loop to
+  finish (bounded via ``asyncio.wait_for``). A hung daemon is
+  forcibly discarded after the timeout so the caller is never
+  blocked.
+- `tools/hot_reload.py` — same change: `stop()` waits up to
+  ``_STOP_WAIT_TIMEOUT_S = 5 s`` for the watch loop to finish.
+  The timeout is also exported as a module constant so the
+  caller can reason about the worst-case shutdown budget.
+- `supervisor/interfaces/telegram_bot.py` — restructured
+  `main()` to run the polling + finalization in a single
+  `asyncio.run()` via the new `_run_with_shutdown()` coroutine.
+  `_finalize_all_sessions()` now runs in the SAME event loop as
+  the polling (no more fresh `asyncio.run()` from the main
+  thread). Each supervisor's `finalize_session()` is wrapped in
+  `asyncio.wait_for(timeout=10s)` as an outer bound.
+- The new `_SHUTDOWN_WAIT_TIMEOUT_S = 10.0` constant in
+  `telegram_bot.py` is the per-supervisor outer cap; the daemon
+  + watcher have their own 5 s budgets internally.
+
+### Verified
+- `python3 -c "from supervisor.interfaces.telegram_bot import run_polling; print('ok')"` → **ok**
+- `python3 -c "from memory.shared.memory_daemon import MemoryDaemon; print('ok')"` → **ok**
+- `python3 -c "from tools.hot_reload import ToolsWatcher; print('ok')"` → **ok**
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → **ok**
+
+---
+
 ## [Unreleased] — 2026-06-17 — Modular config split (memory/dag/behavioral/tools)
 
 ### Added

@@ -1,20 +1,16 @@
 """GOAT 2.0 Telegram interface — one message = one intent.
 
-The bot is a thin adapter: it converts incoming text to a GOAT intent,
-runs it through the supervisor, and sends the result.summary back to
-the chat. DSML stripping, tool-call filtering, and the GOAT decision
-all happen inside the supervisor / goat_call pipeline — the bot
-does not parse, reformat, or retry.
+Thin adapter: text → ``supervisor.run(intent)`` → ``reply_text(summary)``.
+DSML stripping, tool calls, GOAT decision all happen inside the
+supervisor / goat_call pipeline — the bot does not parse or retry.
 
-GRACEFUL SHUTDOWN:
-    On SIGTERM / SIGINT, the application stops polling; the
-    ``_shutdown()`` coroutine then runs in the SAME event loop as
-    the polling, calling each supervisor's ``finalize_session()``
-    which in turn stops the MemoryDaemon and ToolsWatcher with a
-    bounded 5 s wait. This prevents the
-    "Task was destroyed but it is pending!" warning that
-    previously appeared when the event loop closed while the
-    background daemon and watcher tasks were still pending.
+GRACEFUL SHUTDOWN: SIGTERM / SIGINT triggers ``run_polling`` to
+return; ``_finalize_all_sessions`` then runs in the SAME event loop
+so each supervisor's ``finalize_session`` can await the
+MemoryDaemon and ToolsWatcher stops (bounded at 5 s each). This
+prevents the "Task was destroyed but it is pending!" warning that
+previously appeared when the polling loop closed with daemon and
+watcher tasks still bound to it.
 """
 from __future__ import annotations
 
@@ -66,10 +62,9 @@ def _reply_text(text: str) -> str:
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forward incoming text to the per-chat supervisor and reply with the summary.
+    """Forward incoming text to the per-chat supervisor and reply.
 
-    Non-text updates (stickers, photos, voice notes, etc.) are silently
-    ignored — they have no user intent to forward.
+    Non-text updates are silently ignored.
     """
     message = update.message
     if message is None or not message.text:
@@ -90,20 +85,19 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _finalize_all_sessions() -> None:
-    """End-of-process: persist behavior profiles and stop memory daemons.
+    """End-of-process: persist profiles + stop daemons.
 
-    Runs in the SAME event loop as the polling, so each
-    ``finalize_session()`` can actually await the MemoryDaemon and
-    ToolsWatcher stop coroutines. Previously this ran in a fresh
-    ``asyncio.run()`` from the main thread, which left the daemon
-    / watcher tasks bound to the (now-closed) polling loop and
-    produced "Task was destroyed but it is pending!" warnings.
+    Runs in the SAME event loop as the polling so each
+    ``finalize_session()`` can actually await the daemon / watcher
+    stops. Previously this ran in a fresh ``asyncio.run()`` from
+    the main thread — that left daemon / watcher tasks bound to
+    the (now-closed) polling loop and produced the
+    "Task was destroyed but it is pending!" warning.
     """
     for chat_id, supervisor in list(_sessions.items()):
         try:
-            # Bounded so one slow finalizer cannot block the whole
-            # shutdown — the daemon / watcher have their own 5 s
-            # budgets internally, so 10 s here is a comfortable cap.
+            # Daemon + watcher have their own 5 s budgets; 10 s here
+            # is a comfortable cap for the whole finalize_session call.
             await asyncio.wait_for(
                 supervisor.finalize_session(),
                 timeout=_SHUTDOWN_WAIT_TIMEOUT_S,
@@ -111,29 +105,25 @@ async def _finalize_all_sessions() -> None:
             log.info("finalize_session: chat=%d done", chat_id)
         except asyncio.TimeoutError:
             log.warning(
-                "finalize_session: chat=%d timed out after %.1fs — daemon/watcher may be discarded",
-                chat_id, _SHUTDOWN_WAIT_TIMEOUT_S,
+                "finalize_session: chat=%d timed out after %.1fs", chat_id, _SHUTDOWN_WAIT_TIMEOUT_S,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort shutdown
             log.warning("finalize_session: chat=%d failed: %s", chat_id, exc)
 
 
 async def _run_with_shutdown() -> None:
-    """Run the polling loop, then finalize — both in the same event loop.
+    """Run polling, then finalize — both in the same event loop.
 
     ``app.run_polling()`` blocks until SIGINT / SIGTERM; after it
-    returns, the loop is still alive so we can call the supervisor
-    ``finalize_session()`` (which awaits the daemon + watcher
-    stops) without leaving tasks pending.
+    returns, the loop is still alive so ``_finalize_all_sessions``
+    can await the daemon + watcher stops cleanly.
     """
-    app = build_app()
     log.info("GOAT 2.0 Telegram bot starting.")
     try:
-        await app.run_polling(allowed_updates=["message"])
+        await build_app().run_polling(allowed_updates=["message"])
     finally:
         log.info("GOAT 2.0 Telegram bot shutting down — finalizing sessions")
         await _finalize_all_sessions()
-        log.info("GOAT 2.0 Telegram bot shutdown complete")
 
 
 def build_app() -> Application:
@@ -146,18 +136,11 @@ def build_app() -> Application:
 
 
 def main() -> None:
-    """Start the Telegram bot. SIGINT / SIGTERM trigger graceful shutdown.
-
-    Both the polling and the finalization run inside a single
-    ``asyncio.run()`` so the MemoryDaemon and ToolsWatcher tasks
-    (created on the first supervisor's first run) are awaited and
-    cancelled in the same event loop they were created in.
-    """
+    """Start the bot — SIGINT / SIGTERM trigger graceful shutdown."""
     asyncio.run(_run_with_shutdown())
 
 
-# Programmatic entry point — used by tests and by callers that want to start
-# the bot without going through `python -m telegram_bot`. Alias of main().
+# Programmatic entry point — alias of main() for tests and external callers.
 run_polling = main
 
 
