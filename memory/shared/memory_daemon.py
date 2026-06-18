@@ -30,6 +30,14 @@ log = logging.getLogger("goat2.memory.shared.daemon")
 
 __all__ = ["MemoryDaemon"]
 
+# Hard upper bound on how long ``stop()`` will wait for the
+# background loop to actually finish. Bounded so a hung daemon can
+# never block the process shutdown — a stuck task is forcibly
+# discarded (the asyncio loop may still log "Task was destroyed
+# but it is pending" at GC time, but the caller is no longer
+# blocked on it).
+_STOP_WAIT_TIMEOUT_S: float = 5.0
+
 
 class MemoryDaemon:
     """Silent three-tier background promotion daemon.
@@ -106,7 +114,13 @@ class MemoryDaemon:
         log.info("MemoryDaemon: started (interval=%.1fs)", self.interval_s)
 
     async def stop(self) -> None:
-        """Cancel the sweep loop and wait briefly for clean shutdown."""
+        """Cancel the sweep loop and wait briefly for clean shutdown.
+
+        Sets the stop flag, cancels the running task, then waits up to
+        ``_STOP_WAIT_TIMEOUT_S`` seconds for the task to actually
+        finish. Bounded so a hung daemon can never block the process
+        shutdown — a stuck loop is forcibly discarded.
+        """
         self._stop = True
         task = self._task
         if task is None:
@@ -115,7 +129,13 @@ class MemoryDaemon:
         if not task.done():
             task.cancel()
             try:
-                await task
+                await asyncio.wait_for(task, timeout=_STOP_WAIT_TIMEOUT_S)
+                log.debug("MemoryDaemon: loop task joined cleanly")
+            except asyncio.TimeoutError:
+                log.warning(
+                    "MemoryDaemon: stop() timed out after %.1fs — task may be discarded",
+                    _STOP_WAIT_TIMEOUT_S,
+                )
             except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
                 log.debug("MemoryDaemon: stop() task exit (%s)", type(exc).__name__)
         self._task = None

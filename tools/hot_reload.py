@@ -70,6 +70,9 @@ except (TypeError, ValueError):
     _POLL_INTERVAL_S = HOT_RELOAD_INTERVAL_S
 del _tools_cfg, _raw_interval
 
+# Hard upper bound on how long ``stop()`` waits for the loop to finish.
+_STOP_WAIT_TIMEOUT_S: float = 5.0
+
 # Category kinds. "package" reloads via importlib.reload; "file"
 # diffs the .py files inside the category directory.
 _KIND_PACKAGE: str = "package"
@@ -95,16 +98,9 @@ class _Category:
 class ToolsWatcher:
     """Poll every ``tools/<name>/`` package + the external ``dynamic_tools/`` root.
 
-    Lifecycle::
-
-        watcher = ToolsWatcher()
-        await watcher.start(registry)
-        # ... watches in background ...
-        await watcher.stop()
-
-    Public surface is small and side-effect free: every method is
-    idempotent, ``start()`` after ``stop()`` is supported, and the
-    watch loop never raises into the asyncio task.
+    Lifecycle: start() creates the background task; stop() cancels
+    and waits up to ``_STOP_WAIT_TIMEOUT_S`` for it to finish. Both
+    methods are idempotent; the watch loop never raises into the task.
     """
 
     __slots__ = ("_registry", "_categories", "_task", "_stopped")
@@ -151,14 +147,26 @@ class ToolsWatcher:
             log.debug("ToolsWatcher: watching %s → %s", cat.directory, cat.slot)
 
     async def stop(self) -> None:
-        """Stop the polling task. Idempotent — safe to call from any context."""
+        """Stop the polling task. Idempotent — safe to call from any context.
+
+        Sets the stop flag, cancels the running task, then waits up
+        to ``_STOP_WAIT_TIMEOUT_S`` seconds for it to actually finish.
+        Bounded so a hung watcher can never block the process
+        shutdown — a stuck loop is forcibly discarded.
+        """
         self._stopped = True
         if self._task is None:
             return
         if not self._task.done():
             self._task.cancel()
             try:
-                await self._task
+                await asyncio.wait_for(self._task, timeout=_STOP_WAIT_TIMEOUT_S)
+                log.debug("ToolsWatcher: watch task joined cleanly")
+            except asyncio.TimeoutError:
+                log.warning(
+                    "ToolsWatcher: stop() timed out after %.1fs — task may be discarded",
+                    _STOP_WAIT_TIMEOUT_S,
+                )
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._task = None

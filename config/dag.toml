@@ -14,7 +14,7 @@
 [execution]
 max_waves                   = 10   # hard cap on the number of topological waves
 wave_timeout_seconds        = 120  # per-wave gather() ceiling
-task_timeout_seconds        = 30   # per-task asyncio.wait_for ceiling
+task_timeout_seconds        = 45   # per-task asyncio.wait_for ceiling
 max_retries                 = 2    # 1 + max_retries = total attempts per task
 auto_clean_delay_seconds    = 60   # delay before dag:* keys are auto-deleted
 dag_total_timeout_seconds   = 300  # hard upper bound on the entire DAG run

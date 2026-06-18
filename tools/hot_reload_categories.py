@@ -51,6 +51,7 @@ EXCLUDED_PACKAGE_DIRS: frozenset[str] = frozenset({
     "hot_reload",
     "hot_reload_discovery",
     "hot_reload_categories",
+    "dag",  # dag tools need supervisor reference — not hot-reloadable
 })
 
 
