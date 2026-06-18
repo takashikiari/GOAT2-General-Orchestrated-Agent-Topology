@@ -5,6 +5,107 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — AgentRegistry moved to agents/
+
+`AgentRegistry` was placed in `supervisor/registry.py` in the
+previous commit — wrong layer. The supervisor owns the
+single-call LLM and the middleware; it has no business owning
+the role→runner map for the DAG agents. The registry belongs
+to the package whose modules it catalogs: `agents/`.
+
+This change relocates the registry to its natural home and
+makes the layering rule genuinely clean:
+
+  - `agents/` is now fully self-contained. Importing
+    `agents.registry` (or constructing `AgentRegistry()`) pulls
+    in **0** `supervisor.*` modules. Previously the registry
+    lived in `supervisor/` and was reachable from `config/`.
+  - `config/registry.py::ServiceRegistry` now imports
+    `agents.registry.AgentRegistry` (was `supervisor.registry`).
+    Still inside `__init__` so the import is lazy and the
+    dependency is one-directional at startup.
+  - `supervisor/registry.py` is deleted.
+
+### Changed
+- `agents/registry.py` (new, 226 lines, ≤ 260 cap) — full
+  `AgentRegistry` class with `register` / `get` / `roles` /
+  `unregister` / `__contains__` / `__len__` / `__repr__`.
+  Pre-registers all 7 DAG-agent runners (planner, researcher,
+  coder, critic, summarizer, tool_caller, memory) via lazy
+  `importlib.import_module` calls inside `__init__`.
+- `config/registry.py::ServiceRegistry.__init__` —
+  `from supervisor.registry import AgentRegistry` →
+  `from agents.registry import AgentRegistry`. Comment updated
+  to reflect the new home.
+- `supervisor/registry.py` — **deleted**.
+
+### Verified
+- `python3 -c "from agents.registry import AgentRegistry; print('ok')"` → ok
+- `python3 -c "from config.registry import ServiceRegistry; print('ok')"` → ok
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- 9 behavioral assertions on AgentRegistry (default roles in
+  canonical order, all 7 runners async callables, contains/len/
+  repr, KeyError on unknown role, register/unregister, empty-
+  registry path, validation, ServiceRegistry wiring, runner
+  `__name__` matches).
+- Cross-layer rule: `import agents.registry` + `AgentRegistry()`
+  pulls in **0** `supervisor.*` modules (was previously
+  implicitly reachable via `supervisor.registry`).
+- `tests/test_memory_validation.py` — 17 passed, no regressions.
+
+---
+
+## [Unreleased] — 2026-06-18 — AgentRegistry restored
+
+The supervisor rewrite removed `supervisor/registry.py` along
+with the rest of the package, which broke
+`config/registry.py::ServiceRegistry.__init__` (which lazy-imports
+`AgentRegistry` from `supervisor.registry`). Restored with the
+strict layering rule preserved:
+
+  - `agents/` never imports from `supervisor/` at module level.
+  - `AgentRegistry` does its agent-module imports INSIDE
+    `__init__` (`_pre_register_defaults`) so importing the
+    registry at startup doesn't trigger an `agents/` cycle.
+  - ServiceRegistry pre-registers all 7 DAG-agent runners:
+    planner, researcher, coder, critic, summarizer, tool_caller,
+    memory — in that order.
+
+### Added
+- `supervisor/registry.py` (225 lines, ≤ 260 cap) — `AgentRegistry`
+  with the full public surface:
+    - `roles() -> list[str]`
+    - `get(role: str) -> AgentRunner` (raises KeyError on miss)
+    - `register(role, runner)` + `unregister(role)`
+    - `__contains__`, `__len__`, `__repr__`
+    - Constructor flag `pre_register_defaults=True` for tests
+      that need a clean slate.
+- Default-registration binding map (single source of truth):
+    - `planner` ← `agents.planner_decompose._run_planner`
+    - `researcher` ← `agents.researcher.run_researcher`
+    - `coder` ← `agents.coder.run_coder`
+    - `critic` ← `agents.critic.run_critic`
+    - `summarizer` ← `agents.summarizer.run_summarizer`
+    - `tool_caller` ← `agents.tool_caller.run_tool_caller`
+    - `memory` ← `agents.memory_agent.run_memory`
+
+### Verified
+- `python3 -c "from supervisor.registry import AgentRegistry; print('ok')"` → ok
+- `python3 -c "from config.registry import ServiceRegistry; print('ok')"` → ok
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- 10 behavioral assertions on AgentRegistry (default roles,
+  callability, contains/len/repr, KeyError on unknown role,
+  register/unregister, empty-registry path, validation,
+  re-register replaces, ServiceRegistry wiring, runner
+  `__name__` matches).
+- Cross-layer rule: `import agents` does NOT pull in any
+  `supervisor.*` module (0 modules imported).
+- `AgentRegistry()` triggers the lazy agent-module imports
+  (22 supervisor modules + 7 agent runners loaded).
+- `tests/test_memory_validation.py` — 17 passed, no regressions.
+
+---
+
 ## [Unreleased] — 2026-06-18 — Full rewrite of supervisor/ from scratch
 
 The `supervisor/` package is rebuilt from zero around the

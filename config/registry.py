@@ -12,7 +12,7 @@ the leaf layer — it MAY reach supervisor lazily (function-local import)
 but NEVER at module level. The two registries are wired as follows:
 
   ServiceRegistry (config/registry.py, this module)
-    └── agent_registry  ──►  AgentRegistry (supervisor/registry.py)
+    └── agent_registry  ──►  AgentRegistry (agents/registry.py)
                                 ├── researcher   → _run_researcher
                                 ├── coder        → _run_coder
                                 ├── critic       → _run_critic
@@ -63,7 +63,7 @@ from memory.working import RedisBackend
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
-    from supervisor.registry import AgentRegistry
+    from agents.registry import AgentRegistry
 
 log = logging.getLogger("goat2.config.registry")
 
@@ -205,10 +205,12 @@ class ServiceRegistry:
             len(self.dynamic_tools),
         )
 
-        # 7. Agent registry — lazy import of supervisor.registry. The
-        #    cross-layer import is INSIDE __init__ so `import config.registry`
-        #    at startup does NOT pull in supervisor/.
-        from supervisor.registry import AgentRegistry
+        # 7. Agent registry — lazy import of agents.registry. The
+        #    cross-package import is INSIDE __init__ so `import
+        #    config.registry` at startup does NOT pull in agents/.
+        #    AgentRegistry lives in agents/ because it owns the
+        #    role→runner map for the DAG agents (not the supervisor).
+        from agents.registry import AgentRegistry
         self.agent_registry: AgentRegistry = AgentRegistry()
         log.debug(
             "ServiceRegistry: agent_registry ready (roles=%s)",

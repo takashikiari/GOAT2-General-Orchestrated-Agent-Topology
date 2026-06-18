@@ -230,3 +230,6 @@ def _config_token() -> str | None:
     except Exception as exc:  # noqa: BLE001
         log.debug("telegram: config token load failed: %s", exc)
     return None
+
+if __name__ == "__main__":
+    run_polling()
