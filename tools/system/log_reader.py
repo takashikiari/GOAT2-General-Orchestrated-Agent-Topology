@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import logging
+import os
 from tools._make_tool import make_tool
 
 log = logging.getLogger("goat2.tools.system")
 
-LOG_FILE = "/home/lenovo/workspace/goat2/logs/goat2.log"
+# Derive log file path from GOAT_WORKSPACE env var (falls back to repo logs/ dir).
+_WORKSPACE = os.environ.get("GOAT_WORKSPACE")
+if _WORKSPACE:
+    LOG_FILE = os.path.join(_WORKSPACE, "logs", "goat2.log")
+else:
+    # Fallback: relative to this file's parent (works from any CWD)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    LOG_FILE = os.path.normpath(
+        os.path.join(_here, "..", "..", "logs", "goat2.log")
+    )
 
 async def _read_logs_handler(level: str = "ERROR", lines: int = 50) -> str:
     """Read last N lines from log file filtered by level."""

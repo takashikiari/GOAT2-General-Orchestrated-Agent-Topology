@@ -37,15 +37,16 @@ async def store_and_promote(
         from supervisor.session.session import store_turn
         await store_turn(mm, turn_count, intent, summary)
         log.debug("store_and_promote: turn %d persisted", turn_count)
-        # Behavioral learning: analyze recent turns and persist the updated style.
+        # Behavioral learning: analyze recent turns from working memory and persist style.
         try:
+            from config.roles import SESSION_ROLE
             from supervisor.behavior.behavior_analyzer import analyze_style
             from supervisor.behavior.behavior_store import save_style
-            from supervisor.behavior.behavior_session import get_recent_turns
             from supervisor.behavior.behavior_profile import serialize
-            turns = await get_recent_turns(mm, limit=10)
-            if turns:
-                profile = await analyze_style(turns, supervisor.registry)
+            entries = await mm.working.list(SESSION_ROLE, limit=10)
+            user_turns = [e.content for e in entries if e.content]
+            if user_turns:
+                profile = await analyze_style(user_turns, supervisor.registry)
                 if profile:
                     await save_style(mm, serialize(profile))
         except Exception as e:

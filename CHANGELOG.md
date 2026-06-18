@@ -5,6 +5,281 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — Codebase audit findings
+
+### Audit summary
+
+A four-agent parallel audit scanned all 269 Python files in the
+codebase. Findings are reported here in priority order so cleanup
+work can proceed incrementally. **Nothing was changed by the audit
+itself** — these are recommendations only.
+
+### Implemented — 2026-06-18 audit cleanup (P0-2, P0-3, P1 batch, P3 paths)
+
+Followed the audit's recommendations for the import-safe subset. Each
+deletion was preceded by a `grep` for live importers; files with even
+one live consumer were skipped (reported below).
+
+#### Fixed (P0 — broken references)
+
+- **P0-2 — `supervisor/session/turn_persistence.py:44`**: removed
+  `from supervisor.behavior.behavior_session import get_recent_turns`
+  (the symbol does not exist in that module). Replaced the call with
+  `mm.working.list(SESSION_ROLE, limit=10)` which returns
+  `MemoryEntry` records; we extract `.content` strings and pass them
+  to `analyze_style` (which already accepts `list[str]`). Behavioral
+  learning is now functional instead of silently swallowed.
+- **P0-3 — `supervisor/pipeline/goat_enrichment.py:137`**: added
+  `import subprocess` to the import block so `subprocess.run(...)`
+  inside `build_goat_context()` no longer raises `NameError`.
+
+#### Deleted (P1 — dead code, zero importers confirmed)
+
+- `supervisor/pipeline/dag_validator.py`, `goat_validator.py`,
+  `tool_verifier.py`, `agent_corroboration.py` (4 shims re-exporting
+  from `tools.dag.validators`; the `pipeline/__init__.py` import
+  block was updated to point at the canonical module before deletion).
+- `supervisor/pipeline/gates.py` (empty stub).
+- `supervisor/pipeline/pre_classify.py` (never called).
+- `supervisor/classification/classifier_context.py` (never called).
+- `supervisor/pipeline/goat_decision.py` (shim, never imported —
+  callers use `goat_call.goat_turn` directly).
+- `supervisor/modul.py` and `supervisor/dag_control_methods.py`.
+- `config/supervisor.py`, `config/routing.py`, `config/model_selector.py`,
+  `config/tools.py`, `config/memory.py` (all shim / re-export / config
+  with zero importers).
+- `tools/file/path_utils.py`, `file_storage_helpers.py`,
+  `file_storage_service.py` (all zero importers).
+- `tools/memory/` (entire 17-file directory; duplicate of
+  `memory/memory_tools/`, and `tools/__init__.py` already imports
+  from the canonical location).
+- `tools/goat_skills/_verify_imports.py` (debug script).
+- `memory/long_term/letta_blocks.py`, `letta_ops_list.py`,
+  `letta_ops_retrieve.py` (all logic inlined into `LettaClient`).
+
+#### Skipped — audit claim disputed, live importer found
+
+- **`memory/memory_promoter.py`** — audit says "never instantiated",
+  but `supervisor/pipeline/__init__.py:24` does
+  `from memory.memory_promoter import MemoryPromoter` and re-exports
+  it in `__all__`. Deleting it would break that import. Skipped.
+- **`agents/planner.py`** — audit says `PlannerAgent` is never
+  instantiated, but `agents/__init__.py:23` does
+  `from .planner import PlannerAgent` and re-exports it. External
+  consumers may import via `from agents import PlannerAgent`. Skipped.
+- **`agents/prompts/__init__.py`** — audit says the re-export is never
+  imported, but `agents/__init__.py:31` does
+  `from .prompts import RESEARCHER_SYSTEM` and exports it in `__all__`.
+  Skipped.
+
+#### Fixed (P3 — hardcoded paths)
+
+- **`tools/system/shell_tool.py:133`**: replaced
+  `cwd="/home/lenovo"` with
+  `cwd=os.environ.get("GOAT_WORKSPACE", os.path.expanduser("~"))` so
+  the shell tool works on any host / workspace. Updated the adjacent
+  comment that referenced the old hardcoded path.
+- **`tools/system/log_reader.py:8`**: replaced the hardcoded
+  `/home/lenovo/workspace/goat2/logs/goat2.log` with a path derived
+  from `GOAT_WORKSPACE` (falling back to a path computed relative to
+  the file's location). Works in any checkout / container.
+
+#### Verification (post-cleanup)
+
+All four audit-mandated verifications pass:
+
+```text
+python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"  → ok
+python3 -c "from memory.shared.memory_manager import MemoryManager; print('ok')"  → ok
+python3 -c "from tools.tool_runner import _call_with_tools; print('ok')"  → ok
+python3 -c "from agents.critique import critique_results; print('ok')"  → ok
+```
+
+Plus broader sweeps (`from supervisor.pipeline import *`, `from agents
+import *`, `from memory.long_term import *`, `from config import *`,
+`from tools.goat_skills import *`, `from tools.file import *`,
+`from tools.system.shell_tool import SHELL`,
+`from tools.system.log_reader import READ_LOGS`) — all import-clean.
+
+### P0 — Broken references (code that will not import / run)
+
+| # | File | Line | Issue | Recommended action |
+|---|---|---|---|---|
+| P0-1 | `onboarding/verify.py` | 61, 68, 80, 87, 93, 107, 115, 126 | Eight `from supervisor.X` imports reference legacy module paths that no longer exist: `supervisor.dag` (canonical is `supervisor.pipeline.dag`), `supervisor.workflow` (canonical is `supervisor.pipeline.workflow`), `supervisor.identity.Identity` (class does not exist), `supervisor.mem_inject.MemoryInjector` (class does not exist). The whole file is **not import-clean**. | **Fix** the eight imports or mark the file as legacy (it is **not** collected by pytest). |
+| P0-2 | `supervisor/session/turn_persistence.py` | 44 | `from supervisor.behavior.behavior_session import get_recent_turns` — **`get_recent_turns` does not exist** in `behavior_session.py` (only `get_profile` and `finalize_behavior` are defined there). This import is inside a try block in `store_and_promote()` so it raises and is silently swallowed — meaning behavioral learning is **silently broken** at session-finalize time. | **Fix** — either implement `get_recent_turns` in `behavior_session.py` or remove the broken call. |
+| P0-3 | `supervisor/pipeline/goat_enrichment.py` | 137 | `subprocess.run(...)` is called but `subprocess` is **never imported**. The first `build_goat_context()` call would raise `NameError`. | **Fix** — add `import subprocess` near the top of the file. |
+| P0-4 | `tests/test_critic_fallback.py` | 21 | `from supervisor.workflow import (WorkflowGraph, _parse_critic_severity, _extract_critic_feedback, _MAX_CRITIC_RERUNS, _UPSTREAM_REEXEC_TIMEOUT, _CRITIC_RERUN_TIMEOUT)` — `supervisor.workflow` does not exist. The whole test file is **not import-clean**. | **Fix** to `from supervisor.pipeline.workflow import ...`. |
+| P0-5 | `tests/test_memory_pipeline.py` | 39, 45, 67, 97 | Multiple broken imports: `from supervisor.workflow import WorkflowGraph` (line 39), `from config.settings import settings` (line 45 — the singleton was removed), `patch("supervisor.supervisor.MemoryManager")` (line 67 — symbol not imported there), `patch("memory.memory_manager.MemoryManager")` (line 97 — wrong path; canonical is `memory.shared.memory_manager.MemoryManager`). The test file is **not import-clean**. | **Fix** all four imports. |
+| P0-6 | `tests/test_memory_pipeline.py` | 73, 171, 211 | Tests reference `GoatSupervisor(memory_manager=mock_mm)` (line 73) — but the **current** `GoatSupervisor.__init__` requires a `registry` parameter. Lines 171 and 211 reference `supervisor._run_memory_pipeline` which **does not exist** on the supervisor any more. Tests describe an architecture that was removed. | **Fix** the constructor calls and rewrite or remove `TestParallelMemoryPipeline`. |
+| P0-7 | `tests/memory/test_temporal_memory.py` | 9, 10, 148, 170 | `from memory.temporal_filter import filter_by_time, resolve_range` and `from memory.time_parser import parse_time_range` and `from memory.temporal_search import TemporalSearchMixin` — all three modules live at `memory.temporal.*` (sub-package), not at the `memory.*` root. The test file is **not import-clean**. | **Fix** all imports to use the `memory.temporal.*` paths. |
+| P0-8 | `tests/tools/test_file_executor.py` | 22, 23 | `import tools.file_executor_helpers as h; importlib.reload(h)` and `import tools.file_executor as m; importlib.reload(m)` — both modules live at `tools/file/` (sub-package). `tools.file_executor` does not exist. | **Fix** to `tools.file.file_executor_helpers` and `tools.file.file_executor`. |
+
+### P1 — Dead code (entire files / functions with zero callers)
+
+| # | File | Issue | Recommended action |
+|---|---|---|---|
+| P1-1 | `supervisor/modul.py` (198 lines) | Defines `AgentModule` ABC, `ModuleResult` dataclass, `ModuleRegistry`, `ResearchModule`, `CodingModule`, `CritiqueModule`, `SummarizerModule`. Zero importers anywhere in the repo. The real agent system uses `agents.researcher`/`coder`/`critic`/`summarizer`. | **Delete** the whole file. |
+| P1-2 | `supervisor/dag_control_methods.py` (41 lines) | Defines `pause_dag`, `resume_dag`, `stop_dag`, `get_dag_updates`. Zero importers. The real DAG control lives in `tools/dag/__init__.py::make_dag_tools`. | **Delete** the whole file. |
+| P1-3 | `config/supervisor.py` (39 lines) | `MAX_WAVES`, `MAX_TASKS_PER_WAVE`, `SYNTHESIS_TEMPERATURE`, `DEFAULT_TIMEOUT_SECONDS` — zero importers. The real constants live in `config/limits.py` / `config/fallbacks.py` / `config/settings.SupervisorConfig`. | **Delete** the whole file. |
+| P1-4 | `supervisor/pipeline/agent_corroboration.py`, `dag_validator.py`, `goat_validator.py`, `tool_verifier.py` (4 lines each) | Backward-compat shims re-exporting `tools.dag.validators.*`. Zero direct importers (everything uses the canonical `tools.dag.validators` directly). | **Delete** all four. |
+| P1-5 | `supervisor/pipeline/gates.py` (15 lines) | Intentionally empty stub; docstring admits "kept only to avoid breaking stale imports" — but no live import exists. | **Delete**. |
+| P1-6 | `supervisor/pipeline/pre_classify.py` (52 lines) | `prepare_classification_context` — never imported anywhere. Leftover from the old two-call classifier architecture. | **Delete**. |
+| P1-7 | `supervisor/pipeline/goat_decision.py` (71 lines) | `decide` shim and `GoatDecision` alias — never imported. The real flow uses `goat_call.goat_turn`. | **Delete**. |
+| P1-8 | `supervisor/classification/classifier_context.py` (68 lines) | `gather_active_dags`, `gather_user_profile`, `gather_hints` — all dead; classifier is now a trivial parser, not LLM-driven. | **Delete**. |
+| P1-9 | `supervisor/classification/classifier_prompt.py` (144 lines) | `build_classifier_prompt`, `format_history`, `format_active_dags`, `format_hints`, `_CLASSIFIER_SYSTEM` — all dead. Only `format_dialogue` is used. | **Delete the dead functions + `_CLASSIFIER_SYSTEM`; keep `format_dialogue`**. |
+| P1-10 | `supervisor/pipeline/dag_awareness.py` | `read_override`, `write_override`, `wait_if_paused` — leftovers from old routing-override architecture. | **Delete** the dead functions; keep `scan_active_dags`, `read_dag_progress`. |
+| P1-11 | `supervisor/session/routing_state.py` | `get_previous_routing`, `set_previous_routing`, `clear_previous_routing`, `store_routing_correction` — leftovers from old two-call classifier. `pop_pending_dag` is the only live function. | **Delete** the four dead functions. |
+| P1-12 | `agents/planner.py` (110 lines) | `PlannerAgent` class — never instantiated anywhere. The real planner is `decompose_plan()` in `agents/planner_decompose.py`. | **Delete** the whole file. |
+| P1-13 | `agents/coder.py:170-185`, `agents/critic.py:158-171`, `agents/researcher.py:55-72`, `agents/summarizer.py:65-78`, `agents/tool_caller.py:95-108`, `agents/memory_agent.py:77-90` | Six thin `run_<role>` convenience aliases — never imported (the supervisor uses `_run_<role>` from `supervisor/pipeline/runners.py`). | **Delete** all six. |
+| P1-14 | `agents/prompts/__init__.py` (13 lines) | Re-exports `RESEARCHER_SYSTEM` — never imported (consumers use `from .prompts.researcher_prompt import _SYSTEM_PROMPT`). | **Delete**. |
+| P1-15 | `config/routing.py` (208 lines) | Eight accessor functions (`get_agent_registry`, `get_supervisor_result`, etc.) and `routing_debug_enabled` — zero importers. | **Delete**. |
+| P1-16 | `config/model_selector.py` (162 lines) | `get_model_for_role`, `check_model_health`, `ModelUnavailableError` — zero importers (production uses `settings.agents.get(role)`). | **Delete**. |
+| P1-17 | `config/tools.py` (57 lines) | `MAX_FILE_SIZE`, `MAX_SEARCH_RESULTS`, `SHELL_TIMEOUT`, `FILE_ALLOWED_EXTENSIONS` — zero importers. | **Delete**. |
+| P1-18 | `config/memory.py` (27 lines) | Backward-compat shim; docstring says "Import from there instead" (i.e. from `memory.config`). Zero importers. | **Delete**. |
+| P1-19 | `tools/file/path_utils.py` (25 lines) | Re-exports `WORKSPACE`, `ALLOW_OUTSIDE`, `safe_path` — zero importers. | **Delete**. |
+| P1-20 | `tools/file/file_storage_helpers.py` (78 lines) | Defines `FileStorageError`, `get_storage_backend`, `get_storage` — zero importers. | **Delete**. |
+| P1-21 | `tools/file/file_storage_service.py` (440 lines) | Full Local + S3 file storage abstraction — zero importers. | **Delete**. |
+| P1-22 | `tools/memory/*` (17 files, ~1,800 lines) | The whole `tools/memory/` tree is a near-verbatim copy of `memory/memory_tools/*`. `tools/__init__.py:63` already imports directly from `memory.memory_tools`. | **Delete the whole `tools/memory/` tree**. |
+| P1-23 | `tools/goat_skills/_verify_imports.py` (17 lines) | Standalone debug script, never imported. | **Delete**. |
+| P1-24 | `tools/goat_skills/shell.py` | `run_shell()` function (lines 63-112) and `__main__` smoke test (lines 199-225) — never imported. | **Delete** those parts (keep the rest). |
+| P1-25 | `memory/chromadb_client.py`, `memory/letta_client.py`, `memory/chroma_db/chromadb_client.py` | Three backward-compat shims that re-export `ChromaMemoryClient` / `LettaClient` from `memory.episodic` / `memory.long_term`. Only consumers are `config/registry.py:164` (`memory.letta_client`) and `tests/test_memory_pipeline.py:383,398`. | **Migrate consumers, then delete**. |
+| P1-26 | `memory/long_term/letta_blocks.py`, `letta_ops_list.py`, `letta_ops_retrieve.py` | Three ops modules — their `do_*` functions are never imported anywhere. The logic was inlined into `LettaClient` itself. | **Delete all three files**. |
+| P1-27 | `memory/long_term/letta_ops_store.py` | `do_store_profile` (lines 52-75) — never imported. Only `do_delete` and `do_store` are used. | **Delete** the dead function. |
+| P1-28 | `memory/memory_promoter.py` (189 lines) | `MemoryPromoter` class — duplicates `MemoryManager.promote_turns()`. Never instantiated. | **Delete** the whole file. |
+| P1-29 | `memory/memory_metrics/metrics.py:68-87` | `count_long_term_entries()` body returns hardcoded `0` — implementation is a stub. | **Implement or delete**. |
+| P1-30 | `memory/episodic/compartments.py:28-29` | `GOAT_COMPARTMENT_ACCESS`, `DAG_COMPARTMENT_ACCESS`, `namespaced_key` exported but never imported. | **Delete or fix `__all__`**. |
+| P1-31 | `memory/__init__.py:67-70,116-119` | `count_working_entries`, `count_episodic_entries`, `count_long_term_entries` re-exports — never imported. | **Delete** the dead re-exports. |
+| P1-32 | `memory/working/garbage_collector.py:43-47` | `DAG_TTL_S`, `MAX_TURN_ENTRIES`, `AUTO_COLLECT_EVERY_N` hardcoded; docstring claims `dag_ttl_s` and `max_turn_entries` are kwargs that don't actually exist on the function signature. | **Fix the signature** (add the kwargs OR remove the stale docstring claims). |
+| P1-33 | `memory/long_term/letta_client.py:33-35, 627` | `_detect_api_version`, `close()` — never called. | **Delete**. |
+| P1-34 | `supervisor/session/history.py:69-76` | `ConversationHistory.as_full_context` — never called. | **Delete**. |
+| P1-35 | `config/registry.py:120,153` | `self.agent_models = AgentModels()` attribute — never read by any consumer (only the docstring mentions it). | **Delete** the attribute. |
+| P1-36 | `config/limits.py:62-63, 152-179` | `MAX_LINES_PER_FILE`, `MAX_TURNS_HISTORY` and the 24 modular-fallbacks re-export block — never read by any consumer. | **Investigate and delete the truly unused ones**. |
+| P1-37 | `supervisor/registry.py:163-170` | `_build_default_registry` — only referenced in a docstring, never called. | **Delete**. |
+| P1-38 | `supervisor/pipeline/dag_bridge.py:192-218` | `DagBridge.get_progress` — never called (workflow writes progress directly to backend). | **Delete**. |
+| P1-39 | `supervisor/session/session.py:157-196` | `write_dag_instructions` — exported but never called (`tools/dag/execution.py` only reads via `retrieve_dag_instructions`). | **Delete**. |
+| P1-40 | `supervisor/behavior/info_types.py:11` | `FactKind` exported in `__all__` but only `ScoredFact` references it inline; not imported elsewhere. | **Delete** from `__all__`. |
+| P1-41 | `supervisor/pipeline/critic_rerun.py:43-93` | `_rerun_failed_tasks` — duplicates the critic re-execution logic in `workflow.py:346-557`. | **Merge** into workflow.py and delete the module. |
+| P1-42 | `supervisor/pipeline/goat_decision.py:41` | `GoatDecision` alias re-export — never imported. | **Delete**. |
+| P1-43 | `utils/__init__.py:6` | `import logging` — `log` variable never assigned or used. | **Delete** the import. |
+| P1-44 | `Looking at \`supervisor\`` (stray directory at repo root) | Contains a stray 4-line Python snippet; typo'd directory name. | **Delete the directory**. |
+| P1-45 | `test/` (directory at repo root, not the canonical `tests/`) | Contains only `hello.txt`; not collected by pytest. | **Delete the directory**. |
+| P1-46 | `goat.sh`, `goat.bat` | Both reference `python main.py` — but **`main.py` does not exist** in the repo. | **Fix** to point at `cli.py` or `python -m supervisor`. |
+| P1-47 | `agents/prompts/__init__.py` and `agents/__init__.py:31,46` | `RESEARCHER_SYSTEM` re-export chain that no consumer uses. | **Delete** (already covered above; keep `agents/researcher.py:9` direct import). |
+
+### P2 — Conflicts / duplicate logic
+
+| # | Locations | Issue | Recommended action |
+|---|---|---|---|
+| P2-1 | `config/agent_types.py:23` vs `supervisor/pipeline/dag.py:26` | Two `TaskStatus` enums; the dag.py one has an extra `SKIPPED`. | **Reconcile** — pick `config/agent_types.py` as canonical (the comment at line 5 says it's the leaf import), add `SKIPPED` there, have `dag.py` re-export. |
+| P2-2 | `utils/llm_utils.py:44-53` vs `agents/base_agent.py:132-141` | Two `AsyncOpenAI` client caches (`_clients` dicts). Same logic, separate state. | **Pick one home** (`utils/` is canonical) and have `base_agent.py` reuse it. |
+| P2-3 | `memory/memory_tools/memory_helpers.py` vs `tools/memory/memory_helpers.py` | Two parallel `memory_helpers` modules; the tools/memory/ one lacks `LETA_CALL_TIMEOUT_S`, `normalize_tier`, `letta_search_safe`, `letta_list_safe`. | **Delete tools/memory/memory_helpers.py** (the whole `tools/memory/` tree is dead per P1-22). |
+| P2-4 | `memory/memory_promoter.py` vs `memory/shared/memory_promote_turns.py` | Duplicate promotion logic. | **Delete `memory_promoter.py`** (covered by P1-28). |
+| P2-5 | `memory/long_term/letta_blocks.py`, `letta_ops_list.py`, `letta_ops_retrieve.py`, `letta_ops_store.py` | `do_*` functions defined here are inlined inside `LettaClient`. | **Delete the ops modules** (covered by P1-26, P1-27). |
+| P2-6 | `config/memory.py` vs `memory/config.py` | Duplicate constants. | **Delete `config/memory.py`** (covered by P1-18). |
+| P2-7 | `supervisor/pipeline/critic_rerun.py` vs `supervisor/pipeline/workflow.py:346-557` | Two implementations of critic upstream re-execution. `tools/dag/execution.py:65,192` calls the module-level one; workflow.py uses its own class method. | **Merge** — keep workflow.py's class method, delete `critic_rerun.py`. |
+| P2-8 | `supervisor/session/history.py:29-35` vs `supervisor/__main__.py:35-42` | Two near-identical `_strip_dsml` regexes. | **Consolidate** to one location. |
+| P2-9 | `supervisor/pipeline/goat_call.py:189-190`, `supervisor/session/history.py:29-35`, `supervisor/__main__.py:35-42` | Three different DSML-stripping regexes in three places. | **Consolidate** to one (the user-facing strip in `tool_runner` already handles DSML, so this may not be needed at all). |
+| P2-10 | `supervisor/__init__.py` re-exports `~50+` symbols from sub-packages | Almost none of them are imported externally; consumers use direct paths. | **Delete the dead re-exports** — keep only `GoatSupervisor`, `WorkflowGraph`, `AgentRegistry`, `AgentRunner`, `TaskStatus`, `AgentTask`, `AgentResult`, `Plan`, `SupervisorResult`, `run`. |
+| P2-11 | `supervisor/types.py` vs `config/agent_types.py` | `AgentRunner`, `TaskStatus`, etc. defined in `config/agent_types.py`, re-imported in `supervisor/types.py`, re-exported again in `supervisor/__init__.py`. | **Drop the supervisor/__init__.py re-exports** (covered by P2-10). |
+| P2-12 | `utils/__init__.py` vs `supervisor/__init__.py` vs `agents.critique` | `_call_llm`, `_get_client`, etc. re-exported from all three. | **Pick one canonical home** (`utils/`) and remove the duplicate re-exports. |
+| P2-13 | `MEMORY_LAST_WRITE`, `MEMORY_DIRECT_QUERY`, `MEMORY_TIMELINE`, etc. | Defined in both `memory/memory_tools/` and `tools/memory/`. | **Delete the `tools/memory/` tree** (covered by P1-22). |
+
+### P3 — Inconsistencies (hardcoded values / bypassed architecture)
+
+| # | File | Line | Hardcoded value | Recommended |
+|---|---|---|---|---|
+| P3-1 | `supervisor/supervisor.py` | 47, 48, 51 | `_FALLBACK_CLARIFICATION`, `_DAG_STARTED_SUMMARY`, `_COLLECT_FINISHED_TIMEOUT_S=1.0` | Lift to `config/goat.toml` (`[messages]`, `[timeouts]`). |
+| P3-2 | `supervisor/interfaces/telegram_bot.py` | 50 | `_SHUTDOWN_WAIT_TIMEOUT_S=10.0` | Lift to `config/goat.toml`. |
+| P3-3 | `supervisor/session/mem_inject.py` | 71-72, 67 | `_FRESH_MAX_AGE_S=5*60`, `_RECENT_MAX_AGE_S=60*60`, `_WM_LIMIT=50` | Lift to `config/goat.toml`. |
+| P3-4 | `supervisor/pipeline/goat_call.py` | 44, 46 | `_CLARIFY_MAX_CHARS=400`, `_MAX_INTENT_CHARS=4000` | Lift to `config/goat.toml`. |
+| P3-5 | `supervisor/behavior/info_extract.py` | 108, 147, 152 | Various content-length thresholds (`> 80`) | Lift to `config/goat.toml` or `[behavior]`. |
+| P3-6 | `supervisor/session/session.py` | 39-47 | `_MAX_INTENT_CHARS=500`, `_MAX_SUMMARY_CHARS=200`, `_MAX_FULL_CONTENT_CHARS=1000`, `_MAX_DAG_CHARS=50000`, `DAG_INSTRUCTIONS_TTL=3600` | Lift to `config/goat.toml`. |
+| P3-7 | `supervisor/pipeline/dag_setup.py` | 99-101 | TTL hardcoded `3600` (active_dag) | Use config constant. |
+| P3-8 | `supervisor/pipeline/dag_bridge.py` | 45-46 | `POLL_INTERVAL=0.5`, `DEFAULT_TIMEOUT=120.0` | Use `config/dag.toml`. |
+| P3-9 | `supervisor/pipeline/dag_control.py` | 26-28 | `_CONTROL_TTL=3600`, `_PAUSE_INTERVAL=2.0`, `_PAUSE_MAX_WAIT=60.0` | Use config. |
+| P3-10 | `supervisor/pipeline/workflow.py` | 198 | `output[:1000]` truncation hardcoded | Use config. |
+| P3-11 | `supervisor/session/turn_persistence.py` | 46 | `get_recent_turns(mm, limit=10)` hardcoded | Use config. |
+| P3-12 | `supervisor/session/memory_housekeeping.py` | 111 | `max_entries=100` hardcoded | Use `config/memory.toml`. |
+| P3-13 | `supervisor/session_init_flush.py` | 42 | `max_entries=0` hardcoded; `"user_session"` string duplicated across memory_housekeeping.py and session_init_flush.py | Use config. |
+| P3-14 | `supervisor/pipeline/dag.py` | 216-234 | Fallback 2-wave schedule — no log call for the cycle-detection case (docstring says "logs at WARNING") | Add the log call or fix the docstring. |
+| P3-15 | `supervisor/logging/auditor.py` | 49 | `_NUMBER_PATTERN` regex has repeated `ms\|ms` — typo | **Fix**. |
+| P3-16 | `supervisor/README.md` | 60-65 | Directory tree lists deleted files (`planner.py`, `critique.py`, `llm_utils.py`, etc. — the supervisor/` version) | **Update the README** to match the current flat structure. |
+| P3-17 | `supervisor/README.md` | 79-106 | Pipeline 1/2/3 descriptions don't match code — supervisor is now single-GOAT-call + action dispatch | **Update the README** to match the new architecture. |
+| P3-18 | `memory/working/redis_conn.py` | 20-22 | `url="redis://localhost:6379/0"`, `max_connections=10`, `socket_timeout=5.0` hardcoded | Use `config/memory.toml` `[redis]`. |
+| P3-19 | `memory/router/cache.py`, `confidence.py`, `preferences.py`, `types.py` | various | `_CACHE_MAXSIZE`, `_WEIGHT_PATTERN`, `_WEIGHT_HISTORY`, `CONF_HIGH`, `CONF_LOW` hardcoded | Use `config/memory.toml` `[router]`. |
+| P3-20 | `agents/base_agent.py` | 172 | `max_tool_rounds: int = 10` hardcoded | Use `config/goat.toml` `[agents]`. |
+| P3-21 | `utils/llm_utils.py` | 38-41 | `_MAX_CONTENT_CHARS=64000`, `_MAX_CONTEXT_CHARS=32000`, etc. hardcoded | Move to `config/limits.py` or new `[llm]` section. |
+| P3-22 | `tools/system/shell_tool.py` | 134 | `cwd="/home/lenovo"` hardcoded subprocess cwd | Read from `GOAT_WORKSPACE` env. |
+| P3-23 | `tools/system/log_reader.py` | 8 | `LOG_FILE = "/home/lenovo/workspace/goat2/logs/goat2.log"` hardcoded absolute path | Derive from workspace env. |
+| P3-24 | `tools/goat_skills/screen_tools.py` | 31, 104 | `/tmp/goat_screenshot.png` hardcoded | Use `tempfile.gettempdir()` or workspace. |
+| P3-25 | `tools/web/web_search.py` | 30, 31, 71 | `_TIMEOUT=10.0`, `_DEFAULT_N=5`, `_DEFAULT_URL="http://localhost:7777"` hardcoded despite matching keys in `config/tools.toml` | Load from `config/tools.toml`. |
+| P3-26 | `onboarding/detect.py` | 80 | `os.environ.get("SEARXNG_URL", "http://localhost:7777")` — third source of truth for the same env var | Import from `config.limits.SEARXNG_URL`. |
+| P3-27 | `agents/coder.py`, `critic.py`, `planner.py`, `researcher.py`, `summarizer.py`, `tool_caller.py` | docstrings | All hard-code specific model names ("deepseek-coder", "llama-3.3-70b", "gpt-4o", etc.) | Replace with "see `[agents]` in `goat.toml`". |
+| P3-28 | `agents/coder.py`, `agents/researcher.py`, `agents/tool_caller.py` | system prompts | `Workspace root: /home/lenovo/workspace/goat2` hardcoded | Inject from `GOAT_WORKSPACE` env. |
+| P3-29 | `tools/memory/memory_last_write.py` (and `memory/memory_tools/memory_last_write.py`) | 49-66 | Bypasses ServiceRegistry — directly instantiates `RedisBackend()`, calls private `_get_redis()`, hardcodes key prefix `goat2:working:last_write:{tier}` | Use the registry-owned RedisBackend. |
+| P3-30 | `memory/shared/memory_crud.py` | 84-93 | Same bypass — creates a fresh `RedisBackend()` to write `goat2:working:last_write:{tier}` | Use registry. |
+| P3-31 | `memory/episodic/chroma_crud.py` | 60-71 | Same bypass — creates RedisBackend inside the ChromaDB write path | Use injected dependency. |
+| P3-32 | `memory/working/working_crud.py` | 69-77 | Same bypass — `r = await self.backend._get_redis()` (private) | Use the backend's public API. |
+| P3-33 | `memory/memory_tools/memory_count_tool.py` (and `tools/memory/memory_count_tool.py`) | 74-78 | `counts["long_term"] = getattr(results, 'total', 'unknown')` — **`results` is `list[MemoryEntry]`**, has no `.total` attribute, so `long_term` count is **always `"unknown"`** in production | **Fix** the broken `.total` access; the real implementation already lives in `memory_count_tool.py:74-78` in `memory/memory_tools/`. |
+| P3-34 | `memory/long_term/letta_client.py` | 132, 598 | `timeout=30.0`, `timeout=10.0` hardcoded | Use `LETTA_TIMEOUT` from config. |
+| P3-35 | `memory/memory_tools/memory_temporal_tools.py` | 60-66 | Default timeout `120.0` for DAG bridge | Use `config.limits.DAG_TIMEOUT`. |
+| P3-36 | `memory/memory_tools/memory_helpers.py` | 214 | `LETA_CALL_TIMEOUT_S = 10.0` hardcoded | Use config. |
+| P3-37 | `memory/episodic/sliding_window.py` | 53-56 | `_SLIDE_BATCH=100`, `_FETCH_MAX=400`, `_DELETE_BELOW=0.3`, `_PERMANENT_ABOVE=0.7` hardcoded | Move to config or document why they are algorithmic constants. |
+| P3-38 | `memory/memory_promoter.py` | 41-42 | `EPISODIC_THRESHOLD=4`, `LONG_TERM_THRESHOLD=6` hardcoded with conflicting docstring (`PROMOTION_TURN_EPISODIC=2` turns vs `4` messages) | **Fix** docstring and consolidate with `memory/config.py`. |
+| P3-39 | `config/limits.py:62-67` | – | `MAX_LINES_PER_FILE`, `MAX_TURNS_HISTORY` re-exports — zero consumers | **Investigate and delete** the truly unused ones. |
+| P3-40 | `config/limits.py:300` | – | `LOG_LEVEL` re-export — duplicate of `Settings.log_level` (the actual consumer is `cli.py:21`) | **Delete** the re-export. |
+| P3-41 | `config/goat.toml:131-135` | – | Comment says "Temperature: 0.7" but the actual value (per `config/settings.py:242`) is 0.5 | **Fix** the comment. |
+| P3-42 | `config/settings.py:289-292` | – | "PHASE 4 UPDATE" notice duplicated (also at lines 67-69) | **Delete** the duplicate. |
+| P3-43 | `supervisor/supervisor.py:12-17` | – | Module docstring says "DSML stripping is intentionally NOT done here" — but `__main__.py` and `history.py` still strip DSML | **Update** the docstring or remove the redundant stripping. |
+| P3-44 | `supervisor/__init__.py:91-103` | – | Re-export of `agents.critique`, `agents.planner_decompose`, `tools.tool_runner`, `utils.llm_utils` "for backward compatibility" — but the modules are not actually moved | **Delete** the re-exports. |
+| P3-45 | `supervisor/supervisor.py:91-102` | – | `finalize_session()` swallows `tools_watcher.stop` exceptions at `log.debug` level — inconsistent with the WARNING-level handling elsewhere | **Bump** to `log.warning`. |
+| P3-46 | `supervisor/supervisor.py:128` | – | Comment says *"non-blocking by design"* but `_COLLECT_FINISHED_TIMEOUT_S = 1.0` is a real block | **Update** the comment. |
+| P3-47 | `supervisor/__init__.py:106-126` | – | `async def run(intent, registry)` — never imported | **Delete** the dead convenience shim. |
+| P3-48 | `config/onboarding.py:27,38,41,59,63,66` | – | `GOAT_VERSION`, `REDIS_KEY_PREFIX` hardcoded; `onboarding/persist.py:22` has its own hardcoded `"2.0"` literal | **Consolidate** to one source of truth. |
+| P3-49 | `tools/dag/__init__.py:30, 47-49` | – | Docstring claims legacy `supervisor.pipeline.dag_tools` / `dag_execution` / `dag_background` shims exist — **none of those files exist** | **Fix** the docstring. |
+| P3-50 | `tools/dag/background.py:13-14`, `tools/dag/execution.py:17-19` | – | Same stale shim references | **Fix** the docstrings. |
+| P3-51 | `agents/coder.py:148` | – | `re.sub(r"^```[^\n]*\n\|```\s*$", "", code.strip(), flags=re.MULTILINE)` — the file imports `re` only for this one line | Move to a helper or accept as-is (it's active code in `validate_syntax`). |
+
+### P4 — Stale docstrings / references
+
+| # | File | Issue |
+|---|---|---|
+| P4-1 | `config/routing.py` | Docstring describes an architecture that no consumer implements. (Deleted in P1-15.) |
+| P4-2 | `config/registry.py:13-26, 40-50` | Docstring describes routing pattern that doesn't exist; attribute table includes dead `agent_models`. |
+| P4-3 | `config/agent_models.py:1-2` | Accurate, keep. |
+| P4-4 | `config/settings.py:67-69, 289-292` | "PHASE 4 UPDATE" notice duplicated. |
+| P4-5 | `config/limits.py` | Docstring fine. |
+| P4-6 | `agents/coder.py:1-7`, `critique.py:1-20`, `planner_decompose.py:1-7`, `researcher.py:24` | Module docstrings reference removed features; model-name references will drift from toml. |
+| P4-7 | `memory/memory_promoter.py:9-22` | Claims architectural distinctions that no longer exist. (Deleted in P1-28.) |
+| P4-8 | `memory/working/working_memory.py`, `memory/shared/memory_manager.py` | "PHASE 4 UPDATE" notices — accurate. |
+| P4-9 | `memory/shared/types.py` | Accurate. |
+| P4-10 | `memory/long_term/letta_client.py:12-23` | References "Letta v0.5+ API" hardcoded; the actual version-handling is dead. |
+| P4-11 | `memory/memory_metrics/metrics.py:11-12` | Docstring says "Returns the number of blocks" but the actual implementation returns hardcoded `0`. |
+| P4-12 | `supervisor/pipeline/agent_corroboration.py:1-4`, `dag_validator.py:1-4`, `goat_validator.py:1-8`, `tool_verifier.py:1-4` | All four marked "Backward-compat shim" but none have live importers. (Deleted in P1-4.) |
+| P4-13 | `supervisor/pipeline/gates.py:1-9` | "Intentionally empty" — but no live importer. (Deleted in P1-5.) |
+| P4-14 | `supervisor/classification/classifier_prompt.py:1-10`, `classifier_context.py:1-9` | Docstrings describe classifier "best-effort context gatherers" / "pure LLM intent classifier" but they're never called. |
+| P4-15 | `supervisor/pipeline/pre_classify.py:1-9` | "Pre-classify orchestration" — never called. (Deleted in P1-6.) |
+| P4-16 | `supervisor/pipeline/goat_decision.py:6-19` | Whole file is a backward-compat shim docstring. (Deleted in P1-7.) |
+| P4-17 | `supervisor/registry.py:7-11` | Says "All 7 DAG agent runners" but only 6 are pre-registered at module level (`_run_planner` is lazy-loaded). |
+| P4-18 | `tools/dag/__init__.py:30, 47-49` | Stale shim references (covered in P3-49). |
+
+### Coverage stats
+
+- 269 Python files in repo
+- ~117 `memory/` files
+- ~70 `tools/` files
+- ~70 `supervisor/` files
+- ~10 `tests/` files
+- ~20 other (config, agents, utils, scripts, onboarding, top-level)
+- All four audit agents reported; findings cross-checked
+
+### Audit methodology
+
+Four parallel `general-purpose` agents read all files in their
+respective subtrees (agents+config, memory+tools, supervisor+utils+scripts+onboarding+top-level, tests+__init__/__main__). Their findings were aggregated, cross-checked, and verified against the live filesystem (grep for live references, file existence checks, import-path validation). Nothing in the codebase was modified by the audit itself — all recommendations are advisory.
+
+---
+
 ## [Unreleased] — 2026-06-17 — Fix nested event loop in telegram_bot
 
 ### Fixed

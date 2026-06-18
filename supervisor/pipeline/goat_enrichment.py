@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import subprocess
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

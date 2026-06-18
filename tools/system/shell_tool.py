@@ -13,6 +13,7 @@ SECURITY:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from typing import TYPE_CHECKING, Final
 
@@ -43,8 +44,9 @@ ALLOWED_COMMANDS: Final[set[str]] = {
 # We REMOVED: *, $, >, <  — these are needed for legitimate read-only ops:
 #   * → glob expansion       (find *.py, ls *.txt)
 #   $ → environment variables (echo $PATH, env $HOME)
-#   >, < → redirects to /tmp   (allowed since cwd is /home/lenovo, files outside
-#          the workspace are still safe; the full args are validated separately)
+#   >, < → redirects to /tmp   (allowed since cwd is $GOAT_WORKSPACE or $HOME,
+#          files outside the workspace are still safe; the full args are
+#          validated separately)
 # DAG agents are read-only by intent; this is enforced by ALLOWED_COMMANDS.
 BLOCKED_PATTERNS: Final[set[str]] = {
     "|", ";", "&&", "||", "`", "\\", "\n",
@@ -130,7 +132,7 @@ async def _shell_handler(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd="/home/lenovo",  # Restrict to home or workspace
+            cwd=os.environ.get("GOAT_WORKSPACE", os.path.expanduser("~")),  # Restrict to home or workspace
         )
         output = result.stdout
         if result.stderr:
