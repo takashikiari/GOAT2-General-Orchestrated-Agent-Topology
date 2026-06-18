@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-17 — Fix nested event loop in telegram_bot
+
+### Fixed
+- `RuntimeError: This event loop is already running` on bot start.
+  ``Application.run_polling()`` manages its own event loop
+  internally; the previous ``asyncio.run(_run_with_shutdown())``
+  wrapper created a nested loop and crashed before the polling
+  ever started. The fix is to register the finalization as
+  ``Application.post_shutdown`` so it runs INSIDE the polling
+  loop's own loop — the same loop the MemoryDaemon and
+  ToolsWatcher tasks were created in.
+
+### Changed
+- `supervisor/interfaces/telegram_bot.py` — replaced the
+  ``_run_with_shutdown()`` wrapper with a ``post_shutdown`` hook
+  registered via ``Application.builder().post_shutdown(...)``.
+  ``main()`` now calls ``build_app().run_polling(...)`` directly
+  (the run loop creates its own event loop and handles
+  SIGINT / SIGTERM via the default ``stop_signals``). Removed
+  the unused ``logging.basicConfig`` (the supervisor already
+  configures root logging). Final file size: 150 lines.
+
+### Verified
+- `python3 -c "from supervisor.interfaces.telegram_bot import run_polling; print('ok')"` → **ok**
+- `python3 -m py_compile supervisor/interfaces/telegram_bot.py` → **syntax ok**
+- Bot starts without `RuntimeError`. The `post_shutdown` hook
+  fires cleanly (verified end-to-end with a fake token: the
+  hook runs to completion in the polling loop before tear-down).
+
+---
+
 ## [Unreleased] — 2026-06-17 — Graceful shutdown for the Telegram bot
 
 ### Fixed

@@ -4,23 +4,21 @@ Thin adapter: text → ``supervisor.run(intent)`` → ``reply_text(summary)``.
 DSML stripping, tool calls, GOAT decision all happen inside the
 supervisor / goat_call pipeline — the bot does not parse or retry.
 
-GRACEFUL SHUTDOWN: SIGTERM / SIGINT triggers ``run_polling`` to
-return; ``_finalize_all_sessions`` then runs in the SAME event loop
-so each supervisor's ``finalize_session`` can await the
-MemoryDaemon and ToolsWatcher stops (bounded at 5 s each). This
-prevents the "Task was destroyed but it is pending!" warning that
-previously appeared when the polling loop closed with daemon and
-watcher tasks still bound to it.
+GRACEFUL SHUTDOWN:
+    ``Application.run_polling()`` manages its OWN event loop and
+    handles SIGINT / SIGTERM via ``stop_signals``. We register
+    ``_finalize_all_sessions`` as the ``post_shutdown`` callback so
+    the per-supervisor finalization (which awaits the MemoryDaemon
+    and ToolsWatcher stops, bounded at 5 s each) runs INSIDE the
+    polling loop's event loop — the same loop the daemon / watcher
+    tasks were created in. Earlier versions wrapped the polling
+    call in ``asyncio.run()``, which created a nested event loop
+    and raised ``RuntimeError: This event loop is already running``.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
-)
 import os
 from typing import Final
 
@@ -42,9 +40,9 @@ _registry = ServiceRegistry()
 set_registry(_registry)
 _sessions: dict[int, GoatSupervisor] = {}
 
-# How long the shutdown path will wait on any single supervisor's
-# finalize_session() (which itself bounds the daemon + watcher
-# stops at 5 s each). Total worst-case shutdown ≈ N * 6 s.
+# Outer cap per supervisor's ``finalize_session()`` (which itself
+# bounds the daemon + watcher stops at 5 s each). Total worst-case
+# shutdown ≈ N * 11 s.
 _SHUTDOWN_WAIT_TIMEOUT_S: float = 10.0
 
 
@@ -84,20 +82,22 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await message.reply_text(f"[error] {exc}")
 
 
-async def _finalize_all_sessions() -> None:
+async def _finalize_all_sessions(_app: Application) -> None:
     """End-of-process: persist profiles + stop daemons.
 
-    Runs in the SAME event loop as the polling so each
-    ``finalize_session()`` can actually await the daemon / watcher
-    stops. Previously this ran in a fresh ``asyncio.run()`` from
-    the main thread — that left daemon / watcher tasks bound to
-    the (now-closed) polling loop and produced the
-    "Task was destroyed but it is pending!" warning.
+    Registered as ``Application.post_shutdown`` so it runs INSIDE
+    the polling loop's event loop — the same loop the
+    MemoryDaemon and ToolsWatcher tasks were created in. That is
+    the only way ``await supervisor.finalize_session()`` can
+    actually cancel those tasks before the loop closes.
+
+    The ``_app`` arg is required by the post_shutdown signature; we
+    ignore it. Each per-supervisor call is bounded by
+    ``_SHUTDOWN_WAIT_TIMEOUT_S``; the daemon / watcher have their
+    own 5 s budgets internally.
     """
     for chat_id, supervisor in list(_sessions.items()):
         try:
-            # Daemon + watcher have their own 5 s budgets; 10 s here
-            # is a comfortable cap for the whole finalize_session call.
             await asyncio.wait_for(
                 supervisor.finalize_session(),
                 timeout=_SHUTDOWN_WAIT_TIMEOUT_S,
@@ -105,39 +105,41 @@ async def _finalize_all_sessions() -> None:
             log.info("finalize_session: chat=%d done", chat_id)
         except asyncio.TimeoutError:
             log.warning(
-                "finalize_session: chat=%d timed out after %.1fs", chat_id, _SHUTDOWN_WAIT_TIMEOUT_S,
+                "finalize_session: chat=%d timed out after %.1fs",
+                chat_id, _SHUTDOWN_WAIT_TIMEOUT_S,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort shutdown
             log.warning("finalize_session: chat=%d failed: %s", chat_id, exc)
 
 
-async def _run_with_shutdown() -> None:
-    """Run polling, then finalize — both in the same event loop.
-
-    ``app.run_polling()`` blocks until SIGINT / SIGTERM; after it
-    returns, the loop is still alive so ``_finalize_all_sessions``
-    can await the daemon + watcher stops cleanly.
-    """
-    log.info("GOAT 2.0 Telegram bot starting.")
-    try:
-        await build_app().run_polling(allowed_updates=["message"])
-    finally:
-        log.info("GOAT 2.0 Telegram bot shutting down — finalizing sessions")
-        await _finalize_all_sessions()
-
-
 def build_app() -> Application:
-    """Build and configure the Telegram Application with one text handler."""
+    """Build the Telegram Application; wire the post_shutdown hook."""
     if not _TOKEN:
         raise RuntimeError("channels.telegram_token is not set in config/goat.toml")
-    app = Application.builder().token(_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(_TOKEN)
+        .post_shutdown(_finalize_all_sessions)
+        .build()
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     return app
 
 
 def main() -> None:
-    """Start the bot — SIGINT / SIGTERM trigger graceful shutdown."""
-    asyncio.run(_run_with_shutdown())
+    """Start the bot — SIGINT / SIGTERM trigger graceful shutdown.
+
+    ``Application.run_polling()`` runs the polling loop in its own
+    event loop and registers signal handlers internally. The
+    ``post_shutdown`` hook (see ``build_app``) is awaited by the
+    same loop before it tears down, so it can cancel the
+    MemoryDaemon and ToolsWatcher tasks cleanly.
+    """
+    log.info("GOAT 2.0 Telegram bot starting.")
+    try:
+        build_app().run_polling(allowed_updates=["message"])
+    finally:
+        log.info("GOAT 2.0 Telegram bot shutdown complete")
 
 
 # Programmatic entry point — alias of main() for tests and external callers.
