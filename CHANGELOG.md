@@ -5,6 +5,55 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — Intent-aware freshness/source scoring
+
+GOAT was treating DAG coordination entries, conversation turns, and
+GOAT state as one undifferentiated block. It repeated old DAG results
+when the user was just chatting, and surfaced conversation turns when
+the user was asking about a pipeline. This change introduces a
+two-axis score (freshness × source) and an intent-aware admission
+filter so GOAT can pattern-match trust per entry.
+
+### Added
+- `config/memory.toml [freshness]` section with three thresholds:
+  `fresh_max_seconds=300`, `recent_max_seconds=3600`,
+  `dag_max_age_seconds=600`. Resolution order: toml > module default
+  (no env-var override — these knobs are owner-tuned, not runtime).
+- `supervisor/session/mem_inject.should_include_entry(entry, intent, now)`
+  — pure-Python admission function:
+    - CONV (`turn:*`) / GOAT (`goat:*`) / SYS (anything else) → always admitted.
+    - DAG (`dag:*`) → admitted iff `age < dag_max_age_seconds`
+      OR `intent` mentions any of: `dag`, `task`, `result`, `workflow`,
+      `pipeline`.
+
+### Changed
+- `supervisor/session/mem_inject` now loads freshness thresholds from
+  `config/memory.toml [freshness]` at import time via
+  `config.modular_loader.load_memory_config`. Hard-coded
+  `_FRESH_MAX_AGE_S` / `_RECENT_MAX_AGE_S` constants removed.
+- Source-label taxonomy simplified from 5 labels
+  (`DAG/CONV/GOAT/LIVE/OTHER`) to **4** (`DAG/CONV/GOAT/SYS`) to
+  match the system-prompt contract.
+- Working-memory lines are now sorted trust-high first
+  (CONV+FRESH → GOAT+FRESH → SYS → DAG+OLD), with age as the
+  tiebreaker inside each bucket.
+- Working-memory line format simplified from
+  ``- [FRESH][CONV] key (2026-06-17 14:02): preview`` to
+  ``- [FRESH][CONV] key: preview`` (timestamp dropped — it is not
+  part of the trust decision and adds noise).
+- `supervisor/identity.GOAT_SYSTEM` gained rule 6:
+  *"Context entries are labeled [FRESH/RECENT/OLD][CONV/DAG/GOAT].
+  Prioritize [FRESH][CONV]. Treat [OLD][DAG] as potentially stale —
+  verify before using."*
+
+### Verified
+- `python3 -c "from supervisor.session.mem_inject import mem_turn; print('ok')"` → ok
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- `python3 -c "from supervisor.identity import GOAT_SYSTEM; print('rule 6' in GOAT_SYSTEM.lower() or 'fresh' in GOAT_SYSTEM.lower())"` → True
+- `supervisor/session/mem_inject.py` is 208 lines (≤ 260 cap).
+
+---
+
 ## [Unreleased] — 2026-06-18 — Codebase audit findings
 
 ### Audit summary
