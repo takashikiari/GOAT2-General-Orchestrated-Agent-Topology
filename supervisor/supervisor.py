@@ -79,6 +79,7 @@ class GoatSupervisor:
         self._memory_daemon = None
         self._turn_counter: int = 0
         self._tools_watcher = None
+        self._verbose: bool = False
         log.info("GoatSupervisor: ready (session=%s)", self._session_id)
 
     # ── Public API ──────────────────────────────────────────────────────

@@ -19,6 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
+)
 import os
 from typing import Final
 
