@@ -5,6 +5,93 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — Anti-repetition mechanisms (closing 3 feedback loops)
+
+GOAT was repeating the same response pattern across turns. The
+audit identified three reinforcing feedback loops:
+
+  1. **History replay** — the LLM saw its own prior assistant
+     messages on every turn, biasing it to continue the same voice
+     / register.
+  2. **Style update delay** — `self._behavior_style` was refreshed
+     only at session end, so mid-session style changes written to
+     the Letta `persona` block were invisible to the system prompt
+     until the next session.
+  3. **No anti-repetition mechanism** — nothing detected or
+     prevented GOAT from repeating its own previous responses.
+
+This change introduces three pure-Python mechanisms (no LLM, no
+embeddings) that close each loop independently. They are layered:
+any one helps; together they prevent the cascade.
+
+### Added
+- `supervisor/pipeline/antirepeat.py` (new, 109 lines) — pure-Python
+  anti-repetition helpers. Two functions, both sub-millisecond:
+    - `dedup_history(messages)`: collapses consecutive assistant
+      messages whose word-token Jaccard ≥ 0.90; keeps the latest.
+      Breaks loop #1 by removing the previous assistant turn from
+      the prompt when it overlaps the new one.
+    - `is_repetitive(response, history)`: returns True when the
+      new response overlaps ≥ 0.85 of any of the last 3 assistant
+      turns. Breaks loop #3 by flagging the response (downstream
+      channels deprioritize it; we do NOT regenerate — that would
+      add an LLM call).
+- `GoatSupervisor._refresh_behavior_style()` — re-reads the Letta
+  `persona` block into `self._behavior_style` immediately after
+  `save_style` writes a new profile. Called from
+  `turn_persistence.store_and_promote`. Breaks loop #2.
+- `GoatSupervisor._apply_behavior_profile_from_ctx(goat_ctx)` —
+  mirrors the just-loaded behavior profile from the GoatContext
+  (which `build_goat_context` already loaded per-turn for the
+  working-memory block) into `self._behavior_style`. Avoids a
+  second Letta round-trip. Belt-and-suspenders to loop #2.
+
+### Changed
+- `GoatContext` gained a `behavior_profile: str = ""` field carrying
+  the raw Letta `persona`-block text. `build_goat_context` populates
+  it; the supervisor reads it from the GoatContext on every turn.
+- `supervisor/pipeline/goat_call.goat_turn` now runs
+  `dedup_history()` over `history_messages` before building the
+  prompt, and `is_repetitive()` over the LLM's response +
+  `history_messages` after the call. Repetitive responses are
+  tagged `GoatTurnResult.source = "repetitive"` (still surfaced
+  to the user, but downstream can deprioritize).
+- `supervisor/session/turn_persistence.store_and_promote` now
+  calls `supervisor._refresh_behavior_style()` immediately after
+  `save_style` writes a new profile. Defensive: best-effort, never
+  raises.
+
+### Strict rules
+- No new LLM calls — all mechanisms are pure-Python.
+- No singletons — `antirepeat.py` exposes only `Final` constants.
+- All files ≤ 260 lines: `supervisor.py` 260, `goat_call.py` 228,
+  `antirepeat.py` 109, `goat_enrichment.py` 192,
+  `turn_persistence.py` 86.
+- Dedup and anti-echo are sub-millisecond (measured ~0.07 ms per
+  call on 50-message histories with 100-word turns).
+- No prompt engineering — every fix is a code mechanism that runs
+  *before* the prompt is built or *after* the response is generated.
+
+### Verified
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- `python3 -c "from supervisor.pipeline.goat_call import goat_turn; print('ok')"` → ok
+- `python3 -c "from supervisor.pipeline.goat_enrichment import build_goat_context; print('ok')"` → ok
+- 10 behavioral assertions on `dedup_history` + `is_repetitive`:
+  identical consecutive messages collapse to 1; near-overlap
+  (>90%) collapses to 1; distinct messages preserved; non-consecutive
+  duplicates preserved; empty inputs return False; speed < 1 ms
+  per call; input not mutated; defensive `getattr` works on
+  arbitrary objects.
+- 6 wiring assertions: `GoatContext.behavior_profile` field,
+  `GoatSupervisor` has both new methods, `turn_persistence` calls
+  `_refresh_behavior_style`, `goat_call` imports + uses
+  `antirepeat`, `GoatSupervisor.run` calls
+  `_apply_behavior_profile_from_ctx`, idempotency of
+  `_apply_behavior_profile_from_ctx`.
+- `tests/test_memory_validation.py` 17 passed — no regressions.
+
+---
+
 ## [Unreleased] — 2026-06-18 — Intent-aware freshness/source scoring
 
 GOAT was treating DAG coordination entries, conversation turns, and

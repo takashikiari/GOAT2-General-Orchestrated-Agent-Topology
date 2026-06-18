@@ -82,7 +82,7 @@ class GoatSupervisor:
         self._verbose: bool = False
         log.info("GoatSupervisor: ready (session=%s)", self._session_id)
 
-    # ── Public API ──────────────────────────────────────────────────────
+    # ── Public API ──
 
     def spawn_dag_background(self, dag_instructions: str, session_id: str) -> "asyncio.Task":
         """Detach a DAG as a background asyncio.Task; GOAT returns immediately."""
@@ -101,18 +101,15 @@ class GoatSupervisor:
             except Exception as exc:  # noqa: BLE001 — best-effort shutdown
                 log.debug("finalize_session: tools_watcher.stop failed: %s", exc)
 
-    # ── Main turn entry point ───────────────────────────────────────────
+    # ── Main turn entry point ──
 
     async def run(self, intent: str) -> SupervisorResult:
         """Handle one user message. GOAT is the kernel — must respond on every turn.
 
-        Steps (sequential, all defensive — never raises):
-            1. Lazy session init: memory daemon + tools watcher + history/profile.
-            2. Append the user turn; pull working-memory context.
-            3. Surface any finished background DAGs (bounded wait).
-            4. If a DAG was requested by the LLM last turn, spawn it detached and return.
-            5. Build pure middleware context; call the single GOAT LLM turn.
-            6. Dispatch based on action; tick the per-turn GC.
+        Steps (defensive — never raises):
+        (1) lazy init; (2) append user + mem ctx; (3) surface finished DAGs;
+        (4) spawn any pending DAG; (5) build middleware + single GOAT call;
+        (6) dispatch; tick GC.
         """
         t0 = time.monotonic()
         log.info("GOAT 2.0 — intent: %.120s", intent)
@@ -138,6 +135,8 @@ class GoatSupervisor:
 
         # 5. Build pure middleware context; the one GOAT call decides AND responds.
         goat_ctx, clarity_ctx, hints = await self._build_context(intent, mem_ctx)
+        # TASK 4: mirror the just-loaded behavior profile into self (no second Letta read).
+        self._apply_behavior_profile_from_ctx(goat_ctx)
         turn = await self._goat_turn(intent, goat_ctx, clarity_ctx, hints, mem_ctx)
         depth = classify_intent(turn)
         log.info("GOAT turn: action=%s → %s intent=%.80s", turn.action, depth.value, intent)
@@ -148,7 +147,7 @@ class GoatSupervisor:
         tick_gc(self)
         return result
 
-    # ── Internal helpers ────────────────────────────────────────────────
+    # ── Internal helpers ──
 
     def _ensure_initialized(self) -> None:
         """Lazy-init subsystems on the supervisor's first run() call. Idempotent."""
@@ -230,13 +229,7 @@ class GoatSupervisor:
         return result
 
     async def _dispatch(self, intent: str, t0: float, turn: "GoatTurnResult") -> SupervisorResult:
-        """Build the SupervisorResult for the action the LLM chose this turn.
-
-        action = "dag"      → "DAG started" result (supervisor returns immediately).
-        action = "clarify"  → the LLM's clarification question (or fallback).
-        action = "direct"   → the LLM's reply text.
-        All three paths then persist the turn to history + memory before returning.
-        """
+        """Map the LLM's action to a SupervisorResult (dag/clarify/direct) and persist."""
         if turn.action == "dag":
             summary, source, session_id = _DAG_STARTED_SUMMARY, "generated", ""
         elif turn.action == "clarify":
@@ -245,3 +238,23 @@ class GoatSupervisor:
         else:
             summary, source, session_id = turn.response, turn.source, ""
         return await self._record_turn(intent, t0, summary, source, session_id)
+
+    # ── Behavior-style refresh (anti-repetition) ──
+
+    async def _refresh_behavior_style(self) -> None:
+        """Re-read Letta persona into self._behavior_style after save_style writes (TASK 1)."""
+        try:
+            from supervisor.behavior.behavior_store import load_style
+            fresh = await load_style(self.memory_manager)
+            if fresh and fresh != self._behavior_style:
+                log.debug("_refresh_behavior_style: style updated (%d chars)", len(fresh))
+                self._behavior_style = fresh
+        except Exception as exc:  # noqa: BLE001 — refresh is best-effort
+            log.debug("_refresh_behavior_style: load failed — %s", exc)
+
+    def _apply_behavior_profile_from_ctx(self, goat_ctx) -> None:
+        """Mirror GoatContext.behavior_profile into self (TASK 4) — no second Letta read."""
+        profile = getattr(goat_ctx, "behavior_profile", "") or ""
+        if profile and profile != self._behavior_style:
+            log.debug("_apply_behavior_profile_from_ctx: style refreshed (%d chars)", len(profile))
+            self._behavior_style = profile

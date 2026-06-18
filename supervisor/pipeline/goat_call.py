@@ -29,6 +29,7 @@ import re
 from typing import TYPE_CHECKING, Final
 
 from tools.tool_runner import _call_with_tools
+from supervisor.pipeline.antirepeat import dedup_history, is_repetitive
 from utils.llm_utils import strip_dsml
 
 if TYPE_CHECKING:
@@ -167,7 +168,11 @@ async def goat_turn(
     ]
     # Append the prior conversation so the LLM has context for
     # follow-ups. The current user turn is already in user_prompt.
-    for m in (history_messages or [])[:-2]:
+    # dedup_history collapses consecutive near-duplicate assistant
+    # messages so the LLM doesn't see its own previous outputs as a
+    # template to copy (one leg of the GOAT-repetition feedback loop).
+    cleaned_history = dedup_history(list(history_messages or [])[:-2])
+    for m in cleaned_history:
         if m.get("role") in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m["content"]})
 
@@ -194,16 +199,30 @@ async def goat_turn(
     action, visible = _classify_response(raw_content, tagged.called_tools)
     if action not in ("direct", "clarify", "dag"):
         action = "direct"
-    log.info(
-        "goat_turn: action=%s called=%s response_len=%d",
-        action, list(tagged.called_tools), len(visible),
-    )
+    # Anti-repetition check: if the new response overlaps heavily with
+    # any of the last few assistant turns, log and tag the source so
+    # downstream channels (Telegram/CLI) can deprioritize it. We do
+    # NOT regenerate — that would add an LLM call and lengthen the
+    # critical path. The signal is exposed via source="repetitive".
+    repetitive = is_repetitive(visible, list(history_messages or []))
+    final_source = "repetitive" if repetitive else tagged.source
+    if repetitive:
+        log.warning(
+            "goat_turn: response too similar to history — flagging "
+            "(action=%s overlap≥0.85 response_len=%d)",
+            action, len(visible),
+        )
+    else:
+        log.info(
+            "goat_turn: action=%s called=%s response_len=%d",
+            action, list(tagged.called_tools), len(visible),
+        )
     return GoatTurnResult(
         action=action,
         response=visible,
         clarification=visible if action == "clarify" else "",
         dag_session_id=None,
         dag_instructions="",
-        source=tagged.source,
+        source=final_source,
         called_tools=tuple(tagged.called_tools),
     )

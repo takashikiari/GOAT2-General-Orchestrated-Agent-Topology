@@ -8,6 +8,15 @@ GoatSupervisor so the supervisor class stays focused on orchestration.
 Each function takes the live ``supervisor`` instance for state access (history,
 session id, registry, memory_manager) — no singletons, no module-level state.
 All steps degrade quietly on error so a memory hiccup never breaks the turn.
+
+BEHAVIOR-STYLE REFRESH (anti-repetition):
+=========================================
+After ``save_style`` writes an updated profile to Letta's ``persona`` block,
+the supervisor's in-memory ``_behavior_style`` would otherwise stay stale
+until session end (mid-session style changes are invisible to the system
+prompt — one of the three reinforcing loops causing GOAT to repeat
+itself). The callback below re-reads the Letta block immediately so the
+next turn's system prompt carries the freshest profile.
 """
 from __future__ import annotations
 
@@ -38,6 +47,7 @@ async def store_and_promote(
         await store_turn(mm, turn_count, intent, summary)
         log.debug("store_and_promote: turn %d persisted", turn_count)
         # Behavioral learning: analyze recent turns from working memory and persist style.
+        style_was_written = False
         try:
             from config.roles import SESSION_ROLE
             from supervisor.behavior.behavior_analyzer import analyze_style
@@ -48,9 +58,18 @@ async def store_and_promote(
             if user_turns:
                 profile = await analyze_style(user_turns, supervisor.registry)
                 if profile:
-                    await save_style(mm, serialize(profile))
+                    written = await save_style(mm, serialize(profile))
+                    style_was_written = bool(written)
         except Exception as e:
             log.debug("behavior analysis skipped: %s", e)
+        # Refresh the supervisor's in-memory style from Letta *immediately*
+        # so the next turn's system prompt sees the freshest profile.
+        # Closed-loop: write-then-read with no session-end wait.
+        if style_was_written:
+            try:
+                await supervisor._refresh_behavior_style()
+            except Exception as e:  # noqa: BLE001 — refresh is best-effort
+                log.debug("behavior-style refresh skipped: %s", e)
         asyncio.create_task(schedule_promotion(supervisor, turn_count))
     except Exception as e:
         log.warning("Memory storage skipped: %s", e)

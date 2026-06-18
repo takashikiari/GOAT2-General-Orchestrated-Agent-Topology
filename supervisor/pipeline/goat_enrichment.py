@@ -33,12 +33,19 @@ class GoatContext:
         available_agents: Agent roles registered in the registry (dynamic).
         available_tools: Human-readable roles + tool names string (dynamic).
         memory_context: Pre-computed working/episodic memory context for this turn.
+        behavior_profile: Raw style profile text from Letta's ``persona``
+            block. Empty when Letta is unreachable or no profile is set.
+            Carried back to the supervisor so it can refresh the
+            in-memory ``self._behavior_style`` *without* a second Letta
+            read (avoids the mid-session style-update delay that was
+            amplifying the GOAT-repetition feedback loop).
     """
 
     workspace: str
     available_agents: list[str]
     available_tools: str
     memory_context: str
+    behavior_profile: str = ""
     dag_tools: list[str] = None
     has_prior_knowledge: bool = False
     project_structure: str = ""
@@ -144,15 +151,26 @@ async def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> 
     # vocabulary / humor / length / notes) and append it to memory_context
     # so GOAT adapts every response to the user's learned style. Pure read
     # against Letta; never raises (returns empty_profile() on any failure).
+    # The raw text is also attached to the GoatContext so the supervisor
+    # can refresh its in-memory _behavior_style without a second Letta
+    # read (closes the mid-session style-update delay).
     mm = getattr(registry, "memory_manager", None)
     profile_block = ""
+    behavior_profile_text = ""
     try:
         from supervisor.behavior.behavior_session import get_profile
+        from supervisor.behavior.behavior_store import load_style
         profile = await get_profile(mm)
         profile_block = _format_profile_block(profile)
+        # load_style returns the raw 'key: value' text used by
+        # _system_with_profile → mirror_instruction; get_profile returns
+        # the parsed dict used for the [User Style Profile] block. The
+        # supervisor needs the raw text, so fetch it here once.
+        behavior_profile_text = await load_style(mm)
     except Exception as exc:  # noqa: BLE001 — profile is enhancement, not critical
         log.debug("build_goat_context: profile load failed — %s", exc)
         profile_block = ""
+        behavior_profile_text = ""
 
     augmented_mem_ctx = mem_ctx or ""
     if profile_block:
@@ -164,6 +182,7 @@ async def build_goat_context(registry: "ServiceRegistry", mem_ctx: str = "") -> 
         dag_tools=[getattr(t, "name", "") for t in getattr(registry, "file_tools", []) if getattr(t, "name", "")],
         available_tools=_available_tools(registry),
         memory_context=augmented_mem_ctx,
+        behavior_profile=behavior_profile_text or "",
         has_prior_knowledge=bool(augmented_mem_ctx and len(augmented_mem_ctx) > 50),
         project_structure=proj_struct,
     )
