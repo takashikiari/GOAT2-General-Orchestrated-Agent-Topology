@@ -84,15 +84,26 @@ class GoatTurnResult:
 
 
 def _classify_response(text: str, called: tuple[str, ...]) -> tuple[str, str]:
-    """Map (response_text, called_tools) → (action, visible_text)."""
+    """Map (response_text, called_tools) → (action, visible_text).
+
+    BUG-019 fix: the previous implementation had a fallback that
+    treated any short response ending in ``?`` (with no tools
+    called) as a clarifying question. That misclassified
+    rhetorical / direct replies (``"Should we use Flask or
+    FastAPI?"``) as clarifications and the user saw a generic
+    "please rephrase" instead of an answer. The fallback is
+    removed — clarification is now an explicit signal only:
+
+      - ``start_dag`` was called → ``"dag"``
+      - response ends with ``[CLARIFY]`` → ``"clarify"`` (marker stripped)
+      - otherwise → ``"direct"``
+    """
     if _START_DAG_TOOL in called:
         return "dag", text.strip()
     from supervisor.pipeline.prompt_helpers import _CLARIFY_MARKER
     stripped = text.rstrip()
     if stripped.lower().endswith(_CLARIFY_MARKER.lower()):
         return "clarify", stripped[: -len(_CLARIFY_MARKER)].rstrip()
-    if not called and len(stripped) <= 100 and stripped.endswith("?"):
-        return "clarify", stripped
     return "direct", stripped
 
 

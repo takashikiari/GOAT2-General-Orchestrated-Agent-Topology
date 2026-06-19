@@ -134,7 +134,11 @@ def test_classify_clarify_marker() -> None:
 
 
 def test_classify_short_question() -> None:
-    assert _classify_response("hi?", ()) == ("clarify", "hi?")
+    """BUG-019 fix: short responses ending in '?' are now 'direct',
+    not 'clarify' — clarification is an explicit [CLARIFY] marker
+    only. The model can answer rhetorical / direct questions
+    without being misrouted."""
+    assert _classify_response("hi?", ()) == ("direct", "hi?")
 
 
 def test_classify_dag() -> None:
