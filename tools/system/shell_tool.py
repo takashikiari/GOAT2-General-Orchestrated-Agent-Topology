@@ -1,19 +1,29 @@
 """Shell tool for DAG agents — restricted basic shell commands.
 
 Provides SHELL ToolDefinition for safe, restricted shell execution.
-Only basic read-only commands are allowed. No file modification or dangerous ops.
+Only basic read-only commands are allowed. No file modification
+or dangerous ops.
 
-SECURITY:
-- Only whitelisted commands: ls, pwd, cat, head, tail, grep, echo, mkdir, find, wc, du, df, ps, top (non-interactive), date, whoami, hostname, uname, history
-- No: rm, cp, mv, dd, sudo, wget, curl, nc, ssh, chmod, chown, touch, tee
-- No: pipes (|), redirects (>), semicolons (;), &&, ||, $(), backticks
-- No: cd (handled by workspace), aliases, functions
-- Args are validated — no special chars that could escape
+SECURITY (BUG-026 fix):
+  - The allow-list contains ONLY read-only commands. The previous
+    version whitelisted ``python3``, ``python``, ``mkdir``,
+    ``sed``, ``awk`` — all of which can mutate state. A model
+    could run ``python -c "import os; os.system('...')"`` or
+    ``sed -i`` to modify files, defeating the read-only guarantee.
+  - Argument paths are validated: any path argument must resolve
+    under ``$GOAT_WORKSPACE`` (or $HOME if unset). Reading
+    ``/etc/passwd`` or ``~/.ssh/id_rsa`` is blocked.
+  - Error messages do NOT enumerate the full allow-list — a
+    prompt-injected LLM must not be able to enumerate every
+    permitted command from a rejection message.
+  - No shell features: pipes, redirects, command chaining, globs
+    with command substitution, etc. are blocked at the validator.
 """
 from __future__ import annotations
 
 import logging
 import os
+import posixpath
 import subprocess
 from typing import TYPE_CHECKING, Final
 
@@ -24,41 +34,91 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.tools.system.shell")
 
-__all__ = ["SHELL"]
+__all__ = ["SHELL", "ALLOWED_COMMANDS"]
 
-# Whitelist of allowed commands (basic read-only operations).
-# python3 and find are explicitly listed because DAG agents need them
-# for grep-style code search and for running small read-only scripts.
-ALLOWED_COMMANDS: Final[set[str]] = {
-    "ls", "pwd", "cat", "head", "tail", "grep", "echo", "mkdir",
-    "python3", "python", "which", "cd", "env", "printenv",
-    "find", "wc", "du", "df", "ps", "date", "whoami", "hostname",
-    "uname", "sort", "uniq", "tr", "sed", "awk", "cut", "join",
-    "basename", "dirname", "readlink", "file", "stat", "lsblk",
-    "mount", "free", "uptime", "nproc", "id", "groups",
-}
 
-# Block patterns that could escape the whitelist.
-# We KEEP: |, ;, &&, ||, ` (shell injection / command-chaining risks)
-# We KEEP: &, !, ~, ' ", \, \n, ?, [, ], {, } (shell metacharacters / quoting)
-# We REMOVED: *, $, >, <  — these are needed for legitimate read-only ops:
-#   * → glob expansion       (find *.py, ls *.txt)
-#   $ → environment variables (echo $PATH, env $HOME)
-#   >, < → redirects to /tmp   (allowed since cwd is $GOAT_WORKSPACE or $HOME,
-#          files outside the workspace are still safe; the full args are
-#          validated separately)
-# DAG agents are read-only by intent; this is enforced by ALLOWED_COMMANDS.
-BLOCKED_PATTERNS: Final[set[str]] = {
-    "|", ";", "&&", "||", "`", "\\", "\n",
+# Whitelist of read-only commands. BUG-026: removed python3, python,
+# mkdir, sed, awk, touch, tee — all of which can mutate state.
+ALLOWED_COMMANDS: Final[frozenset[str]] = frozenset({
+    "ls", "pwd", "cat", "head", "tail", "grep", "echo",
+    "find", "wc", "du", "df", "ps", "date", "whoami",
+    "hostname", "uname", "sort", "uniq", "tr", "cut", "join",
+    "basename", "dirname", "readlink", "file", "stat",
+    "lsblk", "mount", "free", "uptime", "nproc", "id",
+    "groups", "which", "env", "printenv",
+})
+
+
+# Block any shell feature that could be used to chain commands,
+# expand variables, redirect I/O, or escape quoting.
+_BLOCKED_PATTERNS: Final[frozenset[str]] = frozenset({
+    "|", ";", "&&", "||", "`", "\\", "\n", "$",
     "&", "!", "?", "[", "]", "{", "}", "~", "'", "\"",
-}
+    ">", "<", "*", "(", ")",
+})
 
-# Block dangerous argument patterns
-BLOCKED_ARGS: Final[set[str]] = {
+
+# Argument substrings that indicate file-mutation or network
+# exfiltration intent. Substring match — no regex.
+_BLOCKED_ARG_SUBSTRINGS: Final[frozenset[str]] = frozenset({
     "rm", "cp", "mv", "dd", "sudo", "wget", "curl", "nc", "ssh",
     "chmod", "chown", "touch", "tee", "ln", "mkfifo", "mknod",
-    "--no-check-certificate", "-- insecure", "eval",
-}
+    "python", "perl", "ruby", "node", "sh", "bash",
+    "--no-check-certificate", "--insecure", "eval", "exec",
+})
+
+
+# Maximum shell-tool timeout. The handler clamps any caller value
+# down to this ceiling so a prompt-injected model cannot run a
+# command forever.
+_MAX_TIMEOUT_S: Final[int] = 60
+_DEFAULT_TIMEOUT_S: Final[int] = 30
+
+
+def _workspace_root() -> str:
+    """Return the resolved workspace root for path checks.
+
+    Order: ``$GOAT_WORKSPACE`` > user home. The root is normalised
+    via ``realpath`` so symlinks can't smuggle paths outside.
+    """
+    root = os.environ.get("GOAT_WORKSPACE") or os.path.expanduser("~")
+    try:
+        return os.path.realpath(root)
+    except OSError:
+        return root
+
+
+def _is_path_argument_safe(arg: str) -> bool:
+    """True when ``arg`` is either a flag (starts with ``-``), a
+    pure non-path option (no ``/``), or resolves under the
+    workspace root.
+
+    Defensive: any path containing ``..`` is rejected outright
+    so a model cannot reference ``../../etc/passwd``.
+    """
+    if not arg or not arg.strip():
+        return True  # empty arg — not a path
+    if arg.startswith("-"):
+        return True  # flag
+    # Pure numeric or simple value — treat as non-path.
+    if "/" not in arg and "\\" not in arg:
+        return True
+    # Path with traversal tokens — reject.
+    if ".." in posixpath.normpath(arg).split("/"):
+        return False
+    # Resolve and check containment under workspace root.
+    try:
+        # Use realpath only when the file exists; for non-existent
+        # paths, just check the textual prefix (best-effort).
+        if os.path.exists(arg):
+            resolved = os.path.realpath(arg)
+        else:
+            resolved = posixpath.normpath(os.path.abspath(arg))
+    except (OSError, ValueError):
+        return False
+    root = _workspace_root()
+    # Common-prefix check; allow the root itself.
+    return resolved == root or resolved.startswith(root + os.sep)
 
 
 def _validate_command(cmd: str, args: str) -> str | None:
@@ -66,45 +126,43 @@ def _validate_command(cmd: str, args: str) -> str | None:
 
     Returns None if valid, or error string if blocked.
     """
-    # Check for blocked patterns in command
-    for pattern in BLOCKED_PATTERNS:
-        if pattern in cmd:
-            return f"ERROR: blocked pattern {pattern!r} in command"
-
-    # Check for blocked arguments
-    for blocked in BLOCKED_ARGS:
-        if blocked in args:
-            return f"ERROR: blocked argument {blocked!r}"
-
-    # Check command is whitelisted
+    if not cmd:
+        return "ERROR: empty command"
     if cmd not in ALLOWED_COMMANDS:
-        return f"ERROR: command {cmd!r} not allowed. Allowed: ls, pwd, cat, head, tail, grep, echo"
-
-    # Check for potential command injection in args
-    for char in BLOCKED_PATTERNS:
-        if char in args:
-            return f"ERROR: blocked pattern {char!r} in arguments"
-
+        return f"ERROR: command {cmd!r} not allowed"
+    # Check for blocked patterns in command and args.
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in cmd:
+            return f"ERROR: blocked pattern {pattern!r}"
+        if pattern in args:
+            return f"ERROR: blocked pattern {pattern!r} in arguments"
+    # Check for dangerous argument substrings.
+    args_lc = args.lower()
+    for blocked in _BLOCKED_ARG_SUBSTRINGS:
+        if blocked in args_lc:
+            return f"ERROR: blocked argument {blocked!r}"
+    # Check that every path-looking argument stays under the
+    # workspace root.
+    for token in args.split():
+        if not _is_path_argument_safe(token):
+            return f"ERROR: argument {token!r} is outside the workspace"
     return None
 
 
 async def _shell_handler(
     command: str,
-    timeout: int = 30,
+    timeout: int = _DEFAULT_TIMEOUT_S,
 ) -> str:
-    """Execute a basic shell command (restricted to whitelisted operations).
-
-    DAG agents can use this for basic read operations only.
-    No file modification, no dangerous commands, no pipes/shell features.
+    """Execute a basic read-only shell command.
 
     Args:
-        command: Shell command to execute (validated against whitelist).
-        timeout: Command timeout in seconds (default 30, max 60).
+        command: Shell command to execute (validated against
+            allow-list and path-prefix rules).
+        timeout: Command timeout in seconds (default 30, hard cap 60).
 
     Returns:
-        Command output or error message.
+        Command output or error message. Never raises.
     """
-    # Parse command (simple split, no shell features)
     log.debug("shell: command=%r timeout=%d", command[:80], timeout)
     parts = command.strip().split()
     if not parts:
@@ -114,29 +172,26 @@ async def _shell_handler(
     cmd = parts[0]
     args = " ".join(parts[1:])
 
-    # Validate
     error = _validate_command(cmd, args)
     if error:
         log.warning("shell: validation failed for %r: %s", command[:80], error)
         return error
 
-    # Build safe command
+    # Clamp timeout so a model can't run a command forever.
+    timeout = max(1, min(int(timeout or _DEFAULT_TIMEOUT_S), _MAX_TIMEOUT_S))
+
     safe_cmd = [cmd] + parts[1:]
-
-    # Limit timeout
-    timeout = min(timeout, 60)
-
     try:
         result = subprocess.run(
             safe_cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=os.environ.get("GOAT_WORKSPACE", os.path.expanduser("~")),  # Restrict to home or workspace
+            cwd=_workspace_root(),
         )
         output = result.stdout
         if result.stderr:
-            output += f"[stderr]: {result.stderr}"
+            output += f"\n[stderr]: {result.stderr}"
         return output.strip() if output else f"{cmd}: no output"
     except subprocess.TimeoutExpired:
         log.warning("shell: command timed out after %ds: %r", timeout, command[:80])
@@ -151,20 +206,29 @@ async def _shell_handler(
 
 SHELL = make_tool(
     name="shell",
-    description="Execute basic read-only shell commands (ls, pwd, cat, head, tail, grep, echo, find, etc.). "
-                "DAG agents only - no file modification, no dangerous ops, no pipes/shell features.",
+    description=(
+        "Execute basic read-only shell commands (ls, pwd, cat, head, "
+        "tail, grep, echo, find, wc, du, df, ps, date, whoami, "
+        "hostname, uname). DAG agents only. No file modification, "
+        "no dangerous ops, no shell features (pipes, redirects, "
+        "command substitution are blocked at the validator)."
+    ),
     parameters={
         "type": "object",
         "required": ["command"],
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Command to execute (validated, restricted to basic read-only ops).",
+                "description": (
+                    "Command to execute (validated; restricted to "
+                    "read-only ops, all file arguments must stay "
+                    "under the workspace root)."
+                ),
             },
             "timeout": {
                 "type": "integer",
                 "description": "Timeout in seconds (default 30, max 60).",
-                "default": 30,
+                "default": _DEFAULT_TIMEOUT_S,
             },
         },
     },
