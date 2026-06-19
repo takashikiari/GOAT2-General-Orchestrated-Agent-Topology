@@ -7,7 +7,7 @@ tools/ (definitions) + agents/ (ToolDefinition type). It is the only
 module under tools/ that legitimately needs supervisor/ types at
 runtime (TaggedResult, infer_source, log_tool_call).
 
-To avoid the cycle tools -> supervisor -> tools, the supervisor.logging
+To avoid the cycle tools -> supervisor -> tools, the utils.logging
 imports live inside the function body of ``_call_with_tools`` (lazy),
 not at module level. Only leaf modules — config.settings, config.timeouts,
 utils.llm_utils — are imported at the top.
@@ -28,7 +28,7 @@ from utils.llm_utils import _call_llm, _get_client
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
     from memory.shared import MemoryManager
-    from supervisor.logging.source_types import TaggedResult
+    from utils.logging.source_types import TaggedResult
 
 log = logging.getLogger("goat2.tools.tool_runner")
 __all__ = ["_call_with_tools"]
@@ -144,12 +144,12 @@ async def _call_with_tools(
     """
     # Lazy imports — break tools -> supervisor -> tools cycle.
     # These run only when _call_with_tools is actually called, not at import time.
-    from supervisor.logging.source_types import (
+    from utils.logging.source_types import (
         TaggedResult,
         TOOL_SOURCE_MAP,
         infer_source,
     )
-    from supervisor.logging.structured_logger import log_tool_call
+    from utils.logging.structured_logger import log_tool_call
 
     if not tools or not spec.tool_calling:
         log.debug("tool_runner bypass: model=%s tools=%d tool_calling=%s",

@@ -63,7 +63,7 @@ async def run_dag_pipeline(
     """
     from supervisor.pipeline.workflow import WorkflowGraph
     from supervisor.pipeline.critic_rerun import _rerun_failed_tasks
-    from supervisor.logging.auditor import run_auditor
+    from utils.logging.auditor import run_auditor
     from supervisor.pipeline.task_prep import prepare_tasks
 
     # GOAT's dag_instructions are the planner objective. Prefer the structured

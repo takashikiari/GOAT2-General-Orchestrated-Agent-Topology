@@ -5,6 +5,76 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — utils.logging/ created, supervisor.logging/ dead links removed
+
+The `supervisor/` rewrite dropped the `supervisor/logging/`
+sub-package, but `tools/tool_runner.py` and
+`tools/dag/execution.py` still imported from
+`supervisor.logging.*`. Those imports were broken — GOAT
+could not respond because the agentic tool-calling loop
+failed at the first tool dispatch.
+
+This change relocates the logging primitives to the
+bottom-of-stack `utils/logging/` package, which is the
+correct layer (the primitives are pure Python and used by
+both `tools/` and `supervisor/`).
+
+### Added
+- `utils/logging/__init__.py` (29 lines) — re-exports the
+  three sub-modules.
+- `utils/logging/source_types.py` (171 lines, ≤ 260 cap):
+    - `TaggedResult` dataclass (`content`, `called_tools`,
+      `source`).
+    - `SourceTag` constants: `GENERATED`, `FILE`, `NET`,
+      `MEMORY`, `TOOL` (plain strings, stable across the
+      wire).
+    - `TOOL_SOURCE_MAP` — per-tool name → source tag,
+      including all 7 memory tools, 5 network tools, 12
+      file tools, and 3 generic helpers.
+    - `infer_source(called_tools) -> str` — aggregates a
+      list of called tools into a single source tag with
+      priority `MEMORY > NET > FILE > TOOL > GENERATED`.
+- `utils/logging/structured_logger.py` (121 lines):
+    - `log_tool_call(name, params, source, response_hash)`
+      — emits one structured `INFO` log line per tool
+      invocation. Never raises.
+    - `hash_response(text) -> str` — 16-char SHA-256
+      prefix for response correlation.
+- `utils/logging/auditor.py` (180 lines):
+    - `AuditReport` dataclass with `anomalies`, `checked`,
+      `ok_count`, `fail_count`, and `has_anomalies`
+      property.
+    - `run_auditor(results, slow_threshold_s=30.0)` — async
+      post-DAG audit. Detects failures, slow tasks,
+      empty outputs, and duplicate outputs across the
+      results corpus. Returns an `AuditReport`.
+
+### Changed
+- `tools/tool_runner.py` — `from supervisor.logging.*` →
+  `from utils.logging.*` in 3 places (TYPE_CHECKING block
+  + 2 function-local imports inside `_call_with_tools`).
+  Docstring updated to reflect the new home.
+- `tools/dag/execution.py` — `from supervisor.logging.auditor
+  import run_auditor` → `from utils.logging.auditor
+  import run_auditor`.
+
+### Verified
+- `python3 -c "from utils.logging.source_types import TaggedResult; print('ok')"` → ok
+- `python3 -c "from tools.tool_runner import _call_with_tools; print('ok')"` → ok
+- `python3 -c "from supervisor.supervisor import GoatSupervisor; print('ok')"` → ok
+- 10 behavioral assertions on the new `utils.logging/`
+  package (TaggedResult, infer_source empty/single/priority/
+  unknown, source-tag constants, TOOL_SOURCE_MAP entries,
+  hash_response determinism + length, log_tool_call never
+  raises, run_auditor empty + anomaly detection).
+- `grep -rn "supervisor.logging"` across the codebase:
+  **0** live imports remain (the 2 docstring mentions in
+  `utils/logging/__init__.py` and `auditor.py` are
+  historical references, not imports).
+- `tests/test_memory_validation.py` — 17 passed, no regressions.
+
+---
+
 ## [Unreleased] — 2026-06-18 — AgentRegistry moved to agents/
 
 `AgentRegistry` was placed in `supervisor/registry.py` in the
