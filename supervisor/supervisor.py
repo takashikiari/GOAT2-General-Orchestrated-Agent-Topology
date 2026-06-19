@@ -69,6 +69,7 @@ class GoatSupervisor:
         "_initialized",
         "_semaphore",
         "_active_dag_tasks",
+        "_background_tasks",
     )
 
     def __init__(self, registry: "ServiceRegistry") -> None:
@@ -82,6 +83,10 @@ class GoatSupervisor:
             int(getattr(registry.settings.supervisor, "max_workers", 1) or 1)
         )
         self._active_dag_tasks: dict[str, asyncio.Task] = {}
+        # BUG-027: registry of background tasks (promotion, etc.)
+        # so they can be awaited at session end instead of being
+        # silently dropped.
+        self._background_tasks: dict[str, asyncio.Task] = {}
         log.info("GoatSupervisor: ready (session=%s)", self.session_id)
 
     # ── Public API ──
@@ -212,3 +217,13 @@ class GoatSupervisor:
         """
         from supervisor.errors_fallback import empty_error_result
         return empty_error_result(self, intent=intent, t0=t0, err=err)  # type: ignore[arg-type]
+
+    async def finalize_background_tasks(self, *, timeout_s: float = 5.0) -> None:
+        """Await all tracked background tasks with a bounded timeout.
+
+        Thin wrapper over ``supervisor.background_drain.drain_background_tasks``.
+        The drain itself lives in a sibling module so this file
+        stays under the 260-line ceiling.
+        """
+        from supervisor.background_drain import drain_background_tasks
+        await drain_background_tasks(self, timeout_s=timeout_s)

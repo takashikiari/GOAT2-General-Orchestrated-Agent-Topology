@@ -162,16 +162,57 @@ async def _learn_and_persist(supervisor: "GoatSupervisor", mm) -> bool:
         return False
 
 
-async def schedule_promotion(supervisor: "GoatSupervisor", turn_count: int) -> None:
-    """Promote conversation turns through memory tiers (background task).
+async def _do_promote(supervisor: "GoatSupervisor", turn_count: int) -> None:
+    """Run the actual ``mm.promote_turns`` call. Body of the
+    background task — split out so the wrapper can wrap it in
+    error logging + task registration."""
+    mm = getattr(supervisor, "memory_manager", None)
+    if mm is None:
+        return
+    await mm.promote_turns(SESSION_ROLE, turn_count)
 
-    Detached: errors are logged and swallowed — promotion is a
-    background hygiene task and must never affect the turn path.
+
+def schedule_promotion(supervisor: "GoatSupervisor", turn_count: int) -> None:
+    """Promote conversation turns through memory tiers (background).
+
+    BUG-027 fix: the task is now registered on
+    ``supervisor._background_tasks`` (key ``turn-promotion:<n>``)
+    so it can be awaited at session end. Exceptions inside the
+    task are logged at WARNING (not DEBUG) so recurring failures
+    are visible. The function itself is sync (fire-and-forget);
+    awaiting the actual work is the task's job.
     """
     mm = getattr(supervisor, "memory_manager", None)
     if mm is None:
         return
+    registry = getattr(supervisor, "_background_tasks", None)
+    if registry is None:
+        # No registry available — fall back to the legacy
+        # detached behaviour. The task is fire-and-forget and
+        # exceptions are silently lost. This path is only used
+        # by tests that build a bare supervisor stub.
+        try:
+            asyncio.create_task(_do_promote(supervisor, turn_count))
+        except RuntimeError:
+            # No event loop — give up silently.
+            pass
+        return
+    key = f"turn-promotion:{turn_count}"
+
+    async def _runner() -> None:
+        try:
+            await _do_promote(supervisor, turn_count)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("schedule_promotion failed (turn=%d): %s", turn_count, exc)
+        finally:
+            # Always remove the task from the registry on exit so
+            # finalize_background_tasks can drain cleanly.
+            registry.pop(key, None)
+
     try:
-        await mm.promote_turns(SESSION_ROLE, turn_count)
-    except Exception as exc:  # noqa: BLE001
-        log.debug("schedule_promotion failed (non-critical): %s", exc)
+        task = asyncio.create_task(_runner(), name=key)
+    except RuntimeError:
+        # No event loop running — cannot schedule.
+        log.debug("schedule_promotion: no running event loop — skipping turn=%d", turn_count)
+        return
+    registry[key] = task
