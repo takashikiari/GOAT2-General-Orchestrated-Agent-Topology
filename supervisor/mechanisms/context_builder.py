@@ -25,6 +25,7 @@ from typing import Final
 
 from supervisor.mechanisms.freshness import score_freshness
 from supervisor.mechanisms.namespace import classify_namespace
+from supervisor.mechanisms.staleness import STALE_PREFIX, is_stale
 
 __all__ = ["build_context", "load_max_entries"]
 
@@ -98,26 +99,46 @@ def _sort_key(record: dict, now: float) -> tuple[int, int, float]:
     )
 
 
-def _format_line(record: dict, now: float) -> str:
-    """Render one working-memory line: ``- [FRESH][CONV] key: preview``."""
+def _format_line(record: dict, now: float, intent: str = "") -> str:
+    """Render one working-memory line: ``- [FRESH][CONV] key: preview``.
+
+    DAG entries older than ``dag_max_age_seconds`` (or whose intent
+    doesn't mention a DAG-related keyword) are rendered with the
+    ``[STALE]`` prefix so the LLM sees them as potentially expired.
+    Non-DAG entries never get the prefix — staleness only applies
+    to DAG namespaced records.
+
+    Args:
+        record: Working-memory record (dict with ``key`` and
+            ``created_at_ts``).
+        now: Reference time in seconds since epoch.
+        intent: The raw user intent for this turn. Passed through to
+            ``is_stale`` so an old DAG entry can be un-flagged when
+            the user is explicitly asking about DAG state.
+
+    Returns:
+        A single line string, or ``""`` when the record is not a dict.
+    """
     if not isinstance(record, dict):
         return ""
     key   = record.get("key", "?")
     src   = classify_namespace(key)
     fresh = score_freshness(record, now)
-    return f"- [{fresh}][{src}] {key}: {_preview(record)}"
+    stale_mark = f"{STALE_PREFIX} " if is_stale(record, intent or "", now) else ""
+    return f"{stale_mark}- [{fresh}][{src}] {key}: {_preview(record)}"
 
 
 def build_context(entries: list[dict], intent: str, now: float) -> str:
     """Assemble the ``[Working Memory]`` block from raw records.
 
+    The ``intent`` is forwarded to ``_format_line`` so old DAG entries
+    are correctly flagged ``[STALE]`` (or kept when the user is
+    explicitly asking about DAG state).
+
     Args:
         entries: List of working-memory records (dicts with at
             least ``key`` and ``created_at_ts``).
-        intent: The raw user intent for this turn. Reserved for
-            future intent-aware filtering (DAG staleness uses
-            ``staleness.is_stale`` directly). Accepted here for
-            forward-compat.
+        intent: The raw user intent for this turn.
         now: Reference time in seconds since epoch.
 
     Returns:
@@ -125,7 +146,6 @@ def build_context(entries: list[dict], intent: str, now: float) -> str:
         sorted trust-high first. Returns ``""`` when no entries
         survive the sort + cap.
     """
-    _ = intent  # reserved — staleness is handled in caller
     if not entries:
         return ""
     # Sort first, cap second.
@@ -136,7 +156,7 @@ def build_context(entries: list[dict], intent: str, now: float) -> str:
     ordered = ordered[:MAX_ENTRIES]
     if not ordered:
         return ""
-    lines = [_format_line(r, now) for r in ordered if _format_line(r, now)]
+    lines = [_format_line(r, now, intent) for r in ordered if _format_line(r, now, intent)]
     if not lines:
         return ""
     return "[Working Memory]\n" + "\n".join(lines)

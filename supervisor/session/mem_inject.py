@@ -74,6 +74,7 @@ async def working_memory_block(
     mm: "MemoryManager | None",
     *,
     include_dag: bool = False,
+    intent: str = "",
 ) -> str:
     """Render the ``[Working Memory]`` block (freshness × source scored).
 
@@ -82,6 +83,9 @@ async def working_memory_block(
         include_dag: When False (default), ``dag:*`` entries are
             excluded so DAG coordination never leaks into the
             conversational prompt.
+        intent: The raw user intent for this turn. Forwarded to
+            ``build_context`` so old DAG entries can be marked
+            ``[STALE]`` (or kept when the user is asking about them).
 
     Returns:
         The rendered block (string starting with
@@ -93,7 +97,7 @@ async def working_memory_block(
     try:
         records = await _list_working(mm)
         records = await _filter_dag(records, include_dag)
-        return build_context(records, intent="", now=time.time())
+        return build_context(records, intent=intent, now=time.time())
     except Exception as exc:  # noqa: BLE001
         log.debug("working_memory_block failed: %s", exc)
         return ""
@@ -104,6 +108,7 @@ async def recall_context(
     query: str,
     *,
     include_dag: bool = False,
+    intent: str = "",
 ) -> str:
     """Return cross-tier ``[Memory]`` + working-memory block.
 
@@ -113,6 +118,10 @@ async def recall_context(
         include_dag: When True, ``dag:*`` entries are included in
             the working-memory block (used by the few callers that
             need the unfiltered view).
+        intent: Forwarded to ``working_memory_block`` for staleness
+            labelling. Defaults to ``""`` so old DAG entries are
+            marked stale unless the user mentions DAG-related
+            keywords.
 
     Returns:
         Concatenated ``[Memory]`` and ``[Working Memory]`` blocks,
@@ -130,7 +139,7 @@ async def recall_context(
     except Exception as exc:  # noqa: BLE001
         log.debug("recall_context fan-out failed: %s", exc)
     try:
-        wm_block = await working_memory_block(mm, include_dag=include_dag)
+        wm_block = await working_memory_block(mm, include_dag=include_dag, intent=intent)
     except Exception as exc:  # noqa: BLE001
         log.debug("recall_context wm failed: %s", exc)
     blocks = [b for b in (mem_block, wm_block) if b]
@@ -145,10 +154,12 @@ async def mem_turn(
 
     Args:
         mm: MemoryManager (or None).
-        intent: Raw user intent.
+        intent: Raw user intent. Used as the recall query AND
+            forwarded to ``working_memory_block`` for staleness
+            labelling.
 
     Returns:
         The rendered memory-context block, or the UNAVAILABLE
         marker.
     """
-    return await recall_context(mm, intent, include_dag=False)
+    return await recall_context(mm, intent, include_dag=False, intent=intent)
