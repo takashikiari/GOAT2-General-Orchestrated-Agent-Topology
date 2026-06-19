@@ -8,6 +8,7 @@ import sys
 
 from config.registry import ServiceRegistry
 from supervisor.supervisor import GoatSupervisor
+from utils.logging.setup import configure_logging
 
 # Create ServiceRegistry first to get settings
 _registry = ServiceRegistry()
@@ -16,10 +17,8 @@ _registry = ServiceRegistry()
 from tools.registry_accessor import set_registry
 set_registry(_registry)
 
-logging.basicConfig(
-    level=getattr(logging, _registry.settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s  %(name)-24s  %(levelname)s  %(message)s",
-)
+configure_logging(level=_registry.settings.log_level)
+
 log = logging.getLogger("goat2.cli")
 
 _SEP    = "═" * 62

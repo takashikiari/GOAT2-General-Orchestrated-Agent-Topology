@@ -191,13 +191,12 @@ def run_polling(token: str | None = None) -> None:
             env var, then to ``config/goat.toml [channels].telegram_token``.
 
     Note:
-        Configures ``logging.basicConfig`` so the bot is runnable
-        as a standalone entry point without external setup.
+        Configures centralized logging (file + stderr) so the
+        bot is runnable as a standalone entry point and shares
+        the same log file as the CLI and MCP server.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    from utils.logging.setup import configure_logging
+    configure_logging(level="INFO")
     tok = (
         token
         or _env_token()

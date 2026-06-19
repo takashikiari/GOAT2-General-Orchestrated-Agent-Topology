@@ -122,17 +122,16 @@ def __getattr__(name: str):
 def _configure_logging(verbose: bool = False) -> None:
     """Configure root logging once at process start.
 
-    Logs go to stderr so they don't pollute the stdio MCP
-    channel. The level is INFO by default; pass ``verbose=True``
-    to bump to DEBUG.
+    Uses the centralized ``utils.logging.setup.configure_logging``
+    so MCP server output lands in the same rotating file
+    (``logs/goat2.log``) as the CLI and Telegram bot, plus
+    stderr for live diagnostics. stderr is safe here — MCP
+    uses stdio (stdout) for the protocol, not stderr.
+
+    Pass ``verbose=True`` to bump the root level to DEBUG.
     """
-    import sys as _sys
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=_sys.stderr,
-    )
+    from utils.logging.setup import configure_logging
+    configure_logging(level="DEBUG" if verbose else "INFO")
 
 
 def run() -> None:

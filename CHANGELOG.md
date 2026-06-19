@@ -5,6 +5,64 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-19 — centralized logging wired to logs/goat2.log
+
+Before this change, every entry point (CLI, Telegram bot, MCP
+server) called ``logging.basicConfig`` without a ``filename=``,
+so logs went to stderr only. The ``logs/goat2.log`` file was
+populated by an external wrapper that no longer exists, which
+meant ``mcp_server/tools/query_logs.get_errors`` returned
+whatever happened to be in the file from a previous session —
+making any "last 15 minutes" diagnostic meaningless.
+
+### Added
+- `utils/logging/setup.py` — `configure_logging(level, file_path,
+  max_bytes, backup_count)`. Attaches a ``RotatingFileHandler``
+  (``logs/goat2.log``, 10 MB, 5 backups by default) plus a
+  ``StreamHandler(sys.stderr)`` to the root logger. Idempotent —
+  multiple calls reuse the same handlers; level + formatter
+  updates are reapplied without duplicating handlers. Throttles
+  noisy third-party loggers (``httpx``, ``telegram.ext``,
+  ``urllib3``, ``apscheduler``) to WARNING regardless of root
+  level so GOAT output stays readable.
+
+### Changed
+- `cli.py` — replaced `logging.basicConfig(...)` with
+  `configure_logging(level=settings.log_level)`. Logs now
+  persist in `logs/goat2.log` AND stderr.
+- `supervisor/interfaces/telegram_bot.py` — `run_polling()`
+  calls `configure_logging(level="INFO")` so the bot shares
+  the same log file as the CLI / MCP server.
+- `mcp_server/server.py` — `_configure_logging(verbose)` now
+  routes through `configure_logging()` (still writes to
+  stderr — MCP uses stdio for the protocol, not stderr, so
+  this is safe).
+
+### Verified
+- Live test: triggered logger calls from `goat2.supervisor`
+  and `goat2.memory.working` namespaces, all lines landed
+  in `logs/goat2.log`.
+- Idempotency: 3 successive calls to `configure_logging()`
+  produced exactly 2 root handlers (file + stderr), not 6.
+- Rotation: with `max_bytes=200, backup_count=2` and 20
+  writes, the result was 3 files (`*.log`, `*.log.1`,
+  `*.log.2`) each ~110 bytes — older backups aged out as
+  expected.
+- `python3 -c "import cli"` and `from mcp_server.server
+  import _configure_logging` both succeed.
+- 32/32 tests still pass.
+
+### Operator note
+If the log file is empty after starting the bot, the
+handler hasn't been attached yet. Run
+``python3 -c "from utils.logging.setup import
+configure_logging; configure_logging()"`` once to seed it,
+or simply restart through `start_telegram.sh` /
+`goat.sh` / `python -m mcp_server.server` — each entry point
+calls `configure_logging()` before any other initialization.
+
+---
+
 ## [Unreleased] — 2026-06-19 — supervisor+memory: tolerate tool-call type mismatches
 
 The supervisor was crashing the user's turn on every tool-call
