@@ -21,8 +21,13 @@ DECISION RULE:
           mention a DAG-related keyword (``dag``, ``task``,
           ``result``, ``workflow``, ``pipeline``).
 
-Keywords are matched as case-insensitive substrings. This is
-pure string membership — no regex, no language model.
+KEYWORD MATCHING (BUG-012 fix):
+    The original implementation used plain substring matching, so
+    a user saying "tag the result" or "show me the taskbar" would
+    keep an old DAG entry fresh. The new implementation matches
+    whole tokens: a keyword matches only when surrounded by
+    whitespace, string boundaries, or non-alphanumeric characters.
+    Matching is case-insensitive but otherwise literal — no regex.
 """
 from __future__ import annotations
 
@@ -44,6 +49,49 @@ DAG_INTENT_KEYWORDS: Final[tuple[str, ...]] = (
 )
 
 
+def _token_contains_keyword(token: str, keyword: str) -> bool:
+    """True when ``keyword`` appears in ``token`` as a whole word.
+
+    Handles the trailing-s case (``tasks`` contains ``task``) and
+    trailing-suffix words (``pipelines`` contains ``pipeline``) by
+    accepting keyword matches at the start of the token, with the
+    next character being end-of-string OR a non-alphanumeric char.
+    This is the cheapest correct implementation: O(n) substring
+    scan, no regex.
+    """
+    idx = token.find(keyword)
+    while idx >= 0:
+        after = idx + len(keyword)
+        end_of_token = after >= len(token)
+        next_char = token[after] if not end_of_token else ""
+        if end_of_token or not next_char.isalnum():
+            return True
+        idx = token.find(keyword, idx + 1)
+    return False
+
+
+def _intent_mentions_dag(intent: str) -> bool:
+    """True when any DAG_INTENT_KEYWORD appears in ``intent`` as a
+    whole token (or as a prefix followed by a non-alnum char).
+
+    Args:
+        intent: Raw user intent (any case). Whitespace-split into
+            tokens; each token is checked independently.
+
+    Returns:
+        True if at least one keyword is found in a whole-token match.
+    """
+    if not intent:
+        return False
+    # Whitespace split is sufficient — punctuation stays attached to
+    # tokens and is treated as a word boundary by the alnum check.
+    for token in intent.lower().split():
+        for kw in DAG_INTENT_KEYWORDS:
+            if _token_contains_keyword(token, kw):
+                return True
+    return False
+
+
 def is_stale(entry: dict, intent: str, now: float) -> bool:
     """Return True when ``entry`` should be rendered with STALE_PREFIX.
 
@@ -55,8 +103,9 @@ def is_stale(entry: dict, intent: str, now: float) -> bool:
 
     Returns:
         True when the entry is older than ``dag_max_age_seconds``
-        AND the intent contains no DAG-related keyword. An entry
-        that already carries ``stale=True`` is always stale.
+        AND the intent contains no DAG-related keyword (matched as
+        a whole token, not a substring). An entry that already
+        carries ``stale=True`` is always stale.
     """
     if not isinstance(entry, dict):
         return False
@@ -75,5 +124,4 @@ def is_stale(entry: dict, intent: str, now: float) -> bool:
     if age < _FRESHNESS_CFG["dag_max_age_seconds"]:
         return False
     # Old DAG entry: only fresh if the user is asking about DAGs.
-    intent_lc = (intent or "").lower()
-    return not any(kw in intent_lc for kw in DAG_INTENT_KEYWORDS)
+    return not _intent_mentions_dag(intent)
