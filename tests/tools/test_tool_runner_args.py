@@ -17,10 +17,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from supervisor.pipeline.goat_call import (
-    _classify_response,
-    _tool_schema_failure_hint,
-)
+from supervisor.pipeline.goat_call import _classify_response
+from supervisor.pipeline.prompt_helpers import tool_schema_failure_hint as _tool_schema_failure_hint
 from tools.tool_runner import _prepare_args
 
 

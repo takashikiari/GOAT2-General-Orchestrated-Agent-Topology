@@ -142,6 +142,18 @@ turn_timeout = 120     # Seconds before task timeout
 verbose      = true   # Enable detailed logging
 temperature  = 0.5     # Reduced for accuracy (minimizes false information)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [antirepeat] — clarify text when the active antirepeat gate blocks a loop
+#
+# Read by `supervisor.mechanisms.antirepeat.repetitive_response_text`.
+# Returned as a clarification when the new response overlaps a recent
+# assistant turn above REPETITIVE_THRESHOLD — so the user sees a
+# short rephrase prompt instead of the same echoed text.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[antirepeat]
+repetitive_response = "I'm catching myself repeating the same pattern. Could you rephrase your request, or pick from the options I just gave?"
+
 # =============================================================================
 # COMMUNICATION CHANNELS
 # =============================================================================

@@ -28,6 +28,7 @@ Both are sub-millisecond on typical 100-word turns.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 __all__ = [
@@ -36,7 +37,10 @@ __all__ = [
     "REPETITIVE_LOOKBACK",
     "dedup_history",
     "is_repetitive",
+    "repetitive_response_text",
 ]
+
+log = logging.getLogger("goat2.supervisor.mechanisms.antirepeat")
 
 # Tunable thresholds. Conservative defaults: dedup is permissive
 # (0.90 → only near-duplicates), anti-repetition is sensitive
@@ -45,6 +49,41 @@ __all__ = [
 DEDUP_OVERLAP_THRESHOLD: Final[float] = 0.90
 REPETITIVE_THRESHOLD:     Final[float] = 0.85
 REPETITIVE_LOOKBACK:      Final[int]   = 3
+
+
+def _load_repetitive_response() -> str:
+    """Read the clarify text sent when antirepeat blocks the response.
+
+    Resolution order: ``config/goat.toml [antirepeat].repetitive_response``
+    > module default. The toml loader is non-fatal so a missing file
+    silently falls back to the default.
+    """
+    default = (
+        "I'm catching myself repeating the same pattern. "
+        "Could you rephrase your request, or pick from the options I just gave?"
+    )
+    try:
+        from config.modular_loader import load_goat_config
+        section = (load_goat_config() or {}).get("antirepeat", {}) or {}
+        raw = section.get("repetitive_response")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    except Exception as exc:  # noqa: BLE001 — config load is best-effort
+        log.debug("antirepeat: goat.toml [antirepeat] load skipped: %s", exc)
+    return default
+
+
+# Loaded once at import time; pure read of a static toml file.
+REPETITIVE_RESPONSE: Final[str] = _load_repetitive_response()
+
+
+def repetitive_response_text() -> str:
+    """Return the clarify text used when antirepeat blocks the response.
+
+    Exposed as a callable so tests can monkey-patch the value without
+    mutating the module-level constant.
+    """
+    return REPETITIVE_RESPONSE
 
 
 def _tokenize(text: str) -> set[str]:
