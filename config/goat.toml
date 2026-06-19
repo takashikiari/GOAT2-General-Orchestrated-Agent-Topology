@@ -154,6 +154,22 @@ temperature  = 0.5     # Reduced for accuracy (minimizes false information)
 [antirepeat]
 repetitive_response = "I'm catching myself repeating the same pattern. Could you rephrase your request, or pick from the options I just gave?"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# [errors] — how GOAT's universal error fallback reply is formatted (BUG-007 fix)
+#
+# Read by `supervisor.supervisor._empty_result` and the global except
+# in `GoatSupervisor.run`. Controls the message the user sees when
+# the kernel catches an unhandled exception — must always respond,
+# but honestly: include the exception type so MCP diagnose_turn and
+# the CLI can tell what actually broke instead of swallowing it
+# behind a generic "please provide more details" prompt.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[errors]
+fallback_template = "GOAT hit an error: {error_type}: {error_message}. Please retry or simplify your request."
+include_type      = true
+max_chars        = 200
+
 # =============================================================================
 # COMMUNICATION CHANNELS
 # =============================================================================

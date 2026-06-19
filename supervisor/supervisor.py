@@ -248,10 +248,12 @@ class GoatSupervisor:
         )
 
     def _empty_result(self, intent: str, t0: float, err: str) -> "SupervisorResult":
-        """Build the universal fallback result for unhandled errors."""
-        log.debug("_empty_result: fallback for %r", err)
-        return self._build_result(
-            intent=intent, t0=t0,
-            summary="Could you provide more details about what you'd like me to do?",
-            source="generated", session_id="",
-        )
+        """Build the universal fallback result for unhandled errors.
+
+        Thin wrapper over ``supervisor.errors_fallback.empty_error_result``
+        — that module owns the formatting policy (template, truncation,
+        include-type). Kept as a method on ``GoatSupervisor`` so
+        existing call sites in ``run`` don't need to change.
+        """
+        from supervisor.errors_fallback import empty_error_result
+        return empty_error_result(self, intent=intent, t0=t0, err=err)  # type: ignore[arg-type]
