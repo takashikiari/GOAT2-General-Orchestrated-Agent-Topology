@@ -24,11 +24,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-from supervisor.classification.classifier import IntentDepth, classify_intent
-from supervisor.classification.intent_clarity import build_clarity_context
-from supervisor.pipeline.goat_enrichment import build_goat_context
 from supervisor.session.history import ConversationHistory
-from supervisor.session.mem_inject import mem_turn
 
 if TYPE_CHECKING:
     from config.registry import ServiceRegistry
@@ -93,62 +89,14 @@ class GoatSupervisor:
     async def run(self, intent: str) -> "SupervisorResult":
         """Handle one user message. Must always respond.
 
-        Steps (defensive — never raises):
-          (1) ensure subsystems are booted;
-          (2) gate on supervisor.max_turns;
-          (3) append user turn, render memory context;
-          (4) build middleware context (GoatContext + ClarityContext);
-          (5) sync the in-memory style cache from GoatContext;
-          (6) invoke the ONE LLM call (capped by supervisor.turn_timeout);
-          (7) dispatch, persist, return.
+        Thin wrapper over ``supervisor.turn_runner.run_turn`` — the
+        per-turn lifecycle (bootstrap, history commit/rollback, memory
+        build, single LLM call, dispatch) lives there. Kept as a
+        method on ``GoatSupervisor`` so existing call sites don't
+        change.
         """
-        t0 = time.monotonic()
-        log.info("GOAT — intent: %.120s", intent)
-        try:
-            self._ensure_initialized()
-            if self._history is None:
-                await self._bootstrap_session()
-            assert self._history is not None
-            settings = self.registry.settings.supervisor
-            max_turns = int(getattr(settings, "max_turns", 0) or 0)
-            if max_turns and len(self._history) >= max_turns:
-                log.warning("GoatSupervisor: max_turns=%d reached (history=%d) — refusing",
-                            max_turns, len(self._history))
-                return self._build_result(
-                    intent=intent, t0=t0,
-                    summary="Session turn limit reached. Start a new session to continue.",
-                    source="generated", session_id="",
-                )
-            self._history.add_user(intent)
-            mem_ctx = await mem_turn(self.memory_manager, intent)
-            goat_ctx = await build_goat_context(self.registry, mem_ctx)
-            history_text = "\n".join(
-                f"{m['role']}: {m['content']}" for m in self._history.messages
-            )
-            clarity_text = build_clarity_context(history_text, mem_ctx)
-            self._sync_style_from_ctx(goat_ctx)
-
-            from supervisor.mechanisms.hints import build_hints
-            hints = await build_hints(
-                self.memory_manager, intent, self.registry, limit=3,
-            )
-            try:
-                turn = await self._invoke_turn(
-                    intent, goat_ctx, clarity_text, hints, mem_ctx,
-                )
-            except _TurnTimeoutError:
-                log.warning("GoatSupervisor: turn timeout — failing fast")
-                return self._build_result(
-                    intent=intent, t0=t0,
-                    summary="I took too long to respond. Please try a simpler request or start a new session.",
-                    source="generated", session_id="",
-                )
-            depth = classify_intent(turn)
-            log.info("GOAT turn: action=%s → %s intent=%.80s", turn.action, depth.value, intent)
-            return await self._dispatch(intent, t0, turn)
-        except Exception as exc:  # noqa: BLE001 — kernel must respond
-            log.exception("GoatSupervisor.run: unhandled error: %s", exc)
-            return self._empty_result(intent, t0, str(exc))
+        from supervisor.turn_runner import run_turn
+        return await run_turn(self, intent)
 
     # ── Internal helpers ──
 
@@ -228,7 +176,14 @@ class GoatSupervisor:
             session_id = ""
 
         if self._history is not None:
+            # BUG-016: add_assistant now silently skips empty /
+            # whitespace-only content (see ConversationHistory docs),
+            # so no empty row is appended when the LLM was silent.
             self._history.add_assistant(summary)
+            # BUG-015: the user turn was buffered as pending at the
+            # start of run(). Promote it to the visible history now
+            # that the assistant reply has landed.
+            self._history.commit_pending()
             from supervisor.session.turn_persistence import store_and_promote
             await store_and_promote(self, len(self._history.messages), intent, summary)
         return self._build_result(intent, t0, summary, source, session_id, action=action)
