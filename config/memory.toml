@@ -16,6 +16,10 @@ warn_threshold      = 85   # log WARNING when count >= this
 gc_interval_turns   = 10   # tick the GC every N turns
 dag_ttl_seconds     = 3600 # TTL for dag:* coordination keys (1h)
 flush_on_session_start = true # schedule working-memory flush on session start
+# Prompt-block caps read by supervisor.mechanisms.context_builder
+# and supervisor.session.history. Override per deployment as needed.
+max_prompt_entries  = 50   # max working-memory lines rendered into the prompt
+max_history_messages = 200 # in-memory rolling buffer for ConversationHistory
 
 [episodic]
 max_entries              = 300 # hard cap for episodic entries (per agent_role)

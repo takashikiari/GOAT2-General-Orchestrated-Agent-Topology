@@ -111,7 +111,7 @@ async def _learn_and_persist(supervisor: "GoatSupervisor", mm) -> bool:
         user_turns = [e.content for e in entries if e and e.content]
         if not user_turns:
             return False
-        new_text = await analyze_style(user_turns, supervisor.registry)
+        new_text = await analyze_style(user_turns, existing)
         if not new_text:
             return False
         return bool(await save_style(mm, new_text))

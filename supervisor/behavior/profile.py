@@ -17,7 +17,6 @@ USAGE:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from typing import Any
 
 __all__ = ["BehaviorProfile", "serialize", "deserialize", "empty_profile"]
 
@@ -94,9 +93,3 @@ def deserialize(text: str) -> BehaviorProfile:
         if k in _FIELDS and v:
             setattr(profile, k, v)
     return profile
-
-
-def to_dict(profile: BehaviorProfile) -> dict[str, Any]:
-    """Return a plain dict view (drops empty fields)."""
-    d = asdict(profile) if hasattr(profile, "__dataclass_fields__") else dict(profile)
-    return {k: v for k, v in d.items() if v}

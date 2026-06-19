@@ -1,6 +1,7 @@
-"""The single GOAT LLM call — one prompt, one LLM, decides AND
-responds. Middleware only assembles context; this module is the
-ONLY place an LLM is invoked for the GOAT turn.
+"""The single GOAT LLM call — one prompt, one LLM, decides AND responds.
+
+Middleware only assembles context; this module is the ONLY place an LLM
+is invoked for the GOAT turn.
 
 ACTION DETECTION (post-call):
   - ``start_dag`` was called → ``"dag"``
@@ -10,27 +11,21 @@ ACTION DETECTION (post-call):
 
 USAGE:
     from supervisor.pipeline.goat_call import goat_turn
-
-    result = await goat_turn(
-        registry=registry, intent=intent, goat_context=goat_ctx,
-        clarity_context=clarity_ctx, hints=hints,
-        history_messages=history.messages, mem_ctx=mem_ctx,
-        supervisor=supervisor,
-    )
+    result = await goat_turn(registry=..., intent=..., goat_context=...,
+                             clarity_context=..., hints=..., history_messages=...,
+                             mem_ctx=..., supervisor=...)
 
 STRICT RULES:
   - Exactly ONE ``_call_with_tools()`` call per turn.
-  - Temperature from ``registry.settings.supervisor.temperature``
-    (no hardcoded value).
-  - DSML stripping via ``utils.dsml.strip_dsml`` (single
-    canonical implementation — no regex inline).
-  - History dedup via ``mechanisms.antirepeat.dedup_history``.
-  - Anti-repetition tag via ``mechanisms.antirepeat.is_repetitive``.
+  - Temperature from ``registry.settings.supervisor.temperature`` (no hardcoded value).
+  - DSML stripping via ``utils.dsml.strip_dsml`` (single canonical impl).
+  - History dedup + anti-repetition tag via ``mechanisms.antirepeat``.
 """
 from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 from typing import TYPE_CHECKING, Final
 
 from tools.tool_runner import _call_with_tools
@@ -56,14 +51,13 @@ class GoatTurnResult:
     """Result of the one GOAT LLM call.
 
     Attributes:
-        action:           ``direct`` | ``clarify`` | ``dag``
-        response:         User-facing text (markers stripped)
-        clarification:    Clarifying question (when action=clarify)
-        dag_session_id:   Captured from start_dag (when action=dag)
+        action: ``direct`` | ``clarify`` | ``dag``
+        response: User-facing text (markers stripped)
+        clarification: Clarifying question (when action=clarify)
+        dag_session_id: Captured from start_dag (when action=dag)
         dag_instructions: Task description passed to start_dag
-        source:           Provenance tag; ``"repetitive"`` when the
-            anti-repetition mechanism flagged the response.
-        called_tools:     Tuple of every tool invoked, in order.
+        source: Provenance tag; ``"repetitive"`` when anti-repetition flagged it.
+        called_tools: Every tool invoked, in order.
     """
 
     action:           str
@@ -82,13 +76,34 @@ def _classify_response(text: str, called: tuple[str, ...]) -> tuple[str, str]:
     stripped = text.rstrip()
     if stripped.lower().endswith(_CLARIFY_MARKER.lower()):
         return "clarify", stripped[: -len(_CLARIFY_MARKER)].rstrip()
-    if (
-        not called
-        and len(stripped) <= _CLARIFY_MAX_CHARS
-        and stripped.endswith("?")
-    ):
+    if not called and len(stripped) <= _CLARIFY_MAX_CHARS and stripped.endswith("?"):
         return "clarify", stripped
     return "direct", stripped
+_TOOL_FAIL_SIGNATURE = re.compile(r"<function=([\w_]+)>\{([^}]*)\}")
+_TYPE_MISMATCH_HINT = re.compile(r'"(\w+)":\s*"([^"]*)"')
+_TYPE_KEYWORDS = ("expected integer", "expected number", "expected boolean")
+
+
+def _tool_schema_failure_hint(exc: BaseException) -> str | None:
+    """Best-effort ``tool.param`` hint from a tool-call schema error.
+
+    The OpenAI-compatible SDK (universal transport for all configured
+    providers) reports tool-call failures with a ``<function=NAME>{...}``
+    snippet in the exception body. We match on that signature so the
+    supervisor can log which tool + param the configured model got wrong
+    (most often: model emitted a string where the schema declared an
+    integer). Provider-agnostic — works regardless of which model is
+    configured in ``goat.toml``. Never raises.
+    """
+    msg = str(exc)
+    match = _TOOL_FAIL_SIGNATURE.search(msg)
+    if not match:
+        return None
+    tool_name, raw_args = match.group(1), match.group(2)
+    bad = _TYPE_MISMATCH_HINT.search(raw_args)
+    if bad and any(kw in msg for kw in _TYPE_KEYWORDS):
+        return f"{tool_name}.{bad.group(1)} got string {bad.group(2)!r}"
+    return f"{tool_name} (args: {raw_args[:80]})"
 
 
 def _build_user_prompt(intent, goat_ctx, clarity_ctx, hints, mem_ctx) -> str:
@@ -100,25 +115,21 @@ def _build_user_prompt(intent, goat_ctx, clarity_ctx, hints, mem_ctx) -> str:
     if hints:
         parts.append("Past user corrections (soft hints):\n" + "\n".join(f"- {h}" for h in hints))
     if mem_ctx:
-        parts.append("")
-        parts.append(mem_ctx)
-    parts.append("")
-    parts.append(
-        "If you need a DAG (multi-step research / code / analysis), "
-        "call the start_dag tool with a self-contained task description. "
-        f"If you need a clarifying question, end your reply with {_CLARIFY_MARKER}. "
-        "Otherwise answer."
-    )
+        parts.extend(["", mem_ctx])
+    parts.extend([
+        "",
+        ("If you need a DAG (multi-step research / code / analysis), "
+         "call the start_dag tool with a self-contained task description. "
+         f"If you need a clarifying question, end your reply with {_CLARIFY_MARKER}. "
+         "Otherwise answer."),
+    ])
     return "\n".join(parts)
 
 
 def _build_system_prompt(style: str) -> str:
     """System message = GOAT identity + (optional) style mirror.
 
-    Style is the raw ``key: value`` text from Letta. The
-    mirror directive is appended only when the profile is
-    non-empty. We import the identity module lazily to avoid a
-    cycle through ``supervisor/__init__``.
+    Identity import is lazy to avoid a cycle through ``supervisor/__init__``.
     """
     from supervisor.identity import GOAT_SYSTEM, _build_style_directive
     parts = [GOAT_SYSTEM]
@@ -176,12 +187,10 @@ async def goat_turn(
         supervisor: The live GoatSupervisor (for tool wiring).
 
     Returns:
-        A ``GoatTurnResult`` populated with action, response, and
-        (where applicable) repetition-flagged ``source``.
+        GoatTurnResult with action, response, and (when applicable) repetition-flagged source.
 
     Failure mode:
-        LLM exception → returns a clarify fallback rather than
-        raising. The kernel must always respond.
+        LLM exception → clarify fallback, never raise. The kernel must always respond.
     """
     spec = registry.settings.supervisor.model
     tools = _collect_goat_tools(registry, supervisor, goat_session_id)
@@ -192,10 +201,9 @@ async def goat_turn(
         {"role": "user",   "content": user_prompt},
     ]
 
-    # Append prior conversation (deduped). The current user turn
-    # is already in user_prompt; the last 2 messages (this user
-    # turn + the most recent assistant) are skipped to avoid
-    # double-feeding them.
+    # Append prior conversation (deduped). The current user turn is
+    # already in user_prompt; the last 2 messages are skipped to
+    # avoid double-feeding them.
     from supervisor.mechanisms.antirepeat import dedup_history
     cleaned = dedup_history(list(history_messages or [])[:-2])
     for m in cleaned:
@@ -210,39 +218,36 @@ async def goat_turn(
             memory_manager=registry.memory_manager,
         )
     except Exception as exc:
+        # The OpenAI-compatible SDK raises 400 on tool-call schema
+        # failures (string for integer, etc.). That used to be silently
+        # swallowed into the generic clarify fallback. We now log a
+        # one-line diagnostic so MCP diagnose_turn can pinpoint which
+        # tool/param the configured model got wrong.
         log.warning("goat_turn: LLM call failed: %s", exc)
-        return GoatTurnResult(
-            action="clarify",
-            response="",
-            clarification="Could you provide more details about what you'd like me to do?",
-        )
+        hint = _tool_schema_failure_hint(exc)
+        if hint:
+            log.warning("goat_turn: tool schema failure hint: %s", hint)
+            clarification = "Could you rephrase or narrow your request? (Last attempt failed on a tool-call schema mismatch.)"
+        else:
+            clarification = "Could you provide more details about what you'd like me to do?"
+        return GoatTurnResult(action="clarify", response="", clarification=clarification)
 
-    raw_content = (tagged.content or "")
-    # Strip DeepSeek DSML markers via the single canonical
-    # implementation. No regex inline.
-    raw_content = strip_dsml(raw_content)
+    raw_content = strip_dsml(tagged.content or "")
     if not raw_content.strip() and tagged.called_tools:
         raw_content = f"Am executat: {', '.join(tagged.called_tools)}"
     action, visible = _classify_response(raw_content, tagged.called_tools)
     if action not in ("direct", "clarify", "dag"):
         action = "direct"
 
-    # Anti-repetition check. We do NOT regenerate — that would
-    # add an LLM call. We expose the signal via ``source`` so
-    # downstream channels can deprioritize.
+    # Anti-repetition: we do NOT regenerate (would add an LLM call). The
+    # signal is exposed via ``source`` so downstream channels can deprioritize.
     from supervisor.mechanisms.antirepeat import is_repetitive
     repetitive = is_repetitive(visible, list(history_messages or []))
     final_source = "repetitive" if repetitive else tagged.source
     if repetitive:
-        log.warning(
-            "goat_turn: response flagged repetitive (action=%s response_len=%d)",
-            action, len(visible),
-        )
+        log.warning("goat_turn: response flagged repetitive (action=%s response_len=%d)", action, len(visible))
     else:
-        log.info(
-            "goat_turn: action=%s called=%s response_len=%d",
-            action, list(tagged.called_tools), len(visible),
-        )
+        log.info("goat_turn: action=%s called=%s response_len=%d", action, list(tagged.called_tools), len(visible))
     return GoatTurnResult(
         action=action,
         response=visible,

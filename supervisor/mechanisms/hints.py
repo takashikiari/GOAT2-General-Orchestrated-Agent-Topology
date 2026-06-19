@@ -44,13 +44,11 @@ def load_static_hints(registry: "ServiceRegistry | None") -> list[str]:
     if registry is None:
         return []
     try:
-        # Lazy: avoid pulling config loader at module import.
-        from config.modular_loader import _load_raw  # type: ignore
-        data = _load_raw("goat.toml") or {}
+        from config.modular_loader import load_goat_config
+        data = load_goat_config() or {}
         section = data.get(_HINTS_SECTION, {})
         if not isinstance(section, dict):
             return []
-        # Stable order — toml preserves insertion order on read.
         return [str(v).strip() for v in section.values() if str(v).strip()]
     except Exception as exc:  # noqa: BLE001
         log.debug("load_static_hints: toml load failed: %s", exc)

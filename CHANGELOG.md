@@ -5,6 +5,85 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-19 — supervisor+memory: tolerate tool-call type mismatches
+
+The supervisor was crashing the user's turn on every tool-call
+schema error raised by the LLM client (the OpenAI-compatible SDK
+used as the universal transport for all configured providers —
+openai / deepseek / groq — returns ``invalid_request_error`` with
+HTTP 400 when a model emits a string literal for an
+integer-typed tool parameter; the most common case is
+``{"limit": "50"}`` where the schema declares ``integer``). The
+400 escaped ``_call_with_tools``, ``goat_turn`` swallowed it into
+a generic "Could you provide more details" clarify message, and
+the diagnostic disappeared. Repeated occurrences showed up in
+``get_errors`` as ``tool_use_failed … expected integer, but got
+string`` with no indication of which tool or which parameter was
+at fault.
+
+Two minimal patches fix the class of failure without changing
+the supervisor's single-call contract or any tool schema:
+
+### Changed
+- `tools/tool_runner.py` — `_prepare_args` now performs
+  tolerant scalar coercion **before** dispatch. When the
+  JSON-Schema declares `integer`/`number`/`boolean` and the
+  LLM emitted a string literal that parses cleanly, it is
+  replaced with the typed value. When conversion fails, a
+  one-line error (`"<tool>.<param>: parameter expected
+  integer, got string 'abc'; pass a numeric literal"`) is
+  returned to the model so it can self-correct in the next
+  round. Existing behaviour for unknown tools, missing
+  required params, and defaults is unchanged. Provider-agnostic
+  — works the same regardless of which provider/model is
+  configured in `goat.toml`.
+- `supervisor/pipeline/goat_call.py` — added
+  `_tool_schema_failure_hint(exc)` that parses the canonical
+  ``<function=NAME>{...}`` snippet from the exception body. On
+  a tool-call schema failure, the supervisor now logs a
+  one-line diagnostic (`memory_recent.limit got string '50'`)
+  and returns a softer clarify message asking the user to
+  rephrase, rather than the generic fallback. Non-tool-call
+  errors are unaffected. The diagnostic names the configured
+  tool from the registry, so the operator can map it back to
+  the actual provider/model that mis-emitted the call.
+
+### Added
+- `tests/tools/test_tool_runner_args.py` — 15 unit tests
+  covering: string→int/number/boolean coercion, uncoercible
+  strings, int passthrough, default application, missing
+  required, unknown tool, and the three branches of
+  `_tool_schema_failure_hint` (type mismatch / generic
+  signature / unrelated error). Includes regression tests
+  for `_classify_response` (clarify marker, short question,
+  dag tool, direct). All pure-function tests — no LLM, no
+  Redis, no async.
+
+### Verified
+- `python3 -m pytest tests/tools/test_tool_runner_args.py -v`
+  → 15 passed in ~1.5 s.
+- `python3 -m pytest tests/ --ignore=<preexisting-broken>`
+  → 32 passed, 0 failed. Excluded files import modules that
+  are part of in-progress refactors (deleted but not yet
+  re-added): `memory.temporal_filter`, `supervisor.workflow`,
+  `tools.file_executor_helpers` — failure mode is
+  `ModuleNotFoundError`, not a regression from this change.
+- `wc -l tools/tool_runner.py supervisor/pipeline/goat_call.py`
+  → 244 / 259 (both at-or-under the 260-line ceiling).
+
+### Architecture notes
+- No schema, prompt, or architecture change. The patches
+  are *defensive wrappers* around existing JSON-Schema
+  validation and the existing clarify-fallback path.
+- The coercion happens in the only place where tool args
+  are validated before the round-trip to whatever provider
+  the supervisor model is configured for, so a single fix
+  covers every tool that declares an `integer` / `number` /
+  `boolean` parameter — irrespective of which model emitted
+  the call.
+
+---
+
 ## [Unreleased] — 2026-06-19 — mcp_server: switch from low-level Server to FastMCP
 
 The four tool modules register handlers via the

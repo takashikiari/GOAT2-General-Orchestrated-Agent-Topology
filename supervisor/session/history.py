@@ -12,23 +12,45 @@ USAGE:
     history.messages  # → [{"role": "user", "content": "Hello"}, ...]
 
 Design:
-  - Bounded by ``MAX_MESSAGES`` (in-memory; older messages roll
-    off the front). The supervisor persists the most recent
-    window to working memory on every turn.
+  - Bounded by ``MAX_MESSAGES`` (loaded from
+    ``config/memory.toml [working].max_history_messages``; falls
+    back to a safe default). Older messages roll off the front.
   - ``add_user`` / ``add_assistant`` append a single message.
   - ``summary`` is a session-level string written by the
-    supervisor at session end (via ``load_session_summary``
-    elsewhere).
+    supervisor at session end.
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 __all__ = ["ConversationHistory", "MAX_MESSAGES"]
 
-# Hard cap on the in-memory buffer. 200 is a comfortable ceiling
-# for typical chat sessions; older messages roll off the front.
-MAX_MESSAGES: Final[int] = 200
+log = logging.getLogger("goat2.supervisor.session.history")
+
+_DEFAULT_MAX_MESSAGES: Final[int] = 200
+
+
+def load_max_messages() -> int:
+    """Read ``max_history_messages`` from config/memory.toml [working].
+
+    Returns the configured cap, or ``_DEFAULT_MAX_MESSAGES`` when
+    the file / section is missing. Cached at import time.
+    """
+    try:
+        from config.modular_loader import load_memory_config
+        section = (load_memory_config() or {}).get("working", {}) or {}
+        raw = section.get("max_history_messages")
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        log.debug("history: max_history_messages not int — using default")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("history: max_history_messages load skipped: %s", exc)
+    return _DEFAULT_MAX_MESSAGES
+
+
+MAX_MESSAGES: Final[int] = load_max_messages()
 
 
 class ConversationHistory:

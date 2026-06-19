@@ -37,33 +37,53 @@ _MAX_ROUNDS: Final[int] = 8
 ToolChoice = Literal["auto", "required", "none"]
 
 
-def _prepare_args(args: dict, tool_map: dict, name: str) -> tuple[dict, str | None]:
-    """Apply defaults and validate required parameters from the tool's schema.
+_COERCIBLE = {"integer", "number", "boolean"}
 
-    Args:
-        args: Raw arguments from the LLM tool call.
-        tool_map: Map of tool names to ToolDefinition objects.
-        name: Name of the tool being called.
 
-    Returns:
-        Tuple of (prepared_args, error_message). error_message is None on success.
+def _coerce_arg(value: Any, prop_schema: dict) -> tuple[Any, str | None]:
+    """Tolerantly coerce ``value`` to the JSON-Schema ``type`` in ``prop_schema``.
+
+    LLMs sometimes emit string literals where a schema expects a number/boolean
+    (e.g. ``{"limit": "50"}``). The OpenAI-compatible SDK used as the universal
+    transport rejects those with HTTP 400 *before* dispatch, so we coerce
+    up-front. Provider-agnostic — applies regardless of which model is
+    configured. Returns an error string when conversion fails so the model
+    can self-correct next round.
     """
+    expected = prop_schema.get("type")
+    if expected is None or expected not in _COERCIBLE or not isinstance(value, str):
+        return value, None
+    if expected in ("integer", "number"):
+        try:
+            return (int(value) if expected == "integer" else float(value)), None
+        except (TypeError, ValueError):
+            return value, f"parameter expected {expected}, got string {value!r}; pass a numeric literal"
+    low = value.strip().lower()
+    if low in ("true", "false"):
+        return low == "true", None
+    return value, f"parameter expected boolean, got string {value!r}"
+
+
+def _prepare_args(args: dict, tool_map: dict, name: str) -> tuple[dict, str | None]:
+    """Apply defaults, coerce scalar types, and validate required parameters."""
     if name not in tool_map:
         return args, f"unknown tool '{name}'"
     schema = tool_map[name].parameters
-    props = schema.get("properties", {})
+    props = schema.get("properties", {}) or {}
     required = schema.get("required", [])
 
-    # Apply defaults for missing optional parameters
-    for prop_name, prop_schema in (props or {}).items():
+    for prop_name, prop_schema in props.items():
         if prop_name not in args and "default" in prop_schema:
             args[prop_name] = prop_schema["default"]
+        if prop_name in args:
+            coerced, type_err = _coerce_arg(args[prop_name], prop_schema)
+            if type_err is not None:
+                return args, f"ERROR: {name}.{prop_name}: {type_err}"
+            args[prop_name] = coerced
 
-    # Validate all required parameters are present
     missing = [p for p in required if p not in args]
     if missing:
         return args, f"ERROR: missing required parameters for '{name}': {missing}"
-
     return args, None
 
 

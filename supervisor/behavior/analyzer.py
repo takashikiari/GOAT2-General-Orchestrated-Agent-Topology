@@ -8,7 +8,7 @@ suitable for ``store.save_style``.
 USAGE:
     from supervisor.behavior.analyzer import analyze_style
 
-    text = await analyze_style(user_turns, registry, existing_profile_text)
+    text = await analyze_style(user_turns, existing_profile_text)
 
 SCORING: each BehaviorProfile field is scored by a small pure
 function over the joined text of recent turns. The new profile
@@ -20,7 +20,7 @@ fewer than ``min_turns_to_learn`` turns. Marker sets live in
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from supervisor.behavior.analyzer_markers import (
     CURT_WORDS, EMOJI_FRIENDLY, FRIENDLY_EMOJI, HUMOR_WORDS,
@@ -31,27 +31,27 @@ from supervisor.behavior.profile import (
     BehaviorProfile, deserialize, empty_profile, serialize,
 )
 
-if TYPE_CHECKING:
-    from config.registry import ServiceRegistry
-
 log = logging.getLogger("goat2.supervisor.behavior.analyzer")
 
 __all__ = ["analyze_style", "load_thresholds"]
 
 
 def load_thresholds() -> dict[str, float | int | str]:
-    """Read [learning] and [style] sections from config/behavioral.toml.
+    """Read [learning] and [style] from config/behavioral.toml.
 
-    Returns a flat dict with three knobs the analyzer reads.
+    Returns a flat dict with the six knobs the analyzer reads.
     Missing section / missing key → safe default. The toml
     loader is non-fatal — a missing or unparseable file
     silently falls back to defaults so the analyzer stays
     usable in any environment.
     """
     out: dict[str, float | int | str] = {
-        "min_turns_to_learn":   2,
-        "max_turns_to_analyze": 20,
-        "verbosity_default":    "moderate",
+        "min_turns_to_learn":    2,
+        "max_turns_to_analyze":  20,
+        "verbosity_default":     "moderate",
+        "humor_threshold":       0.3,
+        "formality_threshold":   0.5,
+        "directness_threshold":  0.7,
     }
     try:
         from config.modular_loader import load_behavioral_config
@@ -64,17 +64,21 @@ def load_thresholds() -> dict[str, float | int | str]:
                 out[k] = int(v)
             except (TypeError, ValueError):
                 log.debug("analyzer: %s=%r not int — using default", k, v)
-        v = (data.get("style", {}) or {}).get("verbosity_default")
-        if v:
-            out["verbosity_default"] = str(v)
+        style = data.get("style", {}) or {}
+        for k, caster in (("humor_threshold", float), ("formality_threshold", float),
+                          ("directness_threshold", float), ("verbosity_default", str)):
+            v = style.get(k)
+            if v is None:
+                continue
+            try:
+                out[k] = caster(v)
+            except (TypeError, ValueError):
+                log.debug("analyzer: style.%s=%r bad — using default", k, v)
     except Exception as exc:  # noqa: BLE001
         log.debug("analyzer: behavioral.toml load failed: %s", exc)
     return out
-
-
 # Loaded once at import time; pure read of a static toml.
 _THRESH: Final[dict[str, float | int | str]] = load_thresholds()
-
 
 def _avg_length(turns: list[str]) -> float:
     """Mean character length of non-empty turns."""
@@ -89,8 +93,6 @@ def _punctuation_density(text: str) -> float:
     if not text:
         return 0.0
     return sum(1 for c in text if c in ".,;:!?") * 100.0 / len(text)
-
-
 def _cap_rate(text: str) -> float:
     """Fraction of alphabetic chars that are uppercase."""
     letters = [c for c in text if c.isalpha()]
@@ -100,23 +102,42 @@ def _cap_rate(text: str) -> float:
 
 
 def _score_formality(turns: list[str]) -> str:
-    """``casual`` | ``neutral`` | ``formal``."""
+    """``casual`` | ``neutral`` | ``formal`` — gated by style.formality_threshold.
+
+    Politeness-vs-slang ratio above the threshold → formal,
+    below → casual. Punctuation density + uppercase rate are
+    tie-breakers.
+    """
     if not turns:
         return "neutral"
     text = " ".join(turns).lower()
     punct = sum(_punctuation_density(t) for t in turns) / len(turns)
     cap   = sum(_cap_rate(t) for t in turns) / len(turns)
-    polite = sum(1 for w in text.split() if w in POLITE_WORDS)
-    slang  = sum(1 for w in text.split() if w in SLANG_WORDS)
+    tokens = text.split()
+    polite = sum(1 for w in tokens if w in POLITE_WORDS)
+    slang  = sum(1 for w in tokens if w in SLANG_WORDS)
+    threshold = float(_THRESH.get("formality_threshold", 0.5) or 0.5)
+    polite_signal = polite + punct / 10
+    slang_signal  = slang + max(0.0, 0.05 - cap) * 10
+    total = polite_signal + slang_signal
+    if total > 0:
+        ratio = polite_signal / total
+        if ratio >= threshold and polite >= 1:
+            return "formal"
+        if ratio <= (1 - threshold) and (slang >= 1 or cap < 0.02):
+            return "casual"
     if polite >= 2 and punct >= 3:
         return "formal"
     if slang >= 2 or cap < 0.02 or punct < 0.5:
         return "casual"
     return "neutral"
 
-
 def _score_tone(turns: list[str]) -> str:
-    """``friendly`` | ``technical`` | ``dry`` | ``direct``."""
+    """``friendly`` | ``technical`` | ``dry`` | ``direct``.
+
+    Curt-words density per turn above style.directness_threshold
+    flags the reply as direct.
+    """
     if not turns:
         return "dry"
     text = " ".join(turns).lower()
@@ -124,15 +145,15 @@ def _score_tone(turns: list[str]) -> str:
     has_emoji = any(c in joined for c in EMOJI_FRIENDLY)
     tech = sum(1 for w in text.split() if w in TECH_WORDS)
     curt = sum(1 for t in turns for w in t.split() if w.lower() in CURT_WORDS)
+    curt_per_turn = curt / max(1, len(turns))
+    threshold = float(_THRESH.get("directness_threshold", 0.7) or 0.7)
     if has_emoji and tech <= 1:
         return "friendly"
     if tech >= 2:
         return "technical"
-    if curt >= len(turns):
+    if curt_per_turn >= threshold:
         return "direct"
     return "dry"
-
-
 def _score_vocabulary(turns: list[str]) -> str:
     """``simple`` | ``technical`` | ``mixed``."""
     if not turns:
@@ -140,15 +161,12 @@ def _score_vocabulary(turns: list[str]) -> str:
     tokens = [w for w in " ".join(turns).lower().split() if w]
     if not tokens:
         return "simple"
-    tech = sum(1 for w in tokens if w in TECH_WORDS)
-    rate = tech / len(tokens)
+    rate = sum(1 for w in tokens if w in TECH_WORDS) / len(tokens)
     if rate >= 0.10:
         return "technical"
     if rate >= 0.03:
         return "mixed"
     return "simple"
-
-
 def _score_language(turns: list[str]) -> str:
     """``Romanian`` | ``English`` | ``mixed RO/EN`` — delegates to lang_detect."""
     if not turns:
@@ -159,21 +177,19 @@ def _score_language(turns: list[str]) -> str:
     except Exception:  # noqa: BLE001
         return "English"
     return {"ro": "Romanian", "en": "English", "mixed": "mixed RO/EN"}.get(code, "English")
-
-
 def _score_humor(turns: list[str]) -> str:
-    """``none`` | ``dry`` | ``playful``."""
+    """``none`` | ``dry`` | ``playful`` — gated by style.humor_threshold."""
     if not turns:
         return "none"
     text = " ".join(turns).lower()
     joined = " ".join(turns)
-    if any(tok in text for tok in HUMOR_WORDS):
+    rate = sum(1 for tok in HUMOR_WORDS if tok in text) / max(1, len(turns))
+    threshold = float(_THRESH.get("humor_threshold", 0.3) or 0.3)
+    if rate >= threshold or any(tok in text for tok in ("😂", "🤣", "lol", "lmao", "haha")):
         return "playful"
     if any(c in joined for c in SMILEY_EMOJI):
         return "dry"
     return "none"
-
-
 def _score_length(avg_len: float) -> str:
     """``terse`` | ``moderate`` | ``verbose``."""
     if avg_len < 25:
@@ -181,14 +197,12 @@ def _score_length(avg_len: float) -> str:
     if avg_len < 120:
         return "moderate"
     return "verbose"
-
-
 def _make_notes(turns: list[str], avg_len: float) -> str:
     """Short free-form observation (≤120 chars)."""
     if not turns:
         return "standard prose"
-    notes: list[str] = []
     text = " ".join(turns)
+    notes: list[str] = []
     if _punctuation_density(text) < 0.5:
         notes.append("skips punctuation")
     if _cap_rate(text) < 0.03:
@@ -203,28 +217,17 @@ def _make_notes(turns: list[str], avg_len: float) -> str:
         notes.append("standard prose")
     return ", ".join(notes)[:120]
 
-
 async def analyze_style(
     user_turns: list[str],
-    registry: "ServiceRegistry | None" = None,  # unused — kept for compat
     existing: str = "",
 ) -> str:
     """Score user communication style from ``user_turns``.
 
-    Args:
-        user_turns: Recent user turn strings (most recent last).
-        registry: Reserved for future use; currently ignored.
-            Kept in the signature so existing call sites continue
-            to work without modification.
-        existing: The current profile text (from
-            ``store.load_style``). Merged with the new scores.
-
-    Returns:
-        The serialized updated profile text. Returns
-        ``existing`` unchanged when there are fewer than
-        ``min_turns_to_learn`` turns.
+    Returns ``existing`` unchanged when there are fewer than
+    ``min_turns_to_learn`` turns. Otherwise merges the new
+    scores over the existing profile so the user's evolving
+    style grows incrementally.
     """
-    _ = registry  # reserved
     min_turns = int(_THRESH.get("min_turns_to_learn", 2) or 2)
     max_turns = int(_THRESH.get("max_turns_to_analyze", 20) or 20)
     if len(user_turns) < min_turns:

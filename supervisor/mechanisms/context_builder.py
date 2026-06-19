@@ -20,17 +20,43 @@ USAGE:
 """
 from __future__ import annotations
 
+import logging
 from typing import Final
 
 from supervisor.mechanisms.freshness import score_freshness
 from supervisor.mechanisms.namespace import classify_namespace
 
-__all__ = ["MAX_ENTRIES", "build_context"]
+__all__ = ["build_context", "load_max_entries"]
 
-# Hard cap on lines rendered into the prompt. Bounds prompt
-# growth across long sessions; the most recent MAX_ENTRIES
-# records (after sort) win.
-MAX_ENTRIES: Final[int] = 50
+log = logging.getLogger("goat2.supervisor.mechanisms.context_builder")
+
+# Hard default — used when memory.toml is missing or [working]
+# is absent. Operators tune the real value; this is the safety
+# net that keeps the mechanism functional in any environment.
+_DEFAULT_MAX_ENTRIES: Final[int] = 50
+
+
+def load_max_entries() -> int:
+    """Read ``max_prompt_entries`` from config/memory.toml [working].
+
+    Returns the configured cap on lines rendered into the
+    prompt, or ``_DEFAULT_MAX_ENTRIES`` when the file / section
+    is missing. Cached at import time.
+    """
+    try:
+        from config.modular_loader import load_memory_config
+        section = (load_memory_config() or {}).get("working", {}) or {}
+        raw = section.get("max_prompt_entries")
+        if raw is not None:
+            return int(raw)
+    except (TypeError, ValueError):
+        log.debug("context_builder: max_prompt_entries not int — using default")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("context_builder: max_prompt_entries load skipped: %s", exc)
+    return _DEFAULT_MAX_ENTRIES
+
+
+MAX_ENTRIES: Final[int] = load_max_entries()
 
 # Source-rank order — CONV is most trusted, DAG is least.
 # Used as the primary sort key.

@@ -7,7 +7,6 @@ import logging
 import sys
 
 from config.registry import ServiceRegistry
-from supervisor.session import store_turn
 from supervisor.supervisor import GoatSupervisor
 
 # Create ServiceRegistry first to get settings
@@ -66,7 +65,8 @@ async def chat_loop() -> None:
                 result = await sv.run(intent)
                 _print_result(result)
                 turn += 1
-                await store_turn(_registry.memory_manager, turn, intent, result.summary)
+                # Persistence is handled inside GoatSupervisor._dispatch
+                # via store_and_promote; no manual call needed here.
             except Exception as exc:
                 log.error("Run failed: %s", exc)
                 print(f"\n[error] {exc}")

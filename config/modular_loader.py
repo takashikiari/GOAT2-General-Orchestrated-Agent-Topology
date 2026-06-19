@@ -39,6 +39,7 @@ __all__ = [
     "load_dag_config",
     "load_behavioral_config",
     "load_tools_config",
+    "load_goat_config",
 ]
 
 _CONFIG_DIR: Path = Path(__file__).parent
@@ -86,3 +87,19 @@ def load_behavioral_config() -> dict[str, dict[str, Any]]:
 def load_tools_config() -> dict[str, dict[str, Any]]:
     """Return ``{hot_reload: {...}, shell: {...}, web_search: {...}}`` from ``tools.toml``."""
     return _load_raw("tools.toml")
+
+
+def load_goat_config() -> dict[str, dict[str, Any]]:
+    """Return the full ``goat.toml`` content as a nested dict.
+
+    Use this when a supervisor-layer module needs the unified
+    ``goat.toml`` sections (``[telegram]``, ``[channels]``,
+    ``[hints]``, ``[supervisor]``, …). Modules that only need a
+    dedicated sub-config (memory, dag, behavior, tools) should
+    call the matching ``load_<name>_config()`` instead — those
+    live in their own files for decoupling.
+
+    Public counterpart to the private ``_load_raw``; keep this
+    in sync if a new top-level section is added to ``goat.toml``.
+    """
+    return _load_raw("goat.toml")

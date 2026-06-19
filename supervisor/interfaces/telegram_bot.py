@@ -60,8 +60,8 @@ def _load_telegram_config() -> dict[str, int]:
         "turn_warn_seconds":    20,
     }
     try:
-        from config.modular_loader import _load_raw  # type: ignore
-        data = _load_raw("goat.toml") or {}
+        from config.modular_loader import load_goat_config
+        data = load_goat_config() or {}
         section = data.get("telegram", {}) or {}
         if isinstance(section, dict):
             for k in out:
@@ -222,8 +222,8 @@ def _env_token() -> str | None:
 def _config_token() -> str | None:
     """Read telegram_token from config/goat.toml [channels]."""
     try:
-        from config.modular_loader import _load_raw  # type: ignore
-        data = _load_raw("goat.toml") or {}
+        from config.modular_loader import load_goat_config
+        data = load_goat_config() or {}
         ch = (data.get("channels", {}) or {}).get("telegram_token")
         if isinstance(ch, str) and ch.strip():
             return ch.strip()

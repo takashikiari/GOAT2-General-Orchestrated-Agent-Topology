@@ -3,30 +3,18 @@
 Single flow: middleware (no LLM) → ONE LLM call
 (``pipeline.goat_call.goat_turn``) → dispatch.
 
-DAGs always run in the background — never blocks the kernel.
-Each call to ``run()`` appends one user message, drives the
-LLM call, persists the result, and returns a
-``SupervisorResult``.
-
 USAGE:
     from config.registry import ServiceRegistry
     from supervisor.supervisor import GoatSupervisor
+    result = await GoatSupervisor(ServiceRegistry()).run("Build a REST API")
 
-    registry = ServiceRegistry()
-    result = await GoatSupervisor(registry).run("Build a REST API")
-
-STRICT RULES FOLLOWED:
-  - All dependencies are passed in via the registry. No
-    singletons; no module-level state.
-  - All thresholds, defaults, and labels live in config files
-    (``goat.toml`` / ``memory.toml`` / ``dag.toml`` /
-    ``behavioral.toml`` / ``tools.toml``) — no hardcoded values.
-  - The LLM is called exactly ONCE per turn, in
-    ``pipeline.goat_call``.
+STRICT RULES:
+  - All dependencies via the registry. No singletons.
+  - All thresholds/defaults live in config files.
+  - The LLM is called exactly ONCE per turn, in pipeline.goat_call.
   - No regex anywhere in this module.
-  - DAG spawn is fire-and-forget; the supervisor returns
-    immediately when a DAG is requested and reads the result on
-    the next turn.
+  - DAG spawn is fire-and-forget; the supervisor returns immediately
+    and reads the DAG result on the next turn.
 """
 from __future__ import annotations
 
@@ -49,7 +37,19 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.supervisor")
 
-__all__ = ["GoatSupervisor"]
+__all__ = ["GoatSupervisor", "_TurnTimeoutError"]
+
+
+class _TurnTimeoutError(Exception):
+    """Raised when a turn exceeds ``supervisor.turn_timeout`` seconds.
+
+    Caught by ``GoatSupervisor.run`` and converted into a
+    clarify-style fallback reply — the kernel must always respond.
+    """
+
+    def __init__(self, timeout_s: int) -> None:
+        super().__init__(f"turn exceeded {timeout_s}s")
+        self.timeout_s = timeout_s
 
 
 class GoatSupervisor:
@@ -95,20 +95,12 @@ class GoatSupervisor:
 
         Steps (defensive — never raises):
           (1) ensure subsystems are booted;
-          (2) append user turn, render memory context;
-          (3) build middleware context (GoatContext + ClarityContext);
-          (4) sync the in-memory style cache with what
-              ``build_goat_context`` just loaded from Letta;
-          (5) invoke the ONE LLM call;
-          (6) dispatch, persist, return.
-
-        Args:
-            intent: The raw user intent for this turn.
-
-        Returns:
-            A ``SupervisorResult`` populated with summary,
-            session id, and metadata. Never raises — failures
-            degrade to a clarify result.
+          (2) gate on supervisor.max_turns;
+          (3) append user turn, render memory context;
+          (4) build middleware context (GoatContext + ClarityContext);
+          (5) sync the in-memory style cache from GoatContext;
+          (6) invoke the ONE LLM call (capped by supervisor.turn_timeout);
+          (7) dispatch, persist, return.
         """
         t0 = time.monotonic()
         log.info("GOAT — intent: %.120s", intent)
@@ -116,44 +108,43 @@ class GoatSupervisor:
             self._ensure_initialized()
             if self._history is None:
                 await self._bootstrap_session()
-            assert self._history is not None  # for type-checker
+            assert self._history is not None
+            settings = self.registry.settings.supervisor
+            max_turns = int(getattr(settings, "max_turns", 0) or 0)
+            if max_turns and len(self._history) >= max_turns:
+                log.warning("GoatSupervisor: max_turns=%d reached (history=%d) — refusing",
+                            max_turns, len(self._history))
+                return self._build_result(
+                    intent=intent, t0=t0,
+                    summary="Session turn limit reached. Start a new session to continue.",
+                    source="generated", session_id="",
+                )
             self._history.add_user(intent)
-            mem_ctx = await mem_turn(self.memory_manager, intent, self.registry)
+            mem_ctx = await mem_turn(self.memory_manager, intent)
             goat_ctx = await build_goat_context(self.registry, mem_ctx)
             history_text = "\n".join(
                 f"{m['role']}: {m['content']}" for m in self._history.messages
             )
             clarity_text = build_clarity_context(history_text, mem_ctx)
-
-            # Sync in-memory style cache from GoatContext (no second
-            # Letta read).
             self._sync_style_from_ctx(goat_ctx)
 
-            # Build the hint list (corrections + static hints).
             from supervisor.mechanisms.hints import build_hints
             hints = await build_hints(
                 self.memory_manager, intent, self.registry, limit=3,
             )
-
-            from supervisor.pipeline.goat_call import goat_turn
-            turn = await goat_turn(
-                registry=self.registry,
-                intent=intent,
-                goat_context=goat_ctx,
-                clarity_context=clarity_text,
-                hints=hints,
-                history_messages=self._history.messages,
-                mem_ctx=mem_ctx,
-                style=self._behavior_style,
-                turn=len(self._history.messages),
-                goat_session_id=self.session_id,
-                supervisor=self,
-            )
+            try:
+                turn = await self._invoke_turn(
+                    intent, goat_ctx, clarity_text, hints, mem_ctx,
+                )
+            except _TurnTimeoutError:
+                log.warning("GoatSupervisor: turn timeout — failing fast")
+                return self._build_result(
+                    intent=intent, t0=t0,
+                    summary="I took too long to respond. Please try a simpler request or start a new session.",
+                    source="generated", session_id="",
+                )
             depth = classify_intent(turn)
-            log.info(
-                "GOAT turn: action=%s → %s intent=%.80s",
-                turn.action, depth.value, intent,
-            )
+            log.info("GOAT turn: action=%s → %s intent=%.80s", turn.action, depth.value, intent)
             return await self._dispatch(intent, t0, turn)
         except Exception as exc:  # noqa: BLE001 — kernel must respond
             log.exception("GoatSupervisor.run: unhandled error: %s", exc)
@@ -168,6 +159,33 @@ class GoatSupervisor:
         self._initialized = True
         log.debug("GoatSupervisor: subsystems booted")
 
+    async def _invoke_turn(
+        self, intent: str, goat_ctx, clarity_text, hints, mem_ctx: str,
+    ) -> "GoatTurnResult":
+        """Invoke the single LLM call, optionally bounded by turn_timeout.
+
+        Raises:
+            _TurnTimeoutError: when asyncio.wait_for fires.
+        """
+        from supervisor.pipeline.goat_call import goat_turn
+        turn_timeout = int(
+            getattr(self.registry.settings.supervisor, "turn_timeout", 0) or 0
+        )
+        kwargs = dict(
+            registry=self.registry, intent=intent, goat_context=goat_ctx,
+            clarity_context=clarity_text, hints=hints,
+            history_messages=self._history.messages if self._history else [],
+            mem_ctx=mem_ctx, style=self._behavior_style,
+            turn=len(self._history.messages) if self._history else 0,
+            goat_session_id=self.session_id, supervisor=self,
+        )
+        if turn_timeout > 0:
+            try:
+                return await asyncio.wait_for(goat_turn(**kwargs), timeout=turn_timeout)
+            except asyncio.TimeoutError as exc:
+                raise _TurnTimeoutError(turn_timeout) from exc
+        return await goat_turn(**kwargs)
+
     async def _bootstrap_session(self) -> None:
         """Lazy session init — pull history + style from memory."""
         self._history = ConversationHistory()
@@ -179,17 +197,10 @@ class GoatSupervisor:
             self._behavior_style = ""
 
     def _sync_style_from_ctx(self, goat_ctx) -> None:
-        """Mirror ``GoatContext.behavior_profile`` into ``_behavior_style``.
-
-        No second Letta round-trip — the profile is already on the
-        GoatContext. Empty / unchanged → no-op.
-        """
+        """Mirror ``GoatContext.behavior_profile`` into ``_behavior_style``."""
         profile = getattr(goat_ctx, "behavior_profile", "") or ""
         if profile and profile != self._behavior_style:
-            log.debug(
-                "_sync_style_from_ctx: style refreshed (%d chars)",
-                len(profile),
-            )
+            log.debug("_sync_style_from_ctx: style refreshed (%d chars)", len(profile))
             self._behavior_style = profile
 
     async def _dispatch(
@@ -197,19 +208,18 @@ class GoatSupervisor:
     ) -> "SupervisorResult":
         """Persist the turn and return a populated SupervisorResult.
 
-        action = "dag"     → return a placeholder (DAG runs in bg).
+        action = "dag"     → placeholder (DAG runs in bg).
         action = "clarify" → return the LLM's clarification.
         action = "direct"  → return the LLM's reply.
         """
-        if turn.action == "dag":
+        action = turn.action
+        if action == "dag":
             summary = "DAG started. I'll surface results on the next turn."
             source = "generated"
             session_id = ""
-        elif turn.action == "clarify":
-            summary = (
-                turn.clarification or turn.response
-                or "Could you provide more details about what you'd like me to do?"
-            )
+        elif action == "clarify":
+            summary = (turn.clarification or turn.response
+                       or "Could you provide more details about what you'd like me to do?")
             source = "generated"
             session_id = ""
         else:
@@ -220,30 +230,21 @@ class GoatSupervisor:
         if self._history is not None:
             self._history.add_assistant(summary)
             from supervisor.session.turn_persistence import store_and_promote
-            await store_and_promote(
-                self, len(self._history.messages), intent, summary,
-            )
-        return self._build_result(intent, t0, summary, source, session_id)
+            await store_and_promote(self, len(self._history.messages), intent, summary)
+        return self._build_result(intent, t0, summary, source, session_id, action=action)
 
     def _build_result(
-        self,
-        intent: str,
-        t0: float,
-        summary: str,
-        source: str,
-        session_id: str,
+        self, intent: str, t0: float, summary: str, source: str, session_id: str,
+        action: str = "direct",
     ) -> "SupervisorResult":
         """Build a minimal SupervisorResult."""
-        from supervisor.types import Plan, SupervisorResult
+        from supervisor.types import SupervisorResult
         return SupervisorResult(
-            intent=intent,
-            plan=Plan(tasks=[]),
-            results={},
-            critique="",
-            summary=summary,
-            total_duration_s=time.monotonic() - t0,
+            intent=intent, summary=summary,
             session_id=session_id or self.session_id,
             sources={"conv": source},
+            duration_s=time.monotonic() - t0,
+            action=action,
         )
 
     def _empty_result(self, intent: str, t0: float, err: str) -> "SupervisorResult":

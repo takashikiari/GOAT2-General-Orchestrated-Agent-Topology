@@ -140,19 +140,15 @@ async def recall_context(
 async def mem_turn(
     mm: "MemoryManager | None",
     intent: str,
-    registry: "ServiceRegistry | None" = None,
 ) -> str:
     """Convenience: run ``recall_context`` for this turn.
 
     Args:
         mm: MemoryManager (or None).
         intent: Raw user intent.
-        registry: Optional ServiceRegistry. Reserved for future
-            use (e.g. profile-aware recall); currently ignored.
 
     Returns:
         The rendered memory-context block, or the UNAVAILABLE
         marker.
     """
-    _ = registry  # reserved
     return await recall_context(mm, intent, include_dag=False)

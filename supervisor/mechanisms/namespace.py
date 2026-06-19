@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["NamespaceLabel", "classify_namespace", "is_dag_key", "is_conversational_key"]
+__all__ = ["NamespaceLabel", "classify_namespace", "is_dag_key"]
 
 # Frozen label set. String-typed constants so they can flow
 # directly into system-prompt text without re-rendering.
@@ -64,10 +64,3 @@ def classify_namespace(key: object) -> str:
 def is_dag_key(key: object) -> bool:
     """True when ``key`` is a DAG-namespaced working-memory key."""
     return isinstance(key, str) and key.startswith(_PREFIX_DAG)
-
-
-def is_conversational_key(key: object) -> bool:
-    """True when ``key`` is a conversational / state prefix (turn/goat)."""
-    if not isinstance(key, str):
-        return False
-    return key.startswith(_PREFIX_TURN) or key.startswith(_PREFIX_GOAT)
