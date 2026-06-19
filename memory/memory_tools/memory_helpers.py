@@ -4,21 +4,27 @@ Extracts common logic used by memory_tools.py and
 memory_temporal_tools.py. GOAT supervisor uses GOAT_ROLE for full tier
 access; DAG agents use SESSION_ROLE and are restricted to the working
 tier. Provides role/tier constants, error/entry formatting, validation,
-the ToolDefinition factory, plus the Letta normaliser and timeout
-wrappers added when GOAT's read of long-term memory was fixed.
+and the ToolDefinition factory. Letta routing helpers (timeout
+wrappers, tier alias normalisation) live in
+``memory.temporal.letta_routing_helpers`` and are re-exported here so
+existing call sites keep working.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Final
 
 from config.roles import GOAT_ROLE, SESSION_ROLE
 from config.tiers import WORKING, EPISODIC, LONG_TERM, ANY
+from memory.temporal.letta_routing_helpers import (
+    LETA_CALL_TIMEOUT_S,
+    letta_list_safe,
+    letta_search_safe,
+    normalize_tier,
+)
 
 if TYPE_CHECKING:
     from agents.base_agent import ToolDefinition
-    from memory.shared.memory_manager import MemoryManager
 
 log = logging.getLogger("goat2.memory.tools")
 
@@ -92,22 +98,42 @@ def format_memory_error(operation: str, exc: Exception) -> str:
     return f"ERROR: {operation} failed: {exc}"
 
 
-def format_entries(entries: list, max_content_len: int = 200) -> str:
+def format_entries(entries: list, max_content_len: int = 200, now: float | None = None) -> str:
     """Format memory entries as a readable string.
+
+    Reads ``[temporal]`` config to decide whether to prepend a
+    relative-age label (``[Ns/Nm/Nh/Nd ago]``) to each line. When
+    ``show_relative_age = true`` (default), the actual formatter
+    lives in ``memory.temporal.temporal_format`` so the entry's
+    ``created_at_ts`` becomes visible to the LLM. When false, falls
+    back to the legacy ``[source] key: content`` format (no age).
 
     Args:
         entries: List of MemoryEntry objects.
         max_content_len: Maximum characters to show from content.
+        now: Reference time for age computation (epoch seconds). When
+            omitted, ``time.time()`` is sampled here so callers don't
+            need to thread the clock through.
 
     Returns:
-        Newline-separated string with format: "[{source}] {key}: {content}"
+        Newline-separated string. Format depends on the
+        ``[temporal].show_relative_age`` config flag.
 
     Example:
         >>> format_entries([MemoryEntry(source="file", key="test", content="hello")])
-        '[file] test: hello'
+        '[5s ago] [file] test: hello'   # when show_relative_age=true
     """
     if not entries:
         return ""
+    from time import time
+    from memory.temporal.temporal_format import format_entries_with_age, load_temporal_config
+    cfg = load_temporal_config()
+    if cfg.get("show_relative_age", True):
+        return format_entries_with_age(
+            entries, max_content_len=max_content_len,
+            now=now if now is not None else time(), cfg=cfg,
+        )
+    # Legacy fallback — preserved for the explicit opt-out.
     return "\n".join(
         f"[{e.source}] {e.key}: {e.content[:max_content_len]}"
         for e in entries
@@ -179,7 +205,7 @@ def make_tool(
 
     Args:
         name: Tool identifier.
-        description: Human-readable tool description.
+        description: Short human-readable description.
         parameters: JSON-Schema-style parameter definition.
         handler: Async or sync callable invoked by the supervisor.
 
@@ -196,65 +222,3 @@ def make_tool(
         parameters=parameters,
         handler=handler,
     )
-
-
-# ---------------------------------------------------------------------------
-# Letta routing helpers — GOAT can read long-term memory (PROBLEM fix)
-# ---------------------------------------------------------------------------
-#
-# Before this section, tool handlers (memory_search, memory_recent,
-# memory_direct_query, memory_count) accepted tier="letta" but then
-# passed the raw string to MemoryManager.search(memory_type=...),
-# which calls MemoryType(tier). MemoryType only knows "working" /
-# "episodic" / "long_term", so "letta" raised ValueError. The helpers
-# below normalise the tier name and wrap Letta calls in a 10 s ceiling.
-# ---------------------------------------------------------------------------
-
-
-LETA_CALL_TIMEOUT_S: float = 10.0
-"""Per-call ceiling for any Letta operation surfaced through a tool (seconds)."""
-
-
-def normalize_tier(tier: str) -> str:
-    """Translate user-facing tier aliases to internal MemoryType values.
-
-    Mapping:
-        "letta" -> "long_term"   (Letta IS the long_term backend)
-        "all"   -> "any"         (fan-out trigger in MemoryManager.search)
-        anything else (working / episodic / long_term / any) -> unchanged
-    """
-    if tier == "letta":
-        return "long_term"
-    if tier == "all":
-        return "any"
-    return tier
-
-
-async def letta_search_safe(mm: "MemoryManager", query: str, limit: int) -> list:
-    """Search Letta with a hard 10 s ceiling. Never raises."""
-    try:
-        return await asyncio.wait_for(
-            mm.long_term.search(GOAT_ROLE, query, limit=limit),
-            timeout=LETA_CALL_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        log.warning("memory_helpers: letta search timed out after %.1fs", LETA_CALL_TIMEOUT_S)
-        return []
-    except Exception as exc:  # noqa: BLE001 — tool wrapper must never raise
-        log.warning("memory_helpers: letta search failed: %s", exc)
-        return []
-
-
-async def letta_list_safe(mm: "MemoryManager", limit: int) -> list:
-    """List Letta entries with a hard 10 s ceiling. Never raises."""
-    try:
-        return await asyncio.wait_for(
-            mm.long_term.list(GOAT_ROLE, limit=limit),
-            timeout=LETA_CALL_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        log.warning("memory_helpers: letta list timed out after %.1fs", LETA_CALL_TIMEOUT_S)
-        return []
-    except Exception as exc:  # noqa: BLE001
-        log.warning("memory_helpers: letta list failed: %s", exc)
-        return []

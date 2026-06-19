@@ -42,3 +42,17 @@ socket_timeout   = 5.0                           # env: REDIS_SOCKET_TIMEOUT ove
 fresh_max_seconds   = 300    # <5 min   → [FRESH]
 recent_max_seconds  = 3600   # <60 min  → [RECENT]; > → [OLD]
 dag_max_age_seconds = 600    # DAG entries older than this are excluded unless intent asks for them
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [temporal] — format_entries relative-age labels (BUG-003 fix)
+#
+# Read by `memory.temporal.temporal_format`. Controls whether and how
+# memory entries are labelled with relative age (`[Ns/Nm/Nh/Nd ago]`) in
+# the prompt blocks the LLM sees. Missing entries → `[unknown age]`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[temporal]
+show_relative_age    = true   # when false, format_entries falls back to legacy `[source] key: content` (no age)
+fresh_threshold_s    = 60     # < N seconds → `[Ns ago]`
+recent_threshold_s   = 3600   # < N seconds → `[Nm ago]`; < day → `[Nh ago]`
+day_threshold_s      = 86400  # < N seconds → `[Nh ago]`; else → `[Nd ago]`
