@@ -63,7 +63,7 @@ def test_learn_and_persist_loads_existing_style_before_analyze():
         "supervisor.behavior.store.load_style",
         AsyncMock(return_value=existing_text),
     ), patch(
-        "supervisor.behavior.analyzer.analyze_style",
+        "supervisor.behavior.style_learner.analyze_style",
         AsyncMock(return_value="formality: casual\ntone: friendly\nlength: terse"),
     ) as analyze_mock, patch(
         "supervisor.behavior.store.save_style",
@@ -93,7 +93,7 @@ def test_learn_and_persist_skips_when_no_intent_entries():
     supervisor.memory_manager = mm
 
     with patch(
-        "supervisor.behavior.analyzer.analyze_style",
+        "supervisor.behavior.style_learner.analyze_style",
         AsyncMock(return_value=""),
     ) as analyze_mock:
         result = asyncio.run(_learn_and_persist(supervisor, mm))
@@ -144,7 +144,7 @@ def test_learn_and_persist_reads_only_intent_keys():
         "supervisor.behavior.store.load_style",
         AsyncMock(return_value=""),
     ), patch(
-        "supervisor.behavior.analyzer.analyze_style",
+        "supervisor.behavior.style_learner.analyze_style",
         AsyncMock(return_value="length: terse"),
     ) as analyze_mock, patch(
         "supervisor.behavior.store.save_style",

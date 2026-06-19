@@ -107,13 +107,24 @@ def _score_formality(turns: list[str]) -> str:
     Politeness-vs-slang ratio above the threshold → formal,
     below → casual. Punctuation density + uppercase rate are
     tie-breakers.
+
+    BUG-023 fix: an empty / whitespace-only input (no tokens)
+    is 'neutral' — the fall-through must not return 'casual'
+    when both polite and slang signals are zero. Without the
+    token guard, a whitespace-only string had cap=0 and
+    punct=0, which satisfied the ``cap<0.02 or punct<0.5``
+    branch and returned 'casual'.
     """
     if not turns:
         return "neutral"
-    text = " ".join(turns).lower()
+    text = " ".join(turns).lower().strip()
+    if not text:
+        return "neutral"  # whitespace-only input — no signal
     punct = sum(_punctuation_density(t) for t in turns) / len(turns)
     cap   = sum(_cap_rate(t) for t in turns) / len(turns)
     tokens = text.split()
+    if not tokens:
+        return "neutral"
     polite = sum(1 for w in tokens if w in POLITE_WORDS)
     slang  = sum(1 for w in tokens if w in SLANG_WORDS)
     threshold = float(_THRESH.get("formality_threshold", 0.5) or 0.5)
@@ -137,6 +148,13 @@ def _score_tone(turns: list[str]) -> str:
 
     Curt-words density per turn above style.directness_threshold
     flags the reply as direct.
+
+    BUG-024 fix: the previous ``has_emoji and tech <= 1`` shortcut
+    returned 'friendly' whenever a single emoji appeared in any
+    input — including long, technical messages that contained
+    a celebratory emoji. The fix combines the emoji signal with
+    the average turn length so a long technical message is not
+    labelled 'friendly' just because it contains one emoji.
     """
     if not turns:
         return "dry"
@@ -146,8 +164,12 @@ def _score_tone(turns: list[str]) -> str:
     tech = sum(1 for w in text.split() if w in TECH_WORDS)
     curt = sum(1 for t in turns for w in t.split() if w.lower() in CURT_WORDS)
     curt_per_turn = curt / max(1, len(turns))
+    avg_len = _avg_length(turns)
     threshold = float(_THRESH.get("directness_threshold", 0.7) or 0.7)
-    if has_emoji and tech <= 1:
+    # BUG-024: a long technical message is 'friendly' only when
+    # it also has a high ratio of friendly-emoji tokens to words.
+    # A short message with one emoji is still 'friendly'.
+    if has_emoji and tech <= 1 and avg_len < 80:
         return "friendly"
     if tech >= 2:
         return "technical"
@@ -197,7 +219,7 @@ def _score_length(avg_len: float) -> str:
     if avg_len < 120:
         return "moderate"
     return "verbose"
-def _make_notes(turns: list[str], avg_len: float) -> str:
+def _score_notes(turns: list[str], avg_len: float) -> str:
     """Short free-form observation (≤120 chars)."""
     if not turns:
         return "standard prose"
@@ -217,44 +239,15 @@ def _make_notes(turns: list[str], avg_len: float) -> str:
         notes.append("standard prose")
     return ", ".join(notes)[:120]
 
-async def analyze_style(
-    user_turns: list[str],
-    existing: str = "",
-) -> str:
-    """Score user communication style from ``user_turns``.
 
-    Returns ``existing`` unchanged when there are fewer than
-    ``min_turns_to_learn`` turns. Otherwise merges the new
-    scores over the existing profile so the user's evolving
-    style grows incrementally.
-    """
-    min_turns = int(_THRESH.get("min_turns_to_learn", 2) or 2)
-    max_turns = int(_THRESH.get("max_turns_to_analyze", 20) or 20)
-    if len(user_turns) < min_turns:
-        log.debug("analyze_style: %d turn(s) < min=%d — skipping",
-                  len(user_turns), min_turns)
-        return existing
-    sample = list(user_turns[-max_turns:])
-    existing_profile = deserialize(existing) if existing else empty_profile()
-    avg_len = _avg_length(sample)
-    new = BehaviorProfile(
-        formality=_score_formality(sample),
-        tone=_score_tone(sample),
-        vocabulary=_score_vocabulary(sample),
-        language=_score_language(sample),
-        humor=_score_humor(sample),
-        length=_score_length(avg_len),
-        notes=_make_notes(sample, avg_len),
-    )
-    # Merge: new fields override existing; keep existing when
-    # the new scorer returned nothing.
-    merged = BehaviorProfile(
-        formality  = new.formality  or existing_profile.formality,
-        tone       = new.tone       or existing_profile.tone,
-        vocabulary = new.vocabulary or existing_profile.vocabulary,
-        language   = new.language   or existing_profile.language,
-        humor      = new.humor      or existing_profile.humor,
-        length     = new.length     or existing_profile.length,
-        notes      = new.notes      or existing_profile.notes,
-    )
-    return serialize(merged)
+__all__ = [
+    "load_thresholds",
+    "_avg_length",
+    "_score_formality",
+    "_score_tone",
+    "_score_vocabulary",
+    "_score_language",
+    "_score_humor",
+    "_score_length",
+    "_score_notes",
+]

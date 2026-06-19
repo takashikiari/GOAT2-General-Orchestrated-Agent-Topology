@@ -143,7 +143,7 @@ async def _learn_and_persist(supervisor: "GoatSupervisor", mm) -> bool:
         the analyzer returns empty text.
     """
     try:
-        from supervisor.behavior.analyzer import analyze_style
+        from supervisor.behavior.style_learner import analyze_style
         from supervisor.behavior.store import load_style, save_style
         existing = await load_style(mm) or ""
         entries = await mm.working.list(SESSION_ROLE, limit=_INTENT_WINDOW)
