@@ -171,10 +171,14 @@ async def goat_turn(
     ]
 
     # Append prior conversation (deduped). The current user turn is
-    # already in user_prompt; the last 2 messages are skipped to
-    # avoid double-feeding them.
+    # already in user_prompt, so we exclude only that one message
+    # from the history slice. The most recent assistant message
+    # stays in the slice — the dedup pass needs it to detect a
+    # tight loop on the last reply. (BUG-008: the previous
+    # implementation sliced [:-2], which dropped the prior
+    # assistant message and weakened the loop-detection gate.)
     from supervisor.mechanisms.antirepeat import dedup_history
-    cleaned = dedup_history(list(history_messages or [])[:-2])
+    cleaned = dedup_history(list(history_messages or [])[:-1])
     for m in cleaned:
         if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
             messages.append({"role": m["role"], "content": m.get("content", "")})
