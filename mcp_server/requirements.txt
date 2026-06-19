@@ -1,0 +1,19 @@
+# MCP server runtime dependencies.
+#
+# The MCP SDK (`mcp`) is the only new requirement for the
+# GOAT 2.0 MCP diagnostic server. Every other dependency
+# (Redis, ChromaDB, Letta, etc.) is already in the project's
+# top-level requirements.txt — this server reuses them in
+# read-only mode.
+#
+# Install with:
+#     pip install -r mcp_server/requirements.txt
+#
+# Or, if you use uv:
+#     uv pip install -r mcp_server/requirements.txt
+#
+# Pin a recent 1.x release. The server uses:
+#   - mcp.server.Server
+#   - mcp.server.stdio.stdio_server
+#   - mcp.types.Tool
+mcp>=1.0,<2.0

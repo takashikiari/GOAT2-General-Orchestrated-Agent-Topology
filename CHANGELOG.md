@@ -5,6 +5,99 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-18 — mcp_server: read-only diagnostic layer for Claude Code
+
+A new ``mcp_server/`` package exposes a small set of MCP
+tools that let Claude Code (or any MCP client) inspect
+GOAT 2.0's state mid-conversation. Useful while testing
+GOAT conversationally through the Telegram bot.
+
+The server is read-only by design: it never writes to
+Redis, ChromaDB, Letta, or the filesystem. It can run
+alongside ``telegram_bot.py`` without conflicts.
+
+### Added
+- ``mcp_server/server.py`` (127 lines) — MCP server with
+  stdio transport. Entry point: ``python -m mcp_server.server``.
+  Registers the six diagnostic tools and dispatches incoming
+  JSON-RPC requests to the registered tool handlers.
+- ``mcp_server/_registry.py`` (67 lines) — lazy
+  ``ServiceRegistry`` accessor with a thread-safe one-time
+  initialization. The registry is built on first tool call,
+  so the server starts even when the memory stack is down.
+- ``mcp_server/__init__.py``, ``__main__.py``, ``tools/__init__.py``
+  — package facades and a ``python -m mcp_server`` alias.
+- ``mcp_server/tools/query_logs.py`` (198 lines) —
+  ``get_recent_logs(minutes, level)`` and
+  ``get_errors(minutes)``. Reads ``logs/goat2.log`` with
+  the ``logging`` stdlib format, applies a time window
+  + level filter, caps output at 1000 lines.
+- ``mcp_server/tools/query_memory.py`` (216 lines) —
+  ``get_memory_snapshot()`` (per-tier counts + last-write
+  timestamps + health) and ``get_recent_entries(tier, limit)``
+  (recent entries with freshness labels via
+  ``supervisor.mechanisms.freshness.score_freshness``).
+- ``mcp_server/tools/query_config.py`` (105 lines) —
+  ``get_all_config()`` reads all five toml files
+  (``goat.toml``, ``memory.toml``, ``dag.toml``,
+  ``behavioral.toml``, ``tools.toml``) and merges them
+  into one dict organized by file. Errors are captured
+  per-file so a broken toml doesn't kill the whole tool.
+- ``mcp_server/tools/diagnose_turn.py`` (253 lines) —
+  ``diagnose_last_turn()`` reconstructs the exact context
+  GOAT sent to the LLM on the most recent turn. Returns
+  the GOAT_SYSTEM prompt, the rendered working-memory
+  block, per-entry classification (included vs excluded
+  with reason), freshness + namespace counts, the
+  cross-tier recall context, and the LLM's response.
+
+  **Reuses GOAT's own functions** so the diagnosis matches
+  reality exactly:
+    - ``supervisor.mechanisms.freshness.score_freshness``
+    - ``supervisor.mechanisms.namespace.classify_namespace``
+    - ``supervisor.mechanisms.staleness.is_stale``
+    - ``supervisor.session.mem_inject.working_memory_block``
+    - ``supervisor.session.mem_inject.recall_context``
+    - ``supervisor.identity.GOAT_SYSTEM``
+- ``mcp_server/requirements.txt`` — pins ``mcp>=1.0,<2.0``.
+- ``mcp_server/README.md`` — setup instructions including
+  the exact JSON to drop into Claude Code's MCP config
+  (``~/.config/claude/mcp.json`` on Linux).
+
+### Verified
+- ``python3 -m mcp_server.server --help`` → usage shown
+  (program name, description, --verbose flag)
+- ``python3 -c "from mcp_server.tools.query_logs import get_recent_logs; print('ok')"`` → ok
+- ``python3 -c "from mcp_server.tools.query_memory import get_memory_snapshot; print('ok')"`` → ok
+- ``python3 -c "from mcp_server.tools.diagnose_turn import diagnose_last_turn; print('ok')"`` → ok
+- 7 behavioral assertions on ``query_logs``
+  (level matching, timestamp parsing, real log file read,
+  error filter, unknown-level handling, zero minutes,
+  line cap with omitted-marker).
+- 4 behavioral assertions on ``query_config``
+  (5 toml files + _meta, expected sections, _meta.files
+  report, all 5 files loadable).
+- 4 behavioral assertions on ``query_memory`` /
+  ``diagnose_turn`` (invalid tier → [], snapshot schema,
+  diagnose schema, GOAT_SYSTEM string populated).
+- ``tests/test_memory_validation.py`` — 17 passed, no regressions.
+
+### Strict rules met
+- READ-ONLY. Every memory method called is a pure read
+  (``list``, ``search``, ``count``, ``health``, ``recall``,
+  ``keys``, ``get``, ``read_last_write``, ``tomllib.load``).
+  No ``store``, ``delete``, ``clear``, ``flush``, or
+  ``set_block`` is ever invoked.
+- No singletons. The ``ServiceRegistry`` is lazily
+  constructed and cached per-process, but the
+  ``mcp_server`` module itself holds no module-level state.
+- Full docstrings on every public function.
+- All files ≤ 260 lines (largest: ``diagnose_turn.py`` at 253).
+- ``diagnose_turn`` reuses the same supervisor functions
+  GOAT itself uses, so the diagnosis matches reality.
+
+---
+
 ## [Unreleased] — 2026-06-18 — utils.logging/ created, supervisor.logging/ dead links removed
 
 The `supervisor/` rewrite dropped the `supervisor/logging/`
