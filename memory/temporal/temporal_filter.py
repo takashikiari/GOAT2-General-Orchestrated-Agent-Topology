@@ -19,16 +19,33 @@ def filter_by_time(
 ) -> list[MemoryEntry]:
     """Post-filter entries by created_at_ts epoch.
 
-    Entries where created_at_ts is 0 or absent are excluded when any filter is active
-    — never invent or assume timestamps for legacy/migrated records.
+    BUG-014 unified policy: entries with missing or unparseable
+    timestamps are NOT silently dropped — they survive the filter
+    so the downstream formatter (``temporal_format``) can label
+    them ``[unknown age]``. The user sees the entry, just clearly
+    marked as "age unknown".
+
+    Entries with a parseable timestamp that falls outside the
+    requested range are still excluded — that part of the policy
+    is unchanged.
     """
     if start_ts is None and end_ts is None:
         return entries
     result: list[MemoryEntry] = []
     for e in entries:
-        ts = float(e.metadata.get("created_at_ts") or 0)
-        if ts == 0.0:
-            continue  # unknown timestamp: exclude rather than guess
+        raw_ts = e.metadata.get("created_at_ts")
+        try:
+            ts = float(raw_ts)
+        except (TypeError, ValueError):
+            # Unparseable — keep the entry so the formatter can
+            # render it with [unknown age]; the user can still
+            # decide what to do with it.
+            result.append(e)
+            continue
+        if ts <= 0.0:
+            # Missing timestamp — same policy: keep + label.
+            result.append(e)
+            continue
         if start_ts is not None and ts < start_ts:
             continue
         if end_ts is not None and ts > end_ts:
