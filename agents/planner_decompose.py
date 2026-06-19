@@ -4,6 +4,20 @@ REGISTRY INJECTION (PHASE 4):
 =============================
 decompose_plan() now requires `registry` parameter.
 Uses registry.settings.supervisor.model for planner LLM calls.
+
+BUG-020 + BUG-021 + BUG-022 fixes:
+  - BUG-022: PLANNER_SYSTEM is referenced in exactly one place via
+    the build_planner_request_body helper. Both ``decompose_plan``
+    and ``_run_planner`` route through this helper, so a change
+    to the system prompt can never drift between the two.
+  - BUG-021: the user content wraps ``intent`` inside explicit
+    delimiters (``<<<INTENT>>>...<<<END_INTENT>>>``) so multi-line
+    intents or intents with JSON-like braces cannot break the
+    prompt structure.
+  - BUG-020: plan validation errors are logged at WARNING (not
+    DEBUG) so the operator sees that the LLM produced a plan that
+    didn't pass validation. The fallback path remains in place so
+    the supervisor still has a plan to execute.
 """
 from __future__ import annotations
 
@@ -44,6 +58,58 @@ PLANNER_SYSTEM: Final[str] = (
     "  - tool_caller role handles file operations AND memory queries\n"
 )
 
+# Maximum characters for the user-content intent block. Tunable
+# via config/agents.toml [planner] in a follow-up; 4_000 keeps
+# the prompt budget bounded.
+_MAX_INTENT_CHARS: Final[int] = 4_000
+
+# Explicit delimiters wrapping the intent block. The LLM sees
+# this boundary and treats the content inside as opaque user text
+# — not as prompt structure or JSON.
+_INTENT_OPEN:  Final[str] = "<<<INTENT>>>"
+_INTENT_CLOSE: Final[str] = "<<<END_INTENT>>>"
+
+
+def build_planner_request_body(
+    intent: str,
+    context_text: str = "",
+) -> list[dict[str, str]]:
+    """Compose the canonical [system, user] messages for the planner.
+
+    BUG-022 fix: the single source of truth for the planner prompt
+    structure. Both ``decompose_plan`` and ``_run_planner`` route
+    through this helper so the system prompt and intent wrapping
+    can never drift between the two call sites.
+
+    BUG-021 fix: ``intent`` is wrapped inside explicit delimiters so
+    newlines, JSON braces, or other special characters in the
+    intent text cannot be confused with prompt structure by the
+    LLM.
+
+    Args:
+        intent: Raw user intent (truncated to ``_MAX_INTENT_CHARS``).
+        context_text: Optional prior-task output to thread into
+            the user content. Empty string omits the section.
+
+    Returns:
+        A list of two message dicts: ``[system, user]``.
+    """
+    safe_intent = (intent or "")[:_MAX_INTENT_CHARS]
+    user_parts: list[str] = []
+    user_parts.append("Decompose this intent into tasks:")
+    user_parts.append("")
+    user_parts.append(_INTENT_OPEN)
+    user_parts.append(safe_intent)
+    user_parts.append(_INTENT_CLOSE)
+    if context_text and context_text.strip():
+        user_parts.append("")
+        user_parts.append("Prior task context:")
+        user_parts.append(context_text.strip())
+    return [
+        {"role": "system", "content": PLANNER_SYSTEM},
+        {"role": "user",   "content": "\n".join(user_parts)},
+    ]
+
 
 def _fallback_plan(intent: str) -> Plan:
     """Return a minimal safe fallback plan when validation fails."""
@@ -70,9 +136,14 @@ async def decompose_plan(
 ) -> Plan:
     """Call the supervisor model to decompose intent into an AgentTask DAG.
 
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.supervisor.model.
+    BUG-022 fix: routes through ``build_planner_request_body`` so the
+    system prompt + intent wrapping are identical to the call site
+    used by ``_run_planner``.
+
+    BUG-020 fix: when ``validate_plan`` rejects the LLM output, the
+    validation errors are logged at WARNING (not DEBUG) so the
+    operator sees them; the fallback plan is still returned so the
+    supervisor has something to execute.
 
     Args:
         intent: Technical prompt (from DagPrompt) or raw plan context.
@@ -83,18 +154,15 @@ async def decompose_plan(
     _settings = registry.settings
     spec = _settings.supervisor.model
     log.debug("decompose_plan: spec=%s agents_hint=%s", spec, required_agents)
-    user_content = f"Decompose this intent into tasks:\n\n{intent}"
+    user_body = build_planner_request_body(intent=intent)
     if required_agents:
-        user_content += (
-            f"\n\nSuggested agents (guidance only — not a hard constraint): "
-            f"{', '.join(required_agents)}"
+        user_body[1]["content"] += (
+            "\n\nSuggested agents (guidance only — not a hard constraint): "
+            + ", ".join(required_agents)
         )
     raw = await _call_llm(
         spec,
-        [
-            {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user",   "content": user_content},
-        ],
+        user_body,
         json_mode=(spec.provider == Provider.OPENAI),
         temperature=_settings.get_agent_temperature("planner", default=0.2),
     )
@@ -108,7 +176,10 @@ async def decompose_plan(
             for t in data["tasks"]
         ]
     except (KeyError, TypeError, ValueError) as exc:
-        log.warning("Planner output malformed (%s) — using fallback plan", exc)
+        log.warning(
+            "decompose_plan: malformed LLM output (%s) — using fallback plan",
+            exc,
+        )
         return _fallback_plan(intent)
 
     # Force final summarizer to depend on all other tasks
@@ -125,14 +196,18 @@ async def decompose_plan(
     from supervisor.pipeline.plan_validator import validate_plan  # noqa: PLC0415
     is_valid, errors, warnings = validate_plan(plan)
 
+    # BUG-020 fix: log validation diagnostics at WARNING (operator-
+    # visible) instead of silently choosing the fallback.
     if warnings:
         for w in warnings:
-            log.warning("Plan warning: %s", w)
-
+            log.warning("decompose_plan: plan warning: %s", w)
     if not is_valid:
         for err in errors:
-            log.error("Plan validation failed: %s", err)
-        log.warning("Validation errors — returning fallback plan")
+            log.warning(
+                "decompose_plan: plan validation failed: %s — falling back",
+                err,
+            )
+        log.warning("decompose_plan: returning fallback plan (LLM output rejected)")
         return _fallback_plan(intent)
 
     log.debug("decompose_plan: plan validated tasks=%d", len(plan.tasks))
@@ -146,21 +221,19 @@ async def _run_planner(
 ) -> str:
     """Built-in planner runner — registered for completeness; supervisor uses decompose_plan directly.
 
-    REGISTRY INJECTION (PHASE 4):
-    =============================
-    Requires registry parameter. Uses registry.settings.agents.get("planner").
+    BUG-022 fix: routes through ``build_planner_request_body`` so
+    the system prompt + intent wrapping are identical to those
+    used by ``decompose_plan``.
     """
     _settings = registry.settings
     task.source = "generated"
     spec    = _settings.agents.get("planner")
     context = _format_dep_context(dep_results)
     log.debug("_run_planner: task_id=%s spec=%s", task.id, spec)
+    body = build_planner_request_body(intent=task.prompt, context_text=context)
     return await _call_llm(
         spec,
-        [
-            {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user",   "content": f"{context}\n\nIntent: {task.prompt}".strip()},
-        ],
+        body,
         json_mode=True,
         temperature=_settings.get_agent_temperature("planner", default=0.2),
     )
