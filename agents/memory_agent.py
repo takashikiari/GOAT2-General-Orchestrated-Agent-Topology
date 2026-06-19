@@ -82,9 +82,16 @@ async def run_memory(
     """Module-level runner — instantiates MemoryAgent from the registry and runs it.
 
     Thin convenience alias; mirrors ``agents.researcher.run_researcher``.
+
+    BUG-025 fix: the source tag is set to ``"memory"`` (was
+    ``"generated"``) so downstream consumers — audit logs, MCP
+    diagnose_turn — can tell that the output came from the
+    memory role. The runner explicitly queries the 'memory'
+    spec key (not the tool_caller default) so the configured
+    model is honoured.
     """
     agent = MemoryAgent(spec=registry.settings.agents.get("memory"))
     log.debug("run_memory: task_id=%s spec=%s tools=%s", task.id, agent.spec, agent.tool_names)
     output = await agent.execute(task, context)
-    task.source = "generated"
+    task.source = "memory"
     return output
