@@ -9,6 +9,19 @@ MCP client) spawns it as a subprocess and communicates over
 stdin/stdout. The server exposes six diagnostic tools
 spread across the four ``tools/`` modules.
 
+WHY FastMCP (not the low-level ``mcp.server.Server``):
+    The four tool modules register handlers via the
+    ``@server.tool(...)`` decorator pattern. That decorator
+    lives on ``mcp.server.fastmcp.FastMCP`` — the
+    high-level, ergonomic wrapper. The low-level
+    ``mcp.server.Server`` class has no ``.tool`` attribute;
+    using it would silently drop every tool registration
+    with ``AttributeError: 'Server' object has no attribute
+    'tool'`` at startup. FastMCP also owns the transport
+    plumbing (``server.run(transport='stdio')`` is
+    one line), so we don't need a manual ``stdio_server``
+    context manager.
+
 LAYER NOTES:
     The server is intentionally read-only. It never writes
     to Redis, ChromaDB, Letta, or files. It can run safely
@@ -27,29 +40,23 @@ REGISTRY POLICY:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
-import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.fastmcp import FastMCP
 
 log = logging.getLogger("goat2.mcp_server")
 
-__all__ = ["build_server", "main", "run"]
+__all__ = ["build_server", "get_server", "main", "run", "server"]
 
 
-def build_server() -> Server:
-    """Construct and configure the MCP ``Server`` instance.
+def _register_all_tools(server: FastMCP) -> None:
+    """Wire every diagnostic tool module onto ``server``.
 
-    Imports the four tool modules here (not at module level)
-    so an import failure in one tool doesn't prevent the
-    others from registering. Each ``register(server)`` call
-    is idempotent — multiple invocations are safe.
+    Imports the tool modules here (not at module level) so
+    an import failure in one tool doesn't prevent the others
+    from registering. Each ``register(server)`` call is
+    idempotent — multiple invocations are safe.
     """
-    server: Server = Server("goat2-debug")
-
-    # Import the tool modules and register them.
     from mcp_server.tools import (
         diagnose_turn,
         query_config,
@@ -62,43 +69,85 @@ def build_server() -> Server:
             log.debug("mcp_server: registered tools from %s", module.__name__)
         except Exception as exc:  # noqa: BLE001 — don't fail the whole server
             log.warning("mcp_server: %s.register failed: %s", module.__name__, exc)
+
+
+# Process-wide server instance. Constructed lazily on first
+# access so ``import mcp_server.server`` doesn't drag in the
+# tool modules (and the GOAT memory stack) until something
+# actually needs the server. FastMCP's internal tool list is
+# shared with the instance, so this is also the only one
+# ``FastMCP`` we'll ever construct in this process — callers
+# that need the configured server should use ``get_server()``.
+_server: FastMCP | None = None
+
+
+def build_server() -> FastMCP:
+    """Construct a fresh FastMCP and register all tools on it.
+
+    Returns:
+        A new ``FastMCP`` named ``"goat2-debug"`` with all
+        six diagnostic tools registered. Independent from
+        the module-level cached instance returned by
+        ``get_server()`` — use this when you need an isolated
+        server (e.g. for tests that want a clean tool list).
+    """
+    server: FastMCP = FastMCP("goat2-debug")
+    _register_all_tools(server)
     return server
 
 
-def _configure_logging() -> None:
+def get_server() -> FastMCP:
+    """Return the process-wide FastMCP, constructing it lazily.
+
+    The first call constructs a ``FastMCP`` and registers
+    the six tools. Subsequent calls return the same
+    instance so we never double-register. This is the
+    instance the MCP SDK talks to when ``run()`` is called.
+    """
+    global _server
+    if _server is None:
+        _server = build_server()
+    return _server
+
+
+# Convenience: ``from mcp_server.server import server``.
+# Resolved lazily via a module-level ``__getattr__`` so
+# importing this module does NOT eagerly build the server.
+def __getattr__(name: str):
+    if name == "server":
+        return get_server()
+    raise AttributeError(f"module 'mcp_server.server' has no attribute {name!r}")
+
+
+def _configure_logging(verbose: bool = False) -> None:
     """Configure root logging once at process start.
 
     Logs go to stderr so they don't pollute the stdio MCP
-    channel. The level is INFO by default; pass ``--verbose``
-    on the command line to bump to DEBUG.
+    channel. The level is INFO by default; pass ``verbose=True``
+    to bump to DEBUG.
     """
-    level = logging.INFO
-    if "--verbose" in sys.argv:
-        level = logging.DEBUG
+    import sys as _sys
+    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
+        stream=_sys.stderr,
     )
 
 
-async def run() -> None:
-    """Run the MCP server over stdio. Blocks until EOF.
+def run() -> None:
+    """Build the server and start it on stdio. Blocks until EOF.
+
+    FastMCP's ``.run()`` owns the entire transport lifecycle:
+    it sets up the asyncio streams, runs the event loop,
+    and tears everything down on EOF / SIGINT. There is no
+    async context to manage from the caller side.
 
     This is the entry point used by ``python -m mcp_server.server``.
-    The ``stdio_server`` context manager owns the asyncio
-    streams; ``server.run(read_stream, write_stream, ...)``
-    dispatches incoming JSON-RPC requests to the registered
-    tool handlers.
     """
-    server = build_server()
+    server = get_server()
     log.info("mcp_server: starting stdio server (tools registered)")
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    server.run(transport="stdio")
 
 
 def main() -> None:
@@ -117,11 +166,8 @@ def main() -> None:
         help="Enable DEBUG-level logging to stderr.",
     )
     args = parser.parse_args()
-    if args.verbose:
-        _configure_logging()
-    else:
-        _configure_logging()
-    asyncio.run(run())
+    _configure_logging(verbose=args.verbose)
+    run()
 
 
 if __name__ == "__main__":

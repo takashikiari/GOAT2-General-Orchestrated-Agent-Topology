@@ -5,6 +5,65 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-06-19 — mcp_server: switch from low-level Server to FastMCP
+
+The four tool modules register handlers via the
+``@server.tool(...)`` decorator pattern. That decorator
+lives on ``mcp.server.fastmcp.FastMCP`` — the high-level
+ergonomic wrapper. The previous ``server.py`` was
+constructing a low-level ``mcp.server.Server`` instead,
+which has no ``.tool`` attribute, so every tool
+registration failed silently at startup with:
+
+    mcp_server: mcp_server.tools.query_logs.register
+                failed: 'Server' object has no attribute 'tool'
+    mcp_server: mcp_server.tools.query_memory.register
+                failed: 'Server' object has no attribute 'tool'
+    mcp_server: mcp_server.tools.query_config.register
+                failed: 'Server' object has no attribute 'tool'
+    mcp_server: mcp_server.tools.diagnose_turn.register
+                failed: 'Server' object has no attribute 'tool'
+
+That left the server with zero tools, so every MCP request
+would have returned "method not found". The fix:
+
+### Changed
+- `mcp_server/server.py` —
+  - `from mcp.server import Server` →
+    `from mcp.server.fastmcp import FastMCP`
+  - `server: Server = Server("goat2-debug")` →
+    `server: FastMCP = FastMCP("goat2-debug")`
+  - `run()` simplified: removed the manual
+    `stdio_server()` context-manager wrapping. FastMCP's
+    `.run(transport="stdio")` owns the entire transport
+    lifecycle (setup, run, teardown) in one call.
+  - Removed `from mcp.server.stdio import stdio_server` —
+    no longer used.
+  - Added `get_server()` accessor for the process-wide
+    cached instance (lazy construction, single registration).
+    `build_server()` remains for tests that need an isolated
+    instance.
+  - Module-level `server` attribute resolvable via
+    `__getattr__` so `from mcp_server.server import server`
+    works without eagerly building the server at import time.
+
+### Verified
+- `python3 -c "from mcp_server.server import server; print('ok')"` → ok
+  (returns the FastMCP instance)
+- `python3 -m mcp_server.server & sleep 2 && kill %1` →
+  starts cleanly, no WARNING lines about missing `.tool`
+  attribute, exits 0 when stdin closes.
+- `s.list_tools()` returns all 6 tools
+  (`diagnose_last_turn`, `get_all_config`, `get_errors`,
+  `get_memory_snapshot`, `get_recent_entries`,
+  `get_recent_logs`) — confirmed via the test harness.
+- `get_server()` returns the cached instance (no
+  double-registration when called repeatedly).
+- `python3 -m mcp_server.server --help` → still works.
+- `tests/test_memory_validation.py` — 17 passed, no regressions.
+
+---
+
 ## [Unreleased] — 2026-06-18 — mcp_server: read-only diagnostic layer for Claude Code
 
 A new ``mcp_server/`` package exposes a small set of MCP
