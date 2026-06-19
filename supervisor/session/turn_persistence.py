@@ -90,25 +90,67 @@ async def _store_turn(
     intent: str,
     summary: str,
 ) -> None:
-    """Store one turn as a structured working-memory record."""
+    """Store one turn as two separate working-memory records.
+
+    The intent and the assistant summary are written under distinct keys
+    so the style analyzer (``_learn_and_persist``) can train on user
+    input alone. Bundling them into a single payload would mix prior
+    GOAT responses with user input, biasing the learned style profile
+    toward the assistant's voice instead of the user's.
+
+    Args:
+        mm: MemoryManager.
+        turn_count: 1-based turn number.
+        intent: Raw user intent for this turn.
+        summary: Assistant's user-facing summary for this turn.
+
+    Returns:
+        None. Best-effort; never raises.
+    """
     try:
-        payload = (
-            f"turn={turn_count}\n"
-            f"intent={intent}\n"
-            f"summary={summary}"
-        )
-        await mm.store(SESSION_ROLE, f"turn:{turn_count}", payload)
+        await mm.store(SESSION_ROLE, f"turn:{turn_count}:intent", intent or "")
+        await mm.store(SESSION_ROLE, f"turn:{turn_count}:summary", summary or "")
     except Exception as exc:  # noqa: BLE001
         log.debug("_store_turn failed: %s", exc)
 
 
+# How many recent user-intent entries the analyzer reads.
+# Doubled vs the legacy window so the ``e.key.endswith(":intent")`` filter
+# still yields ≥ ``min_turns_to_learn`` samples after dropping summaries.
+_INTENT_WINDOW: Final[int] = _ANALYZER_WINDOW * 2
+
+
 async def _learn_and_persist(supervisor: "GoatSupervisor", mm) -> bool:
-    """Run the analyzer, write to Letta, return True on successful write."""
+    """Run the analyzer, write to Letta, return True on successful write.
+
+    Steps:
+        1. Load the existing persona block from Letta (the merged baseline
+           against which the new style will be diffed). Without this read,
+           every turn overwrites the profile with a standalone one and
+           incremental learning is lost.
+        2. Read recent user-intent entries (key suffix ``:intent`` only —
+           never the assistant summaries, which would bias the profile).
+        3. Call ``analyze_style(user_turns, existing)`` so the new profile
+           merges over the old.
+        4. Write the merged profile back to Letta.
+
+    Args:
+        supervisor: The live GoatSupervisor (for ``mm`` access).
+        mm: The registry's MemoryManager.
+
+    Returns:
+        True when a new profile was written, False on any failure or when
+        the analyzer returns empty text.
+    """
     try:
         from supervisor.behavior.analyzer import analyze_style
-        from supervisor.behavior.store import save_style
-        entries = await mm.working.list(SESSION_ROLE, limit=_ANALYZER_WINDOW)
-        user_turns = [e.content for e in entries if e and e.content]
+        from supervisor.behavior.store import load_style, save_style
+        existing = await load_style(mm) or ""
+        entries = await mm.working.list(SESSION_ROLE, limit=_INTENT_WINDOW)
+        user_turns = [
+            e.content for e in entries
+            if e and e.content and getattr(e, "key", "").endswith(":intent")
+        ]
         if not user_turns:
             return False
         new_text = await analyze_style(user_turns, existing)
