@@ -3,16 +3,14 @@ prompt. NO personality, NO tool enumeration, NO LLM.
 
 The system prompt is composed of three parts:
 
-  1. ``GOAT_SYSTEM`` — the 10 operational rules (this module).
-  2. The style mirror directive (``behavior.mirror``) — only
+  1. A ``Today's date: YYYY-MM-DD`` anchor (computed at import
+     time) so the LLM can ground its temporal reasoning in
+     the actual day. Without this anchor, the LLM has been
+     observed to fabricate year-2025 timestamps when asked
+     about "this morning" or "today".
+  2. ``GOAT_SYSTEM`` — the 10 operational rules.
+  3. The style mirror directive (``behavior.mirror``) — only
      when a style profile is loaded.
-  3. Optional context blocks (memory, working memory, clarity)
-     — appended by the caller, not this module.
-
-USAGE (from the pipeline):
-    from supervisor.identity import GOAT_SYSTEM, _build_style_directive
-
-    sys_prompt = "\n".join([GOAT_SYSTEM, _build_style_directive(style)])
 
 Design rationale:
   - Personality, style, and capabilities flow dynamically from
@@ -25,6 +23,7 @@ Design rationale:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Final
 
 log = logging.getLogger("goat2.supervisor.identity")
@@ -32,11 +31,20 @@ log = logging.getLogger("goat2.supervisor.identity")
 __all__ = ["GOAT_SYSTEM", "_build_style_directive"]
 
 
+# Today's date is computed at import time and prepended to the
+# system prompt. This grounds the LLM's temporal reasoning —
+# without it, the model has no anchor for "today" or "yesterday"
+# and falls back to guessing (often an old year, observed in
+# session logs).
+_TODAY_ISO: Final[str] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 # Operational rules only. Personality, style, and capabilities
 # are injected dynamically. Each rule below is a hard constraint
 # the LLM must follow on every call; everything else is data,
 # not identity.
 GOAT_SYSTEM: Final[str] = (
+    f"Today's date: {_TODAY_ISO}\n"
     "1. Never invent facts. Use tools, working memory, or the [Memory] block. "
     "Report from it directly when present.\n"
     "2. Prefer tools and memory over assumptions. Verify before stating facts.\n"
