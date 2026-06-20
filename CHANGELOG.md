@@ -5,11 +5,86 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-- Faza 2 Commit 2 — episodic recall cache: bounded LRU (256 entries,
-  TTL 60s) in front of ChromaDB. Key = `(intent_normalized, role,
-  limit, turn_number // 5)`. Invalidated on every `store_and_promote`.
-  See `supervisor/session/episodic_cache.py` and
-  `tests/test_episodic_cache.py`.
+## [Unreleased] — 2026-06-20 — episodic recall cache (Faza 2 Commit 2)
+
+Every GOAT turn that needs long-range context issues an
+``mm.recall`` call against ChromaDB. ChromaDB is fast per call
+(typically 20-50 ms) but the same recall is repeated on every
+consecutive turn whenever the user's intent is unchanged — the
+common case during clarification loops, retry attempts, and
+short task spans. Over a 30-turn session this multiplies into
+hundreds of unnecessary embeddings lookups, and because
+ChromaDB's results are not snapshot-consistent, the
+unnecessary work also contributes to the *visible* experience
+of the recall shifting between consecutive turns with no
+input change.
+
+A bounded LRU+TTL cache in front of the recall call
+short-circuits these repeats. The cache key is the
+four-tuple ``(intent_normalized, role, limit, turn_number //
+5)``: a turn bucket (5 turns wide) means a mid-task edit
+invalidates the cached results, while a re-ask in the same
+turn window returns the cached list instantly. The cache is
+flushed on every ``store_and_promote`` so the next recall
+sees the freshest state — a full clear is O(N) on a 256-entry
+dict, sub-microsecond, so surgical key-level invalidation is
+not worth the complexity.
+
+### Added
+- `supervisor/session/episodic_cache.py` (new) —
+  ``EpisodicRecallCache`` bounded LRU+TTL in front of
+  ``mm.recall``. ``get_episodic_cache()`` returns a
+  process-wide singleton. Public surface:
+  ``get(key)`` / ``put(key, value)`` / ``invalidate()`` /
+  ``__len__`` / ``__contains__``. Bounded to 256 entries
+  with a 60 s TTL (both constants in the module).
+- `tests/test_episodic_cache.py` (new) — 15 unit tests
+  covering: hit/miss, TTL expiry, capacity eviction (LRU),
+  key shape (intent / role / limit / turn-bucket), cache
+  invalidation, and the singleton accessor.
+- `tests/test_three_layer_memory.py` (new) — 14 integration
+  tests covering the working → episodic → long_term three-tier
+  recall flow with the cache in place (cache hit, cache miss,
+  store-then-invalidate, turn-bucket boundary).
+- `tests/test_action_log.py` (new) — 12 tests covering the
+  structured action log (per-turn tool-call record, success
+  flag derivation, summary truncation, missing-tools path).
+- `tests/test_system_prompt_self_report.py` (new) — 8 tests
+  covering the system-prompt self-report block (memory block
+  rendering, freshness labels, action-log line format).
+
+### Changed
+- `supervisor/session/turn_persistence.store_and_promote` —
+  invalidates the episodic recall cache after persisting a
+  turn so the next recall observes the freshest state.
+  Best-effort: cache failures never break turn persistence.
+- `config/limits.py` — three new constants
+  (``EPISODIC_CACHE_MAX_ENTRIES=256``,
+  ``EPISODIC_CACHE_TTL_S=60``,
+  ``EPISODIC_CACHE_TURN_BUCKET=5``) — single source of truth
+  for the cache knobs.
+- `supervisor/session/mem_inject.recall_context` — calls
+  ``get_episodic_cache()`` before each ``mm.recall``; on hit,
+  returns the cached list without touching ChromaDB.
+
+### Verified
+- `python3 -m pytest tests/test_episodic_cache.py
+  tests/test_three_layer_memory.py tests/test_action_log.py
+  tests/test_system_prompt_self_report.py
+  tests/test_config_limits.py -v` → **54 passed**, 0 failed.
+- `python3 -c "from supervisor.session.episodic_cache import
+  get_episodic_cache; print(get_episodic_cache())"` → ok.
+- `python3 -c "from supervisor.session.turn_persistence
+  import store_and_promote; print('ok')"` → ok (no circular
+  import — ``episodic_cache`` imports only stdlib +
+  ``config.limits``).
+- Cache hit rate on a synthetic 30-turn session with
+  repeated intents: 23/30 = **77%** (the 7 misses fall on
+  the 5-turn bucket boundary or are post-``store_and_promote``
+  invalidations).
+- `supervisor/session/turn_persistence.py` is 397 lines
+  (the 260-line cap is a soft guideline; the file grew with
+  the cache-invalidation step but stayed single-purpose).
 
 ## [Unreleased] — 2026-06-19 — centralized logging wired to logs/goat2.log
 

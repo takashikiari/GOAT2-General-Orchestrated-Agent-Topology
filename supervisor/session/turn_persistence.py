@@ -29,6 +29,7 @@ import logging
 from typing import TYPE_CHECKING, Final
 
 from config.roles import SESSION_ROLE
+from supervisor.session.episodic_cache import get_episodic_cache
 
 if TYPE_CHECKING:
     from supervisor.supervisor import GoatSupervisor
@@ -255,7 +256,6 @@ async def store_and_promote(
         #    on its next call. Best-effort: cache failures must
         #    never break turn persistence.
         try:
-            from supervisor.session.episodic_cache import get_episodic_cache
             get_episodic_cache().invalidate()
         except Exception as exc:  # noqa: BLE001 — best-effort
             log.debug("episodic cache invalidate failed: %s", exc)
