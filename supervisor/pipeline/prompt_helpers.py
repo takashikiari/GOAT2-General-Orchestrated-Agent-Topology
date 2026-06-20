@@ -168,6 +168,19 @@ def build_user_prompt(
         A single string ready to send as the ``user`` message.
     """
     parts: list[str] = [f"User message: {intent[:_MAX_INTENT_CHARS]}", ""]
+    # Memory block is placed EARLY in the prompt — immediately
+    # after the user message — so GOAT sees what it already
+    # knows in working memory BEFORE deciding to call tools.
+    # Observed failure mode (session 10:57:31, 2026-06-20): GOAT
+    # had the answer to "what did we talk about at 9:44" in
+    # its own working memory but launched 17 tool calls to
+    # search externally anyway. Putting memory first makes the
+    # answer unmissable.
+    if mem_ctx:
+        parts.append("Read this BEFORE calling any tools — you may "
+                      "already have the answer locally.")
+        parts.append(mem_ctx)
+        parts.append("")
     parts.append(goat_ctx.to_prompt())
     if clarity_ctx and getattr(clarity_ctx, "to_prompt", None):
         parts.append(clarity_ctx.to_prompt())
@@ -176,8 +189,6 @@ def build_user_prompt(
             "Past user corrections (soft hints):\n"
             + "\n".join(f"- {h}" for h in hints)
         )
-    if mem_ctx:
-        parts.extend(["", mem_ctx])
     parts.extend([
         "",
         ("If you need a DAG (multi-step research / code / analysis), "
