@@ -79,9 +79,18 @@ async def run_turn(supervisor: "GoatSupervisor", intent: str) -> "SupervisorResu
         # BUG-015: buffer the user turn as pending — only commits
         # after a successful assistant reply, so a failure path
         # cannot leave an orphan user message in history.
+        # turn_number = completed turns before this one (i.e. history
+        # length BEFORE buffering the current user turn as pending).
+        # Used as the episodic recall cache bucket key.
+        turn_number = (
+            len(supervisor._history.messages)
+            if supervisor._history is not None else 0
+        )
         supervisor._history.add_user(intent, pending=True)
 
-        mem_ctx = await mem_turn(supervisor.memory_manager, intent)
+        mem_ctx = await mem_turn(
+            supervisor.memory_manager, intent, turn_number=turn_number,
+        )
         goat_ctx = await build_goat_context(supervisor.registry, mem_ctx)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in supervisor._history.messages

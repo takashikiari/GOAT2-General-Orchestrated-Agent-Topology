@@ -154,6 +154,8 @@ async def recall_context(
 async def mem_turn(
     mm: "MemoryManager | None",
     intent: str,
+    *,
+    turn_number: int = 0,
 ) -> str:
     """Assemble the three-layer memory context for this turn.
 
@@ -172,6 +174,13 @@ async def mem_turn(
         mm: MemoryManager (or None → ``[Memory: UNAVAILABLE]``).
         intent: Raw user intent. Used as the episodic recall
             query.
+        turn_number: Number of completed turns before this one
+            (i.e. ``len(history.messages)`` BEFORE the current
+            user turn is buffered). Used as the episodic recall
+            cache bucket key so retry / re-render within the
+            same turn is cheap and parallel turns don't collide.
+            Defaults to ``0`` for backward compatibility with
+            callers that don't track history.
 
     Returns:
         The rendered three-layer block.
@@ -202,8 +211,10 @@ async def mem_turn(
         present, now=now, max_entries=_present_max_entries,
     )
 
-    # 4. Fetch episodic recall hits (timeout-protected).
-    episodic_hits = await fetch_episodic_hits(mm, intent, _episodic_top_k)
+    # 4. Fetch episodic recall hits (timeout-protected + cached).
+    episodic_hits = await fetch_episodic_hits(
+        mm, intent, _episodic_top_k, turn_number=turn_number,
+    )
     episodic_hits = episodic_hits[:_episodic_top_k]
 
     # 5. Render [Present-Past].
