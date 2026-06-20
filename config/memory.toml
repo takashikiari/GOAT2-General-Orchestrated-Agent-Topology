@@ -44,6 +44,23 @@ recent_max_seconds  = 3600   # <60 min  → [RECENT]; > → [OLD]
 dag_max_age_seconds = 600    # DAG entries older than this are excluded unless intent asks for them
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [temporal_layers] — three-layer memory structure (Faza 2)
+#
+# Read by `supervisor.session.mem_inject.mem_turn`. Controls how
+# the working memory is split into Present / Present-Past / Past
+# layers, and how many entries each layer renders into the prompt.
+# Missing section → safe defaults from `config.limits`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[temporal_layers]
+present_max_age_s        = 300    # < 5 min  → [Present]
+present_past_max_age_s   = 86400  # < 24 h   → [Present-Past]; older → [Past]
+present_max_entries      = 50     # hard cap for [Present] entries
+present_past_max_entries = 30     # hard cap for [Present-Past] (working + episodic combined)
+past_max_entries         = 20     # hard cap for [Past] working entries
+episodic_top_k           = 5      # number of episodic recall hits in [Present-Past]
+
+# ─────────────────────────────────────────────────────────────────────────────
 # [temporal] — format_entries relative-age labels (BUG-003 fix)
 #
 # Read by `memory.temporal.temporal_format`. Controls whether and how

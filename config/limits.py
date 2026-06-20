@@ -40,6 +40,13 @@ __all__ = [
     "DEFAULT_TEMPORAL_FRESH_THRESHOLD_S",
     "DEFAULT_TEMPORAL_RECENT_THRESHOLD_S",
     "DEFAULT_TEMPORAL_DAY_THRESHOLD_S",
+    # Faza 2: three-layer memory structure thresholds.
+    "DEFAULT_TEMPORAL_PRESENT_MAX_AGE_S",
+    "DEFAULT_TEMPORAL_PRESENT_PAST_MAX_AGE_S",
+    "DEFAULT_TEMPORAL_PRESENT_MAX_ENTRIES",
+    "DEFAULT_TEMPORAL_PRESENT_PAST_MAX_ENTRIES",
+    "DEFAULT_TEMPORAL_PAST_MAX_ENTRIES",
+    "DEFAULT_EPISODIC_TOP_K",
     # Modular fallbacks re-exported from config.fallbacks
     # (memory.toml / dag.toml / behavioral.toml / tools.toml).
     "WORKING_MAX_ENTRIES",
@@ -178,6 +185,32 @@ DEFAULT_TEMPORAL_FRESH_THRESHOLD_S:  Final[int] = 60
 DEFAULT_TEMPORAL_RECENT_THRESHOLD_S: Final[int] = 3600
 DEFAULT_TEMPORAL_DAY_THRESHOLD_S:    Final[int] = 86400
 """Relative-age label thresholds (BUG-003)."""
+
+# ─────────────────────────────────────────────────────────────────────
+# Faza 2: three-layer memory structure thresholds.
+#
+# Module-local mirrors of these values live in
+# supervisor.session.mem_inject and are pinned to the canonical
+# source via tests/test_three_layer_memory.py.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_TEMPORAL_PRESENT_MAX_AGE_S: Final[int] = 300
+"""Max age (seconds) for [Present] layer (< fresh). 5 min."""
+
+DEFAULT_TEMPORAL_PRESENT_PAST_MAX_AGE_S: Final[int] = 86400
+"""Max age (seconds) for [Present-Past] layer. 24 h."""
+
+DEFAULT_TEMPORAL_PRESENT_MAX_ENTRIES: Final[int] = 50
+"""Hard cap for [Present] entries."""
+
+DEFAULT_TEMPORAL_PRESENT_PAST_MAX_ENTRIES: Final[int] = 30
+"""Hard cap for [Present-Past] entries (working + episodic)."""
+
+DEFAULT_TEMPORAL_PAST_MAX_ENTRIES: Final[int] = 20
+"""Hard cap for [Past] entries."""
+
+DEFAULT_EPISODIC_TOP_K: Final[int] = 5
+"""Number of episodic recall hits in [Present-Past]."""
 
 # ─────────────────────────────────────────────────────────────────────
 # MODULAR FALLBACKS (memory/dag/behavioral/tools) — re-exported
