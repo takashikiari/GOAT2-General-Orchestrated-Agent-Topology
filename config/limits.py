@@ -47,6 +47,10 @@ __all__ = [
     "DEFAULT_TEMPORAL_PRESENT_PAST_MAX_ENTRIES",
     "DEFAULT_TEMPORAL_PAST_MAX_ENTRIES",
     "DEFAULT_EPISODIC_TOP_K",
+    # Faza 2 Commit 2: episodic recall cache tunables.
+    "EPISODIC_CACHE_MAX_SIZE",
+    "EPISODIC_CACHE_TTL_S",
+    "EPISODIC_CACHE_TURN_BUCKET",
     # Modular fallbacks re-exported from config.fallbacks
     # (memory.toml / dag.toml / behavioral.toml / tools.toml).
     "WORKING_MAX_ENTRIES",
@@ -211,6 +215,16 @@ DEFAULT_TEMPORAL_PAST_MAX_ENTRIES: Final[int] = 20
 
 DEFAULT_EPISODIC_TOP_K: Final[int] = 5
 """Number of episodic recall hits in [Present-Past]."""
+
+# Faza 2 Commit 2: episodic recall cache tunables.
+EPISODIC_CACHE_MAX_SIZE: Final[int] = 256
+"""LRU cap for the episodic recall cache (entries)."""
+
+EPISODIC_CACHE_TTL_S: Final[float] = 60.0
+"""Per-entry TTL for cached episodic recall results (seconds)."""
+
+EPISODIC_CACHE_TURN_BUCKET: Final[int] = 5
+"""Refresh the cache bucket every N turns — bounds staleness without a per-query clock."""
 
 # ─────────────────────────────────────────────────────────────────────
 # MODULAR FALLBACKS (memory/dag/behavioral/tools) — re-exported
