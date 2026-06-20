@@ -28,6 +28,18 @@ __all__ = [
     "SEARXNG_URL",
     "SEARXNG_TIMEOUT",
     "LOG_LEVEL",
+    # BUG-032: centralised defaults for cross-module limits.
+    # Module-local _DEFAULT_* mirrors stay aligned with these
+    # values — see docs/magic_numbers_policy.md and
+    # tests/test_config_limits.py for the conformance tests.
+    "DEFAULT_HISTORY_MAX_MESSAGES",
+    "DEFAULT_PROMPT_MAX_ENTRIES",
+    "DEFAULT_BACKGROUND_DRAIN_TIMEOUT_S",
+    "DEFAULT_ERROR_MAX_CHARS",
+    "DEFAULT_CORRECTIONS_LIMIT",
+    "DEFAULT_TEMPORAL_FRESH_THRESHOLD_S",
+    "DEFAULT_TEMPORAL_RECENT_THRESHOLD_S",
+    "DEFAULT_TEMPORAL_DAY_THRESHOLD_S",
     # Modular fallbacks re-exported from config.fallbacks
     # (memory.toml / dag.toml / behavioral.toml / tools.toml).
     "WORKING_MAX_ENTRIES",
@@ -137,6 +149,35 @@ SEARXNG_TIMEOUT: Final[int] = _env_int("SEARXNG_TIMEOUT", 10)
 
 LOG_LEVEL: Final[str] = _env_str("LOG_LEVEL", "INFO")
 """Default log level for GOAT 2.0 subsystems."""
+
+# ─────────────────────────────────────────────────────────────────────
+# BUG-032: Centralised cross-module defaults.
+#
+# Module-local mirrors stay aligned with these values via
+# tests/test_config_limits.py. Override at runtime by setting
+# the corresponding env var (e.g. DEFAULT_HISTORY_MAX_MESSAGES)
+# or by editing the canonical source here.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_HISTORY_MAX_MESSAGES: Final[int] = 200
+"""ConversationHistory in-memory cap. ~50 turns."""
+
+DEFAULT_PROMPT_MAX_ENTRIES: Final[int] = 50
+"""Working-memory entries rendered into the prompt block."""
+
+DEFAULT_BACKGROUND_DRAIN_TIMEOUT_S: Final[float] = 5.0
+"""Wall-clock budget for draining background tasks at shutdown."""
+
+DEFAULT_ERROR_MAX_CHARS: Final[int] = 200
+"""Cap on the error-message text in fallback replies."""
+
+DEFAULT_CORRECTIONS_LIMIT: Final[int] = 3
+"""Default cap on recall_corrections result size."""
+
+DEFAULT_TEMPORAL_FRESH_THRESHOLD_S:  Final[int] = 60
+DEFAULT_TEMPORAL_RECENT_THRESHOLD_S: Final[int] = 3600
+DEFAULT_TEMPORAL_DAY_THRESHOLD_S:    Final[int] = 86400
+"""Relative-age label thresholds (BUG-003)."""
 
 # ─────────────────────────────────────────────────────────────────────
 # MODULAR FALLBACKS (memory/dag/behavioral/tools) — re-exported
