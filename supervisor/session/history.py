@@ -35,35 +35,70 @@ Design:
 from __future__ import annotations
 
 import logging
-from typing import Final, Optional
+from typing import Optional
 
 __all__ = ["ConversationHistory", "MAX_MESSAGES"]
 
 log = logging.getLogger("goat2.supervisor.session.history")
 
-_DEFAULT_MAX_MESSAGES: Final[int] = 200
+_DEFAULT_MAX_MESSAGES: int = 200
+
+# Module-level cache for the configured cap. Populated on the
+# first call to ``load_max_messages()``; re-bindable by tests.
+# BUG-028 fix: previously the value was read once at import
+# time and frozen as a Final constant. That made the cap
+# untunable at runtime — operators had to restart the process
+# for a config change to take effect.
+_MAX_MESSAGES_CACHE: Optional[int] = None
 
 
 def load_max_messages() -> int:
     """Read ``max_history_messages`` from config/memory.toml [working].
 
     Returns the configured cap, or ``_DEFAULT_MAX_MESSAGES`` when
-    the file / section is missing. Cached at import time.
+    the file / section is missing. The result is cached at
+    first call (not at module-import time) so a config reload
+    after the supervisor is already running can take effect.
+    Tests can call ``load_max_messages.cache_clear()`` to force
+    a re-read.
     """
+    global _MAX_MESSAGES_CACHE
+    if _MAX_MESSAGES_CACHE is not None:
+        return _MAX_MESSAGES_CACHE
+    value = _DEFAULT_MAX_MESSAGES
     try:
         from config.modular_loader import load_memory_config
         section = (load_memory_config() or {}).get("working", {}) or {}
         raw = section.get("max_history_messages")
         if raw is not None:
-            return int(raw)
+            value = int(raw)
     except (TypeError, ValueError):
         log.debug("history: max_history_messages not int — using default")
     except Exception as exc:  # noqa: BLE001
         log.debug("history: max_history_messages load skipped: %s", exc)
-    return _DEFAULT_MAX_MESSAGES
+    _MAX_MESSAGES_CACHE = value
+    return value
 
 
-MAX_MESSAGES: Final[int] = load_max_messages()
+def cache_clear() -> None:
+    """Force the next ``load_max_messages()`` call to re-read
+    config. Tests use this to verify reload behaviour; production
+    code should not need it.
+    """
+    global _MAX_MESSAGES_CACHE
+    _MAX_MESSAGES_CACHE = None
+
+
+# Property accessor: every read of MAX_MESSAGES goes through
+# the lazy loader, so a config change after first import is
+# picked up automatically on the next read.
+    def _append(self, msg: dict[str, str]) -> None:
+        self._messages.append(msg)
+        # Lazy read — the cap can change at runtime via
+        # ``load_max_messages.cache_clear()`` (BUG-028).
+        cap = load_max_messages()
+        if len(self._messages) > cap:
+            del self._messages[: len(self._messages) - cap]  # noqa: E501
 
 
 class ConversationHistory:
@@ -162,6 +197,8 @@ class ConversationHistory:
 
     def _append(self, msg: dict[str, str]) -> None:
         self._messages.append(msg)
-        if len(self._messages) > MAX_MESSAGES:
-            # Roll the oldest off the front.
-            del self._messages[: len(self._messages) - MAX_MESSAGES]
+        # Lazy read — the cap can change at runtime via
+        # ``load_max_messages.cache_clear()`` (BUG-028).
+        cap = load_max_messages()
+        if len(self._messages) > cap:
+            del self._messages[: len(self._messages) - cap]
