@@ -1,0 +1,165 @@
+# Review package: 2c67967..c76272a
+
+## Commits
+c76272a feat(memory_helpers): wire episodic recall cache into fetch_episodic_hits
+
+## Files changed
+ supervisor/session/memory_helpers.py | 32 ++++++++++++++++++++++++++++++--
+ tests/test_three_layer_memory.py     | 18 ++++++++++++++++++
+ 2 files changed, 48 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/supervisor/session/memory_helpers.py b/supervisor/session/memory_helpers.py
+index 7c6c44f..94076c7 100644
+--- a/supervisor/session/memory_helpers.py
++++ b/supervisor/session/memory_helpers.py
+@@ -26,20 +26,24 @@ from __future__ import annotations
+ import asyncio
+ import logging
+ import time
+ from typing import TYPE_CHECKING, Final
+ 
+ if TYPE_CHECKING:
+     from memory.shared import MemoryManager
+ 
+ from config.roles import SESSION_ROLE
+ from supervisor.mechanisms.namespace import is_dag_key
++from supervisor.session.episodic_cache import (
++    build_episodic_cache_key,
++    get_episodic_cache,
++)
+ 
+ log = logging.getLogger("goat2.supervisor.session.memory_helpers")
+ 
+ __all__ = [
+     "list_working",
+     "filter_dag",
+     "ts_of",
+     "bucket_by_age",
+     "fetch_episodic_hits",
+ ]
+@@ -156,42 +160,66 @@ def bucket_by_age(
+ 
+ # ── Episodic + persona fetchers ───────────────────────────────────────────
+ 
+ 
+ async def fetch_episodic_hits(
+     mm: "MemoryManager",
+     query: str,
+     top_k: int = _EPISODIC_DEFAULT_TOP_K,
+     *,
+     timeout_s: float = _EPISODIC_TIMEOUT_S,
++    turn_number: int = 0,
+ ) -> list:
+-    """Fetch episodic recall hits with a hard timeout.
++    """Fetch episodic recall hits with a hard timeout and LRU+TTL cache.
++
++    Cache key = ``build_episodic_cache_key(query, SESSION_ROLE, top_k,
++    turn_number)``. On a hit, returns the cached value without
++    issuing a recall call. On miss (or cache error), issues the
++    recall and stores the result.
++
++    The cache is a process-local singleton; tests inject a fresh
++    cache via ``set_episodic_cache``.
+ 
+     On any failure (timeout, exception, missing method), returns
+     ``[]`` — the [Present-Past] layer renders without episodic
+     hits but the rest of the structure is preserved.
+     """
++    # 1. Cache lookup (best-effort).
++    cache = get_episodic_cache()
++    key = build_episodic_cache_key(query, SESSION_ROLE, top_k, turn_number)
++    cached = cache.get(key)
++    if cached is not None:
++        return list(cached)
++
++    # 2. Cache miss → real recall with timeout.
+     try:
+         hits = await asyncio.wait_for(
+             mm.recall(SESSION_ROLE, query, limit=top_k),
+             timeout=timeout_s,
+         )
+-        return list(hits or [])
++        result = list(hits or [])
+     except asyncio.TimeoutError:
+         log.warning(
+             "fetch_episodic_hits: timed out after %.1fs", timeout_s,
+         )
+         return []
+     except Exception as exc:  # noqa: BLE001
+         log.debug("fetch_episodic_hits failed: %s", exc)
+         return []
+ 
++    # 3. Store in cache (best-effort). Note: an empty list IS a
++    #    valid cache value (the query genuinely returned nothing)
++    #    — caching it avoids hammering ChromaDB on the same empty
++    #    query inside the TTL window.
++    cache.put(key, result)
++    return result
++
+ 
+ async def fetch_persona(mm: "MemoryManager") -> str:
+     """Fetch the Letta persona block. Returns empty string on
+     failure (caller renders the unavailable marker)."""
+     try:
+         long_term = getattr(mm, "long_term", None)
+         if long_term is None:
+             return ""
+         text = await long_term.get_block("goat", "persona")
+         return text or ""
+diff --git a/tests/test_three_layer_memory.py b/tests/test_three_layer_memory.py
+index f3a803b..69c9901 100644
+--- a/tests/test_three_layer_memory.py
++++ b/tests/test_three_layer_memory.py
+@@ -14,33 +14,51 @@ config/memory.toml.
+ """
+ from __future__ import annotations
+ 
+ import time
+ from types import SimpleNamespace
+ from unittest.mock import AsyncMock, MagicMock
+ 
+ import pytest
+ 
+ from supervisor.session import mem_inject
++from supervisor.session.episodic_cache import (
++    EpisodicRecallCache,
++    set_episodic_cache,
++)
+ from supervisor.session.mem_inject import (
+     LAYER_PRESENT,
+     LAYER_PRESENT_PAST,
+     LAYER_PAST,
+     _present_max_age_s,
+     _present_past_max_age_s,
+     _present_max_entries,
+     _present_past_max_entries,
+     _past_max_entries,
+     mem_turn,
+ )
+ 
+ 
++@pytest.fixture(autouse=True)
++def _fresh_episodic_cache():
++    """Reset the episodic cache singleton for every test.
++
++    Without this, the first test that exercises ``mem_turn`` with
++    a default (empty) ``episodic_hits`` mock caches ``[]`` for the
++    (intent, SESSION_ROLE, top_k, 0) key, and later tests that
++    supply real hits get the stale cached ``[]`` back.
++    """
++    set_episodic_cache(EpisodicRecallCache())
++    yield
++    set_episodic_cache(None)
++
++
+ # ── Helpers ────────────────────────────────────────────────────────────────
+ 
+ 
+ def _working_record(key: str, content: str, ts: float) -> SimpleNamespace:
+     """Build a working-memory record (MemoryEntry shape) for tests."""
+     return SimpleNamespace(
+         key=key,
+         content=content,
+         metadata={"created_at_ts": ts},
+         source="working",

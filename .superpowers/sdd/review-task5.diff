@@ -1,0 +1,128 @@
+# Review package: c76272a..437f086
+
+## Commits
+437f086 feat(mem_inject,turn_runner): thread turn_number for episodic cache key
+
+## Files changed
+ supervisor/session/mem_inject.py | 15 +++++++++++++--
+ supervisor/turn_runner.py        | 11 ++++++++++-
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/supervisor/session/mem_inject.py b/supervisor/session/mem_inject.py
+index ce3f6aa..4c6f4f8 100644
+--- a/supervisor/session/mem_inject.py
++++ b/supervisor/session/mem_inject.py
+@@ -147,38 +147,47 @@ async def recall_context(
+     blocks = [b for b in (mem_block, wm_block) if b]
+     return "\n".join(blocks) if blocks else _NO_MEMORY_FALLBACK
+ 
+ 
+ # ── Three-layer orchestrator ───────────────────────────────────────────────
+ 
+ 
+ async def mem_turn(
+     mm: "MemoryManager | None",
+     intent: str,
++    *,
++    turn_number: int = 0,
+ ) -> str:
+     """Assemble the three-layer memory context for this turn.
+ 
+     The output is a single string with three labelled sections:
+ 
+       [Present] (N)
+         - [Xs ago] [working] turn:K: content
+       [Present-Past] (M)
+         - [Xs ago] [working] turn:K: content
+         - [episodic] hit-1
+       [Past]
+         - persona: <Letta persona block>
+         - [Xd ago] [working] turn:K: content
+ 
+     Args:
+         mm: MemoryManager (or None → ``[Memory: UNAVAILABLE]``).
+         intent: Raw user intent. Used as the episodic recall
+             query.
++        turn_number: Number of completed turns before this one
++            (i.e. ``len(history.messages)`` BEFORE the current
++            user turn is buffered). Used as the episodic recall
++            cache bucket key so retry / re-render within the
++            same turn is cheap and parallel turns don't collide.
++            Defaults to ``0`` for backward compatibility with
++            callers that don't track history.
+ 
+     Returns:
+         The rendered three-layer block.
+     """
+     if mm is None:
+         return _NO_MEMORY_FALLBACK
+ 
+     now = time.time()
+ 
+     # 1. Fetch all working-memory records (delegated).
+@@ -195,22 +204,24 @@ async def mem_turn(
+         now=now,
+         present_max_age_s=_present_max_age_s,
+         present_past_max_age_s=_present_past_max_age_s,
+     )
+ 
+     # 3. Render [Present].
+     present_block = render_present_layer(
+         present, now=now, max_entries=_present_max_entries,
+     )
+ 
+-    # 4. Fetch episodic recall hits (timeout-protected).
+-    episodic_hits = await fetch_episodic_hits(mm, intent, _episodic_top_k)
++    # 4. Fetch episodic recall hits (timeout-protected + cached).
++    episodic_hits = await fetch_episodic_hits(
++        mm, intent, _episodic_top_k, turn_number=turn_number,
++    )
+     episodic_hits = episodic_hits[:_episodic_top_k]
+ 
+     # 5. Render [Present-Past].
+     present_past_block = render_present_past_layer(
+         present_past, episodic_hits,
+         now=now, max_entries=_present_past_max_entries,
+     )
+ 
+     # 6. Fetch persona + render [Past].
+     persona_text = await fetch_persona(mm)
+diff --git a/supervisor/turn_runner.py b/supervisor/turn_runner.py
+index ccbccd5..6bc4268 100644
+--- a/supervisor/turn_runner.py
++++ b/supervisor/turn_runner.py
+@@ -72,23 +72,32 @@ async def run_turn(supervisor: "GoatSupervisor", intent: str) -> "SupervisorResu
+             )
+             return supervisor._build_result(
+                 intent=intent, t0=t0,
+                 summary="Session turn limit reached. Start a new session to continue.",
+                 source="generated", session_id="",
+             )
+ 
+         # BUG-015: buffer the user turn as pending — only commits
+         # after a successful assistant reply, so a failure path
+         # cannot leave an orphan user message in history.
++        # turn_number = completed turns before this one (i.e. history
++        # length BEFORE buffering the current user turn as pending).
++        # Used as the episodic recall cache bucket key.
++        turn_number = (
++            len(supervisor._history.messages)
++            if supervisor._history is not None else 0
++        )
+         supervisor._history.add_user(intent, pending=True)
+ 
+-        mem_ctx = await mem_turn(supervisor.memory_manager, intent)
++        mem_ctx = await mem_turn(
++            supervisor.memory_manager, intent, turn_number=turn_number,
++        )
+         goat_ctx = await build_goat_context(supervisor.registry, mem_ctx)
+         history_text = "\n".join(
+             f"{m['role']}: {m['content']}" for m in supervisor._history.messages
+         )
+         clarity_text = build_clarity_context(history_text, mem_ctx)
+         supervisor._sync_style_from_ctx(goat_ctx)
+ 
+         from supervisor.mechanisms.hints import build_hints
+         hints = await build_hints(
+             supervisor.memory_manager, intent, supervisor.registry, limit=3,

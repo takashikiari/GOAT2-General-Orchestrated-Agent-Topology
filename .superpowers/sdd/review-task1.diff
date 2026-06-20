@@ -1,0 +1,70 @@
+# Review package: fc88ce0..bc3f95e
+
+## Commits
+bc3f95e feat(config): Faza 2 Commit 2 — episodic recall cache tunables
+
+## Files changed
+ config/limits.py | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+## Diff
+diff --git a/config/limits.py b/config/limits.py
+index c22cf05..53557d3 100755
+--- a/config/limits.py
++++ b/config/limits.py
+@@ -40,20 +40,24 @@ __all__ = [
+     "DEFAULT_TEMPORAL_FRESH_THRESHOLD_S",
+     "DEFAULT_TEMPORAL_RECENT_THRESHOLD_S",
+     "DEFAULT_TEMPORAL_DAY_THRESHOLD_S",
+     # Faza 2: three-layer memory structure thresholds.
+     "DEFAULT_TEMPORAL_PRESENT_MAX_AGE_S",
+     "DEFAULT_TEMPORAL_PRESENT_PAST_MAX_AGE_S",
+     "DEFAULT_TEMPORAL_PRESENT_MAX_ENTRIES",
+     "DEFAULT_TEMPORAL_PRESENT_PAST_MAX_ENTRIES",
+     "DEFAULT_TEMPORAL_PAST_MAX_ENTRIES",
+     "DEFAULT_EPISODIC_TOP_K",
++    # Faza 2 Commit 2: episodic recall cache tunables.
++    "EPISODIC_CACHE_MAX_SIZE",
++    "EPISODIC_CACHE_TTL_S",
++    "EPISODIC_CACHE_TURN_BUCKET",
+     # Modular fallbacks re-exported from config.fallbacks
+     # (memory.toml / dag.toml / behavioral.toml / tools.toml).
+     "WORKING_MAX_ENTRIES",
+     "WORKING_WARN_THRESHOLD",
+     "WORKING_FLUSH_ON_START",
+     "WORKING_GC_INTERVAL_TURNS",
+     "EPISODIC_MAX_ENTRIES",
+     "EPISODIC_WARN_THRESHOLD",
+     "EPISODIC_PROMOTE_THRESHOLD",
+     "EPISODIC_DROP_THRESHOLD",
+@@ -205,20 +209,30 @@ DEFAULT_TEMPORAL_PRESENT_MAX_ENTRIES: Final[int] = 50
+ 
+ DEFAULT_TEMPORAL_PRESENT_PAST_MAX_ENTRIES: Final[int] = 30
+ """Hard cap for [Present-Past] entries (working + episodic)."""
+ 
+ DEFAULT_TEMPORAL_PAST_MAX_ENTRIES: Final[int] = 20
+ """Hard cap for [Past] entries."""
+ 
+ DEFAULT_EPISODIC_TOP_K: Final[int] = 5
+ """Number of episodic recall hits in [Present-Past]."""
+ 
++# Faza 2 Commit 2: episodic recall cache tunables.
++EPISODIC_CACHE_MAX_SIZE: Final[int] = 256
++"""LRU cap for the episodic recall cache (entries)."""
++
++EPISODIC_CACHE_TTL_S: Final[float] = 60.0
++"""Per-entry TTL for cached episodic recall results (seconds)."""
++
++EPISODIC_CACHE_TURN_BUCKET: Final[int] = 5
++"""Refresh the cache bucket every N turns — bounds staleness without a per-query clock."""
++
+ # ─────────────────────────────────────────────────────────────────────
+ # MODULAR FALLBACKS (memory/dag/behavioral/tools) — re-exported
+ # The canonical home of these constants is ``config/fallbacks.py``,
+ # which is organised by the same modular sections as the four new
+ # toml files (``memory.toml`` / ``dag.toml`` / ``behavioral.toml`` /
+ # ``tools.toml``). This block re-exports them so existing call sites
+ # that import from ``config.limits`` keep working — the user-facing
+ # canonical import path for new code is ``config.fallbacks`` (or the
+ # module-local ``_load_toml`` helper that each consuming module
+ # now uses to read its own section).
