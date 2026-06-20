@@ -2,8 +2,13 @@
 
 Pure Python, no LLM, no I/O. Thresholds come from
 ``config/memory.toml [freshness]`` via ``config.modular_loader``.
-Three labels, configurable cutoffs, no hardcoded numbers in
-this file (defaults are a defensive fallback only).
+Three labels, configurable cutoffs. The module does carry a
+``_DEFAULTS`` fallback so a missing or malformed toml section
+yields sensible values without raising — but operators tune
+the real numbers via config, and the docstring policy is
+that "defensive default" is not the same as "no hardcoded
+numbers". See docs/regex_policy.md and docs/logging_policy.md
+for the project-wide conventions.
 
 USAGE:
     from supervisor.mechanisms.freshness import (
