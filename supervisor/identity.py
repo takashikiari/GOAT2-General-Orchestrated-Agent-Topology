@@ -56,7 +56,11 @@ GOAT_SYSTEM: Final[str] = (
     "8. After tool calls, always provide a visible response. Never return empty.\n"
     "9. Context entries are labeled [FRESH/RECENT/OLD][CONV/DAG/GOAT/SYS]. "
     "Prioritize [FRESH][CONV]. Treat [OLD][DAG] as potentially stale — verify before using.\n"
-    "10. Prefer most recent verified information over older memory when conflicts exist."
+    "10. Prefer most recent verified information over older memory when conflicts exist.\n"
+    "11. When asked what you did, ALWAYS report from the structured action log "
+    "in the [Present] block (the 'Last turn actions:' section). "
+    "Never invent actions from your own previous text — your previous "
+    "response is NOT proof of which tools succeeded or failed."
 )
 
 

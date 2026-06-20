@@ -24,6 +24,7 @@ breaks the turn.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING, Final
 
@@ -34,12 +35,157 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("goat2.supervisor.session.turn_persistence")
 
-__all__ = ["store_and_promote", "schedule_promotion"]
+__all__ = [
+    "store_and_promote",
+    "schedule_promotion",
+    "store_action_log",
+    "format_action_log",
+    "_action_log_from_turn",
+    "_ACTION_LOG_KEY",
+    "_ACTION_SUMMARY_CAP",
+]
 
 # How many recent working-memory entries the analyzer reads.
 # Small window keeps the analyzer fast (O(n) scoring on a
 # bounded list) and avoids stale turn influence.
 _ANALYZER_WINDOW: Final[int] = 10
+
+
+# ── Action log: structured per-tool record for self-reporting ────────────
+
+# Key under which the per-turn action log is persisted. Sibling of
+# ``turn:<N>:intent`` and ``turn:<N>:summary``. Value is a small
+# JSON list; one entry per tool call, with success flag and a
+# short summary of the result.
+_ACTION_LOG_KEY: Final[str] = "turn:{n}:actions"
+
+# Per-entry summary cap. Matches layer_renderer's working-memory
+# truncation so the action log fits the same prompt budget.
+_ACTION_SUMMARY_CAP: int = 200
+
+
+def _action_log_from_turn(turn) -> list[dict]:
+    """Build the structured action-log entries for one turn.
+
+    Each entry is a dict with: ``tool`` (name), ``args`` (dict of
+    arguments the model passed — best-effort parsed), ``ok``
+    (bool), ``summary`` (first N chars of the tool result).
+
+    Failure detection: a result starting with ``ERROR`` is
+    treated as ok=False. We also catch common error prefixes
+    that memory tools emit (e.g. "Key not found:", "ERROR calling...",
+    "Connection refused:") so the structured log flags the failure
+    for the next turn's self-report.
+    """
+    called = tuple(getattr(turn, "called_tools", ()) or ())
+    results = tuple(getattr(turn, "tool_results", ()) or ())
+    entries: list[dict] = []
+    for tool, raw_result in zip(called, results):
+        result_str = str(raw_result or "")
+        # Heuristic error patterns. Each entry matches a common
+        # memory-tool error shape; the list is short on purpose
+        # — false positives are tolerable (the next turn just
+        # sees a "FAIL" for an entry that actually succeeded, which
+        # is honest but slightly over-cautious).
+        error_prefixes = (
+            "ERROR:",
+            "ERROR ",
+            "Error:",
+            "Key not found",
+            "No entry found",
+            "Connection refused",
+            "Connection error",
+        )
+        ok = not any(result_str.startswith(p) for p in error_prefixes)
+        # Strip a leading "ERROR: " for a cleaner summary line.
+        summary = result_str
+        if summary.startswith("ERROR:"):
+            summary = summary[len("ERROR:"):].lstrip()
+        elif summary.startswith("ERROR "):
+            summary = summary[len("ERROR "):].lstrip()
+        elif summary.startswith("Error:"):
+            summary = summary[len("Error:"):].lstrip()
+        entries.append({
+            "tool": tool,
+            "args": {},  # args were passed to the tool but not echoed
+                          # back on the result; we leave this empty
+                          # rather than guess. The intent layer can
+                          # fill it in if needed.
+            "ok": ok,
+            "summary": summary[:_ACTION_SUMMARY_CAP],
+        })
+    return entries
+
+
+def format_action_log(entries: list[dict]) -> str:
+    """Render the structured action log as human-readable lines.
+
+    Format per line::
+
+        tool_name → ok: <one-line summary>
+        tool_name → FAIL: <one-line summary>
+
+    The visual ``ok`` / ``FAIL`` distinction lets the model
+    report successes and failures correctly without parsing.
+    Long summaries are truncated to ``_ACTION_SUMMARY_CAP``
+    chars so a single verbose tool result doesn't blow the
+    prompt budget.
+    """
+    if not entries:
+        return ""
+    lines: list[str] = []
+    for e in entries:
+        tool = e.get("tool", "?")
+        summary = e.get("summary", "")
+        # Defensive truncation — entries produced by
+        # _action_log_from_turn are already truncated, but a
+        # caller could pass pre-built entries from elsewhere.
+        if len(summary) > _ACTION_SUMMARY_CAP:
+            summary = summary[:_ACTION_SUMMARY_CAP]
+        status = "ok" if e.get("ok") else "FAIL"
+        args = e.get("args", {}) or {}
+        arg_str = ""
+        if args:
+            # Compact rendering: key1=val1, key2=val2
+            arg_str = " " + ", ".join(
+                f"{k}={v}" for k, v in list(args.items())[:3]
+            )
+        lines.append(f"- {tool}{arg_str} → {status}: {summary}")
+    return "\n".join(lines)
+
+
+async def store_action_log(
+    mm,
+    turn_count: int,
+    turn,
+) -> None:
+    """Persist the structured action log for one turn.
+
+    Writes a single record under ``turn:<n>:actions`` containing
+    a JSON-encoded list of entries. Best-effort: any failure is
+    logged at DEBUG (not WARNING) because losing one log entry
+    is not a turn-breaking failure — the model just falls back
+    to its previous behaviour of not having structured data.
+
+    Skips silently when ``called_tools`` is empty (the turn had
+    no tool calls — direct reply).
+    """
+    if mm is None:
+        return
+    called = tuple(getattr(turn, "called_tools", ()) or ())
+    if not called:
+        return
+    try:
+        entries = _action_log_from_turn(turn)
+        if not entries:
+            return
+        key = _ACTION_LOG_KEY.format(n=turn_count)
+        payload = json.dumps(entries, ensure_ascii=False)
+        await mm.store(SESSION_ROLE, key, payload)
+        log.debug("store_action_log: turn %d actions stored (%d entries)",
+                  turn_count, len(entries))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("store_action_log failed (turn=%d): %s", turn_count, exc)
 
 
 async def store_and_promote(
@@ -67,7 +213,15 @@ async def store_and_promote(
         await _store_turn(mm, turn_count, intent, summary)
         log.debug("store_and_promote: turn %d persisted", turn_count)
 
-        # 2. Behavioral learning — analyze + write + cache refresh.
+        # 2. Persist the structured action log so the NEXT turn
+        #    can report from data (tool calls + outcomes) rather
+        #    than confabulate from its own previous text.
+        if getattr(supervisor, "_last_turn_result", None) is not None:
+            await store_action_log(
+                mm, turn_count, supervisor._last_turn_result,
+            )
+
+        # 3. Behavioral learning — analyze + write + cache refresh.
         style_was_written = await _learn_and_persist(supervisor, mm)
         if style_was_written:
             # 3. Refresh the in-memory style cache so the next

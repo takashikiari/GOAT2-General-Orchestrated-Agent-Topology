@@ -70,6 +70,7 @@ class GoatSupervisor:
         "_semaphore",
         "_active_dag_tasks",
         "_background_tasks",
+        "_last_turn_result",
     )
 
     def __init__(self, registry: "ServiceRegistry") -> None:
@@ -87,6 +88,10 @@ class GoatSupervisor:
         # so they can be awaited at session end instead of being
         # silently dropped.
         self._background_tasks: dict[str, asyncio.Task] = {}
+        # BUG-? (action log): the most recent GoatTurnResult is
+        # stashed here so store_and_promote can persist the
+        # structured action log alongside the turn summary.
+        self._last_turn_result: object | None = None
         log.info("GoatSupervisor: ready (session=%s)", self.session_id)
 
     # ── Public API ──
@@ -165,6 +170,12 @@ class GoatSupervisor:
         action = "clarify" → return the LLM's clarification.
         action = "direct"  → return the LLM's reply.
         """
+        # Stash the last turn result on the supervisor so the
+        # action log can be persisted alongside the turn summary.
+        # We do this BEFORE building the result so a failure in
+        # store_and_promote doesn't lose the data we need.
+        self._last_turn_result = turn
+
         action = turn.action
         if action == "dag":
             summary = "DAG started. I'll surface results on the next turn."

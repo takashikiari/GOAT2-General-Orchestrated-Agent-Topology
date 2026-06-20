@@ -22,12 +22,17 @@ USAGE:
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Final
 
 from memory.temporal.temporal_format import (
     format_entries_with_age,
     load_temporal_config,
+)
+from supervisor.session.action_log_renderer import (
+    render_action_log_section,
+    split_records_by_type,
 )
 
 log = logging.getLogger("goat2.supervisor.session.layer_renderer")
@@ -82,23 +87,59 @@ def render_present_layer(
     Format::
 
         [Present] (N)
+        Last turn actions:
+          - memory_delete(key=X) → FAIL: Key not found
+          - memory_get(key=Y) → ok: Content: ...
         - [Xs ago] [working] turn:K: content
         ...
+
+    Records whose key ends with ``:actions`` are rendered
+    FIRST under a ``Last turn actions:`` header using the
+    structured format from ``format_action_log``. This gives
+    the model a concrete action record (with success / failure
+    markers) for self-reporting questions like "what did you
+    do last turn?" — without the model having to confabulate
+    from its own previous text.
 
     Args:
         records: Fresh working-memory records (age < present_max_age_s).
         now: Reference time for age computation.
-        max_entries: Hard cap on lines rendered.
+        max_entries: Hard cap on lines rendered (sum of action
+            log lines + other entries).
 
     Returns:
         The rendered block, or just the header when the layer
         is empty (so the LLM sees the layer exists).
     """
-    capped = records[:max_entries]
-    body = _render_age(capped, now=now)
-    if not body:
+    # Split: action-log records vs everything else. Action logs
+    # render FIRST so the model sees structured data before any
+    # free-text record.
+    action_records, other_records = split_records_by_type(records)
+
+    lines: list[str] = []
+
+    # Action log block (structured, success/failure markers).
+    # Only the most recent action log is rendered — older logs
+    # would crowd the prompt without adding signal.
+    if action_records:
+        last_content = (
+            action_records[0].get("content")
+            if isinstance(action_records[0], dict)
+            else getattr(action_records[0], "content", "")
+        ) or ""
+        action_section = render_action_log_section(last_content)
+        if action_section:
+            lines.append(action_section)
+
+    # Other working-memory entries (the standard age-labelled block).
+    body = _render_age(other_records[:max_entries], now=now)
+    if body:
+        lines.append(body)
+
+    if not lines:
         return LAYER_PRESENT
-    return f"{LAYER_PRESENT} ({len(capped)})\n{body}"
+    total_entries = len(other_records[:max_entries]) + (1 if action_records else 0)
+    return f"{LAYER_PRESENT} ({total_entries})\n" + "\n".join(lines)
 
 
 def format_episodic_hit(hit, *, max_content_len: int = 200) -> str:
