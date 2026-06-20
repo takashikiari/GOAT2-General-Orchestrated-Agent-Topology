@@ -76,10 +76,13 @@ async def store_and_promote(
             await refresh_style(supervisor)
 
         # 4. Schedule the background tier promotion.
-        asyncio.create_task(
-            schedule_promotion(supervisor, turn_count),
-            name="turn-promotion",
-        )
+        # NOTE: schedule_promotion is itself responsible for
+        # creating its own asyncio task and registering it in
+        # supervisor._background_tasks (BUG-027). Do NOT wrap
+        # it in asyncio.create_task here — that would pass
+        # schedule_promotion's None return value to create_task,
+        # which raises "a coroutine was expected, got None".
+        schedule_promotion(supervisor, turn_count)
     except Exception as exc:  # noqa: BLE001 — never break the turn
         log.warning("store_and_promote failed: %s", exc)
 

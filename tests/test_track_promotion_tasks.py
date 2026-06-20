@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import unittest.mock as mock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -117,3 +118,84 @@ def test_finalize_drains_pending_tasks_with_timeout():
     assert sorted(completed) == [1, 2, 3]
     # Registry is now empty (drained).
     assert len(sv._background_tasks) == 0
+
+
+# ── Regression: store_and_promote must not wrap schedule_promotion ────────
+
+
+def test_store_and_promote_does_not_coroutine_wrap_schedule_promotion():
+    """Regression: store_and_promote used to call
+
+        asyncio.create_task(schedule_promotion(sv, n), name=...)
+
+    but ``schedule_promotion`` is sync (def, not async def) and
+    returns None. ``asyncio.create_task(None)`` raised
+    "a coroutine was expected, got None" at runtime, surfacing
+    as a 'store_and_promote failed' WARNING in the logs even
+    though the actual work succeeded.
+
+    The fix: ``store_and_promote`` now calls ``schedule_promotion``
+    directly. ``schedule_promotion`` itself creates the
+    background task and registers it in ``_background_tasks``,
+    so the wrapping was redundant.
+
+    We pin the contract here by inspecting the source — the
+    test fails if anyone re-introduces the bad pattern.
+    """
+    import inspect
+    from supervisor.session import turn_persistence as tp
+
+    src = inspect.getsource(tp.store_and_promote)
+    # The fix: store_and_promote must NOT call asyncio.create_task
+    # with schedule_promotion as an argument.
+    assert "asyncio.create_task(\n            schedule_promotion(" not in src, (
+        "store_and_promote is wrapping schedule_promotion in "
+        "asyncio.create_task — but schedule_promotion is sync and "
+        "returns None. This is the 'a coroutine was expected, got None' "
+        "regression."
+    )
+    # And it MUST call schedule_promotion directly (so the
+    # background task actually gets registered).
+    assert "schedule_promotion(supervisor, turn_count)" in src, (
+        "store_and_promote must call schedule_promotion directly "
+        "so the background task is registered for drain at "
+        "session end (BUG-027)."
+    )
+
+
+def test_store_and_promote_registers_background_task():
+    """Functional check: store_and_promote must register a
+    background task via schedule_promotion. The task is
+    observable in ``_background_tasks`` after the call."""
+    from supervisor.session.turn_persistence import store_and_promote
+
+    async def _run():
+        sv = GoatSupervisor(ServiceRegistry())
+        # Stub the persist + style phases so we only exercise
+        # the schedule_promotion path.
+        async def _noop_store(*args, **kwargs):
+            return None
+        async def _noop_learn(*args, **kwargs):
+            return False
+        sv.memory_manager = MagicMock()
+        sv.memory_manager.store = AsyncMock(side_effect=_noop_store)
+        sv.memory_manager.working = MagicMock()
+        sv.memory_manager.working.list = AsyncMock(return_value=[])
+        # Patch the inner functions so we don't hit real Letta/Chroma.
+        with patch(
+            "supervisor.session.turn_persistence._store_turn",
+            new=_noop_store,
+        ), patch(
+            "supervisor.session.turn_persistence._learn_and_persist",
+            new=AsyncMock(side_effect=_noop_learn),
+        ):
+            await store_and_promote(sv, turn_count=1, intent="x", summary="y")
+
+        # The background task must be registered.
+        assert any("turn-promotion" in k for k in sv._background_tasks), (
+            f"schedule_promotion was not invoked from store_and_promote; "
+            f"_background_tasks={list(sv._background_tasks)}"
+        )
+        # Drain so the test doesn't leak.
+        await sv.finalize_background_tasks(timeout_s=1.0)
+    asyncio.run(_run())
