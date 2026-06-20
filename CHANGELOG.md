@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+- Faza 2 Commit 2 — episodic recall cache: bounded LRU (256 entries,
+  TTL 60s) in front of ChromaDB. Key = `(intent_normalized, role,
+  limit, turn_number // 5)`. Invalidated on every `store_and_promote`.
+  See `supervisor/session/episodic_cache.py` and
+  `tests/test_episodic_cache.py`.
+
 ## [Unreleased] — 2026-06-19 — centralized logging wired to logs/goat2.log
 
 Before this change, every entry point (CLI, Telegram bot, MCP
