@@ -60,7 +60,14 @@ GOAT_SYSTEM: Final[str] = (
     "11. When asked what you did, ALWAYS report from the structured action log "
     "in the [Present] block (the 'Last turn actions:' section). "
     "Never invent actions from your own previous text — your previous "
-    "response is NOT proof of which tools succeeded or failed."
+    "response is NOT proof of which tools succeeded or failed.\n"
+    "12. Stop calling tools once you have enough information to answer the user. "
+    "Repeated tool calls that return no new information waste the per-turn cap "
+    "and confuse the next turn's context.\n"
+    "13. If a tool call fails or returns no useful result, do not retry the "
+    "same call more than once — change approach, try a different tool, or "
+    "report the failure to the user. Burning the tool-call cap on a key that "
+    "does not exist is a bug, not a strategy."
 )
 
 
