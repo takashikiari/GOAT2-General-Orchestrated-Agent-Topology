@@ -204,6 +204,18 @@ async def store_and_promote(
 
     Returns:
         None. Best-effort; never raises.
+
+    Side effects:
+        - Writes two records to working memory (``turn:N:intent``,
+          ``turn:N:summary``).
+        - Writes a JSON action log to ``turn:N:actions`` (if any
+          tools were called).
+        - Refreshes the in-memory style cache if a style update
+          was learned.
+        - Invalidates the process-local episodic recall cache so
+          the next recall observes the freshest memory state.
+        - Schedules a background task to promote old working
+          entries to episodic.
     """
     mm = getattr(supervisor, "memory_manager", None)
     if mm is None:
@@ -237,6 +249,16 @@ async def store_and_promote(
         # schedule_promotion's None return value to create_task,
         # which raises "a coroutine was expected, got None".
         schedule_promotion(supervisor, turn_count)
+
+        # 5. Invalidate the episodic recall cache. We persist BEFORE
+        #    invalidating so the cache observes the freshest state
+        #    on its next call. Best-effort: cache failures must
+        #    never break turn persistence.
+        try:
+            from supervisor.session.episodic_cache import get_episodic_cache
+            get_episodic_cache().invalidate()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.debug("episodic cache invalidate failed: %s", exc)
     except Exception as exc:  # noqa: BLE001 — never break the turn
         log.warning("store_and_promote failed: %s", exc)
 

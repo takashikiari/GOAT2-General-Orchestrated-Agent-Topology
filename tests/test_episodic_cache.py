@@ -211,3 +211,34 @@ def test_fetch_episodic_hits_bypasses_cache_on_different_turn_bucket():
     asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))  # bucket 2
     asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=15))  # bucket 3
     assert mm.recall.await_count == 2
+
+
+# ── Integration: store_and_promote invalidates the cache ─────────────────
+
+
+def test_store_and_promote_invalidates_episodic_cache(monkeypatch):
+    """After ``store_and_promote`` runs, the cache must be empty so
+    the next recall observes the freshly-persisted turn."""
+    from supervisor.session import turn_persistence
+    from supervisor.session.episodic_cache import get_episodic_cache
+
+    # Pre-populate the cache with a stale value.
+    cache = get_episodic_cache()
+    cache.put(("hello", "goat", 5, 0), [_episodic_hit("stale")])
+    assert cache.size == 1
+
+    # Build a minimal supervisor stub.
+    supervisor = MagicMock()
+    supervisor.memory_manager = MagicMock()
+    supervisor._history = None
+    supervisor._last_turn_result = None
+
+    # schedule_promotion is fire-and-forget; stub it so the test
+    # doesn't need a full ServiceRegistry.
+    monkeypatch.setattr(
+        turn_persistence, "schedule_promotion",
+        lambda *a, **kw: None,
+    )
+
+    asyncio_run(turn_persistence.store_and_promote(supervisor, 1, "intent", "summary"))
+    assert cache.size == 0
