@@ -176,6 +176,14 @@ class GoatSupervisor:
         # store_and_promote doesn't lose the data we need.
         self._last_turn_result = turn
 
+        # Persist the structured action log EARLY — before we
+        # decide whether _history exists. The action log uses
+        # _last_turn_result (which we just set) and the memory
+        # manager, NOT the history buffer. This guarantees the
+        # action log is always written, regardless of whether
+        # the history bootstrap ran.
+        await self._persist_action_log(turn_count=len(self._history.messages) if self._history else 0, turn=turn)
+
         action = turn.action
         if action == "dag":
             summary = "DAG started. I'll surface results on the next turn."
@@ -203,6 +211,25 @@ class GoatSupervisor:
             from supervisor.session.turn_persistence import store_and_promote
             await store_and_promote(self, len(self._history.messages), intent, summary)
         return self._build_result(intent, t0, summary, source, session_id, action=action)
+
+    async def _persist_action_log(self, *, turn_count: int, turn) -> None:
+        """Persist the structured action log for this turn.
+
+        Extracted from store_and_promote so it can run BEFORE
+        the ``if self._history is not None`` check. The action
+        log depends only on the memory_manager and the turn
+        result — not on the history buffer.
+
+        Best-effort: any failure is logged at DEBUG, never raised.
+        """
+        mm = getattr(self, "memory_manager", None)
+        if mm is None:
+            return
+        try:
+            from supervisor.session.turn_persistence import store_action_log
+            await store_action_log(mm, turn_count=turn_count, turn=turn)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("_persist_action_log failed: %s", exc)
 
     def _build_result(
         self, intent: str, t0: float, summary: str, source: str, session_id: str,
