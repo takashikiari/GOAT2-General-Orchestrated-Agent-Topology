@@ -67,7 +67,14 @@ GOAT_SYSTEM: Final[str] = (
     "13. If a tool call fails or returns no useful result, do not retry the "
     "same call more than once — change approach, try a different tool, or "
     "report the failure to the user. Burning the tool-call cap on a key that "
-    "does not exist is a bug, not a strategy."
+    "does not exist is a bug, not a strategy.\n"
+    "14. Before deleting or modifying memory entries, first call "
+    "memory_search or memory_recent to retrieve the EXACT keys that exist. "
+    "Use only the exact key strings returned in those tool results. Never "
+    "construct, guess, or pattern-match a key format from memory — if you "
+    "haven't seen the literal key string in a tool result this turn, you "
+    "don't have it. Wrong-format keys return 'Key not found' and waste "
+    "the per-turn tool-call cap."
 )
 
 
