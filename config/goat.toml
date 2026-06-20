@@ -141,6 +141,12 @@ max_turns    = 20      # Maximum conversation turns
 turn_timeout = 120     # Seconds before task timeout
 verbose      = true   # Enable detailed logging
 temperature  = 0.5     # Reduced for accuracy (minimizes false information)
+# Hard cap on the total number of tool calls per turn. Default 6 is
+# enough for normal flows and low enough to prevent the observed
+# "17 calls, all no-ops" pathology (model loops calling memory_get
+# with fabricated key names). Lower = safer; raise only if you
+# have a strong reason.
+max_tool_calls_per_turn = 6
 
 # ─────────────────────────────────────────────────────────────────────────────
 # [antirepeat] — clarify text when the active antirepeat gate blocks a loop

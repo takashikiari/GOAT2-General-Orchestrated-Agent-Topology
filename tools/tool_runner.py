@@ -31,7 +31,36 @@ if TYPE_CHECKING:
     from utils.logging.source_types import TaggedResult
 
 log = logging.getLogger("goat2.tools.tool_runner")
-__all__ = ["_call_with_tools"]
+__all__ = ["_call_with_tools", "_MAX_TOOL_CALLS_PER_TURN"]
+
+
+# Hard cap on the total number of tool calls per turn.
+# The previous behaviour let the LLM iterate up to 8 rounds × N
+# tools per round, observed in the wild as 17 tool calls in a
+# single turn (session 10:57, 2026-06-20 — the model burned
+# 10 of those on `memory_get` for keys that didn't exist).
+# The cap is loaded from config/goat.toml [supervisor]; default
+# 6 is enough for normal flows and low enough to prevent the
+# pathological "many calls, all no-ops" pattern.
+def _load_tool_call_cap() -> int:
+    """Read [supervisor].max_tool_calls_per_turn from config.
+
+    Resolution order: toml > module default. The loader is
+    best-effort so a missing file silently falls back.
+    """
+    default = 6
+    try:
+        from config.modular_loader import load_goat_config
+        section = (load_goat_config() or {}).get("supervisor", {}) or {}
+        raw = section.get("max_tool_calls_per_turn")
+        if raw is not None:
+            return max(1, int(raw))
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+    return default
+
+
+_MAX_TOOL_CALLS_PER_TURN: int = _load_tool_call_cap()
 
 _MAX_ROUNDS: Final[int] = 8
 ToolChoice = Literal["auto", "required", "none"]
@@ -220,6 +249,29 @@ async def _call_with_tools(
             ],
         })
         for tc in msg.tool_calls:
+            # BUG-?: per-turn tool-call cap. When the model
+            # exceeds _MAX_TOOL_CALLS_PER_TURN, stop dispatching
+            # and return a short honest fallback instead of
+            # letting the loop keep spinning (or returning
+            # empty). The fallback mentions the cap so the
+            # operator can see why iteration stopped.
+            if len(called_tools) + 1 > _MAX_TOOL_CALLS_PER_TURN:
+                log.warning(
+                    "tool_runner: per-turn cap reached "
+                    "(%d calls) — returning fallback",
+                    _MAX_TOOL_CALLS_PER_TURN,
+                )
+                source = infer_source(called_tools)
+                fallback = (
+                    f"[Reached the {_MAX_TOOL_CALLS_PER_TURN}-tool "
+                    f"per-turn limit while answering. Stopped "
+                    f"here.]"
+                )
+                return TaggedResult(
+                    content=fallback,
+                    source=source,
+                    called_tools=tuple(called_tools),
+                )
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
