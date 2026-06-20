@@ -21,6 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from supervisor.session import mem_inject
+from supervisor.session.episodic_cache import (
+    EpisodicRecallCache,
+    set_episodic_cache,
+)
 from supervisor.session.mem_inject import (
     LAYER_PRESENT,
     LAYER_PRESENT_PAST,
@@ -32,6 +36,20 @@ from supervisor.session.mem_inject import (
     _past_max_entries,
     mem_turn,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_episodic_cache():
+    """Reset the episodic cache singleton for every test.
+
+    Without this, the first test that exercises ``mem_turn`` with
+    a default (empty) ``episodic_hits`` mock caches ``[]`` for the
+    (intent, SESSION_ROLE, top_k, 0) key, and later tests that
+    supply real hits get the stale cached ``[]`` back.
+    """
+    set_episodic_cache(EpisodicRecallCache())
+    yield
+    set_episodic_cache(None)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
