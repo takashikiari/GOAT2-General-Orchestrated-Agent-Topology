@@ -145,6 +145,46 @@ def _strip_dsml(text: str) -> str:
     return text.strip()
 
 
+# Per-tool-result truncation cap for the structured fallback.
+# Sized so a single huge result cannot blow up the user-facing reply
+# (observed: ``memory_search`` over a large corpus returned ~50 KB).
+# 200 chars is enough to convey "Key not found", "no results", an
+# error code, or a short preview — long enough to be useful,
+# short enough that the aggregation block stays scannable.
+_TOOL_RESULT_PREVIEW_CHARS: Final[int] = 200
+
+
+def _format_tool_results_fallback(results: list[tuple[str, str]]) -> str:
+    """Format tool dispatch results as a structured user-facing block.
+
+    Used when the LLM returns no visible content after calling tools.
+    Each result is rendered as ``Tool <name> returned: <preview>`` so
+    the user sees an honest "this is what the tools returned" message
+    that cannot be confused with a model-generated claim.
+
+    Args:
+        results: List of (tool_name, cleaned_result) pairs in dispatch
+            order. May be empty (caller checks before calling).
+
+    Returns:
+        Multi-line structured block, one line per tool. Empty results
+        are rendered as ``Tool X returned: (empty)`` so the user sees
+        the tool was called but produced nothing — distinguishes
+        "tool ran and returned nothing" from "tool wasn't called".
+    """
+    if not results:
+        # Defensive: caller already checks, but never return a bare
+        # empty string — the user would see no feedback at all.
+        return "(tool calls produced no result)"
+    lines: list[str] = []
+    for name, content in results:
+        preview = (content or "").strip() or "(empty)"
+        if len(preview) > _TOOL_RESULT_PREVIEW_CHARS:
+            preview = preview[:_TOOL_RESULT_PREVIEW_CHARS] + "…"
+        lines.append(f"Tool {name} returned: {preview}")
+    return "\n".join(lines)
+
+
 async def _dispatch(name: str, args: dict, tool_map: dict, memory_manager) -> str:
     """Dispatch a tool call by name, injecting memory_manager for memory tools if accepted.
 
@@ -210,6 +250,13 @@ async def _call_with_tools(
     schema = [t.to_openai() for t in tools]
     history = list(messages)
     called_tools: list[str] = []
+    # Parallel to ``called_tools``: (name, cleaned_result) pairs for
+    # every tool the model dispatched. Used by the structured
+    # fallback when the model returns no visible content after tool
+    # calls — see ``_format_tool_results_fallback`` below. Kept as a
+    # parallel list (instead of scanning ``history`` backwards) so the
+    # fallback is robust to history-format changes.
+    tool_results: list[tuple[str, str]] = []
     log.debug("tool_runner: model=%s tools=%s choice=%s", spec.model_id, [t.name for t in tools], tool_choice)
     for rnd in range(_MAX_ROUNDS + 1):
         kw: dict[str, Any] = {"model": spec.model_id, "messages": history}
@@ -223,12 +270,17 @@ async def _call_with_tools(
             log.debug("tool_runner: round=%d no tool_calls from %s", rnd, spec.model_id)
             source = infer_source(called_tools)
             final_content = msg.content or ""
-            if not final_content.strip() and history:
-                last_tool = next(
-                    (m["content"] for m in reversed(history) if m.get("role") == "tool"),
-                    ""
-                )
-                final_content = last_tool
+            if not final_content.strip() and tool_results:
+                # Model went silent after calling tools. The previous
+                # behaviour returned the LAST tool's raw result as
+                # the user-facing reply, which the model then treated
+                # as its own claim on the next turn (see Commit 1.5
+                # root-cause note — the "6-point report" confabulation).
+                # Fix: format ALL tool results as a structured block
+                # so the user sees an honest "this is what the tools
+                # returned" message that cannot be confused with a
+                # model-generated claim.
+                final_content = _format_tool_results_fallback(tool_results)
             return TaggedResult(content=_strip_dsml(final_content), source=source,
                                 called_tools=tuple(called_tools))
         log.debug("tool_runner: round=%d calls=%s", rnd, [tc.function.name for tc in msg.tool_calls])
@@ -286,6 +338,7 @@ async def _call_with_tools(
             # Strip DSML from tool results to keep history clean
             clean_result = _strip_dsml(result)
             called_tools.append(tc.function.name)
+            tool_results.append((tc.function.name, clean_result))
             tool_src = TOOL_SOURCE_MAP.get(tc.function.name, "generated")
             log_tool_call(tc.function.name, args, tool_src, clean_result)
             history.append({"role": "tool", "tool_call_id": tc.id, "content": clean_result})
