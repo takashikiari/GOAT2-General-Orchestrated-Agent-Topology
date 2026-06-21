@@ -1,39 +1,9 @@
-"""Working memory layer — Redis-backed session-scoped storage.
-
-Provides short-term memory with TTL enforcement. Used for session context,
-active conversation, tool outputs, and DAG agent communication.
-
-EXPORTS:
-- WorkingMemoryLayer: Main session-scoped memory layer
-- WorkingMemoryBackend: Storage-neutral backend Protocol (swap any backend)
-- RedisBackend: Networked key-value implementation
-- DictBackend: In-memory dictionary implementation
-- RecordDict: Serialization wrapper
-- check_and_promote: LLM-scored promotion when working memory fills up
-- collect: Silent garbage-collector sweep (dag TTL + turn trim)
-- schedule_auto_collect: Predicate for periodic detached collection
 """
-from __future__ import annotations
+memory.working — session-scoped working memory backed by Redis.
 
-import logging
+Re-exports WorkingMemory for convenient top-level import:
+    from memory.working import WorkingMemory
+"""
+from memory.working.working import WorkingMemory
 
-from memory.working.working_memory import WorkingMemoryLayer
-from memory.working.backend_protocol import WorkingMemoryBackend
-from memory.working.redis_backend import RedisBackend
-from memory.working.dict_backend import DictBackend
-from memory.working.working_record import RecordDict
-from memory.working.capacity import check_and_promote
-from memory.working.garbage_collector import collect, schedule_auto_collect
-
-log = logging.getLogger("goat2.memory.working")
-
-__all__ = [
-    "WorkingMemoryLayer",
-    "WorkingMemoryBackend",
-    "RedisBackend",
-    "DictBackend",
-    "RecordDict",
-    "check_and_promote",
-    "collect",
-    "schedule_auto_collect",
-]
+__all__ = ["WorkingMemory"]

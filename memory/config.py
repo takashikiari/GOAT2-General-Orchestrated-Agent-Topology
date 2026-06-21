@@ -1,52 +1,54 @@
-"""Memory system configuration constants.
+"""
+memory.config — configuration for all memory tiers.
 
-Central registry for memory-related constants used across the memory module.
-Replaces hardcoded values with configurable constants.
+Reads config/memory.toml at import time and exposes typed constants.
+Nothing else reads the toml directly — this is the single source of truth
+for memory configuration, same pattern as config/settings.py for LLM config.
+
+Falls back to hardcoded defaults only when the toml file is absent.
 """
 from __future__ import annotations
 
-import logging
+import tomllib
+from pathlib import Path
 
-log = logging.getLogger("goat2.memory.config")
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "memory.toml"
 
-__all__ = [
-    "WORKING_BACKEND",
-    "EPISODIC_BACKEND",
-    "LONG_TERM_BACKEND",
-    "PROMOTION_TURN_EPISODIC",
-    "PROMOTION_TURN_LONG_TERM",
-    "POLLUTION_GUARD_MIN_LENGTH",
-]
+_DEFAULTS: dict = {
+    "working": {
+        "storage_url": "redis://localhost:6379/0",
+        "ttl_seconds": 0,
+    },
+    "episodic": {
+        "storage_path": "./chroma_data",
+        "collection_name": "episodic_memory",
+    },
+}
 
-# Memory backends
-WORKING_BACKEND: str = "redis"
-"""Backend used for working memory tier."""
 
-EPISODIC_BACKEND: str = "chromadb"
-"""Backend used for episodic memory tier."""
+def _load() -> dict:
+    """Load memory.toml; return defaults if the file is missing."""
+    try:
+        with open(_CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return _DEFAULTS
 
-LONG_TERM_BACKEND: str = "letta"
-"""Backend used for long-term memory tier."""
 
-# Promotion thresholds (in conversation turns)
-PROMOTION_TURN_EPISODIC: int = 2
-"""Turn threshold for promoting working → episodic memory.
+_cfg = _load()
 
-When turn_count >= 4 (messages), working memory entries are promoted
-to episodic storage.
-"""
+_working = _cfg.get("working", _DEFAULTS["working"])
+WORKING_STORAGE_URL: str = str(
+    _working.get("storage_url", _DEFAULTS["working"]["storage_url"])
+)
+WORKING_TTL_SECONDS: int = int(
+    _working.get("ttl_seconds", _DEFAULTS["working"]["ttl_seconds"])
+)
 
-PROMOTION_TURN_LONG_TERM: int = 3
-"""Turn threshold for promoting episodic → long-term memory.
-
-When turn_count >= 6 (messages), episodic memory entries are promoted
-to long-term storage.
-"""
-
-# Quality guard
-POLLUTION_GUARD_MIN_LENGTH: int = 10
-"""Minimum content length for PollutionGuard validation.
-
-Content shorter than this is flagged for review before promotion
-to higher tiers.
-"""
+_episodic = _cfg.get("episodic", _DEFAULTS["episodic"])
+EPISODIC_STORAGE_PATH: str = str(
+    _episodic.get("storage_path", _DEFAULTS["episodic"]["storage_path"])
+)
+EPISODIC_COLLECTION_NAME: str = str(
+    _episodic.get("collection_name", _DEFAULTS["episodic"]["collection_name"])
+)

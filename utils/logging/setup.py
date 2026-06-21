@@ -1,138 +1,68 @@
-"""Centralized logging setup for GOAT 2.0.
+"""
+utils.logging.setup — structured logging configuration for GOAT 2.0.
 
-Wires every entry point (CLI, Telegram bot, MCP server, ad-hoc
-scripts) to a rotating file handler at ``logs/goat2.log`` plus
-a stderr handler. Idempotent — safe to call from any module
-more than once; only the first call attaches handlers and
-later calls just adjust the level.
+Usage in every module:
+    from utils.logging.setup import get_logger
+    log = get_logger(__name__)
 
-DESIGN:
-  - The file handler is a ``RotatingFileHandler`` capped at
-    ``DEFAULT_MAX_BYTES`` (10 MB) with ``DEFAULT_BACKUP_COUNT``
-    (5). Older files become ``goat2.log.1`` ... ``goat2.log.5``.
-  - The directory is created on demand (``mkdir -p``).
-  - Stderr is preserved at the same level so developers
-    running ``python cli.py`` still see live output.
-  - Re-running with a different ``level`` re-binds the level
-    on the existing handlers without duplicating them, so
-    ``configure_logging(level=DEBUG)`` after a normal start
-    works as expected.
-  - The ``goat2`` logger namespace gets the same level as
-    root. Third-party loggers (``httpx``, ``telegram``,
-    ``asyncio``) get WARNING to keep output readable.
+get_logger() configures the Python root logger on first call (stdout at INFO +
+rotating file at DEBUG).  Noisy third-party libraries (httpx, openai, httpcore)
+are capped at WARNING so they don't drown out application logs.  All subsequent
+calls return a named logger cheaply — no re-configuration.
 
-USAGE (from an entry point):
-    from utils.logging.setup import configure_logging
-    configure_logging()                  # defaults
-    configure_logging(level="DEBUG")     # change level at runtime
-    configure_logging(file_path=Path("/var/log/goat.log"))  # override
+For symbol-conflict detection see utils.logging.symbols.register_symbols().
 """
 from __future__ import annotations
 
 import logging
 import logging.handlers
 import os
-import sys
 from pathlib import Path
-from typing import Final
 
-__all__ = [
-    "configure_logging",
-    "DEFAULT_FORMAT",
-    "DEFAULT_MAX_BYTES",
-    "DEFAULT_BACKUP_COUNT",
-    "DEFAULT_LOG_PATH",
-]
-
-DEFAULT_FORMAT:     Final[str] = (
-    "%(asctime)s  %(name)-32s  %(levelname)-8s  %(message)s"
-)
-DEFAULT_MAX_BYTES:  Final[int] = 10 * 1024 * 1024  # 10 MB
-DEFAULT_BACKUP_COUNT: Final[int] = 5
-DEFAULT_LOG_PATH:   Final[Path] = Path("logs") / "goat2.log"
-
-# Loggers known to be noisy at INFO. Throttled so the
-# operator's view stays focused on goat2.* events.
-_NOISY_LOGGERS: Final[tuple[str, ...]] = (
-    "httpx", "httpcore", "apscheduler",
-    "telegram.ext", "telegram.bot", "urllib3",
-)
-
-# Sentinel so we can tell "first call" from "subsequent" calls
-# without holding module state that survives a reload.
-_FILE_HANDLER_NAME: Final[str] = "goat2_file_handler"
-_STDERR_HANDLER_NAME: Final[str] = "goat2_stderr_handler"
+_LOG_DIR = Path(os.environ.get("GOAT_LOG_DIR", "/tmp/goat2/logs"))
+_LOG_FILE = _LOG_DIR / "goat2.log"
+_FMT = "%(asctime)s  %(name)-35s  %(levelname)-8s  %(message)s"
+_DATE_FMT = "%Y-%m-%dT%H:%M:%S"
+_QUIET_LIBS = ("httpx", "httpcore", "openai", "hpack", "h2", "asyncio")
+_root_configured = False
 
 
-def _level_for(name: str) -> int:
-    """Resolve a level name to a logging constant, defaulting to INFO."""
-    return getattr(logging, name.upper(), logging.INFO)
+def get_logger(name: str) -> logging.Logger:
+    """
+    Return a logger for ``name``, configuring the root logger on first call.
 
-
-def configure_logging(
-    level: str | int = "INFO",
-    file_path: Path | None = None,
-    max_bytes: int = DEFAULT_MAX_BYTES,
-    backup_count: int = DEFAULT_BACKUP_COUNT,
-    fmt: str = DEFAULT_FORMAT,
-) -> logging.Logger:
-    """Attach file + stderr handlers to the root logger.
-
-    Idempotent. On the first call a ``RotatingFileHandler``
-    and a ``StreamHandler(sys.stderr)`` are created. On
-    subsequent calls the existing handlers are reused and
-    only their level + formatter are updated.
+    Writes INFO+ to stdout and DEBUG+ to a rotating log file (10 MB, 5 backups).
+    Third-party libraries that log excessively are capped at WARNING.
 
     Args:
-        level: Root level — string (``"DEBUG"``) or logging constant.
-        file_path: Where to write the log file. ``None`` →
-            ``DEFAULT_LOG_PATH`` (relative to CWD).
-        max_bytes: Per-file rotation size.
-        backup_count: Number of rotated files to keep.
-        fmt: Log record format string.
+        name: Typically ``__name__`` of the calling module.
 
     Returns:
-        The configured root logger (so callers can immediately
-        ``root.info(...)`` if they want).
+        Configured logging.Logger instance.
     """
-    target = file_path or DEFAULT_LOG_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
+    global _root_configured
+    if not _root_configured:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
 
-    root = logging.getLogger()
-    root.setLevel(_level_for(level))
-    formatter = logging.Formatter(fmt)
+        fmt = logging.Formatter(_FMT, datefmt=_DATE_FMT)
 
-    # File handler — attach or update.
-    file_h = _find_handler(root, _FILE_HANDLER_NAME)
-    if file_h is None:
-        file_h = logging.handlers.RotatingFileHandler(
-            str(target), maxBytes=max_bytes, backupCount=backup_count,
-            encoding="utf-8",
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        sh.setLevel(logging.INFO)
+        root.addHandler(sh)
+
+        fh = logging.handlers.RotatingFileHandler(
+            _LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5
         )
-        file_h.set_name(_FILE_HANDLER_NAME)
-        root.addHandler(file_h)
-    file_h.setLevel(_level_for(level))
-    file_h.setFormatter(formatter)
+        fh.setFormatter(fmt)
+        fh.setLevel(logging.DEBUG)
+        root.addHandler(fh)
 
-    # Stderr handler — attach or update.
-    stderr_h = _find_handler(root, _STDERR_HANDLER_NAME)
-    if stderr_h is None:
-        stderr_h = logging.StreamHandler(sys.stderr)
-        stderr_h.set_name(_STDERR_HANDLER_NAME)
-        root.addHandler(stderr_h)
-    stderr_h.setLevel(_level_for(level))
-    stderr_h.setFormatter(formatter)
+        for lib in _QUIET_LIBS:
+            logging.getLogger(lib).setLevel(logging.WARNING)
 
-    # Throttle noisy third-party loggers regardless of root level.
-    for noisy in _NOISY_LOGGERS:
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+        _root_configured = True
 
-    return root
-
-
-def _find_handler(logger: logging.Logger, name: str) -> logging.Handler | None:
-    """Return the first handler on ``logger`` with ``handler.name == name``."""
-    for h in logger.handlers:
-        if getattr(h, "name", None) == name:
-            return h
-    return None
+    return logging.getLogger(name)
