@@ -1,17 +1,7 @@
 """
-registry.registry — lightweight dependency-injection container.
+registry.registry — lightweight DI container for GOAT 2.0.
 
-ServiceRegistry is constructed explicitly by whoever needs it (orchestrator,
-tests, CLI entry points).  There is intentionally no module-level singleton —
-callers own the registry lifetime, which makes testing trivial.
-
-Usage:
-    from registry.registry import ServiceRegistry
-
-    registry = ServiceRegistry()
-    client = registry.llm_client       # AsyncOpenAI, built on first access
-    memory = registry.working_memory   # WorkingMemory, built on first access
-    epis   = registry.episodic_memory  # EpisodicMemory, built on first access
+No module-level singleton — callers own the registry lifetime.
 """
 from __future__ import annotations
 
@@ -25,29 +15,21 @@ if TYPE_CHECKING:
     from openai import AsyncOpenAI
     from memory.working import WorkingMemory
     from memory.episodic import EpisodicMemory
+    from memory.permanent import PermanentMemory
 
 
 class ServiceRegistry:
-    """
-    Minimal DI container for GOAT 2.0.
-
-    All services are built lazily on first access — importing the registry
-    never triggers network activity or raises on missing configuration.
-    """
+    """Minimal DI container. All services built lazily on first access."""
 
     def __init__(self) -> None:
-        """Create an empty registry.  All services are built on first access."""
         self._llm_client: AsyncOpenAI | None = None
         self._working_memory: WorkingMemory | None = None
         self._episodic_memory: EpisodicMemory | None = None
+        self._permanent_memory: PermanentMemory | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
-        """
-        Return the shared AsyncOpenAI-compatible LLM client.
-
-        Built once; reused for the registry's lifetime.
-        """
+        """Shared AsyncOpenAI-compatible LLM client, built once."""
         if self._llm_client is None:
             from openai import AsyncOpenAI  # lazy — avoids import-time side effects
             self._llm_client = AsyncOpenAI(
@@ -59,12 +41,7 @@ class ServiceRegistry:
 
     @property
     def working_memory(self) -> WorkingMemory:
-        """
-        Return the shared WorkingMemory instance.
-
-        Built once; the underlying Redis client is itself lazily connected
-        on first I/O call.
-        """
+        """Shared WorkingMemory, Redis client lazily connected on first I/O."""
         if self._working_memory is None:
             from memory.working import WorkingMemory  # lazy — avoids import-time I/O
             self._working_memory = WorkingMemory()
@@ -72,13 +49,16 @@ class ServiceRegistry:
 
     @property
     def episodic_memory(self) -> EpisodicMemory:
-        """
-        Return the shared EpisodicMemory instance.
-
-        Built once; the ChromaDB client is itself lazily initialised on
-        first store/search call.
-        """
+        """Shared EpisodicMemory, ChromaDB lazily initialised on first use."""
         if self._episodic_memory is None:
             from memory.episodic import EpisodicMemory  # lazy — avoids import-time I/O
             self._episodic_memory = EpisodicMemory()
         return self._episodic_memory
+
+    @property
+    def permanent_memory(self) -> PermanentMemory:
+        """Shared PermanentMemory, Letta client lazily connected on first use."""
+        if self._permanent_memory is None:
+            from memory.permanent import PermanentMemory  # lazy — avoids import-time I/O
+            self._permanent_memory = PermanentMemory()
+        return self._permanent_memory

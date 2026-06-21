@@ -11,3 +11,8 @@ check_interval_seconds = 60
 max_messages_before_promote = 50
 max_age_seconds_before_promote = 600
 recovery_message_limit = 20
+
+[permanent]
+letta_url = "http://localhost:8283"
+agent_name = "goat-permanent"
+letta_model = "letta/letta-free"
