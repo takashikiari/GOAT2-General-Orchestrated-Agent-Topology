@@ -5,3 +5,9 @@ ttl_seconds = 0
 [episodic]
 storage_path = "./chroma_data"
 collection_name = "episodic_memory"
+
+[promotion]
+check_interval_seconds = 60
+max_messages_before_promote = 50
+max_age_seconds_before_promote = 600
+recovery_message_limit = 20

@@ -18,11 +18,10 @@ log = get_logger(__name__)
 
 class EpisodicMemory:
     """
-    Cross-session conversation memory with semantic search.
+    Cross-session conversation memory with semantic search and recency lookup.
 
-    The ChromaDB client and collection are built lazily on first use so
-    importing this class never touches the filesystem.  One instance is
-    shared across all chat sessions (via ServiceRegistry).
+    ChromaDB client and collection are built lazily on first use.
+    One instance is shared across all chat sessions (via ServiceRegistry).
     """
 
     def __init__(self) -> None:
@@ -48,14 +47,7 @@ class EpisodicMemory:
         return self._collection
 
     async def store(self, chat_id: str, content: str, metadata: dict) -> None:
-        """
-        Store one piece of content with metadata.
-
-        Args:
-            chat_id:  Conversation identifier; merged into stored metadata.
-            content:  Text to embed and store.
-            metadata: Caller-supplied metadata (e.g. {"role": "user", "ts": ...}).
-        """
+        """Store content + metadata for chat_id. chat_id is merged into metadata."""
         merged = {"chat_id": chat_id, **metadata}
         doc_id = str(uuid.uuid4())
         await asyncio.to_thread(
@@ -67,16 +59,7 @@ class EpisodicMemory:
         log.debug("EpisodicMemory: stored entry chat=%s id=%s", chat_id, doc_id)
 
     async def search(self, query: str, limit: int = 5) -> list[dict]:
-        """
-        Semantic search across all stored episodic entries.
-
-        Args:
-            query: Natural-language query; embedded and compared against stored entries.
-            limit: Maximum number of results to return.
-
-        Returns:
-            List of {"content": str, "metadata": dict} dicts, closest first.
-        """
+        """Semantic search. Returns list of {"content", "metadata"} dicts, closest first."""
         results = await asyncio.to_thread(
             self._get_collection().query,
             query_texts=[query],
@@ -85,3 +68,23 @@ class EpisodicMemory:
         docs = results["documents"][0]
         metas = results["metadatas"][0]
         return [{"content": d, "metadata": m} for d, m in zip(docs, metas)]
+
+    async def get_recent(self, chat_id: str, limit: int = 20) -> list[dict]:
+        """
+        Return the most recent N entries for chat_id in chronological order.
+
+        Pure recency (not semantic). Fetches all entries for chat_id, sorts
+        client-side by metadata.timestamp, returns the newest N.
+        """
+        results = await asyncio.to_thread(
+            self._get_collection().get,
+            where={"chat_id": chat_id},
+            include=["documents", "metadatas"],
+        )
+        docs = results["documents"] or []
+        metas = results["metadatas"] or []
+        entries = sorted(
+            [{"content": d, "metadata": m} for d, m in zip(docs, metas)],
+            key=lambda e: float(e["metadata"].get("timestamp", 0)),
+        )
+        return entries[-limit:]

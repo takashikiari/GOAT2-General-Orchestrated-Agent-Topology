@@ -14,6 +14,7 @@ Usage:
 """
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from config import settings
@@ -61,9 +62,13 @@ class Orchestrator:
             LLM response text, or an empty string if the model returned none.
         """
         messages = await self._registry.working_memory.get_messages(chat_id)
-        messages.append({"role": "user", "content": intent})
+        messages.append({"role": "user", "content": intent, "timestamp": time.time()})
 
-        api_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
+        # Strip non-standard fields (timestamp) before sending to the LLM API.
+        api_messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            *({"role": m["role"], "content": m["content"]} for m in messages),
+        ]
         response = await self._registry.llm_client.chat.completions.create(
             model=settings.MODEL_NAME,
             messages=api_messages,
@@ -72,6 +77,6 @@ class Orchestrator:
         )
         reply = response.choices[0].message.content or ""
 
-        messages.append({"role": "assistant", "content": reply})
+        messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})
         await self._registry.working_memory.save_messages(chat_id, messages)
         return reply
