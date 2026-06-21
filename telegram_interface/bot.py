@@ -1,9 +1,6 @@
 """
-telegram_interface.bot — Telegram bot entry point for GOAT 2.0.
-
-build_app(registry): Wires Orchestrator; recovers context on first message
-per chat; force-promotes all chats on shutdown.
-run_polling(): Builds registry + PromotionDaemon, starts long-polling.
+telegram_interface.bot — entry point for GOAT 2.0 Telegram bot.
+build_app(registry) wires handlers; run_polling() starts daemon + long-polling.
 """
 from __future__ import annotations
 
@@ -76,7 +73,9 @@ def run_polling() -> None:
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
-    daemon = PromotionDaemon(registry.working_memory, registry.episodic_memory)
+    daemon = PromotionDaemon(
+        registry.working_memory, registry.episodic_memory, registry.permanent_memory,
+    )
 
     async def _start(app: Application) -> None:
         await daemon.start()
