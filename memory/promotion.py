@@ -1,62 +1,56 @@
-"""
-memory.promotion — background daemon that promotes stale WorkingMemory to EpisodicMemory.
-
-Runs a periodic loop (PROMOTION_CHECK_INTERVAL_SECONDS).  For each chat_id,
-delegates to _check_and_promote() which applies age and count thresholds.
-"""
+"""memory.promotion — daemon: WorkingMemory→EpisodicMemory→PermanentMemory promotion."""
 from __future__ import annotations
 
-import asyncio
-import time
+import asyncio, time  # noqa: E401
 from typing import TYPE_CHECKING
 
-from memory.config import PROMOTION_CHECK_INTERVAL_SECONDS, PROMOTION_MAX_AGE_SECONDS, PROMOTION_MAX_MESSAGES
+from memory.config import (
+    EPISODIC_MAX_ENTRIES, EPISODIC_PROMOTE_COUNT, PROMOTION_CHECK_INTERVAL_SECONDS,
+    PROMOTION_MAX_AGE_SECONDS, PROMOTION_MAX_MESSAGES,
+)
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
     from memory.episodic import EpisodicMemory
+    from memory.permanent import PermanentMemory
     from memory.working import WorkingMemory
 
 log = get_logger(__name__)
 
 
 class PromotionDaemon:
-    """
-    Periodically promotes stale WorkingMemory entries to EpisodicMemory.
-    Not a singleton — owned by the caller (e.g. the Telegram bot).
-    """
+    """Promotes stale entries up the memory tier chain on a periodic schedule."""
 
-    def __init__(self, working_memory: WorkingMemory, episodic_memory: EpisodicMemory) -> None:
+    def __init__(
+        self, working_memory: WorkingMemory,
+        episodic_memory: EpisodicMemory, permanent_memory: PermanentMemory,
+    ) -> None:
         self._working = working_memory
         self._episodic = episodic_memory
+        self._permanent = permanent_memory
         self._running = False
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        """Launch the promotion loop as a background asyncio task."""
-        self._running = True
-        self._task = asyncio.create_task(self._loop())
+        self._running, self._task = True, asyncio.create_task(self._loop())
         log.info("PromotionDaemon started (interval=%ds)", PROMOTION_CHECK_INTERVAL_SECONDS)
 
     async def stop(self) -> None:
-        """Cancel the loop and wait for it to finish cleanly."""
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+            try: await self._task
+            except asyncio.CancelledError: pass
         log.info("PromotionDaemon stopped")
 
     async def _loop(self) -> None:
-        """Check every known chat_id each interval; sleep between cycles."""
         while self._running:
             try:
                 for chat_id in await self._working.list_chat_ids():
                     n = await self._check_and_promote(chat_id)
                     if n:
                         log.info("promoted %d msg(s) from chat=%s", n, chat_id)
+                await self._check_episodic_promotion()
             except Exception:
                 log.exception("PromotionDaemon: check cycle failed")
             try:
@@ -65,7 +59,6 @@ class PromotionDaemon:
                 break
 
     async def _check_and_promote(self, chat_id: str) -> int:
-        """Promote stale msgs for chat_id (age then count threshold). Returns promoted count."""
         messages = await self._working.get_messages(chat_id)
         if not messages:
             return 0
@@ -79,11 +72,19 @@ class PromotionDaemon:
             to_promote += to_keep[:excess]
             to_keep = to_keep[excess:]
         for msg in to_promote:
-            await self._episodic.store(
-                chat_id=chat_id,
-                content=msg["content"],
-                metadata={"role": msg["role"], "timestamp": float(msg.get("timestamp", now))},
-            )
+            ts = float(msg.get("timestamp", now))
+            await self._episodic.store(chat_id, msg["content"],
+                                        {"role": msg["role"], "timestamp": ts})
         if to_promote:
             await self._working.save_messages(chat_id, to_keep)
         return len(to_promote)
+
+    async def _check_episodic_promotion(self) -> int:
+        """Global episodic→permanent: promote oldest EPISODIC_PROMOTE_COUNT when total >= EPISODIC_MAX_ENTRIES."""
+        if (total := await self._episodic.count()) < EPISODIC_MAX_ENTRIES:
+            return 0
+        oldest = await self._episodic.get_oldest(EPISODIC_PROMOTE_COUNT)
+        await self._permanent.archive_entries(oldest)
+        await self._episodic.delete_entries([e["id"] for e in oldest])
+        log.info("PromotionDaemon: episodic→permanent %d entries (was %d)", len(oldest), total)
+        return len(oldest)

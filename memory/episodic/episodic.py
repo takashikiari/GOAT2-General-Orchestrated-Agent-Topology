@@ -1,10 +1,4 @@
-"""
-memory.episodic.episodic — cross-session semantic memory backed by ChromaDB.
-
-EpisodicMemory IS the ChromaDB implementation — no abstract backend layer.
-'Episodic' means: persists across sessions, searchable by semantic similarity.
-ChromaDB's API is synchronous; calls use asyncio.to_thread to avoid blocking.
-"""
+"""memory.episodic.episodic — cross-session memory backed by ChromaDB. Sync API; asyncio.to_thread."""
 from __future__ import annotations
 
 import asyncio
@@ -17,25 +11,16 @@ log = get_logger(__name__)
 
 
 class EpisodicMemory:
-    """
-    Cross-session conversation memory with semantic search and recency lookup.
-
-    ChromaDB client and collection are built lazily on first use.
-    One instance is shared across all chat sessions (via ServiceRegistry).
-    """
+    """Cross-session memory: semantic search, recency, and bulk ops. Lazily connected."""
 
     def __init__(self) -> None:
-        """Initialise with no connection — built on first use."""
         self._collection = None
 
     def _get_collection(self):
-        """Return (and lazily create) the ChromaDB collection."""
         if self._collection is None:
-            import chromadb  # lazy — avoids import-time filesystem access
+            import chromadb
             import posthog as _posthog
             from chromadb.config import Settings
-            # posthog 7.7.0 disabled stub has wrong signature; patch before
-            # PersistentClient() triggers telemetry calls.
             _posthog.disabled = True
             _posthog.capture = lambda *args, **kwargs: None  # type: ignore[assignment]
             client = chromadb.PersistentClient(
@@ -47,44 +32,57 @@ class EpisodicMemory:
         return self._collection
 
     async def store(self, chat_id: str, content: str, metadata: dict) -> None:
-        """Store content + metadata for chat_id. chat_id is merged into metadata."""
+        """Store content + metadata. chat_id merged into metadata."""
         merged = {"chat_id": chat_id, **metadata}
         doc_id = str(uuid.uuid4())
         await asyncio.to_thread(
             self._get_collection().add,
-            ids=[doc_id],
-            documents=[content],
-            metadatas=[merged],
+            ids=[doc_id], documents=[content], metadatas=[merged],
         )
-        log.debug("EpisodicMemory: stored entry chat=%s id=%s", chat_id, doc_id)
 
     async def search(self, query: str, limit: int = 5) -> list[dict]:
-        """Semantic search. Returns list of {"content", "metadata"} dicts, closest first."""
+        """Semantic search. Returns {"content", "metadata"} dicts, closest first."""
         results = await asyncio.to_thread(
-            self._get_collection().query,
-            query_texts=[query],
-            n_results=limit,
+            self._get_collection().query, query_texts=[query], n_results=limit,
         )
-        docs = results["documents"][0]
-        metas = results["metadatas"][0]
+        docs, metas = results["documents"][0], results["metadatas"][0]
         return [{"content": d, "metadata": m} for d, m in zip(docs, metas)]
 
     async def get_recent(self, chat_id: str, limit: int = 20) -> list[dict]:
-        """
-        Return the most recent N entries for chat_id in chronological order.
-
-        Pure recency (not semantic). Fetches all entries for chat_id, sorts
-        client-side by metadata.timestamp, returns the newest N.
-        """
+        """Most recent N entries for chat_id in chronological order."""
         results = await asyncio.to_thread(
             self._get_collection().get,
-            where={"chat_id": chat_id},
-            include=["documents", "metadatas"],
+            where={"chat_id": chat_id}, include=["documents", "metadatas"],
         )
-        docs = results["documents"] or []
-        metas = results["metadatas"] or []
         entries = sorted(
-            [{"content": d, "metadata": m} for d, m in zip(docs, metas)],
+            [{"content": d, "metadata": m}
+             for d, m in zip(results["documents"] or [], results["metadatas"] or [])],
             key=lambda e: float(e["metadata"].get("timestamp", 0)),
         )
         return entries[-limit:]
+
+    async def count(self, chat_id: str | None = None) -> int:
+        """Return total entry count (global) or filtered by chat_id."""
+        if chat_id is None:
+            return await asyncio.to_thread(self._get_collection().count)
+        r = await asyncio.to_thread(
+            self._get_collection().get, where={"chat_id": chat_id}, include=["metadatas"],
+        )
+        return len(r["ids"])
+
+    async def get_oldest(self, limit: int, chat_id: str | None = None) -> list[dict]:
+        """Return oldest N entries (timestamp asc). Each entry includes 'id' for deletion."""
+        kwargs: dict = {"include": ["documents", "metadatas"]}
+        if chat_id is not None:
+            kwargs["where"] = {"chat_id": chat_id}
+        results = await asyncio.to_thread(self._get_collection().get, **kwargs)
+        all_e = [{"id": i, "content": d, "metadata": m}
+                 for i, d, m in zip(results["ids"], results["documents"], results["metadatas"])]
+        return sorted(all_e, key=lambda e: float(e["metadata"].get("timestamp", 0)))[:limit]
+
+    async def delete_entries(self, entry_ids: list[str]) -> None:
+        """Delete entries by their ChromaDB document IDs."""
+        if not entry_ids:
+            return
+        await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
+        log.debug("EpisodicMemory: deleted %d entries", len(entry_ids))

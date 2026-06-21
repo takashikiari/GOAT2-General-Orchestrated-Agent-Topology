@@ -11,6 +11,8 @@ check_interval_seconds = 60
 max_messages_before_promote = 50
 max_age_seconds_before_promote = 600
 recovery_message_limit = 20
+episodic_max_entries = 300
+episodic_promote_count = 150
 
 [permanent]
 letta_url = "http://localhost:8283"

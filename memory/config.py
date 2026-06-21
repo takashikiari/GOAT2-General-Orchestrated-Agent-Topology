@@ -1,12 +1,4 @@
-"""
-memory.config — configuration for all memory tiers.
-
-Reads config/memory.toml at import time and exposes typed constants.
-Nothing else reads the toml directly — this is the single source of truth
-for memory configuration, same pattern as config/settings.py for LLM config.
-
-Falls back to hardcoded defaults only when the toml file is absent.
-"""
+"""memory.config — memory tier config (working/episodic/promotion/permanent). Reads config/memory.toml."""
 from __future__ import annotations
 
 import tomllib
@@ -28,6 +20,8 @@ _DEFAULTS: dict = {
         "max_messages_before_promote": 50,
         "max_age_seconds_before_promote": 600,
         "recovery_message_limit": 20,
+        "episodic_max_entries": 300,
+        "episodic_promote_count": 150,
     },
     "permanent": {
         "letta_url": "http://localhost:8283",
@@ -38,7 +32,6 @@ _DEFAULTS: dict = {
 
 
 def _load() -> dict:
-    """Load memory.toml; return defaults if the file is missing."""
     try:
         with open(_CONFIG_PATH, "rb") as f:
             return tomllib.load(f)
@@ -77,6 +70,8 @@ PROMOTION_MAX_AGE_SECONDS: int = int(
 RECOVERY_MESSAGE_LIMIT: int = int(
     _promotion.get("recovery_message_limit", _DEFAULTS["promotion"]["recovery_message_limit"])
 )
+EPISODIC_MAX_ENTRIES: int = int(_promotion.get("episodic_max_entries", 300))
+EPISODIC_PROMOTE_COUNT: int = int(_promotion.get("episodic_promote_count", 150))
 
 _permanent = _cfg.get("permanent", _DEFAULTS["permanent"])
 PERMANENT_LETTA_URL: str = str(
