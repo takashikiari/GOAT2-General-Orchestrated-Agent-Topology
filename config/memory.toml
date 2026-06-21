@@ -1,75 +1,7 @@
-# GOAT 2.0 — memory subsystem configuration
-#
-# Resolution order: env var > config/memory.toml > config/limits.py fallback
-# Each module reads ONLY this file. No cross-module config dependencies.
-#
-# Sections:
-#   [working]   - Working memory (Redis): capacity, thresholds, GC cadence, DAG TTL
-#   [episodic]  - Episodic memory (ChromaDB): capacity, scoring thresholds, permanence
-#   [daemon]    - MemoryDaemon: sweep interval, age cutoffs for tier-1/2 promotion
-#   [redis]     - Redis connection: URL, pool size, socket timeout
-# =============================================================================
-
 [working]
-max_entries         = 100  # hard cap for working entries (per agent_role)
-warn_threshold      = 85   # log WARNING when count >= this
-gc_interval_turns   = 10   # tick the GC every N turns
-dag_ttl_seconds     = 3600 # TTL for dag:* coordination keys (1h)
-flush_on_session_start = true # schedule working-memory flush on session start
-# Prompt-block caps read by supervisor.mechanisms.context_builder
-# and supervisor.session.history. Override per deployment as needed.
-max_prompt_entries  = 50   # max working-memory lines rendered into the prompt
-max_history_messages = 200 # in-memory rolling buffer for ConversationHistory
+storage_url = "redis://localhost:6379/0"
+ttl_seconds = 0
 
 [episodic]
-max_entries              = 300 # hard cap for episodic entries (per agent_role)
-warn_threshold           = 250 # log WARNING when count >= this
-promote_threshold        = 0.5 # score >= this → promote (working → episodic)
-drop_threshold           = 0.3 # score <  this → drop (delete from working)
-permanent_never_delete   = true # metadata.permanent=True entries are NEVER touched
-
-[daemon]
-interval_seconds   = 60   # sweep every N seconds
-tier1_age_hours    = 24  # only promote working entries older than this
-tier2_age_hours    = 48  # episodic sliding window considers entries this old
-
-[redis]
-url              = "redis://localhost:6379/0"  # env: REDIS_URL overrides
-max_connections  = 10                            # env: REDIS_MAX_CONNECTIONS overrides
-socket_timeout   = 5.0                           # env: REDIS_SOCKET_TIMEOUT overrides (seconds)
-
-[freshness]
-fresh_max_seconds   = 300    # <5 min   → [FRESH]
-recent_max_seconds  = 3600   # <60 min  → [RECENT]; > → [OLD]
-dag_max_age_seconds = 600    # DAG entries older than this are excluded unless intent asks for them
-
-# ─────────────────────────────────────────────────────────────────────────────
-# [temporal_layers] — three-layer memory structure (Faza 2)
-#
-# Read by `supervisor.session.mem_inject.mem_turn`. Controls how
-# the working memory is split into Present / Present-Past / Past
-# layers, and how many entries each layer renders into the prompt.
-# Missing section → safe defaults from `config.limits`.
-# ─────────────────────────────────────────────────────────────────────────────
-
-[temporal_layers]
-present_max_age_s        = 300    # < 5 min  → [Present]
-present_past_max_age_s   = 86400  # < 24 h   → [Present-Past]; older → [Past]
-present_max_entries      = 50     # hard cap for [Present] entries
-present_past_max_entries = 30     # hard cap for [Present-Past] (working + episodic combined)
-past_max_entries         = 20     # hard cap for [Past] working entries
-episodic_top_k           = 5      # number of episodic recall hits in [Present-Past]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# [temporal] — format_entries relative-age labels (BUG-003 fix)
-#
-# Read by `memory.temporal.temporal_format`. Controls whether and how
-# memory entries are labelled with relative age (`[Ns/Nm/Nh/Nd ago]`) in
-# the prompt blocks the LLM sees. Missing entries → `[unknown age]`.
-# ─────────────────────────────────────────────────────────────────────────────
-
-[temporal]
-show_relative_age    = true   # when false, format_entries falls back to legacy `[source] key: content` (no age)
-fresh_threshold_s    = 60     # < N seconds → `[Ns ago]`
-recent_threshold_s   = 3600   # < N seconds → `[Nm ago]`; < day → `[Nh ago]`
-day_threshold_s      = 86400  # < N seconds → `[Nh ago]`; else → `[Nd ago]`
+storage_path = "./chroma_data"
+collection_name = "episodic_memory"

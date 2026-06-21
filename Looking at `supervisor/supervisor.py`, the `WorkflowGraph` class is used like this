@@ -1,3 +1,0 @@
-results = await WorkflowGraph(plan.tasks).execute(
-    self.registry, self._semaphore, verbose=self._verbose,
-)

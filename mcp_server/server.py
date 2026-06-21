@@ -62,8 +62,9 @@ def _register_all_tools(server: FastMCP) -> None:
         query_config,
         query_logs,
         query_memory,
+        query_state,
     )
-    for module in (query_logs, query_memory, query_config, diagnose_turn):
+    for module in (query_logs, query_memory, query_config, diagnose_turn, query_state):
         try:
             module.register(server)
             log.debug("mcp_server: registered tools from %s", module.__name__)

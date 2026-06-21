@@ -26,7 +26,7 @@ from mcp_server._registry import get_registry
 
 log = logging.getLogger("goat2.mcp_server.tools.query_memory")
 
-__all__ = ["get_memory_snapshot", "get_recent_entries", "register"]
+__all__ = ["get_memory_snapshot", "get_recent_entries", "get_memory_metrics", "register"]
 
 
 # Tier names the tools accept. ``long_term`` matches the
@@ -172,6 +172,29 @@ def _adapt_memory_entries(entries: list) -> list[dict[str, Any]]:
     return out
 
 
+async def get_memory_metrics() -> dict[str, Any]:
+    """Return the in-process per-tier metrics counter snapshot.
+
+    Counters are bumped from the supervisor's per-turn flow and
+    the ``MemoryDaemon``'s per-sweep path (see
+    ``memory.memory_metrics.counters``). Useful for answering
+    "is the tier promotion actually running?" and "how many
+    episodic hits did the LLM see this session?" without
+    grepping logs.
+
+    Returns:
+        A dict with one entry per counter key (dotted event
+        names like ``memory.working.write``,
+        ``memory.daemon.tier1_promote``). Empty dict when
+        no counters have fired yet.
+    """
+    try:
+        from memory.memory_metrics import snapshot as _snapshot
+        return _snapshot()
+    except Exception as exc:  # noqa: BLE001
+        return {"_error": f"{type(exc).__name__}: {exc}"}
+
+
 def _adapt_long_term_list(raw, limit: int) -> list[dict[str, Any]]:
     """Adapt Letta's ``list()`` output to the same dict shape."""
     out: list[dict[str, Any]] = []
@@ -215,3 +238,17 @@ def register(server) -> None:
     )
     async def _get_recent_entries(tier: str, limit: int = 10) -> list[dict[str, Any]]:
         return await get_recent_entries(tier=tier, limit=limit)
+
+    @server.tool(
+        name="get_memory_metrics",
+        description=(
+            "Return the in-process per-tier metrics counter snapshot: "
+            "memory.working.write / flush, memory.episodic.hit, "
+            "memory.daemon.tier1_promote / tier2_slide, "
+            "memory.session.flush / daemon_start. Counters are "
+            "in-memory (reset on process restart). Empty dict when "
+            "no activity yet."
+        ),
+    )
+    async def _get_memory_metrics() -> dict[str, Any]:
+        return await get_memory_metrics()
