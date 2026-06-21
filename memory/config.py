@@ -29,6 +29,11 @@ _DEFAULTS: dict = {
         "max_age_seconds_before_promote": 600,
         "recovery_message_limit": 20,
     },
+    "permanent": {
+        "letta_url": "http://localhost:8283",
+        "agent_name": "goat-permanent",
+        "letta_model": "letta/letta-free",
+    },
 }
 
 
@@ -71,4 +76,15 @@ PROMOTION_MAX_AGE_SECONDS: int = int(
 )
 RECOVERY_MESSAGE_LIMIT: int = int(
     _promotion.get("recovery_message_limit", _DEFAULTS["promotion"]["recovery_message_limit"])
+)
+
+_permanent = _cfg.get("permanent", _DEFAULTS["permanent"])
+PERMANENT_LETTA_URL: str = str(
+    _permanent.get("letta_url", _DEFAULTS["permanent"]["letta_url"])
+)
+PERMANENT_AGENT_NAME: str = str(
+    _permanent.get("agent_name", _DEFAULTS["permanent"]["agent_name"])
+)
+PERMANENT_LETTA_MODEL: str = str(
+    _permanent.get("letta_model", _DEFAULTS["permanent"]["letta_model"])
 )
