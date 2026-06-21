@@ -1,10 +1,8 @@
 """
 memory.working.working — session-scoped conversation memory backed by Redis.
 
-WorkingMemory IS the Redis implementation — no abstract backend layer.
-Keys live under ``goat2:working:{chat_id}``.  Each message dict is stored
-with a "timestamp" field (Unix epoch float); save_messages stamps any
-unstamped entries so older data is handled safely.
+Keys: ``goat2:working:{chat_id}``.  Non-list or corrupt values are logged as
+WARNING and treated as empty — malformed Redis entries never crash the daemon.
 """
 from __future__ import annotations
 
@@ -22,9 +20,7 @@ _KEY_PREFIX = "goat2:working"
 class WorkingMemory:
     """
     Session-scoped conversation memory, stored in Redis.
-
-    The Redis client is built lazily on first use.  One instance is shared
-    across all sessions via the ServiceRegistry.
+    Redis client is built lazily; one instance shared across sessions.
     """
 
     def __init__(self) -> None:
@@ -42,18 +38,23 @@ class WorkingMemory:
         return self._client
 
     async def get_messages(self, chat_id: str) -> list[dict]:
-        """Return stored messages for chat_id sorted by timestamp ascending, or []."""
+        """Return messages for chat_id sorted by timestamp asc, or [] on any error."""
         data = await self._get_client().get(f"{_KEY_PREFIX}:{chat_id}")
-        msgs = json.loads(data) if data else []
-        return sorted(msgs, key=lambda m: float(m.get("timestamp", 0)))
+        if not data:
+            return []
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            log.warning("WorkingMemory: corrupt JSON for chat=%s, returning []", chat_id)
+            return []
+        if not isinstance(parsed, list):
+            log.warning("WorkingMemory: expected list for chat=%s, got %s, returning []",
+                        chat_id, type(parsed).__name__)
+            return []
+        return sorted(parsed, key=lambda m: float(m.get("timestamp", 0)))
 
     async def save_messages(self, chat_id: str, messages: list[dict]) -> None:
-        """
-        Persist the message list for chat_id.
-
-        Entries missing a "timestamp" field are stamped with the current time
-        so the promotion daemon can age them correctly.
-        """
+        """Persist the message list. Entries missing 'timestamp' are stamped now."""
         now = time.time()
         stamped = [m if "timestamp" in m else {**m, "timestamp": now} for m in messages]
         key = f"{_KEY_PREFIX}:{chat_id}"
@@ -66,7 +67,23 @@ class WorkingMemory:
         log.debug("WorkingMemory: saved %d messages for chat=%s", len(stamped), chat_id)
 
     async def list_chat_ids(self) -> list[str]:
-        """Return all chat_ids that currently have working memory entries."""
+        """Return chat_ids with valid list-valued entries (MGET, one round-trip).
+        Corrupt or non-list keys are logged as WARNING and excluded."""
         keys = await self._get_client().keys(f"{_KEY_PREFIX}:*")
-        prefix_len = len(_KEY_PREFIX) + 1  # +1 for the ':'
-        return [k[prefix_len:] for k in keys]
+        if not keys:
+            return []
+        prefix_len = len(_KEY_PREFIX) + 1
+        result = []
+        for key, data in zip(keys, await self._get_client().mget(*keys)):
+            chat_id = key[prefix_len:]
+            try:
+                parsed = json.loads(data) if data else []
+            except json.JSONDecodeError:
+                log.warning("WorkingMemory: corrupt JSON at key=%s, skipping", key)
+                continue
+            if not isinstance(parsed, list):
+                log.warning("WorkingMemory: non-list value at key=%s (type=%s), skipping",
+                            key, type(parsed).__name__)
+                continue
+            result.append(chat_id)
+        return result
