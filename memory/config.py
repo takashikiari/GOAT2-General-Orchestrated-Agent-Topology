@@ -23,6 +23,12 @@ _DEFAULTS: dict = {
         "storage_path": "./chroma_data",
         "collection_name": "episodic_memory",
     },
+    "promotion": {
+        "check_interval_seconds": 60,
+        "max_messages_before_promote": 50,
+        "max_age_seconds_before_promote": 600,
+        "recovery_message_limit": 20,
+    },
 }
 
 
@@ -51,4 +57,18 @@ EPISODIC_STORAGE_PATH: str = str(
 )
 EPISODIC_COLLECTION_NAME: str = str(
     _episodic.get("collection_name", _DEFAULTS["episodic"]["collection_name"])
+)
+
+_promotion = _cfg.get("promotion", _DEFAULTS["promotion"])
+PROMOTION_CHECK_INTERVAL_SECONDS: int = int(
+    _promotion.get("check_interval_seconds", _DEFAULTS["promotion"]["check_interval_seconds"])
+)
+PROMOTION_MAX_MESSAGES: int = int(
+    _promotion.get("max_messages_before_promote", _DEFAULTS["promotion"]["max_messages_before_promote"])
+)
+PROMOTION_MAX_AGE_SECONDS: int = int(
+    _promotion.get("max_age_seconds_before_promote", _DEFAULTS["promotion"]["max_age_seconds_before_promote"])
+)
+RECOVERY_MESSAGE_LIMIT: int = int(
+    _promotion.get("recovery_message_limit", _DEFAULTS["promotion"]["recovery_message_limit"])
 )
