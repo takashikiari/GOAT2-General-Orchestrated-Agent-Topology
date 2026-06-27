@@ -17,3 +17,12 @@ ttl_seconds = 300
 [retrieval_budget]
 max_results_per_search = 15
 max_context_tokens = 4000
+l2_context_cap = 8000
+
+[aits]
+budget_base = 2000
+budget_confidence_multiplier = 4000
+budget_complexity_max_bonus = 2000
+budget_hard_cap = 12000
+prefetch_timeout = 0.5
+prefetch_confidence_threshold = 0.4

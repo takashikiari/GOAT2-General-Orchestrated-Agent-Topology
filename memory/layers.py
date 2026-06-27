@@ -1,17 +1,13 @@
 """
-memory.layers — Backend Mapper: translates logical layers (L0-L3) to
-physical storage tiers (Permanent / Working / Episodic).
-
-GOAT and the Orchestrator interact ONLY with this class's methods — they
-never import the physical tiers directly, so backends (Redis, ChromaDB, Letta)
-can be swapped without touching Orchestrator code.
+memory.layers — Backend Mapper: L0-L3 logical layers → physical tiers
+(Permanent / Working / Episodic). GOAT/Orchestrator talk ONLY to this class.
 
     L0 Identity / L1 Facts → PermanentMemory
     L2 Working / L2.5 Cache → WorkingMemory / SessionCache
     L3 Episodic           → EpisodicMemory
 
-Steps 1-3 added the mapping, L2.5 cache, and retrieval budget; Step 5 adds
-the L3 write path (``store_episodic``). No prefetch yet.
+Steps 1-6: mapping, L2.5 cache, retrieval budget, L3 write, AITS dynamic
+budget + async prefetch (``assemble_context``).
 """
 from __future__ import annotations
 
@@ -19,8 +15,8 @@ import hashlib
 import time
 from typing import TYPE_CHECKING
 
-from memory.budget import enforce_context_budget, enforce_result_limit, estimate_tokens
-from memory.config import MAX_CONTEXT_TOKENS, MAX_RESULTS_PER_SEARCH
+from memory.budget import enforce_result_limit, estimate_tokens
+from memory.config import L2_CONTEXT_CAP, MAX_CONTEXT_TOKENS
 from memory.session_cache import SessionCache
 from utils.logging.setup import get_logger
 
@@ -35,20 +31,17 @@ log = get_logger(__name__)
 # so search caches are distinguishable from tool-output caches inside L2.5.
 _SEARCH_NAMESPACE = "search"
 
-# L0 base identity prompt. The always-present root instruction for the agent.
-# A candidate to externalise to config / a Letta-backed identity block in a
-# later step; kept as a constant here so prepare_context_for_prompt is the
-# single source of the assembled system prompt.
+# L0 base identity prompt. The always-present root instruction; candidate to
+# externalise to config / a Letta-backed identity block in a later step.
 _BASE_IDENTITY = "You are a helpful assistant."
 
 
 class MemoryLayers:
     """Backend Mapper — L0-L3 logical layers → physical tiers.
 
-    GOAT/Orchestrator talk only to this class. Step 1 = mapping, Step 2 =
-    L2.5 cache, Step 3 = retrieval budget (``prepare_context_for_prompt``;
-    L0+L1 protected, L2/L3 dropped lowest-priority-first), Step 5 = L3 write
-    path (``store_episodic``). No intent classification or prefetch yet.
+    GOAT/Orchestrator talk only to this class. Step 6 = AITS dynamic budget +
+    async prefetch (``assemble_context``; L2 protected to ``L2_CONTEXT_CAP``,
+    L3 AITS-gated), Step 5 = L3 write (``store_episodic``), Step 2 = L2.5 cache.
     """
 
     def __init__(
@@ -65,9 +58,8 @@ class MemoryLayers:
             working: WorkingMemory instance (backs L2, L2.5).
             episodic: EpisodicMemory instance (backs L3).
             permanent: PermanentMemory instance (backs L0, L1).
-            cache_ttl: TTL in seconds for L2.5 cache entries (default 300s).
-                The active value comes from config via the registry; this
-                default is a fallback only.
+            cache_ttl: TTL in seconds for L2.5 cache entries; config supplies
+                the active value, this default is a fallback only.
         """
         self._working = working
         self._episodic = episodic
@@ -101,11 +93,10 @@ class MemoryLayers:
     async def search_episodic(self, query: str, limit: int = 5) -> list[dict]:
         """L3 (uncached): semantic search across episodic memory.
 
-        Use this when fresh results are required (e.g. an explicit user
-        request for current data). For the cached path used by the normal
-        per-turn flow, see ``search_episodic_with_cache``. Maps to
-        ``EpisodicMemory.search`` and returns ``{"content", "metadata"}``
-        dicts, closest first, capped to ``MAX_RESULTS_PER_SEARCH``.
+        For fresh results (explicit user request); cached path is
+        ``search_episodic_with_cache``. Maps to ``EpisodicMemory.search``,
+        returns ``{"content","metadata"}`` closest-first, capped to
+        ``MAX_RESULTS_PER_SEARCH``.
         """
         results = await self._episodic.search(query, limit=limit)
         return enforce_result_limit(results)
@@ -115,11 +106,10 @@ class MemoryLayers:
     ) -> None:
         """L3: write content to episodic memory — the only L3 write path.
 
-        GOAT calls this via the ``store_memory`` tool when it decides
-        something is worth preserving for future sessions. Maps to
-        ``EpisodicMemory.store``. Tags are joined into one metadata string
-        and a timestamp is added — ChromaDB metadata must be primitives (no
-        lists); ``get_recent``/``get_oldest`` sort by ``metadata.timestamp``.
+        GOAT calls this via the ``store_memory`` tool. Maps to
+        ``EpisodicMemory.store``; tags are joined into one metadata string and a
+        timestamp added (ChromaDB metadata must be primitives; recency sorts
+        by ``metadata.timestamp``).
 
         Args:
             chat_id: Origin chat — labels the entry for per-chat recency.
@@ -134,16 +124,11 @@ class MemoryLayers:
     ) -> list[dict]:
         """L3 + L2.5: semantic search, served from the session cache on repeat.
 
-        Flow: build a deterministic cache key from the query, check the L2.5
-        cache, return the cached list on a hit, otherwise search episodic
-        memory, store the result, and return it.
-
-        The cache key is ``search:{sha256(query)[:16]}``. SHA-256 is used
-        (not Python's built-in ``hash``) because ``hash`` is randomised per
-        process via ``PYTHONHASHSEED`` — a deterministic digest keeps cache
-        keys stable across restarts and across the separate MCP process.
-        Results are capped to ``MAX_RESULTS_PER_SEARCH`` before caching so
-        cache hits return the limited set without re-triggering the cap.
+        Builds a deterministic key, returns the cached list on a hit, else
+        searches episodic, stores, and returns. Key is ``search:{sha256(query)[:16]}``
+        — SHA-256 (not Python's randomised ``hash``) for stability across
+        restarts/processes. Results capped to ``MAX_RESULTS_PER_SEARCH`` before
+        caching so hits return the limited set without re-triggering the cap.
         """
         cache_key = self._search_cache_key(query)
         cached = await self._cache.get(chat_id, cache_key)
@@ -180,70 +165,90 @@ class MemoryLayers:
         """L2.5: report whether a cache entry exists without reading it."""
         return await self._cache.exists(chat_id, key)
 
-    async def prepare_context_for_prompt(
-        self, chat_id: str, user_query: str | None = None,
+    async def assemble_context(
+        self, chat_id: str, budget: int | None = None,
+        l3_results: list[dict] | None = None,
     ) -> list[str]:
-        """L0-L3 context assembly with a combined token budget.
+        """Assemble L0-L3 prompt blocks under a dynamic (AITS) budget.
 
-        The SINGLE method the Orchestrator calls to get prompt-ready context
-        blocks. It assembles every layer, applies the global token budget to
-        the combined list, and returns only the blocks that fit within
-        ``MAX_CONTEXT_TOKENS``.
-
-        Priority (most → least important):
-            1. L0 (Identity) — base identity prompt; ALWAYS included.
-            2. L1 (Critical Facts) — permanent facts; ALWAYS included (folded
-               into the L0/L1 identity block, never dropped).
-            3. L2 (Working Context) — conversation history; included if it
-               exists, dropped only if it cannot fit the remaining budget.
-            4. L2.5 (Session Cache) — no standalone block; the cache is used
-               transparently inside ``search_episodic_with_cache``.
-            5. L3 (Episodic Search) — included only if ``user_query`` is given
-               and budget remains; lowest priority, dropped first.
-
-        L0+L1 form one mandatory block and are NEVER dropped. L2 and L3 are
-        optional and budgeted: when the combined size exceeds the budget,
-        blocks are dropped from the end (L3 before L2).
+        L0+L1 mandatory (always kept). L2 (live conversation) is protected: kept
+        up to ``L2_CONTEXT_CAP`` by dropping the oldest messages, independent of
+        ``budget`` — the live thread is never fully lost (Step 6 fix). L3 is
+        AITS-gated: included only when ``l3_results`` is given and budget remains
+        after L0+L1+L2, formatted via ``_fit_search_results`` (silent, closest).
 
         Args:
             chat_id: Current chat session ID.
-            user_query: Query for the cache-aware episodic search. If given,
-                results are added as the L3 block.
-
-        Returns:
-            Text blocks ready to inject into the prompt, in priority order.
-            The total estimated tokens of all returned blocks is ≤
-            ``MAX_CONTEXT_TOKENS``.
+            budget: AITS per-intent token budget (falls back to
+                ``MAX_CONTEXT_TOKENS`` when ``None``).
+            l3_results: Prefetched episodic results (closest first) or ``None``.
         """
+        if budget is None:
+            budget = MAX_CONTEXT_TOKENS
         # L0 + L1: identity + facts — mandatory, never dropped.
         facts = await self.get_identity_and_facts()
         identity = f"[Identity]\n{_BASE_IDENTITY}"
         if facts:
             identity += f"\n\nKnown facts:\n{self._format_facts(facts)}"
-        mandatory = [identity]
-
-        # L2: working context — optional, higher priority than L3.
-        optional: list[str] = []
+        mandatory_tokens = estimate_tokens(identity)
+        blocks = [identity]
+        # L2: working context — protected, drop-oldest up to L2_CONTEXT_CAP.
         messages = await self.get_working_context(chat_id)
-        if messages:
-            optional.append(f"[Conversation History]\n{self._format_messages(messages)}")
-        # L3: episodic search — optional, lowest priority (dropped first).
-        if user_query:
-            results = await self.search_episodic_with_cache(
-                chat_id, user_query, limit=MAX_RESULTS_PER_SEARCH,
-            )
-            if results:
-                optional.append(f"[Related Memory]\n{self._format_search_results(results)}")
+        trimmed = self._trim_recent_messages(messages, L2_CONTEXT_CAP)
+        l2_tokens = 0
+        if trimmed:
+            l2_block = f"[Conversation History]\n{self._format_messages(trimmed)}"
+            l2_tokens = estimate_tokens(l2_block)
+            blocks.append(l2_block)
+        # L3: episodic — AITS-gated, fits the budget remaining after L0+L1+L2.
+        if l3_results:
+            l3_budget = budget - mandatory_tokens - l2_tokens
+            if l3_budget > 0:
+                l3_block = self._fit_search_results(l3_results, l3_budget)
+                if l3_block:
+                    blocks.append(f"[Related Memory]\n{l3_block}")
+        return blocks
 
-        blocks = mandatory + optional
-        if estimate_tokens("\n".join(blocks)) <= MAX_CONTEXT_TOKENS:
-            return blocks
-        # Over budget: protect L0+L1, drop lowest-priority optional blocks first.
-        mandatory_tokens = estimate_tokens("\n".join(mandatory))
-        kept_optional = enforce_context_budget(
-            optional, max_tokens=MAX_CONTEXT_TOKENS - mandatory_tokens,
-        )
-        return mandatory + kept_optional
+    @staticmethod
+    def _trim_recent_messages(messages: list[dict], max_tokens: int) -> list[dict]:
+        """Keep the most recent ``messages`` whose combined tokens fit ``max_tokens``.
+
+        Newest→oldest accumulation; older messages dropped. Returns oldest-first.
+        Each message estimated as ``role: content`` to match the block; DEBUG
+        on trim.
+        """
+        if not messages:
+            return []
+        kept: list[dict] = []
+        total = 0
+        for msg in reversed(messages):
+            tok = estimate_tokens(f"{msg['role']}: {msg['content']}")
+            if total + tok > max_tokens and kept:
+                break
+            kept.append(msg)
+            total += tok
+        kept.reverse()
+        if len(kept) < len(messages):
+            log.debug("L2 trimmed %d->%d messages (cap=%d)", len(messages), len(kept), max_tokens)
+        return kept
+
+    @staticmethod
+    def _fit_search_results(results: list[dict], max_tokens: int) -> str:
+        """Format episodic results, closest first, keeping as many as fit ``max_tokens``.
+
+        Greedy add-while-fits; returns joined lines (possibly empty). Silent by
+        design — partial recall beats dropping the whole block with a warning.
+        """
+        lines: list[str] = []
+        total = 0
+        for r in results:
+            line = f"- {r['content']}"
+            tok = estimate_tokens(line)
+            if total + tok > max_tokens and lines:
+                break
+            lines.append(line)
+            total += tok
+        return "\n".join(lines)
 
     @staticmethod
     def _format_facts(facts: dict[str, str]) -> str:
@@ -254,8 +259,3 @@ class MemoryLayers:
     def _format_messages(messages: list[dict]) -> str:
         """Format L2 conversation history as ``role: content`` lines, in order."""
         return "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-
-    @staticmethod
-    def _format_search_results(results: list[dict]) -> str:
-        """Format L3 episodic results as ``- content`` lines, closest first."""
-        return "\n".join(f"- {r['content']}" for r in results)
