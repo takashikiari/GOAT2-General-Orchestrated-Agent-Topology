@@ -1,11 +1,18 @@
-"""orchestrator.orchestrator — stateless LLM driver with optional single-round tool calling."""
+"""orchestrator.orchestrator — stateless LLM driver with AITS budgeting, async prefetch, and optional single-round tool calling."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import TYPE_CHECKING
 
 from config import settings
+from memory.aits import (
+    calculate_complexity_from_query,
+    calculate_confidence_from_query,
+    calculate_intent_budget,
+)
+from memory.config import MAX_RESULTS_PER_SEARCH, PREFETCH_CONFIDENCE_THRESHOLD, PREFETCH_TIMEOUT
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -33,17 +40,16 @@ _STORE_MEMORY_GUIDANCE = (
 
 
 class Orchestrator:
-    """Stateless (intent, chat_id)→LLM→reply driver.
+    """Stateless (intent, chat_id)→LLM→reply driver with AITS budgeting + async prefetch.
 
     All memory access flows through ``registry.memory_layers`` (the Backend
-    Mapper). The Orchestrator never imports or references the physical tiers
-    (WorkingMemory/EpisodicMemory/PermanentMemory) directly. Context for the
-    prompt is assembled and budgeted by ``memory_layers.prepare_context_for_prompt``.
-
-    L3 (episodic) is NOT auto-retrieved: the orchestrator assembles only
-    L0+L1+L2 and lets GOAT decide, organically in its one call, whether to
-    fetch L3 via the ``search_memory`` tool. (Automatic/prefetch retrieval is
-    a separate future step.)
+    Mapper); the orchestrator never imports the physical tiers. Per turn it
+    computes a dynamic AITS token budget (confidence + complexity), runs a
+    bounded-time L3 prefetch (skipped below a confidence threshold; the
+    ``search_memory`` tool remains the fallback), then assembles context via
+    ``memory_layers.assemble_context`` (L0+L1 protected, L2 protected to
+    ``L2_CONTEXT_CAP``, L3 AITS-gated). Memory is the kernel's context only;
+    tools and agents are separate systems that consume it, not budget inputs.
     """
 
     def __init__(self, registry: ServiceRegistry, tools: list[ToolDefinition] | None = None) -> None:
@@ -59,37 +65,64 @@ class Orchestrator:
         return any(t.name == "store_memory" for t in self._tools)
 
     async def run(self, intent: str, chat_id: str) -> str:
-        """Single turn: assemble budgeted L0+L1+L2 context → LLM (one tool round) → save → return text.
+        """Single turn: AITS budget → bounded-time L3 prefetch → assemble → LLM → save.
 
         Flow:
-            1. ``memory_layers.prepare_context_for_prompt(chat_id)`` assembles
-               L0+L1 (identity + facts, always kept) and L2 (history) into
-               text blocks whose combined size stays under ``MAX_CONTEXT_TOKENS``.
-               L3 is NOT included — GOAT fetches it on demand via search_memory.
-            2. Join the blocks into the system prompt; append the search_memory
-               / store_memory guidance when those tools are configured; append
-               the user message.
-            3. Call the LLM (with tools if configured).
-            4. Handle a single tool round if the model requests it — e.g. a
-               search_memory call whose results inform the final answer, or a
-               store_memory call that persists a fact. The current ``chat_id``
-               is injected into each handler so tools that need an origin chat
-               receive it without the model supplying it.
-            5. Persist this turn (user + assistant) to working memory (L2).
-            6. Return the response text.
+            1. AITS: derive ``confidence`` + ``complexity`` from ``intent`` and
+               compute a dynamic per-intent ``budget``.
+            2. L3 prefetch: when ``confidence >= PREFETCH_CONFIDENCE_THRESHOLD``,
+               run ``search_episodic_with_cache`` bounded by
+               ``PREFETCH_TIMEOUT`` — success yields ``l3_results``; timeout or
+               failure yields ``[]`` and a warning (the response never blocks on
+               it). Below threshold, prefetch is skipped and GOAT may still use
+               the ``search_memory`` tool as fallback.
+            3. ``memory_layers.assemble_context(chat_id, budget, l3_results)``:
+               L0+L1 protected, L2 protected to ``L2_CONTEXT_CAP``, L3 AITS-gated.
+            4. Join blocks into the system prompt; append the search/store
+               guidance when those tools are configured; append the user message.
+            5. Call the LLM (with tools if configured).
+            6. Handle a single tool round if the model requests it — ``chat_id``
+               is injected into each handler (per-call, concurrency-safe).
+            7. Persist this turn (user + assistant) to working memory (L2).
 
-        If the model requests tool calls, executes each handler and makes one
-        more LLM call (without tools) to produce the final text answer — that
-        second call never receives tools, so runaway tool-calling loops are
-        structurally impossible. Multi-round support is a separate future step.
+        The second (tool-result) LLM call never receives tools, so runaway
+        tool-calling loops are structurally impossible. Multi-round is future.
         """
         layers = self._registry.memory_layers
-        context_blocks = await layers.prepare_context_for_prompt(chat_id)
+        # 1. AITS dynamic budget.
+        confidence = calculate_confidence_from_query(intent)
+        complexity = calculate_complexity_from_query(intent)
+        budget = calculate_intent_budget(confidence, complexity)
+        log.info(
+            "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
+            budget, confidence, complexity, chat_id,
+        )
+        # 2. Bounded-time L3 prefetch (non-blocking). The L2/L0/L1 fetch inside
+        #    assemble_context is cheap Redis/Letta, so it is not worth splitting
+        #    out to overlap ~ms; the timeout is the real non-blocking guarantee.
+        l3_results: list[dict] = []
+        if confidence >= PREFETCH_CONFIDENCE_THRESHOLD:
+            log.debug("prefetch started chat=%s", chat_id)
+            try:
+                l3_results = await asyncio.wait_for(
+                    layers.search_episodic_with_cache(chat_id, intent, limit=MAX_RESULTS_PER_SEARCH),
+                    timeout=PREFETCH_TIMEOUT,
+                )
+                log.info("prefetch ok chat=%s hits=%d", chat_id, len(l3_results))
+            except asyncio.TimeoutError:
+                log.warning("prefetch timed out chat=%s, continuing without L3", chat_id)
+            except Exception as exc:
+                log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
+        else:
+            log.debug("prefetch skipped (low confidence %.2f) chat=%s", confidence, chat_id)
+        # 3. Assemble L0+L1 (protected) + L2 (protected to cap) + L3 (AITS-gated).
+        context_blocks = await layers.assemble_context(chat_id, budget=budget, l3_results=l3_results)
         system_content = "\n\n".join(context_blocks)
         if self._has_search_memory():
             system_content += f"\n\n{_SEARCH_MEMORY_GUIDANCE}"
         if self._has_store_memory():
             system_content += f"\n\n{_STORE_MEMORY_GUIDANCE}"
+        # 4-5. LLM call (with tools if configured).
         api_msgs = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": intent},
@@ -101,11 +134,12 @@ class Orchestrator:
             kw["tool_choice"] = "auto"
         response = await self._registry.llm_client.chat.completions.create(**kw)
         choice = response.choices[0]
+        # 6. Single tool round if requested.
         if choice.message.tool_calls:
             reply = await self._run_tool_round(api_msgs, choice, chat_id)
         else:
             reply = choice.message.content or ""
-        # Persist this turn: reload history, append user + assistant, save (L2).
+        # 7. Persist this turn: reload history, append user + assistant, save (L2).
         messages = await layers.get_working_context(chat_id)
         messages.append({"role": "user", "content": intent, "timestamp": time.time()})
         messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})

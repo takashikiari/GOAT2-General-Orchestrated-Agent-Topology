@@ -1,16 +1,18 @@
 """
 memory.budget — retrieval budget helpers: token estimation and hard size limits.
 
-These enforce the Step-3 guarantee that no layer combination ever produces a
-prompt larger than the configured budget. Two concerns are separated:
+The primary per-intent budget is now dynamic (AITS, ``memory.aits``); the fixed
+``MAX_CONTEXT_TOKENS`` is a fallback only. Two reusable concerns remain here:
 
     - ``enforce_result_limit`` caps how many items a single search returns.
-    - ``enforce_context_budget`` caps the combined token size of assembled
-      context blocks, dropping lowest-priority blocks (from the end) first.
+    - ``enforce_context_budget`` caps the combined token size of a block list,
+      dropping lowest-priority blocks (from the end) first — a generic utility
+      (kept exported); ``MemoryLayers.assemble_context`` applies L2/L3 sizing
+      directly via its own trim/fit helpers instead, because the coarse
+      "drop whole block + warn" behaviour is wrong for partial L3 recall.
 
-Both log a WARNING **only when truncation actually happens** — no log spam when
-nothing is dropped. Defaults come from ``memory.config`` (config/memory.toml),
-so callers may omit the explicit limit and still get the configured cap.
+Both log a WARNING **only when truncation actually happens**. Defaults come from
+``memory.config`` (config/memory.toml), so callers may omit the explicit limit.
 """
 from __future__ import annotations
 

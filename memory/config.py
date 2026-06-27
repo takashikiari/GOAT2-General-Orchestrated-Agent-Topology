@@ -1,4 +1,4 @@
-"""memory.config — memory tier config (working/episodic/permanent/session_cache/retrieval_budget). Reads config/memory.toml."""
+"""memory.config — memory tier config (working/episodic/permanent/session_cache/retrieval_budget/aits). Reads config/memory.toml."""
 from __future__ import annotations
 
 import tomllib
@@ -27,6 +27,15 @@ _DEFAULTS: dict = {
     "retrieval_budget": {
         "max_results_per_search": 15,
         "max_context_tokens": 4000,
+        "l2_context_cap": 8000,
+    },
+    "aits": {
+        "budget_base": 2000,
+        "budget_confidence_multiplier": 4000,
+        "budget_complexity_max_bonus": 2000,
+        "budget_hard_cap": 12000,
+        "prefetch_timeout": 0.5,
+        "prefetch_confidence_threshold": 0.4,
     },
 }
 
@@ -80,6 +89,25 @@ MAX_RESULTS_PER_SEARCH: Final[int] = int(
 MAX_CONTEXT_TOKENS: Final[int] = int(
     _retrieval_budget.get("max_context_tokens", _DEFAULTS["retrieval_budget"]["max_context_tokens"])
 )
+L2_CONTEXT_CAP: Final[int] = int(
+    _retrieval_budget.get("l2_context_cap", _DEFAULTS["retrieval_budget"]["l2_context_cap"])
+)
+
+_aits = _cfg.get("aits", _DEFAULTS["aits"])
+BUDGET_BASE: Final[int] = int(_aits.get("budget_base", _DEFAULTS["aits"]["budget_base"]))
+BUDGET_CONFIDENCE_MULTIPLIER: Final[int] = int(
+    _aits.get("budget_confidence_multiplier", _DEFAULTS["aits"]["budget_confidence_multiplier"])
+)
+BUDGET_COMPLEXITY_MAX_BONUS: Final[int] = int(
+    _aits.get("budget_complexity_max_bonus", _DEFAULTS["aits"]["budget_complexity_max_bonus"])
+)
+BUDGET_HARD_CAP: Final[int] = int(_aits.get("budget_hard_cap", _DEFAULTS["aits"]["budget_hard_cap"]))
+PREFETCH_TIMEOUT: Final[float] = float(
+    _aits.get("prefetch_timeout", _DEFAULTS["aits"]["prefetch_timeout"])
+)
+PREFETCH_CONFIDENCE_THRESHOLD: Final[float] = float(
+    _aits.get("prefetch_confidence_threshold", _DEFAULTS["aits"]["prefetch_confidence_threshold"])
+)
 
 __all__ = [
     "WORKING_STORAGE_URL",
@@ -92,4 +120,11 @@ __all__ = [
     "SESSION_CACHE_TTL",
     "MAX_RESULTS_PER_SEARCH",
     "MAX_CONTEXT_TOKENS",
+    "L2_CONTEXT_CAP",
+    "BUDGET_BASE",
+    "BUDGET_CONFIDENCE_MULTIPLIER",
+    "BUDGET_COMPLEXITY_MAX_BONUS",
+    "BUDGET_HARD_CAP",
+    "PREFETCH_TIMEOUT",
+    "PREFETCH_CONFIDENCE_THRESHOLD",
 ]
