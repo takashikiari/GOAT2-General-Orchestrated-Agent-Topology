@@ -13,6 +13,7 @@ from config import settings
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from memory.layers import MemoryLayers
     from memory.working import WorkingMemory
     from memory.episodic import EpisodicMemory
     from memory.permanent import PermanentMemory
@@ -26,6 +27,7 @@ class ServiceRegistry:
         self._working_memory: WorkingMemory | None = None
         self._episodic_memory: EpisodicMemory | None = None
         self._permanent_memory: PermanentMemory | None = None
+        self._memory_layers: MemoryLayers | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
@@ -62,3 +64,20 @@ class ServiceRegistry:
             from memory.permanent import PermanentMemory  # lazy — avoids import-time I/O
             self._permanent_memory = PermanentMemory()
         return self._permanent_memory
+
+    @property
+    def memory_layers(self) -> MemoryLayers:
+        """Shared MemoryLayers (Backend Mapper), built from the three tiers.
+
+        The single façade GOAT and the Orchestrator talk to. Constructed
+        lazily on first access from the registry's working/episodic/permanent
+        tier instances, which themselves connect to their backends lazily.
+        """
+        if self._memory_layers is None:
+            from memory.config import SESSION_CACHE_TTL  # lazy — avoids import-time I/O
+            from memory.layers import MemoryLayers  # lazy — avoids import-time I/O
+            self._memory_layers = MemoryLayers(
+                self.working_memory, self.episodic_memory, self.permanent_memory,
+                cache_ttl=SESSION_CACHE_TTL,
+            )
+        return self._memory_layers
