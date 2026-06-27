@@ -2,30 +2,21 @@
 memory.layers — Backend Mapper: translates logical layers (L0-L3) to
 physical storage tiers (Permanent / Working / Episodic).
 
-GOAT and the Orchestrator interact ONLY with this class's methods. They
-never import or reference ``WorkingMemory``, ``EpisodicMemory``, or
-``PermanentMemory`` directly. Physical backends (Redis, ChromaDB, Letta) can
-therefore be swapped without touching Orchestrator code — only this mapper
-changes.
+GOAT and the Orchestrator interact ONLY with this class's methods — they
+never import the physical tiers directly, so backends (Redis, ChromaDB, Letta)
+can be swapped without touching Orchestrator code.
 
-Logical → physical mapping:
-    L0 (Identity)           → PermanentMemory
-    L1 (Critical Facts)     → PermanentMemory
-    L2 (Working Context)    → WorkingMemory
-    L2.5 (Session Cache)     → SessionCache (Redis, via WorkingMemory's client)
-    L3 (Episodic)           → EpisodicMemory
+    L0 Identity / L1 Facts → PermanentMemory
+    L2 Working / L2.5 Cache → WorkingMemory / SessionCache
+    L3 Episodic           → EpisodicMemory
 
-Step 1 added the pure L0-L3 mapping; Step 2 added the L2.5 session cache.
-Step 3 adds the retrieval budget: ``search_episodic`` /
-``search_episodic_with_cache`` cap result count, and
-``prepare_context_for_prompt`` assembles every layer into budgeted text blocks
-so the combined L0+L1+L2+L2.5+L3 context never exceeds ``MAX_CONTEXT_TOKENS``
-(L0+L1 always protected; L2/L2.5/L3 dropped lowest-priority-first). No intent
-classification or prefetch yet — those are later steps.
+Steps 1-3 added the mapping, L2.5 cache, and retrieval budget; Step 5 adds
+the L3 write path (``store_episodic``). No prefetch yet.
 """
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import TYPE_CHECKING
 
 from memory.budget import enforce_context_budget, enforce_result_limit, estimate_tokens
@@ -52,22 +43,12 @@ _BASE_IDENTITY = "You are a helpful assistant."
 
 
 class MemoryLayers:
-    """Backend Mapper — translates logical layers (L0-L3) to physical
-    storage tiers (Permanent/Working/Episodic).
+    """Backend Mapper — L0-L3 logical layers → physical tiers.
 
-    GOAT and the Orchestrator interact ONLY with this class's methods. They
-    never import or reference ``WorkingMemory``, ``EpisodicMemory``, or
-    ``PermanentMemory`` directly. This means physical backends (Redis,
-    ChromaDB, Letta) can be swapped without touching Orchestrator code —
-    only this mapper changes.
-
-    Step 1 = pure L0-L3 mapping. Step 2 = L2.5 session cache (a
-    ``SessionCache`` built from the working tier + configurable TTL) so
-    repeated searches/tool outputs are served from Redis. Step 3 = retrieval
-    budget: search results are capped and ``prepare_context_for_prompt``
-    assembles all layers into text blocks whose combined size stays under
-    ``MAX_CONTEXT_TOKENS`` (L0+L1 protected; L2/L3 dropped
-    lowest-priority-first). No intent classification or prefetch yet.
+    GOAT/Orchestrator talk only to this class. Step 1 = mapping, Step 2 =
+    L2.5 cache, Step 3 = retrieval budget (``prepare_context_for_prompt``;
+    L0+L1 protected, L2/L3 dropped lowest-priority-first), Step 5 = L3 write
+    path (``store_episodic``). No intent classification or prefetch yet.
     """
 
     def __init__(
@@ -128,6 +109,25 @@ class MemoryLayers:
         """
         results = await self._episodic.search(query, limit=limit)
         return enforce_result_limit(results)
+
+    async def store_episodic(
+        self, chat_id: str, content: str, tags: list[str] | None = None,
+    ) -> None:
+        """L3: write content to episodic memory — the only L3 write path.
+
+        GOAT calls this via the ``store_memory`` tool when it decides
+        something is worth preserving for future sessions. Maps to
+        ``EpisodicMemory.store``. Tags are joined into one metadata string
+        and a timestamp is added — ChromaDB metadata must be primitives (no
+        lists); ``get_recent``/``get_oldest`` sort by ``metadata.timestamp``.
+
+        Args:
+            chat_id: Origin chat — labels the entry for per-chat recency.
+            content: The information to store.
+            tags: Optional retrieval tags; joined into one metadata string.
+        """
+        metadata = {"tags": ",".join(tags or []), "timestamp": time.time()}
+        await self._episodic.store(chat_id, content, metadata)
 
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,

@@ -31,17 +31,21 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     Build and return a configured Telegram Application.
 
     Creates the Orchestrator from registry (DI) with the ``search_memory``
-    tool (GOAT's on-demand path to L3 episodic memory) and routes incoming
-    text messages to it. Memory is accessed entirely through the Orchestrator,
-    which talks to ``registry.memory_layers`` (the Backend Mapper); this
-    module never touches the physical tiers directly. ``post_init`` /
-    ``post_shutdown`` are forwarded to ApplicationBuilder when provided.
+    tool (GOAT's on-demand path to read L3) and the ``store_memory`` tool
+    (GOAT's on-demand path to write L3) and routes incoming text messages to
+    it. Memory is accessed entirely through the Orchestrator, which talks to
+    ``registry.memory_layers`` (the Backend Mapper); this module never touches
+    the physical tiers directly. ``post_init`` / ``post_shutdown`` are
+    forwarded to ApplicationBuilder when provided.
     """
     from orchestrator.orchestrator import Orchestrator  # lazy — avoids import cycle
     from tools.memory_tools import build_search_memory_tool  # lazy — avoids import cycle
+    from tools.memory_writer import build_store_memory_tool  # lazy — avoids import cycle
 
-    search_memory = build_search_memory_tool(registry.memory_layers)
-    orchestrator = Orchestrator(registry, tools=[search_memory])
+    layers = registry.memory_layers
+    search_memory = build_search_memory_tool(layers)
+    store_memory = build_store_memory_tool(layers)
+    orchestrator = Orchestrator(registry, tools=[search_memory, store_memory])
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""

@@ -46,14 +46,17 @@ def build_search_memory_tool(memory_layers: "MemoryLayers") -> ToolDefinition:
         notice.
     """
 
-    async def handler(query: str) -> str:
+    async def handler(query: str, chat_id: str = "") -> str:
         """Search episodic memory for ``query``; return formatted hits or a no-match notice.
 
-        Returns one ``- {content}`` line per result (closest first), capped by
-        the retrieval budget, or ``"No relevant memories found."`` when empty.
+        ``chat_id`` is injected by the Orchestrator's tool round and unused
+        here — episodic search is global (cross-chat) so a memory stored in
+        one session is recallable from another. Returns one ``- {content}``
+        line per result (closest first), capped by the retrieval budget, or
+        ``"No relevant memories found."`` when empty.
         """
         results = await memory_layers.search_episodic(query)
-        log.debug("search_memory query=%r hits=%d", query, len(results))
+        log.debug("search_memory chat=%s query=%r hits=%d", chat_id, query, len(results))
         if not results:
             return "No relevant memories found."
         return "\n".join(f"- {r['content']}" for r in results)
