@@ -1,4 +1,4 @@
-"""memory.config — memory tier config (working/episodic/permanent/session_cache/retrieval_budget/aits). Reads config/memory.toml."""
+"""memory.config — memory tier config (working/episodic/permanent/session_cache/retrieval_budget/aits/analytics). Reads config/memory.toml."""
 from __future__ import annotations
 
 import tomllib
@@ -36,6 +36,9 @@ _DEFAULTS: dict = {
         "budget_hard_cap": 12000,
         "prefetch_timeout": 0.5,
         "prefetch_confidence_threshold": 0.4,
+    },
+    "analytics": {
+        "log_interval": 100,
     },
 }
 
@@ -109,6 +112,11 @@ PREFETCH_CONFIDENCE_THRESHOLD: Final[float] = float(
     _aits.get("prefetch_confidence_threshold", _DEFAULTS["aits"]["prefetch_confidence_threshold"])
 )
 
+_analytics = _cfg.get("analytics", _DEFAULTS["analytics"])
+ANALYTICS_LOG_INTERVAL: Final[int] = int(
+    _analytics.get("log_interval", _DEFAULTS["analytics"]["log_interval"])
+)
+
 __all__ = [
     "WORKING_STORAGE_URL",
     "WORKING_TTL_SECONDS",
@@ -127,4 +135,5 @@ __all__ = [
     "BUDGET_HARD_CAP",
     "PREFETCH_TIMEOUT",
     "PREFETCH_CONFIDENCE_THRESHOLD",
+    "ANALYTICS_LOG_INTERVAL",
 ]

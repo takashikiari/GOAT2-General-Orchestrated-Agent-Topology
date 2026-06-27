@@ -121,23 +121,23 @@ class MemoryLayers:
 
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], bool]:
         """L3 + L2.5: semantic search, served from the session cache on repeat.
 
-        Builds a deterministic key, returns the cached list on a hit, else
-        searches episodic, stores, and returns. Key is ``search:{sha256(query)[:16]}``
-        — SHA-256 (not Python's randomised ``hash``) for stability across
-        restarts/processes. Results capped to ``MAX_RESULTS_PER_SEARCH`` before
-        caching so hits return the limited set without re-triggering the cap.
+        Builds a deterministic key; returns ``(cached, True)`` on a hit, else
+        searches, stores, returns ``(results, False)``. Key is
+        ``search:{sha256(query)[:16]}`` — SHA-256 (not Python's randomised
+        ``hash``) for cross-restart stability. Results capped to
+        ``MAX_RESULTS_PER_SEARCH`` before caching so cache hits need no re-cap.
         """
         cache_key = self._search_cache_key(query)
         cached = await self._cache.get(chat_id, cache_key)
         if cached is not None:
-            return cached["results"]
+            return cached["results"], True
         log.debug("episodic search (cache miss) chat=%s query=%r", chat_id, query[:80])
         results = enforce_result_limit(await self._episodic.search(query, limit=limit))
         await self._cache.set(chat_id, cache_key, {"results": results})
-        return results
+        return results, False
 
     @staticmethod
     def _search_cache_key(query: str) -> str:
@@ -168,14 +168,13 @@ class MemoryLayers:
     async def assemble_context(
         self, chat_id: str, budget: int | None = None,
         l3_results: list[dict] | None = None,
-    ) -> list[str]:
-        """Assemble L0-L3 prompt blocks under a dynamic (AITS) budget.
+    ) -> tuple[list[str], int]:
+        """Assemble L0-L3 prompt blocks under a dynamic (AITS) budget; returns ``(blocks, l3_used)``.
 
-        L0+L1 mandatory (always kept). L2 (live conversation) is protected: kept
-        up to ``L2_CONTEXT_CAP`` by dropping the oldest messages, independent of
-        ``budget`` — the live thread is never fully lost (Step 6 fix). L3 is
+        L0+L1 mandatory. L2 (live conversation) is protected to ``L2_CONTEXT_CAP``
+        (drop-oldest), independent of ``budget`` — never fully lost. L3 is
         AITS-gated: included only when ``l3_results`` is given and budget remains
-        after L0+L1+L2, formatted via ``_fit_search_results`` (silent, closest).
+        after L0+L1+L2 (silent); ``l3_used`` is how many L3 results fit the budget.
 
         Args:
             chat_id: Current chat session ID.
@@ -201,13 +200,14 @@ class MemoryLayers:
             l2_tokens = estimate_tokens(l2_block)
             blocks.append(l2_block)
         # L3: episodic — AITS-gated, fits the budget remaining after L0+L1+L2.
+        l3_used = 0
         if l3_results:
             l3_budget = budget - mandatory_tokens - l2_tokens
             if l3_budget > 0:
-                l3_block = self._fit_search_results(l3_results, l3_budget)
+                l3_block, l3_used = self._fit_search_results(l3_results, l3_budget)
                 if l3_block:
                     blocks.append(f"[Related Memory]\n{l3_block}")
-        return blocks
+        return blocks, l3_used
 
     @staticmethod
     def _trim_recent_messages(messages: list[dict], max_tokens: int) -> list[dict]:
@@ -233,11 +233,11 @@ class MemoryLayers:
         return kept
 
     @staticmethod
-    def _fit_search_results(results: list[dict], max_tokens: int) -> str:
-        """Format episodic results, closest first, keeping as many as fit ``max_tokens``.
+    def _fit_search_results(results: list[dict], max_tokens: int) -> tuple[str, int]:
+        """Format results closest-first, keeping as many as fit ``max_tokens``.
 
-        Greedy add-while-fits; returns joined lines (possibly empty). Silent by
-        design — partial recall beats dropping the whole block with a warning.
+        Returns ``(block_text, count)``: joined lines and how many results kept.
+        Greedy add-while-fits; silent — partial recall beats a dropped block.
         """
         lines: list[str] = []
         total = 0
@@ -248,7 +248,7 @@ class MemoryLayers:
                 break
             lines.append(line)
             total += tok
-        return "\n".join(lines)
+        return "\n".join(lines), len(lines)
 
     @staticmethod
     def _format_facts(facts: dict[str, str]) -> str:

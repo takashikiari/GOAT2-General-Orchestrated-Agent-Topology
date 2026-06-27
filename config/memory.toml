@@ -26,3 +26,6 @@ budget_complexity_max_bonus = 2000
 budget_hard_cap = 12000
 prefetch_timeout = 0.5
 prefetch_confidence_threshold = 0.4
+
+[analytics]
+log_interval = 100
