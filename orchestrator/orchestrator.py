@@ -1,4 +1,4 @@
-"""orchestrator.orchestrator — stateless LLM driver with AITS budgeting, async prefetch, and optional single-round tool calling."""
+"""orchestrator.orchestrator — stateless LLM driver with AITS budgeting, async prefetch, single-round tool calling, and per-request observability."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,13 @@ from memory.aits import (
     calculate_confidence_from_query,
     calculate_intent_budget,
 )
-from memory.config import MAX_RESULTS_PER_SEARCH, PREFETCH_CONFIDENCE_THRESHOLD, PREFETCH_TIMEOUT
+from memory.config import (
+    ANALYTICS_LOG_INTERVAL,
+    MAX_RESULTS_PER_SEARCH,
+    PREFETCH_CONFIDENCE_THRESHOLD,
+    PREFETCH_TIMEOUT,
+)
+from memory.observability_collector import ObservationCollector
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -40,7 +46,7 @@ _STORE_MEMORY_GUIDANCE = (
 
 
 class Orchestrator:
-    """Stateless (intent, chat_id)→LLM→reply driver with AITS budgeting + async prefetch.
+    """Stateless (intent, chat_id)→LLM→reply driver with AITS + observability.
 
     All memory access flows through ``registry.memory_layers`` (the Backend
     Mapper); the orchestrator never imports the physical tiers. Per turn it
@@ -48,8 +54,10 @@ class Orchestrator:
     bounded-time L3 prefetch (skipped below a confidence threshold; the
     ``search_memory`` tool remains the fallback), then assembles context via
     ``memory_layers.assemble_context`` (L0+L1 protected, L2 protected to
-    ``L2_CONTEXT_CAP``, L3 AITS-gated). Memory is the kernel's context only;
-    tools and agents are separate systems that consume it, not budget inputs.
+    ``L2_CONTEXT_CAP``, L3 AITS-gated). One ``ObservationCollector`` records the
+    turn (latency per stage, tokens per tier, cache/prefetch outcome) and feeds
+    the registry-owned ``memory_analytics`` aggregator. Memory is the kernel's
+    context only; tools and agents are separate systems, not budget inputs.
     """
 
     def __init__(self, registry: ServiceRegistry, tools: list[ToolDefinition] | None = None) -> None:
@@ -67,84 +75,105 @@ class Orchestrator:
     async def run(self, intent: str, chat_id: str) -> str:
         """Single turn: AITS budget → bounded-time L3 prefetch → assemble → LLM → save.
 
-        Flow:
-            1. AITS: derive ``confidence`` + ``complexity`` from ``intent`` and
-               compute a dynamic per-intent ``budget``.
-            2. L3 prefetch: when ``confidence >= PREFETCH_CONFIDENCE_THRESHOLD``,
-               run ``search_episodic_with_cache`` bounded by
-               ``PREFETCH_TIMEOUT`` — success yields ``l3_results``; timeout or
-               failure yields ``[]`` and a warning (the response never blocks on
-               it). Below threshold, prefetch is skipped and GOAT may still use
-               the ``search_memory`` tool as fallback.
-            3. ``memory_layers.assemble_context(chat_id, budget, l3_results)``:
-               L0+L1 protected, L2 protected to ``L2_CONTEXT_CAP``, L3 AITS-gated.
-            4. Join blocks into the system prompt; append the search/store
-               guidance when those tools are configured; append the user message.
-            5. Call the LLM (with tools if configured).
-            6. Handle a single tool round if the model requests it — ``chat_id``
-               is injected into each handler (per-call, concurrency-safe).
-            7. Persist this turn (user + assistant) to working memory (L2).
-
-        The second (tool-result) LLM call never receives tools, so runaway
-        tool-calling loops are structurally impossible. Multi-round is future.
+        Each stage is timed (classify / search / assemble / inject) by an
+        ``ObservationCollector``; on success the observation is recorded into
+        ``memory_analytics`` and a report is logged every
+        ``ANALYTICS_LOG_INTERVAL`` requests. On exception the partial
+        observation is recorded before re-raising. The LLM call + tool round
+        fall inside the ``inject`` stage (the biggest latency), and the second
+        (tool-result) LLM call never receives tools, so runaway tool loops are
+        structurally impossible.
         """
         layers = self._registry.memory_layers
-        # 1. AITS dynamic budget.
-        confidence = calculate_confidence_from_query(intent)
-        complexity = calculate_complexity_from_query(intent)
-        budget = calculate_intent_budget(confidence, complexity)
-        log.info(
-            "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
-            budget, confidence, complexity, chat_id,
-        )
-        # 2. Bounded-time L3 prefetch (non-blocking). The L2/L0/L1 fetch inside
-        #    assemble_context is cheap Redis/Letta, so it is not worth splitting
-        #    out to overlap ~ms; the timeout is the real non-blocking guarantee.
-        l3_results: list[dict] = []
-        if confidence >= PREFETCH_CONFIDENCE_THRESHOLD:
-            log.debug("prefetch started chat=%s", chat_id)
-            try:
-                l3_results = await asyncio.wait_for(
-                    layers.search_episodic_with_cache(chat_id, intent, limit=MAX_RESULTS_PER_SEARCH),
-                    timeout=PREFETCH_TIMEOUT,
-                )
-                log.info("prefetch ok chat=%s hits=%d", chat_id, len(l3_results))
-            except asyncio.TimeoutError:
-                log.warning("prefetch timed out chat=%s, continuing without L3", chat_id)
-            except Exception as exc:
-                log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
-        else:
-            log.debug("prefetch skipped (low confidence %.2f) chat=%s", confidence, chat_id)
-        # 3. Assemble L0+L1 (protected) + L2 (protected to cap) + L3 (AITS-gated).
-        context_blocks = await layers.assemble_context(chat_id, budget=budget, l3_results=l3_results)
-        system_content = "\n\n".join(context_blocks)
-        if self._has_search_memory():
-            system_content += f"\n\n{_SEARCH_MEMORY_GUIDANCE}"
-        if self._has_store_memory():
-            system_content += f"\n\n{_STORE_MEMORY_GUIDANCE}"
-        # 4-5. LLM call (with tools if configured).
-        api_msgs = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": intent},
-        ]
-        kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
-                        temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS)
-        if self._tools:
-            kw["tools"] = [t.to_openai_schema() for t in self._tools]
-            kw["tool_choice"] = "auto"
-        response = await self._registry.llm_client.chat.completions.create(**kw)
-        choice = response.choices[0]
-        # 6. Single tool round if requested.
-        if choice.message.tool_calls:
-            reply = await self._run_tool_round(api_msgs, choice, chat_id)
-        else:
-            reply = choice.message.content or ""
-        # 7. Persist this turn: reload history, append user + assistant, save (L2).
-        messages = await layers.get_working_context(chat_id)
-        messages.append({"role": "user", "content": intent, "timestamp": time.time()})
-        messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})
-        await layers.save_working_context(chat_id, messages)
-        return reply
+        analytics = self._registry.memory_analytics
+        collector = ObservationCollector(chat_id, intent)
+        start = time.time()
+        try:
+            # 1. AITS dynamic budget (classify stage).
+            collector.start_stage("classify")
+            confidence = calculate_confidence_from_query(intent)
+            complexity = calculate_complexity_from_query(intent)
+            budget = calculate_intent_budget(confidence, complexity)
+            collector.set_confidence(confidence)
+            collector.set_complexity(complexity)
+            collector.set_intent(collector.categorize_intent(confidence, PREFETCH_CONFIDENCE_THRESHOLD))
+            collector.set_budget(budget, 0)
+            collector.end_stage("classify")
+            log.info(
+                "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
+                budget, confidence, complexity, chat_id,
+            )
+            # 2. Bounded-time L3 prefetch (search stage, non-blocking).
+            collector.start_stage("search")
+            l3_results: list[dict] = []
+            cache_hit = False
+            prefetch_attempted = False
+            prefetch_succeeded = False
+            prefetch_timeout = False
+            if confidence >= PREFETCH_CONFIDENCE_THRESHOLD:
+                prefetch_attempted = True
+                log.debug("prefetch started chat=%s", chat_id)
+                try:
+                    l3_results, cache_hit = await asyncio.wait_for(
+                        layers.search_episodic_with_cache(chat_id, intent, limit=MAX_RESULTS_PER_SEARCH),
+                        timeout=PREFETCH_TIMEOUT,
+                    )
+                    prefetch_succeeded = True
+                    log.info("prefetch ok chat=%s hits=%d", chat_id, len(l3_results))
+                except asyncio.TimeoutError:
+                    prefetch_timeout = True
+                    log.warning("prefetch timed out chat=%s, continuing without L3", chat_id)
+                except Exception as exc:
+                    log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
+            else:
+                log.debug("prefetch skipped (low confidence %.2f) chat=%s", confidence, chat_id)
+            collector.end_stage("search")
+            collector.set_cache(cache_hit)
+            collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
+            # 3. Assemble L0+L1+L2+L3 (assemble stage); derive tokens/results.
+            collector.start_stage("assemble")
+            context_blocks, l3_used = await layers.assemble_context(chat_id, budget=budget, l3_results=l3_results)
+            collector.end_stage("assemble")
+            collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
+            # 4-5. Build prompt + LLM call + tool round (inject stage).
+            collector.start_stage("inject")
+            system_content = "\n\n".join(context_blocks)
+            if self._has_search_memory():
+                system_content += f"\n\n{_SEARCH_MEMORY_GUIDANCE}"
+            if self._has_store_memory():
+                system_content += f"\n\n{_STORE_MEMORY_GUIDANCE}"
+            api_msgs = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": intent},
+            ]
+            kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
+                            temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS)
+            if self._tools:
+                kw["tools"] = [t.to_openai_schema() for t in self._tools]
+                kw["tool_choice"] = "auto"
+            response = await self._registry.llm_client.chat.completions.create(**kw)
+            choice = response.choices[0]
+            if choice.message.tool_calls:
+                reply = await self._run_tool_round(api_msgs, choice, chat_id)
+            else:
+                reply = choice.message.content or ""
+            # 6. Persist this turn: reload history, append user + assistant, save (L2).
+            messages = await layers.get_working_context(chat_id)
+            messages.append({"role": "user", "content": intent, "timestamp": time.time()})
+            messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})
+            await layers.save_working_context(chat_id, messages)
+            collector.end_stage("inject")
+            # 7. Record the observation; log a report at the configured interval.
+            collector.finish(time.time() - start)
+            analytics.record(collector.obs)
+            if analytics.total_requests % ANALYTICS_LOG_INTERVAL == 0:
+                analytics.log_report()
+            return reply
+        except Exception:
+            log.warning("run() failed chat=%s, recording partial observation", chat_id)
+            collector.finish(time.time() - start)
+            analytics.record(collector.obs)
+            raise
 
     async def _run_tool_round(self, api_msgs: list, choice, chat_id: str) -> str:
         """Execute tool calls from choice, make one more LLM call (no tools), return text.

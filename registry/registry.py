@@ -13,6 +13,7 @@ from config import settings
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from memory.analytics import MemoryAnalytics
     from memory.layers import MemoryLayers
     from memory.working import WorkingMemory
     from memory.episodic import EpisodicMemory
@@ -28,6 +29,7 @@ class ServiceRegistry:
         self._episodic_memory: EpisodicMemory | None = None
         self._permanent_memory: PermanentMemory | None = None
         self._memory_layers: MemoryLayers | None = None
+        self._memory_analytics: MemoryAnalytics | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
@@ -81,3 +83,16 @@ class ServiceRegistry:
                 cache_ttl=SESSION_CACHE_TTL,
             )
         return self._memory_layers
+
+    @property
+    def memory_analytics(self) -> "MemoryAnalytics":
+        """Shared MemoryAnalytics aggregator, built once (registry-owned).
+
+        Not a module singleton — the registry owns its lifetime. The
+        orchestrator records one observation per turn and logs a report every
+        ``ANALYTICS_LOG_INTERVAL`` requests.
+        """
+        if self._memory_analytics is None:
+            from memory.analytics import MemoryAnalytics  # lazy — avoids import cycle
+            self._memory_analytics = MemoryAnalytics()
+        return self._memory_analytics
