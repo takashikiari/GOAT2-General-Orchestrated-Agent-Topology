@@ -6,15 +6,14 @@ ttl_seconds = 0
 storage_path = "./chroma_data"
 collection_name = "episodic_memory"
 
-[promotion]
-check_interval_seconds = 60
-max_messages_before_promote = 50
-max_age_seconds_before_promote = 600
-recovery_message_limit = 20
-episodic_max_entries = 300
-episodic_promote_count = 150
-
 [permanent]
 letta_url = "http://localhost:8283"
 agent_name = "goat-permanent"
 letta_model = "letta/letta-free"
+
+[session_cache]
+ttl_seconds = 300
+
+[retrieval_budget]
+max_results_per_search = 15
+max_context_tokens = 4000

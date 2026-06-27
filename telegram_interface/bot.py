@@ -30,24 +30,24 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     """
     Build and return a configured Telegram Application.
 
-    Creates Orchestrator from registry (DI).  A per-process set tracks
-    recovered chat_ids; recover_recent_context() runs once per chat on
-    first message.  post_init/post_shutdown forwarded to ApplicationBuilder.
+    Creates the Orchestrator from registry (DI) with the ``search_memory``
+    tool (GOAT's on-demand path to L3 episodic memory) and routes incoming
+    text messages to it. Memory is accessed entirely through the Orchestrator,
+    which talks to ``registry.memory_layers`` (the Backend Mapper); this
+    module never touches the physical tiers directly. ``post_init`` /
+    ``post_shutdown`` are forwarded to ApplicationBuilder when provided.
     """
     from orchestrator.orchestrator import Orchestrator  # lazy — avoids import cycle
-    from memory.recovery import recover_recent_context  # lazy
+    from tools.memory_tools import build_search_memory_tool  # lazy — avoids import cycle
 
-    _recovered: set[str] = set()
-    orchestrator = Orchestrator(registry)
+    search_memory = build_search_memory_tool(registry.memory_layers)
+    orchestrator = Orchestrator(registry, tools=[search_memory])
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Recover context on first message per chat, then call orchestrator."""
+        """Forward the incoming text to the orchestrator and reply."""
         text = update.message.text or ""
         chat_id = str(update.effective_chat.id)
         log.info("chat=%s text=%r", chat_id, text[:80])
-        if chat_id not in _recovered:
-            await recover_recent_context(registry.working_memory, registry.episodic_memory, chat_id)
-            _recovered.add(chat_id)
         try:
             reply = await orchestrator.run(text, chat_id)
         except Exception:
@@ -67,22 +67,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
 
 
 def run_polling() -> None:
-    """Build registry + PromotionDaemon, wire lifecycle hooks, start polling."""
+    """Build registry, wire optional lifecycle hooks, and start long-polling."""
     from registry.registry import ServiceRegistry  # lazy
-    from memory.promotion import PromotionDaemon  # lazy
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
-    daemon = PromotionDaemon(
-        registry.working_memory, registry.episodic_memory, registry.permanent_memory,
-    )
-
-    async def _start(app: Application) -> None:
-        await daemon.start()
-
-    async def _stop(app: Application) -> None:
-        from memory.recovery import force_promote_all_chats
-        await force_promote_all_chats(registry.working_memory, registry.episodic_memory)
-        await daemon.stop()
-
-    build_app(registry, post_init=_start, post_shutdown=_stop).run_polling()
+    build_app(registry).run_polling()
