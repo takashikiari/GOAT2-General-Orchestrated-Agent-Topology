@@ -47,6 +47,8 @@ class MemoryAnalytics:
         self.total_latency_search = 0.0
         self.total_latency_assemble = 0.0
         self.total_latency_inject = 0.0
+        self.total_latency_llm = 0.0
+        self.total_latency_save = 0.0
         self.total_latency = 0.0
 
     def record(self, obs: MemoryObservation) -> None:
@@ -76,6 +78,8 @@ class MemoryAnalytics:
         self.total_latency_search += obs.latency_search
         self.total_latency_assemble += obs.latency_assemble
         self.total_latency_inject += obs.latency_inject
+        self.total_latency_llm += obs.latency_llm
+        self.total_latency_save += obs.latency_save
         self.total_latency += obs.latency_total
 
     def get_report(self) -> dict:
@@ -101,6 +105,8 @@ class MemoryAnalytics:
             "avg_latency_search": self.total_latency_search / n,
             "avg_latency_assemble": self.total_latency_assemble / n,
             "avg_latency_inject": self.total_latency_inject / n,
+            "avg_latency_llm": self.total_latency_llm / n,
+            "avg_latency_save": self.total_latency_save / n,
             "avg_latency_total": self.total_latency / n,
         }
 

@@ -5,6 +5,7 @@ No module-level singleton — callers own the registry lifetime.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from memory.working import WorkingMemory
     from memory.episodic import EpisodicMemory
     from memory.permanent import PermanentMemory
+    from plugins.plugin_manager import PluginManager
 
 
 class ServiceRegistry:
@@ -30,6 +32,7 @@ class ServiceRegistry:
         self._permanent_memory: PermanentMemory | None = None
         self._memory_layers: MemoryLayers | None = None
         self._memory_analytics: MemoryAnalytics | None = None
+        self._plugin_manager: PluginManager | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
@@ -96,3 +99,17 @@ class ServiceRegistry:
             from memory.analytics import MemoryAnalytics  # lazy — avoids import cycle
             self._memory_analytics = MemoryAnalytics()
         return self._memory_analytics
+
+    @property
+    def plugin_manager(self) -> "PluginManager":
+        """Shared PluginManager for hot-reload tool plugins, built once.
+
+        Registry-owned (lazy) — points at ``tools/goat_skills``. The orchestrator
+        reads ``plugin_manager.tools`` each turn and the Telegram bot's scanner
+        calls ``scan()`` every 30 s so plugins reload without a restart.
+        """
+        if self._plugin_manager is None:
+            from plugins.plugin_manager import PluginManager  # lazy
+            plugins_dir = Path(__file__).parent.parent / "tools" / "goat_skills"
+            self._plugin_manager = PluginManager(self, plugins_dir)
+        return self._plugin_manager

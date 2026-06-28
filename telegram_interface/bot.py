@@ -41,11 +41,13 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     from orchestrator.orchestrator import Orchestrator  # lazy — avoids import cycle
     from tools.memory_tools import build_search_memory_tool  # lazy — avoids import cycle
     from tools.memory_writer import build_store_memory_tool  # lazy — avoids import cycle
+    from tools.memory_promote import build_promote_memory_tool  # lazy — avoids import cycle
 
     layers = registry.memory_layers
     search_memory = build_search_memory_tool(layers)
     store_memory = build_store_memory_tool(layers)
-    orchestrator = Orchestrator(registry, tools=[search_memory, store_memory])
+    promote_memory = build_promote_memory_tool(layers)
+    orchestrator = Orchestrator(registry, tools=[search_memory, store_memory, promote_memory])
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""
@@ -57,7 +59,8 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         except Exception:
             log.exception("orchestrator.run() failed for chat=%s", chat_id)
             reply = _ERROR_REPLY
-        await update.message.reply_text(_truncate(reply))
+        if reply:
+            await update.message.reply_text(_truncate(reply))
 
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
     if post_init:
@@ -71,9 +74,10 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
 
 
 def run_polling() -> None:
-    """Build registry, wire optional lifecycle hooks, and start long-polling."""
+    """Build registry, wire the plugin scanner, and start long-polling."""
     from registry.registry import ServiceRegistry  # lazy
+    from telegram_interface._plugin_scanner import post_init_hook  # lazy
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
-    build_app(registry).run_polling()
+    build_app(registry, post_init=post_init_hook(registry)).run_polling()

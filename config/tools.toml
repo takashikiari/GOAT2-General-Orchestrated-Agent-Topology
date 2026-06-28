@@ -1,0 +1,4 @@
+[web]
+max_chars_default = 8000
+timeout_seconds   = 30
+screenshot_dir    = "/tmp/goat_screenshots"

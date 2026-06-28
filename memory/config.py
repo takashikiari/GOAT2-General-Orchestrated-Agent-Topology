@@ -20,14 +20,22 @@ _DEFAULTS: dict = {
         "letta_url": "http://localhost:8283",
         "agent_name": "goat-permanent",
         "letta_model": "letta/letta-free",
+        "l1_facts_max_tokens": 500,
     },
     "session_cache": {
         "ttl_seconds": 300,
+    },
+    "identity": {
+        "base_prompt": "You are a helpful assistant.",
     },
     "retrieval_budget": {
         "max_results_per_search": 15,
         "max_context_tokens": 4000,
         "l2_context_cap": 8000,
+        "l3_reserve_fraction": 0.3,
+        "l2_floor_tokens": 500,
+        "l3_min_guarantee_tokens": 1200,
+        "l3_similarity_max_distance": 1.0,
     },
     "aits": {
         "budget_base": 2000,
@@ -79,10 +87,18 @@ PERMANENT_AGENT_NAME: str = str(
 PERMANENT_LETTA_MODEL: str = str(
     _permanent.get("letta_model", _DEFAULTS["permanent"]["letta_model"])
 )
+L1_FACTS_MAX_TOKENS: Final[int] = int(
+    _permanent.get("l1_facts_max_tokens", _DEFAULTS["permanent"]["l1_facts_max_tokens"])
+)
 
 _session_cache = _cfg.get("session_cache", _DEFAULTS["session_cache"])
 SESSION_CACHE_TTL: Final[int] = int(
     _session_cache.get("ttl_seconds", _DEFAULTS["session_cache"]["ttl_seconds"])
+)
+
+_identity = _cfg.get("identity", _DEFAULTS["identity"])
+IDENTITY_BASE_PROMPT: str = str(
+    _identity.get("base_prompt", _DEFAULTS["identity"]["base_prompt"])
 )
 
 _retrieval_budget = _cfg.get("retrieval_budget", _DEFAULTS["retrieval_budget"])
@@ -94,6 +110,18 @@ MAX_CONTEXT_TOKENS: Final[int] = int(
 )
 L2_CONTEXT_CAP: Final[int] = int(
     _retrieval_budget.get("l2_context_cap", _DEFAULTS["retrieval_budget"]["l2_context_cap"])
+)
+L3_RESERVE_FRACTION: Final[float] = float(
+    _retrieval_budget.get("l3_reserve_fraction", _DEFAULTS["retrieval_budget"]["l3_reserve_fraction"])
+)
+L2_FLOOR_TOKENS: Final[int] = int(
+    _retrieval_budget.get("l2_floor_tokens", _DEFAULTS["retrieval_budget"]["l2_floor_tokens"])
+)
+L3_MIN_GUARANTEE_TOKENS: Final[int] = int(
+    _retrieval_budget.get("l3_min_guarantee_tokens", _DEFAULTS["retrieval_budget"]["l3_min_guarantee_tokens"])
+)
+L3_SIMILARITY_MAX_DISTANCE: Final[float] = float(
+    _retrieval_budget.get("l3_similarity_max_distance", _DEFAULTS["retrieval_budget"]["l3_similarity_max_distance"])
 )
 
 _aits = _cfg.get("aits", _DEFAULTS["aits"])
@@ -125,10 +153,16 @@ __all__ = [
     "PERMANENT_LETTA_URL",
     "PERMANENT_AGENT_NAME",
     "PERMANENT_LETTA_MODEL",
+    "L1_FACTS_MAX_TOKENS",
     "SESSION_CACHE_TTL",
+    "IDENTITY_BASE_PROMPT",
     "MAX_RESULTS_PER_SEARCH",
     "MAX_CONTEXT_TOKENS",
     "L2_CONTEXT_CAP",
+    "L3_RESERVE_FRACTION",
+    "L2_FLOOR_TOKENS",
+    "L3_MIN_GUARANTEE_TOKENS",
+    "L3_SIMILARITY_MAX_DISTANCE",
     "BUDGET_BASE",
     "BUDGET_CONFIDENCE_MULTIPLIER",
     "BUDGET_COMPLEXITY_MAX_BONUS",

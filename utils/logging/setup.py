@@ -21,6 +21,10 @@ from pathlib import Path
 
 _LOG_DIR = Path(os.environ.get("GOAT_LOG_DIR", "/tmp/goat2/logs"))
 _LOG_FILE = _LOG_DIR / "goat2.log"
+
+# Public alias so other modules (e.g. the get_recent_logs plugin) read the
+# exact file this module writes — one source of truth for the log path.
+LOG_FILE: Path = _LOG_FILE
 _FMT = "%(asctime)s  %(name)-35s  %(levelname)-8s  %(message)s"
 _DATE_FMT = "%Y-%m-%dT%H:%M:%S"
 _QUIET_LIBS = ("httpx", "httpcore", "openai", "hpack", "h2", "asyncio")

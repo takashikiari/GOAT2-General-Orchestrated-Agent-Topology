@@ -10,14 +10,36 @@ collection_name = "episodic_memory"
 letta_url = "http://localhost:8283"
 agent_name = "goat-permanent"
 letta_model = "letta/letta-free"
+# Token cap on the L1 facts (core-memory) block — promotion is refused past this
+# so L1 stays small, curated and always-in-context (off the top of every budget).
+l1_facts_max_tokens = 500
 
 [session_cache]
 ttl_seconds = 300
+
+# L0 identity. Set your real persona here — the always-present root instruction.
+# Counted against the AITS budget, so keep it concise.
+[identity]
+base_prompt = "You are GOAT, a helpful assistant with layered memory."
 
 [retrieval_budget]
 max_results_per_search = 15
 max_context_tokens = 4000
 l2_context_cap = 8000
+# Fraction of the budget (after L0+L1) reserved for L3 when episodic results are
+# available, so L2 cannot starve L3. L2 keeps a floor so it is never fully dropped.
+l3_reserve_fraction = 0.3
+l2_floor_tokens = 500
+# Priority-inverted split: L3 gets first claim on this guaranteed minimum token
+# slice; L2 takes the remainder (AITS-scaled). Nonzero by construction on
+# realistic budgets, so L3 is never starved to 0. Anchored to observed L3
+# injection sizes (1159-1731 tokens); tune empirically (Verification V2).
+l3_min_guarantee_tokens = 1200
+# L2 squared-Euclidean distance floor (ChromaDB default hnsw:space = "l2", no
+# override at episodic.py:40). On unit-norm MiniLM embeddings squared-L2 =
+# 2(1-cos), so 1.0 ~ cosine similarity 0.5. Calibrate empirically (V3) once a
+# richer labeled collection exists.
+l3_similarity_max_distance = 1.0
 
 [aits]
 budget_base = 2000

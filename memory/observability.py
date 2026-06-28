@@ -47,11 +47,14 @@ class MemoryObservation:
     cache_miss: bool
     cache_key: Optional[str] = None
 
-    # Latency (seconds) per stage
+    # Latency (seconds) per stage. inject = prompt assembly only; llm holds the
+    # (dominant) LLM API call(s); save = L2 working-memory persist.
     latency_classify: float = 0.0
     latency_search: float = 0.0
     latency_assemble: float = 0.0
     latency_inject: float = 0.0
+    latency_llm: float = 0.0
+    latency_save: float = 0.0
     latency_total: float = 0.0
 
     # Results

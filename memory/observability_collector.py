@@ -75,10 +75,15 @@ class ObservationCollector:
         self.obs.budget_allocated = allocated
         self.obs.budget_used = used
 
-    def set_cache(self, hit: bool) -> None:
-        """Set the L2.5 cache outcome (hit/miss). The key is internal, not stored."""
+    def set_cache(self, hit: bool, key: str | None = None) -> None:
+        """Set the L2.5 cache outcome (hit/miss) and report the cache key.
+
+        The key was previously treated as internal and never stored; it is now
+        propagated so the observability record shows what was actually looked up.
+        """
         self.obs.cache_hit = hit
         self.obs.cache_miss = not hit
+        self.obs.cache_key = key
 
     def set_prefetch(
         self, attempted: bool, succeeded: bool, timeout: bool,
@@ -89,6 +94,15 @@ class ObservationCollector:
         self.obs.prefetch_succeeded = succeeded
         self.obs.prefetch_timeout = timeout
         self.obs.prefetch_blocks_injected = blocks_injected
+        self.obs.prefetch_blocks_used = blocks_used
+
+    def set_prefetch_blocks_used(self, blocks_used: int) -> None:
+        """Patch in the real L3 usage count once assemble_context has run.
+
+        ``set_prefetch`` is called before assemble (only the raw result count is
+        known then); this sets ``prefetch_blocks_used`` to the ``l3_used`` value
+        ``assemble_context`` returns, replacing the placeholder 0.
+        """
         self.obs.prefetch_blocks_used = blocks_used
 
     def categorize_intent(self, confidence: float, threshold: float) -> str:
