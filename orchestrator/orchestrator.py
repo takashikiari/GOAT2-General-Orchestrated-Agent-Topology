@@ -36,6 +36,12 @@ log = get_logger(__name__)
 _DSML_BLOCK = re.compile(
     r"<｜｜DSML｜｜tool_calls>(.*?)</｜｜DSML｜｜tool_calls>", re.DOTALL
 )
+
+# Matches standalone multi-digit integers in text — used by the grounding check
+# to detect numeric claims in a synthesis reply that have no basis in the tool
+# output returned that turn. Single-digit numbers excluded (too noisy: indices,
+# list markers). Only the exact token must match; "42" in "142" is not a match.
+_NUMBER_CLAIM = re.compile(r"\b\d{2,}\b")
 _DSML_INVOKE = re.compile(
     r'<｜｜DSML｜｜invoke name="([^"]+)">(.*?)</｜｜DSML｜｜invoke>', re.DOTALL
 )
@@ -87,7 +93,82 @@ _INTROSPECTION_GUIDANCE = (
 # persona. This is NOT redundant with L0/L1: those answer "who you are";
 # this answers "what to do right now with the data above" — a gap L0/L1
 # structurally cannot close from the system-message position.
-_TOOL_SYNTHESIS_BRIDGE = "Respond to my request based on the tool results above."
+# The anti-fabrication clause directly addresses the class of failure where
+# the model invents counts/numbers not present in the tool output.
+_TOOL_SYNTHESIS_BRIDGE = (
+    "Respond to my request based on the tool results above. "
+    "Only state specific numbers, counts, or names if they appear verbatim "
+    "in the tool output — if a figure was not returned by the tools, "
+    "say so explicitly rather than guessing."
+)
+
+# Injected as a correction turn when the grounding check finds the synthesis
+# reply contains numbers absent from all tool output this turn. Parallel to
+# the DSML detection→correction pattern: a structural check (regex) triggers
+# the correction, not a pre-emptive prompt. {nums} and {they} are formatted
+# in at call time with the specific ungrounded values.
+_GROUNDING_CORRECTION = (
+    "Your response contains {nums}, but {they} do not appear in the tool "
+    "output above. Please correct or withdraw those claims — only state "
+    "figures that appear verbatim in the tool results."
+)
+
+# Tool-summary evidence constants — controls what _compact_tool_summary persists
+# from each tool call into L2/L3. Without this, only the synthesized reply text
+# is saved, leaving future turns with no real grounding for "did you actually
+# call X?" — the model's prior narrative is indistinguishable from a hallucination.
+#
+# Preview strategy by tool type:
+#   _LARGE_OUTPUT_TOOLS: store "[N chars]" only; URL/path in args is the evidence.
+#   _HEAD_TAIL_TOOLS: head + tail when long; grep/wc counts appear at line-end.
+#   others: head-only when long.
+# Short results (≤ _RESULT_SHORT_THRESHOLD) always stored in full regardless of type.
+_LARGE_OUTPUT_TOOLS = frozenset({"browse_page", "fetch_content"})
+_HEAD_TAIL_TOOLS = frozenset({"shell_run"})
+_RESULT_SHORT_THRESHOLD = 400
+_RESULT_HEAD = 200
+_RESULT_TAIL = 150
+_ARGS_MAX = 200
+
+
+def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
+    """One evidence line per tool call: 'called {name}({args}) → {result_preview}'.
+
+    Written into the saved assistant message so future turns can verify past
+    tool use against real logged evidence, not just the model's prior narrative.
+    """
+    lines = []
+    for name, args_json, result in calls_and_results:
+        args = args_json if len(args_json) <= _ARGS_MAX else args_json[:_ARGS_MAX] + "..."
+        if name in _LARGE_OUTPUT_TOOLS:
+            preview = f"[{len(result)} chars]"
+        elif len(result) <= _RESULT_SHORT_THRESHOLD:
+            preview = result
+        elif name in _HEAD_TAIL_TOOLS:
+            preview = result[:_RESULT_HEAD] + "..." + result[-_RESULT_TAIL:]
+        else:
+            preview = result[:_RESULT_HEAD] + "..."
+        lines.append(f"called {name}({args}) → {preview}")
+    return "\n".join(lines)
+
+
+def _ungrounded_numbers(reply: str, tool_exchange: list[dict]) -> frozenset[str]:
+    """Numbers asserted in reply that don't appear verbatim in any tool result.
+
+    Extracts all standalone 2+ digit integers from reply and from the
+    concatenated content of every role='tool' message in tool_exchange.
+    Returns the difference: numbers the model asserted that have no basis
+    in what the tools actually returned this turn.
+
+    Single-digit numbers are excluded to avoid noise from indices and markers.
+    False-positive risk: numbers drawn from conversation history or general
+    knowledge will be flagged if absent from tool output — the correction
+    round presents the evidence and the model self-adjudicates.
+    """
+    tool_text = " ".join(
+        m["content"] for m in tool_exchange if m.get("role") == "tool"
+    )
+    return frozenset(_NUMBER_CLAIM.findall(reply)) - frozenset(_NUMBER_CLAIM.findall(tool_text))
 
 
 async def _archive_turn(layers, chat_id: str, intent: str, reply: str) -> None:
@@ -238,8 +319,9 @@ class Orchestrator:
                 bool(choice.message.tool_calls),
                 content[:80].encode("unicode_escape").decode(),
             )
+            tool_summary = ""
             if choice.message.tool_calls:
-                reply = await self._run_tool_round(api_msgs, choice, chat_id, all_tools)
+                reply, tool_summary = await self._run_tool_round(api_msgs, choice, chat_id, all_tools)
                 if _DSML_BLOCK.search(reply):
                     log.warning("DSML in _run_tool_round reply chat=%s; running DSML round", chat_id)
                     reply = await self._run_dsml_tool_round(reply, chat_id, all_tools)
@@ -250,13 +332,18 @@ class Orchestrator:
                 reply = content
             collector.end_stage("llm")
             # 6. Persist this turn: reload history, append user + assistant, save (L2).
+            #    When tools were used, embed a compact evidence record in the assistant
+            #    message so future turns have real grounding for past tool calls.
+            #    Without this, only the synthesized reply text is saved — identical in
+            #    structure to a hallucinated claim and indistinguishable under questioning.
             #    Also fire an async L3 archive write (full message pair, non-blocking).
             collector.start_stage("save")
+            saved_reply = f"[Tool calls]\n{tool_summary}\n\n{reply}" if tool_summary else reply
             messages = await layers.get_working_context(chat_id)
             messages.append({"role": "user", "content": intent, "timestamp": time.time()})
-            messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})
+            messages.append({"role": "assistant", "content": saved_reply, "timestamp": time.time()})
             await layers.save_working_context(chat_id, messages)
-            asyncio.create_task(_archive_turn(layers, chat_id, intent, reply))
+            asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
             collector.end_stage("save")
             # 7. Record the observation; log a report at the configured interval.
             collector.finish(time.time() - start)
@@ -271,8 +358,13 @@ class Orchestrator:
             raise
 
     async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
-                              tools: list[ToolDefinition]) -> str:
-        """Execute tool calls from choice, make one more LLM call (no tools), return text.
+                              tools: list[ToolDefinition]) -> tuple[str, str]:
+        """Execute tool calls from choice, make one more LLM call (no tools), return (text, summary).
+
+        Returns ``(reply, tool_summary)`` where ``tool_summary`` is a compact
+        evidence string (one line per call: "called {name}({args}) → {preview}")
+        built by ``_compact_tool_summary``. The caller embeds this in the saved
+        assistant message so future turns have real grounding for past tool use.
 
         ``chat_id`` is threaded through to each handler so tools that need an
         origin chat (e.g. ``store_memory``) receive it without the model ever
@@ -282,6 +374,7 @@ class Orchestrator:
         this turn; dispatch is resolved against it so a mid-turn reload can't
         drop a tool the model already called.
         """
+        calls_and_results: list[tuple[str, str, str]] = []
         tool_exchange = [
             {"role": "assistant", "content": choice.message.content,
              "tool_calls": [
@@ -292,7 +385,12 @@ class Orchestrator:
         ]
         for tc in choice.message.tool_calls:
             result = await self._call_tool(tc, chat_id, tools)
+            log.debug(
+                "tool_result tool=%s chat=%s content=%r",
+                tc.function.name, chat_id, result,
+            )
             tool_exchange.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            calls_and_results.append((tc.function.name, tc.function.arguments, result))
         tool_exchange.append({"role": "user", "content": _TOOL_SYNTHESIS_BRIDGE})
         r2 = await self._registry.llm_client.chat.completions.create(
             model=settings.MODEL_NAME, messages=api_msgs + tool_exchange,
@@ -300,7 +398,45 @@ class Orchestrator:
         )
         r2_content = r2.choices[0].message.content or ""
         log.debug("_run_tool_round r2 content_hex=%s", r2_content[:80].encode("unicode_escape").decode())
-        return r2_content
+        ungrounded = _ungrounded_numbers(r2_content, tool_exchange)
+        if ungrounded:
+            log.warning(
+                "grounding check: synthesis reply contains numbers absent from tool output "
+                "chat=%s ungrounded=%s",
+                chat_id, sorted(ungrounded),
+            )
+            r2_content = await self._run_grounding_correction(
+                api_msgs, tool_exchange, r2_content, ungrounded, chat_id,
+            )
+        return r2_content, _compact_tool_summary(calls_and_results)
+
+    async def _run_grounding_correction(
+        self, api_msgs: list, tool_exchange: list, prior_reply: str,
+        ungrounded: frozenset[str], chat_id: str,
+    ) -> str:
+        """One corrective LLM call when the grounding check fires.
+
+        Parallel to the DSML detection→correction pattern: a structural
+        regex detected fabricated numbers; this round presents the specific
+        ungrounded values and asks the model to self-correct using only
+        what the tools returned. Falls back to prior_reply on LLM error —
+        a correction failure is never worse than the original fabrication.
+        """
+        nums = ", ".join(sorted(ungrounded))
+        they = "it" if len(ungrounded) == 1 else "they"
+        correction_msgs = api_msgs + tool_exchange + [
+            {"role": "assistant", "content": prior_reply},
+            {"role": "user", "content": _GROUNDING_CORRECTION.format(nums=nums, they=they)},
+        ]
+        try:
+            r3 = await self._registry.llm_client.chat.completions.create(
+                model=settings.MODEL_NAME, messages=correction_msgs,
+                temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+            )
+            return r3.choices[0].message.content or prior_reply
+        except Exception as exc:
+            log.warning("grounding correction LLM call failed chat=%s: %s; using prior reply", chat_id, exc)
+            return prior_reply
 
     async def _run_dsml_tool_round(self, content: str, chat_id: str,
                                    tools: list[ToolDefinition]) -> str:
