@@ -48,6 +48,7 @@ class _FakeLayers:
         self._l3_used = l3_used
         self.search_calls = 0
         self.last_query = None
+        self.archive_calls = 0
 
     async def search_episodic_with_cache(self, chat_id, query, limit=5):
         self.search_calls += 1
@@ -62,6 +63,9 @@ class _FakeLayers:
 
     async def save_working_context(self, chat_id, messages):
         self.saved = messages
+
+    async def store_episodic(self, chat_id: str, content: str, tags=None) -> None:
+        self.archive_calls += 1
 
 
 class _FakeAnalytics:

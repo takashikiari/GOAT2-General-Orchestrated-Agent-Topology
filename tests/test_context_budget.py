@@ -115,23 +115,41 @@ def _res(content, score):
     return {"content": content, "metadata": {"timestamp": 0.0}, "score": score}
 
 
-def test_assemble_filters_l3_by_similarity():
-    """Only results under the similarity threshold (L2 distance <= 1.0) are injected."""
-    layers = _layers([])                                # empty L2 -> L3 gets the budget
+def test_assemble_filters_l3_by_gap():
+    """Gap filter keeps the cluster before the structural break; distant outlier excluded.
+
+    scores=[0.30, 0.35, 0.40, 0.45, 2.00]: gaps=[0.05, 0.05, 0.05, 1.55],
+    mean=0.425, ratio=3.65 > 3.0 → keeps first 4, drops the distant result.
+    """
+    layers = _layers([])
     results = [
-        _res("relevant A", 0.4),                        # passes (cos ~0.8)
-        _res("irrelevant B", 2.5),                      # filtered (cos ~-0.25)
-        _res("relevant C", 0.9),                        # passes (cos ~0.55)
+        _res("close A", 0.30),
+        _res("close B", 0.35),
+        _res("close C", 0.40),
+        _res("close D", 0.45),
+        _res("distant E", 2.00),
     ]
     blocks, l3_used = asyncio.run(
         layers.assemble_context("c", budget=4000, l3_results=results)
     )
     related = [b for b in blocks if b.startswith("[Related Memory]")]
     assert len(related) == 1
-    assert "relevant A" in related[0]
-    assert "relevant C" in related[0]
-    assert "irrelevant B" not in related[0]
-    assert l3_used == 2
+    assert "close A" in related[0]
+    assert "close D" in related[0]
+    assert "distant E" not in related[0]
+    assert l3_used == 4
+
+
+def test_assemble_uniform_l3_injects_nothing():
+    """Uniform score distribution (no structural gap) → gap filter returns [] → no injection."""
+    layers = _layers([])
+    results = [_res(f"doc{i}", 1.0 + i * 0.1) for i in range(6)]  # 1.0, 1.1, ... 1.5
+    blocks, l3_used = asyncio.run(
+        layers.assemble_context("c", budget=4000, l3_results=results)
+    )
+    related = [b for b in blocks if b.startswith("[Related Memory]")]
+    assert len(related) == 0
+    assert l3_used == 0
 
 
 def test_assemble_l2_cap_reserves_l3_guarantee():

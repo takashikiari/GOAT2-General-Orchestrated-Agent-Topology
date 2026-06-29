@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from memory.budget import enforce_result_limit, estimate_tokens
-from memory.config import IDENTITY_BASE_PROMPT, L3_SIMILARITY_MAX_DISTANCE, MAX_CONTEXT_TOKENS
+from memory.config import IDENTITY_BASE_PROMPT, L3_GAP_SIGNIFICANCE, MAX_CONTEXT_TOKENS
 from memory.context_budget import allocate_context_budget
 from memory.session_cache import SessionCache
 from utils.logging.setup import get_logger
@@ -237,10 +237,7 @@ class MemoryLayers:
         if l3_results:
             l3_budget = max(budget - mandatory_tokens - l2_tokens, 0)
             if l3_budget > 0:
-                relevant = [
-                    r for r in l3_results
-                    if r.get("score", 0.0) <= L3_SIMILARITY_MAX_DISTANCE
-                ]
+                relevant = self._gap_filter(l3_results, L3_GAP_SIGNIFICANCE)
                 l3_block, l3_used = self._fit_search_results(relevant, l3_budget)
                 if l3_block:
                     blocks.append(f"[Related Memory]\n{l3_block}")
@@ -305,6 +302,46 @@ class MemoryLayers:
             lines.append(line)
             total += tok
         return "\n".join(lines), len(lines)
+
+    @staticmethod
+    def _gap_filter(results: list[dict], significance: float = 3.0) -> list[dict]:
+        """Keep results before the largest structural gap in the score distribution.
+
+        ChromaDB returns results sorted ascending (closest first). For a genuine
+        recall query, relevant docs cluster near the query; a large gap separates
+        them from noise. For an unrelated query on a monothematic corpus, all gaps
+        are roughly equal — no structural break — so nothing is injected.
+
+        Requires at least 3 results to compute a meaningful ratio (2 gaps). With
+        fewer than 3, a generous absolute ceiling (1.5 sq-L2 ≈ cosine 0.25 —
+        "nearly orthogonal", from V3 calibration) is applied instead: the ratio
+        criterion is meaningless on a single gap, but results beyond 1.5 are
+        unambiguously irrelevant regardless of corpus size and should not be
+        injected even during the first 1-2 turns of a fresh collection.
+
+        ``significance`` is max_gap / mean_gap; calibrated at 3.0 from 12 labeled
+        queries (V3, 2026-06-29): unrelated gap ratios 2.33–2.76 rejected, genuine
+        ratios 3.13–5.13 passed. At scale with l2_full_archive docs, archive
+        clusters produce ratios >> 10, making this self-calibrating.
+
+        Args:
+            results: Score-ascending results from ChromaDB (already sorted).
+            significance: max_gap / mean_gap required for a structural break.
+        Returns:
+            Results before the structural gap, or ``[]`` when none found.
+        """
+        if not results:
+            return []
+        if len(results) < 3:
+            return [r for r in results if r.get("score", 0.0) < 1.5]
+        scores = [r["score"] for r in results]
+        gaps = [scores[i + 1] - scores[i] for i in range(len(scores) - 1)]
+        max_gap = max(gaps)
+        mean_gap = sum(gaps) / len(gaps)
+        if mean_gap == 0 or max_gap < significance * mean_gap:
+            return []
+        cut = gaps.index(max_gap) + 1
+        return results[:cut]
 
     @staticmethod
     def _format_facts(facts: dict[str, str]) -> str:

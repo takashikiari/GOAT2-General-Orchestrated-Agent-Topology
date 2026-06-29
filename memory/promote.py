@@ -21,6 +21,9 @@ from __future__ import annotations
 
 from memory.budget import estimate_tokens
 from memory.config import L1_FACTS_MAX_TOKENS
+from utils.logging.setup import get_logger
+
+log = get_logger(__name__)
 
 __all__ = ["promote_fact"]
 
@@ -53,6 +56,7 @@ async def promote_fact(permanent, key: str, value: str) -> str:
                 f"Retire or shorten an existing fact before promoting {key!r}."
             )
         await permanent.store_fact(key, value)
+        log.info("L1 promote ok: key=%r", key)
     except Exception as exc:  # noqa: BLE001 — surface to the model, don't crash the turn
         return f"❌ promote_memory failed (Letta unavailable): {exc}"
     return f"✅ Promoted to permanent core-memory: {key} = {value[:80]}"

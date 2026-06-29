@@ -123,6 +123,9 @@ L3_MIN_GUARANTEE_TOKENS: Final[int] = int(
 L3_SIMILARITY_MAX_DISTANCE: Final[float] = float(
     _retrieval_budget.get("l3_similarity_max_distance", _DEFAULTS["retrieval_budget"]["l3_similarity_max_distance"])
 )
+L3_GAP_SIGNIFICANCE: Final[float] = float(
+    _retrieval_budget.get("l3_gap_significance", _DEFAULTS["retrieval_budget"].get("l3_gap_significance", 3.0))
+)
 
 _aits = _cfg.get("aits", _DEFAULTS["aits"])
 BUDGET_BASE: Final[int] = int(_aits.get("budget_base", _DEFAULTS["aits"]["budget_base"]))
@@ -163,6 +166,7 @@ __all__ = [
     "L2_FLOOR_TOKENS",
     "L3_MIN_GUARANTEE_TOKENS",
     "L3_SIMILARITY_MAX_DISTANCE",
+    "L3_GAP_SIGNIFICANCE",
     "BUDGET_BASE",
     "BUDGET_CONFIDENCE_MULTIPLIER",
     "BUDGET_COMPLEXITY_MAX_BONUS",

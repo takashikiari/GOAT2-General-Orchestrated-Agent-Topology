@@ -36,6 +36,22 @@ def test_prefetch_blocks_used_reflects_real_l3_used():
     assert obs.results_used == 3
 
 
+def test_archive_turn_calls_store_episodic():
+    """_archive_turn must call store_episodic on every turn.
+
+    _FakeLayers lacked store_episodic when _archive_turn was introduced,
+    causing a WARNING log on every test run (the missing method raised
+    AttributeError inside _archive_turn's except block, which silently
+    emitted to the shared log file). This test catches that class of gap:
+    if _FakeLayers ever drops store_episodic again, it fails immediately
+    instead of polluting logs.
+    """
+    layers = _FakeLayers(results=[])
+    reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
+    asyncio.run(Orchestrator(reg, tools=[]).run("hello", "c"))
+    assert layers.archive_calls >= 1
+
+
 def test_latency_split_llm_vs_inject():
     """The LLM call is isolated in latency_llm; inject is just prompt build."""
     layers = _FakeLayers(results=[])

@@ -58,6 +58,7 @@ class EpisodicMemory(EpisodicQueries):
             col.add(ids=[doc_id], documents=[content], metadatas=[merged])
 
         await asyncio.to_thread(_sync)
+        log.debug("L3 write ok: chat=%s doc_id=%s tags=%r", chat_id, doc_id, metadata.get("tags", ""))
 
     async def search(
         self, query: str, limit: int = 5,

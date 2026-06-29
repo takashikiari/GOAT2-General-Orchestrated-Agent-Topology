@@ -80,6 +80,30 @@ _INTROSPECTION_GUIDANCE = (
     "get_recent_logs tools to inspect your live state before answering."
 )
 
+# Injected as the final user-turn in _run_tool_round, immediately before the
+# second LLM call. Without this, the last message the model sees before
+# generating is raw tool output — whose format dominates generation style
+# because of context-position proximity, overriding the distant system-message
+# persona. This is NOT redundant with L0/L1: those answer "who you are";
+# this answers "what to do right now with the data above" — a gap L0/L1
+# structurally cannot close from the system-message position.
+_TOOL_SYNTHESIS_BRIDGE = "Respond to my request based on the tool results above."
+
+
+async def _archive_turn(layers, chat_id: str, intent: str, reply: str) -> None:
+    """Fire-and-forget: archive the full message pair into L3 episodic memory.
+
+    Tagged 'l2_full_archive' to distinguish raw archival writes from GOAT's
+    curated store_memory/promote_memory calls. Never raises — L3 write failure
+    must not affect the turn response.
+    """
+    try:
+        content = f"user: {intent}\nassistant: {reply}"
+        await layers.store_episodic(chat_id, content, tags=["l2_full_archive"])
+        log.debug("L3 archive write ok: chat=%s", chat_id)
+    except Exception as exc:
+        log.warning("L3 archive dump failed chat=%s: %s", chat_id, exc)
+
 
 class Orchestrator:
     """Stateless (intent, chat_id)→LLM→reply driver with AITS + observability.
@@ -226,11 +250,13 @@ class Orchestrator:
                 reply = content
             collector.end_stage("llm")
             # 6. Persist this turn: reload history, append user + assistant, save (L2).
+            #    Also fire an async L3 archive write (full message pair, non-blocking).
             collector.start_stage("save")
             messages = await layers.get_working_context(chat_id)
             messages.append({"role": "user", "content": intent, "timestamp": time.time()})
             messages.append({"role": "assistant", "content": reply, "timestamp": time.time()})
             await layers.save_working_context(chat_id, messages)
+            asyncio.create_task(_archive_turn(layers, chat_id, intent, reply))
             collector.end_stage("save")
             # 7. Record the observation; log a report at the configured interval.
             collector.finish(time.time() - start)
@@ -267,6 +293,7 @@ class Orchestrator:
         for tc in choice.message.tool_calls:
             result = await self._call_tool(tc, chat_id, tools)
             tool_exchange.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        tool_exchange.append({"role": "user", "content": _TOOL_SYNTHESIS_BRIDGE})
         r2 = await self._registry.llm_client.chat.completions.create(
             model=settings.MODEL_NAME, messages=api_msgs + tool_exchange,
             temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
