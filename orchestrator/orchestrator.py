@@ -15,8 +15,7 @@ from memory.aits import (
 )
 from memory.config import (
     ANALYTICS_LOG_INTERVAL,
-    MAX_RESULTS_PER_SEARCH,
-    PREFETCH_CONFIDENCE_THRESHOLD,
+    PREFETCH_MAX_RESULTS,
     PREFETCH_TIMEOUT,
 )
 from memory.observability_collector import ObservationCollector
@@ -191,14 +190,16 @@ class Orchestrator:
 
     All memory access flows through ``registry.memory_layers`` (the Backend
     Mapper); the orchestrator never imports the physical tiers. Per turn it
-    computes a dynamic AITS token budget (confidence + complexity), runs a
-    bounded-time L3 prefetch (skipped below a confidence threshold; the
-    ``search_memory`` tool remains the fallback), then assembles context via
-    ``memory_layers.assemble_context`` (L0+L1 protected, L2 protected to
-    ``L2_CONTEXT_CAP``, L3 AITS-gated). One ``ObservationCollector`` records the
-    turn (latency per stage, tokens per tier, cache/prefetch outcome) and feeds
-    the registry-owned ``memory_analytics`` aggregator. Memory is the kernel's
-    context only; tools and agents are separate systems, not budget inputs.
+    starts a prefetch daemon (the FIRST step, fire-and-forget) whose 3
+    mechanisms classify and search L3 in parallel with the L0/L1/L2 fetch,
+    computes a dynamic AITS token budget (confidence + complexity), awaits the
+    daemon under a bounded timeout (no confidence gate — every turn attempts
+    prefetch), then assembles context via ``memory_layers.assemble_context``
+    (L0+L1 protected, L2 protected to ``L2_CONTEXT_CAP``, L3 AITS-gated). One
+    ``ObservationCollector`` records the turn (latency per stage, tokens per
+    tier, cache/prefetch outcome) and feeds the registry-owned
+    ``memory_analytics`` aggregator. Memory is the kernel's context only;
+    tools and agents are separate systems, not budget inputs.
     """
 
     def __init__(self, registry: ServiceRegistry, tools: list[ToolDefinition] | None = None) -> None:
@@ -238,26 +239,32 @@ class Orchestrator:
         collector = ObservationCollector(chat_id, intent)
         start = time.time()
         try:
-            # 1. AITS dynamic budget (classify stage).
+            # 1. Prefetch daemon — started FIRST as a fire-and-forget task so its
+            #    L3 search overlaps the L0/L1/L2 fetch and the AITS classify stage
+            #    below (real overlap). No confidence gate: every turn attempts
+            #    prefetch; PREFETCH_TIMEOUT is the only blocker. Results come back
+            #    pre-scored (blended_score) from result_merger.
+            prefetch_task = asyncio.create_task(self._prefetch_daemon(chat_id, intent))
+            # 2. Concurrently fetch L0/L1 (facts) and L2 (working context) so the
+            #    I/O-bound tier fetches overlap with the daemon's L3 search.
+            facts_task = asyncio.create_task(layers.get_identity_and_facts())
+            msgs_task = asyncio.create_task(layers.get_working_context(chat_id))
+            # 3. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
             confidence = calculate_confidence_from_query(intent)
             complexity = calculate_complexity_from_query(intent)
             budget = calculate_intent_budget(confidence, complexity)
             collector.set_confidence(confidence)
             collector.set_complexity(complexity)
-            collector.set_intent(collector.categorize_intent(confidence, PREFETCH_CONFIDENCE_THRESHOLD))
+            collector.set_intent(collector.categorize_intent(confidence))
             collector.set_budget(budget, 0)
             collector.end_stage("classify")
             log.info(
                 "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
                 budget, confidence, complexity, chat_id,
             )
-            # 2. Unconditional L3 search (search stage, non-blocking, bounded time).
-            #    Pre-search confidence gating is removed — every turn searches;
-            #    relevance is decided post-search by similarity score (assemble),
-            #    not by query form. The search_memory tool remains the on-demand
-            #    fallback. latency_search (~0.2s, local embedding) is negligible
-            #    next to the LLM call in the inject/llm stage.
+            # 4. Await the daemon (search stage) — bounded; on timeout continue
+            #    without L3. The cancelled task's mechanisms are torn down.
             collector.start_stage("search")
             l3_results: list[dict] = []
             cache_hit = False
@@ -267,22 +274,29 @@ class Orchestrator:
             prefetch_timeout = False
             try:
                 l3_results, cache_hit, cache_key = await asyncio.wait_for(
-                    layers.search_episodic_with_cache(chat_id, intent, limit=MAX_RESULTS_PER_SEARCH),
-                    timeout=PREFETCH_TIMEOUT,
+                    prefetch_task, timeout=PREFETCH_TIMEOUT,
                 )
                 prefetch_succeeded = True
-                log.info("episodic search ok chat=%s hits=%d", chat_id, len(l3_results))
+                log.info("prefetch ok chat=%s hits=%d", chat_id, len(l3_results))
             except asyncio.TimeoutError:
                 prefetch_timeout = True
-                log.warning("episodic search timed out chat=%s, continuing without L3", chat_id)
+                prefetch_task.cancel()
+                log.warning("prefetch timed out chat=%s, continuing without L3", chat_id)
             except Exception as exc:
-                log.warning("episodic search failed chat=%s: %s, continuing without L3", chat_id, exc)
+                prefetch_task.cancel()
+                log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
             collector.end_stage("search")
             collector.set_cache(cache_hit, cache_key)
             collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
-            # 3. Assemble L0+L1+L2+L3 (assemble stage); derive tokens/results.
+            # 5. Await the concurrent L0/L1/L2 fetch (normally done already) and
+            #    assemble L0-L3 with the pre-fetched tiers (assemble stage).
             collector.start_stage("assemble")
-            context_blocks, l3_used = await layers.assemble_context(chat_id, budget=budget, l3_results=l3_results)
+            facts = await facts_task
+            messages = await msgs_task
+            context_blocks, l3_used = await layers.assemble_context(
+                chat_id, budget=budget, l3_results=l3_results,
+                facts=facts, messages=messages,
+            )
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
@@ -356,6 +370,94 @@ class Orchestrator:
             collector.finish(time.time() - start)
             analytics.record(collector.obs)
             raise
+
+    async def _prefetch_daemon(
+        self, chat_id: str, user_message: str,
+    ) -> tuple[list[dict], bool, str | None]:
+        """Classify + run the 3 prefetch mechanisms in parallel, merge, score.
+
+        Started as the FIRST step of ``run()`` (a fire-and-forget task) so its L3
+        search overlaps the orchestrator's L0/L1/L2 fetch. The three mechanisms
+        evaluate independently every query — no confidence gate on whether
+        prefetch runs at all:
+
+          * thematic     — always runs; cached semantic search (carries cache_key).
+          * temporal     — only when ``extract_temporal_range`` finds a
+            completed-past range; filtered semantic search on that range.
+          * specific-key — only when ``extract_structural_keys`` finds structural
+            keys; exact structural retrieval (UUID get-by-id / content contains).
+
+        Results are merged + deduped + scored by ``result_merger.merge_results``
+        (similarity·0.6 + recency·0.3 + access_count·0.1), trimmed to
+        ``PREFETCH_MAX_RESULTS``, and the accessed records' access_count is
+        bumped fire-and-forget. Returns ``(results, cache_hit, cache_key)`` —
+        cache_hit/cache_key come from the thematic (cached) mechanism. Any single
+        mechanism that raises is skipped (``return_exceptions=True``).
+        """
+        from memory.query_classifier import (
+            extract_structural_keys,
+            extract_temporal_range,
+        )
+        from memory.result_merger import merge_results
+
+        layers = self._registry.memory_layers
+        after_before = extract_temporal_range(user_message)
+        keys = extract_structural_keys(user_message)
+        log.debug(
+            "prefetch classify chat=%s temporal=%s specific_key=%s keys=%s",
+            chat_id, after_before is not None, bool(keys), keys,
+        )
+        limit = PREFETCH_MAX_RESULTS
+
+        async def _thematic() -> dict:
+            results, hit, key = await layers.search_episodic_with_cache(
+                chat_id, user_message, limit=limit,
+            )
+            return {"results": results, "cache_hit": hit, "cache_key": key}
+
+        async def _temporal(rng: tuple[float, float]) -> dict:
+            after, before = rng
+            results = await layers.search_episodic(
+                user_message, limit=limit, after=after, before=before,
+            )
+            return {"results": results, "cache_hit": False, "cache_key": None}
+
+        async def _specific_key(matched_keys: list[str]) -> dict:
+            results = await layers.find_by_keys(chat_id, matched_keys, limit=limit)
+            return {"results": results, "cache_hit": False, "cache_key": None}
+
+        tasks: list = [_thematic()]
+        if after_before is not None:
+            tasks.append(_temporal(after_before))
+        if keys:
+            tasks.append(_specific_key(keys))
+        parts = await asyncio.gather(*tasks, return_exceptions=True)
+
+        groups: list[list[dict]] = []
+        cache_hit = False
+        cache_key: str | None = None
+        for part in parts:
+            if isinstance(part, BaseException):
+                log.warning("prefetch mechanism raised chat=%s: %s", chat_id, part)
+                continue
+            groups.append(part["results"])
+            if part.get("cache_key") is not None:
+                cache_hit = part["cache_hit"]
+                cache_key = part["cache_key"]
+
+        merged = merge_results(groups)[:limit]
+        log.info(
+            "prefetch merge chat=%s mechanisms=%d merged=%d",
+            chat_id, len(parts), len(merged),
+        )
+        ids = [
+            r.get("metadata", {}).get("message_id")
+            for r in merged
+            if r.get("metadata", {}).get("message_id")
+        ]
+        if ids:
+            asyncio.create_task(layers.bump_access(chat_id, ids))
+        return merged, cache_hit, cache_key
 
     async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
                               tools: list[ToolDefinition]) -> tuple[str, str]:

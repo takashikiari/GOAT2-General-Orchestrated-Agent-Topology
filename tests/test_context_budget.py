@@ -132,7 +132,7 @@ def test_assemble_filters_l3_by_gap():
     blocks, l3_used = asyncio.run(
         layers.assemble_context("c", budget=4000, l3_results=results)
     )
-    related = [b for b in blocks if b.startswith("[Related Memory]")]
+    related = [b for b in blocks if b.startswith("[Context recuperat din istoric]")]
     assert len(related) == 1
     assert "close A" in related[0]
     assert "close D" in related[0]
@@ -147,7 +147,7 @@ def test_assemble_uniform_l3_injects_nothing():
     blocks, l3_used = asyncio.run(
         layers.assemble_context("c", budget=4000, l3_results=results)
     )
-    related = [b for b in blocks if b.startswith("[Related Memory]")]
+    related = [b for b in blocks if b.startswith("[Context recuperat din istoric]")]
     assert len(related) == 0
     assert l3_used == 0
 
@@ -170,4 +170,4 @@ def test_assemble_l3_guaranteed_when_l2_small():
         layers.assemble_context("c", budget=4000, l3_results=results)
     )
     assert l3_used == 1
-    assert any(b.startswith("[Related Memory]") for b in blocks)
+    assert any(b.startswith("[Context recuperat din istoric]") for b in blocks)

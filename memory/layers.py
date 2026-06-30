@@ -126,8 +126,33 @@ class MemoryLayers:
             content: The information to store.
             tags: Optional retrieval tags; joined into one metadata string.
         """
-        metadata = {"tags": ",".join(tags or []), "timestamp": time.time()}
+        now = time.time()
+        metadata = {
+            "tags": ",".join(tags or []),
+            "timestamp": now,
+            "access_count": 0,
+            "last_accessed_ts": now,
+        }
         await self._episodic.store(chat_id, content, metadata)
+
+    async def find_by_keys(
+        self, chat_id: str, keys: list[str], limit: int = 15,
+    ) -> list[dict]:
+        """L3 specific-key retrieval: exact structural matches, scoped to ``chat_id``.
+
+        Maps to ``EpisodicMemory.find_by_keys`` (UUID get-by-id + content
+        ``$contains``). Used by the prefetch daemon's specific-key mechanism;
+        results carry ``score = 0.0`` so the merger treats them as exact matches.
+        """
+        return await self._episodic.find_by_keys(chat_id, keys, limit=limit)
+
+    async def bump_access(self, chat_id: str, ids: list[str]) -> None:
+        """L3: best-effort retrieval-popularity bump (access_count, last_accessed_ts).
+
+        Fire-and-forget from the prefetch daemon; never raises. Feeds the
+        access-count term of the merge score on future turns.
+        """
+        await self._episodic.bump_access(chat_id, ids)
 
     async def promote_fact(self, key: str, value: str) -> str:
         """L1: promote a stable fact into the Letta core-memory ``facts`` block.
@@ -191,6 +216,8 @@ class MemoryLayers:
     async def assemble_context(
         self, chat_id: str, budget: int | None = None,
         l3_results: list[dict] | None = None,
+        facts: dict[str, str] | None = None,
+        messages: list[dict] | None = None,
     ) -> tuple[list[str], int]:
         """Assemble L0-L3 prompt blocks under a dynamic (AITS) budget; returns ``(blocks, l3_used)``.
 
@@ -202,16 +229,29 @@ class MemoryLayers:
         how many L3 results fit. When ``budget`` is ``None`` it falls back to
         ``MAX_CONTEXT_TOKENS``.
 
+        ``facts`` / ``messages`` let the orchestrator pre-fetch L0/L1 and L2
+        concurrently with the prefetch daemon (real overlap); when ``None`` they
+        are fetched here (backward-compatible for direct callers/tests).
+
+        L3 results from the daemon carry a ``blended_score`` field (pre-scored by
+        ``memory.result_merger``); those are sorted best-first and fit directly,
+        skipping the gap filter (the daemon already ranked). Raw Chroma results
+        (no ``blended_score``, e.g. from the on-demand ``search_memory`` path or
+        direct tests) still go through the gap filter as before.
+
         Args:
             chat_id: Current chat session ID.
             budget: AITS per-intent token budget (falls back to
                 ``MAX_CONTEXT_TOKENS`` when ``None``).
             l3_results: Prefetched episodic results (closest first) or ``None``.
+            facts: Pre-fetched L0+L1 facts (``None`` → fetch here).
+            messages: Pre-fetched L2 working messages (``None`` → fetch here).
         """
         if budget is None:
             budget = MAX_CONTEXT_TOKENS
         # L0 + L1: identity + facts — mandatory, never dropped.
-        facts = await self.get_identity_and_facts()
+        if facts is None:
+            facts = await self.get_identity_and_facts()
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         identity = f"[Identity]\n{_BASE_IDENTITY}\nCurrent time: {now}"
         if facts:
@@ -222,25 +262,32 @@ class MemoryLayers:
         # gets the remainder and so stays AITS-scaled. L3 is never starved to 0.
         l2_cap, l3_guarantee = allocate_context_budget(mandatory_tokens, budget)
         # L2: working context — capped to its share, drop-oldest, never fully lost.
-        messages = await self.get_working_context(chat_id)
+        if messages is None:
+            messages = await self.get_working_context(chat_id)
         trimmed = self._trim_recent_messages(messages, l2_cap)
         l2_tokens = 0
         if trimmed:
             l2_block = f"[Conversation History]\n{self._format_messages(trimmed)}"
             l2_tokens = estimate_tokens(l2_block)
             blocks.append(l2_block)
-        # L3: episodic — similarity-filtered, then fit the budget remaining after
-        # L0+L1+L2 (>= l3_guarantee by construction, since l2_tokens <= l2_cap =
-        # available - l3_guarantee). Relevance is decided by ChromaDB score, not
-        # query form; search is unconditional (the orchestrator always runs it).
+        # L3: episodic — either pre-scored by the daemon (blended_score present,
+        # sorted best-first) or raw Chroma results run through the gap filter.
+        # Either way the survivors are fit into the budget remaining after
+        # L0+L1+L2 (>= l3_guarantee by construction).
         l3_used = 0
         if l3_results:
             l3_budget = max(budget - mandatory_tokens - l2_tokens, 0)
             if l3_budget > 0:
-                relevant = self._gap_filter(l3_results, L3_GAP_SIGNIFICANCE)
+                if any("blended_score" in r for r in l3_results):
+                    relevant = sorted(
+                        l3_results, key=lambda r: r.get("blended_score", 0.0),
+                        reverse=True,
+                    )
+                else:
+                    relevant = self._gap_filter(l3_results, L3_GAP_SIGNIFICANCE)
                 l3_block, l3_used = self._fit_search_results(relevant, l3_budget)
                 if l3_block:
-                    blocks.append(f"[Related Memory]\n{l3_block}")
+                    blocks.append(f"[Context recuperat din istoric]\n{l3_block}")
         return blocks, l3_used
 
     @staticmethod

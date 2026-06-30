@@ -42,8 +42,15 @@ _DEFAULTS: dict = {
         "budget_confidence_multiplier": 4000,
         "budget_complexity_max_bonus": 2000,
         "budget_hard_cap": 12000,
-        "prefetch_timeout": 0.5,
-        "prefetch_confidence_threshold": 0.4,
+    },
+    "prefetch": {
+        "timeout": 0.5,
+        "max_results": 15,
+        "recency_window_days": 30,
+        "access_count_ref": 10,
+        "score_similarity_weight": 0.6,
+        "score_recency_weight": 0.3,
+        "score_access_weight": 0.1,
     },
     "analytics": {
         "log_interval": 100,
@@ -136,11 +143,30 @@ BUDGET_COMPLEXITY_MAX_BONUS: Final[int] = int(
     _aits.get("budget_complexity_max_bonus", _DEFAULTS["aits"]["budget_complexity_max_bonus"])
 )
 BUDGET_HARD_CAP: Final[int] = int(_aits.get("budget_hard_cap", _DEFAULTS["aits"]["budget_hard_cap"]))
+
+# Prefetch daemon config — see config/memory.toml [prefetch]. timeout is the
+# only blocker (no confidence gate); max_results caps the per-turn result count.
+_prefetch = _cfg.get("prefetch", _DEFAULTS["prefetch"])
 PREFETCH_TIMEOUT: Final[float] = float(
-    _aits.get("prefetch_timeout", _DEFAULTS["aits"]["prefetch_timeout"])
+    _prefetch.get("timeout", _DEFAULTS["prefetch"]["timeout"])
 )
-PREFETCH_CONFIDENCE_THRESHOLD: Final[float] = float(
-    _aits.get("prefetch_confidence_threshold", _DEFAULTS["aits"]["prefetch_confidence_threshold"])
+PREFETCH_MAX_RESULTS: Final[int] = int(
+    _prefetch.get("max_results", _DEFAULTS["prefetch"]["max_results"])
+)
+PREFETCH_RECENCY_WINDOW_DAYS: Final[int] = int(
+    _prefetch.get("recency_window_days", _DEFAULTS["prefetch"]["recency_window_days"])
+)
+PREFETCH_ACCESS_COUNT_REF: Final[int] = int(
+    _prefetch.get("access_count_ref", _DEFAULTS["prefetch"]["access_count_ref"])
+)
+PREFETCH_SCORE_SIMILARITY_WEIGHT: Final[float] = float(
+    _prefetch.get("score_similarity_weight", _DEFAULTS["prefetch"]["score_similarity_weight"])
+)
+PREFETCH_SCORE_RECENCY_WEIGHT: Final[float] = float(
+    _prefetch.get("score_recency_weight", _DEFAULTS["prefetch"]["score_recency_weight"])
+)
+PREFETCH_SCORE_ACCESS_WEIGHT: Final[float] = float(
+    _prefetch.get("score_access_weight", _DEFAULTS["prefetch"]["score_access_weight"])
 )
 
 _analytics = _cfg.get("analytics", _DEFAULTS["analytics"])
@@ -172,6 +198,11 @@ __all__ = [
     "BUDGET_COMPLEXITY_MAX_BONUS",
     "BUDGET_HARD_CAP",
     "PREFETCH_TIMEOUT",
-    "PREFETCH_CONFIDENCE_THRESHOLD",
+    "PREFETCH_MAX_RESULTS",
+    "PREFETCH_RECENCY_WINDOW_DAYS",
+    "PREFETCH_ACCESS_COUNT_REF",
+    "PREFETCH_SCORE_SIMILARITY_WEIGHT",
+    "PREFETCH_SCORE_RECENCY_WEIGHT",
+    "PREFETCH_SCORE_ACCESS_WEIGHT",
     "ANALYTICS_LOG_INTERVAL",
 ]

@@ -19,11 +19,14 @@ from memory.observability import MemoryObservation
 # tokens to a tier without changing the per-block bookkeeping.
 _IDENTITY_HEADER = "[Identity]"
 _HISTORY_HEADER = "[Conversation History]"
-_RELATED_HEADER = "[Related Memory]"
+_RELATED_HEADER = "[Context recuperat din istoric]"
 
 # Confidence-tier thresholds for the coarse intent category (no real
-# classifier exists yet; AITS yields confidence, not a category).
+# classifier exists yet; AITS yields confidence, not a category). Hardcoded
+# here — no config knob — because the prefetch confidence gate is gone and
+# these only label the analytics tier, never gate any behaviour.
 _GREETING_CONFIDENCE = 0.3
+_RECALL_CONFIDENCE = 0.4
 
 
 class ObservationCollector:
@@ -105,13 +108,14 @@ class ObservationCollector:
         """
         self.obs.prefetch_blocks_used = blocks_used
 
-    def categorize_intent(self, confidence: float, threshold: float) -> str:
+    def categorize_intent(self, confidence: float) -> str:
         """Derive a coarse intent category from the confidence tier.
 
-        ``>= threshold`` → recall; ``< _GREETING_CONFIDENCE`` → greeting;
-        else conversational. A real intent classifier is future work.
+        ``>= _RECALL_CONFIDENCE`` → recall; ``< _GREETING_CONFIDENCE`` →
+        greeting; else conversational. A real intent classifier is future
+        work; these labels are analytics-only and never gate prefetch.
         """
-        if confidence >= threshold:
+        if confidence >= _RECALL_CONFIDENCE:
             return "recall"
         if confidence < _GREETING_CONFIDENCE:
             return "greeting"

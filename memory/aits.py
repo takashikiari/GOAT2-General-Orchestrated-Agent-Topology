@@ -49,11 +49,10 @@ _MEDIUM_CONFIDENCE_WORDS = frozenset({
     "would", "do", "does", "care", "este", "sunt", "erau", "poate", "ar",
     "trebuie", "face", "fac",
 })
-_LOW_CONFIDENCE_WORDS = frozenset({
-    "hi", "hello", "hey", "thanks", "thank", "thx", "ok", "okay", "yes",
-    "no", "bye", "salut", "buna", "bună", "salutare", "mulțumesc",
-    "mersi", "multumesc", "pa", "la", "revedere",
-})
+# No low-confidence word list: greetings/short turns no longer get penalised to
+# 0.2 (which also drove a false "greeting" analytics label and, historically, a
+# prefetch gate). They fall to the no-cue default (0.5). Confidence still feeds
+# the AITS budget formula unchanged.
 
 # Reference query length that counts as "full" complexity (≈ a long sentence).
 _COMPLEXITY_REF_LENGTH = 200
@@ -69,10 +68,11 @@ def _tokens(query: str) -> set[str]:
 def calculate_confidence_from_query(query: str) -> float:
     """Estimate (0-1) how much deep / recall context this query needs.
 
-    Set-membership over the query tokens against high / medium / low word
-    lists. High cues → 0.8 scaled up toward 1.0 by cue count; medium → 0.5;
-    low cues → 0.2; a statement with no cue defaults to medium (0.5) — most
-    turns benefit from at least recent context.
+    Set-membership over the query tokens against high / medium word lists.
+    High cues → 0.8 scaled up toward 1.0 by cue count; medium → 0.5; an empty
+    query → 0.2; any other statement defaults to medium (0.5) — most turns
+    benefit from at least recent context. There is no low-confidence word list,
+    so greetings/short turns no longer collapse to 0.2.
     """
     words = _tokens(query)
     if not words:
@@ -82,8 +82,6 @@ def calculate_confidence_from_query(query: str) -> float:
         return min(0.8 + 0.1 * (high - 1), 1.0)
     if words & _MEDIUM_CONFIDENCE_WORDS:
         return 0.5
-    if words & _LOW_CONFIDENCE_WORDS:
-        return 0.2
     return 0.5
 
 

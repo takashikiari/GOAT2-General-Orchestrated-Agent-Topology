@@ -47,9 +47,16 @@ class EpisodicMemory(EpisodicQueries):
         await warmup_collection(self._get_collection)
 
     async def store(self, chat_id: str, content: str, metadata: dict) -> None:
-        """Store content + metadata. chat_id, message_id, sequence_number merged."""
+        """Store content + metadata. chat_id, message_id, sequence_number merged.
+
+        ``access_count`` (retrieval popularity) and ``last_accessed_ts`` are
+        initialised here so the merge-score terms exist from the first write;
+        ``bump_access`` updates them on retrieval (best-effort, fire-and-forget).
+        """
         doc_id = str(uuid.uuid4())
         merged = {"chat_id": chat_id, **metadata}
+        merged.setdefault("access_count", 0)
+        merged.setdefault("last_accessed_ts", merged.get("timestamp", 0.0))
 
         def _sync() -> None:
             col = self._get_collection()

@@ -55,8 +55,21 @@ budget_base = 2000
 budget_confidence_multiplier = 4000
 budget_complexity_max_bonus = 2000
 budget_hard_cap = 12000
-prefetch_timeout = 0.5
-prefetch_confidence_threshold = 0.4
+
+# Prefetch daemon — runs as the FIRST step in orchestrator.run(), in parallel
+# with L0/L1/L2 fetch. No confidence gate: every turn attempts prefetch; the
+# timeout is the only blocker. timeout is the asyncio.wait_for bound; max_results
+# is the per-turn count cap (token budget is still applied in assemble_context).
+# recency_window_days / access_count_ref normalise the merge-score terms;
+# score_*_weight are the blend weights (similarity + recency + access_count).
+[prefetch]
+timeout = 0.5
+max_results = 15
+recency_window_days = 30
+access_count_ref = 10
+score_similarity_weight = 0.6
+score_recency_weight = 0.3
+score_access_weight = 0.1
 
 [analytics]
 log_interval = 100

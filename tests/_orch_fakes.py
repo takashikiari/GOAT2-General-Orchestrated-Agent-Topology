@@ -55,7 +55,21 @@ class _FakeLayers:
         self.last_query = query
         return list(self._results), False, "search:deadbeef"
 
-    async def assemble_context(self, chat_id, budget=None, l3_results=None):
+    async def search_episodic(self, query, limit=5, after=None, before=None):
+        self.search_calls += 1
+        return list(self._results)
+
+    async def find_by_keys(self, chat_id, keys, limit=15):
+        return list(self._results)
+
+    async def get_identity_and_facts(self):
+        return {}
+
+    async def bump_access(self, chat_id, ids):
+        return None
+
+    async def assemble_context(self, chat_id, budget=None, l3_results=None,
+                               facts=None, messages=None):
         return list(self._blocks), self._l3_used
 
     async def get_working_context(self, chat_id):
