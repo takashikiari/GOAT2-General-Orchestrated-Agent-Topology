@@ -5,10 +5,15 @@
 | Requirement | Minimum version | Notes |
 |-------------|----------------|-------|
 | Python | 3.12 | `tomllib` (stdlib from 3.11) is used by `memory/config.py` |
-| Redis | any recent | L2 working memory + L2.5 session cache; default `redis://localhost:6379/0` |
-| Letta server | — | L0/L1 permanent memory; default `http://localhost:8283`. If unreachable, L1 facts degrade to `{}` but the bot still runs. |
+| Redis | any recent | L2 working memory + L2.5 session cache |
+| Letta server | — | L0/L1 permanent memory; if unreachable, L1 facts degrade to `{}` but the bot still runs |
 
-The Letta URL and Redis URL are set in `config/memory.toml`, not via environment variables.
+> **Important — no env vars for service URLs.**
+> Redis and Letta connection details are read exclusively from `config/memory.toml`
+> (`memory/config.py` uses `tomllib.load()` with no `os.environ` call).
+> There is no environment variable override path for either.
+> If your Redis or Letta instance runs on a non-default host/port, you must edit
+> `config/memory.toml` directly — setting these in `.env` has no effect.
 
 ---
 
@@ -53,29 +58,43 @@ export TELEGRAM_BOT_TOKEN=123456:ABC...
 
 ## Services
 
-**Redis** — must be reachable before the bot starts. Default URL (`redis://localhost:6379/0`) is set in `config/memory.toml` under `[working] storage_url`. Start locally with:
+**Redis** — must be reachable before the bot starts. Edit `config/memory.toml` to point at your instance:
+
+```toml
+[working]
+storage_url = "redis://localhost:6379/0"   # change host/port/db here
+```
+
+Start a local instance with:
 
 ```bash
 redis-server
 ```
 
-**Letta** — must be reachable for permanent memory (L0 identity, L1 facts). Default URL (`http://localhost:8283`) is set in `config/memory.toml` under `[permanent] letta_url`. If Letta is down, L1 returns an empty facts dict and L0 loads from the `[identity] base_prompt` in `memory.toml` — the bot continues to function, with a warning logged.
+**Letta** — required for permanent memory (L0 identity, L1 facts). Edit `config/memory.toml` to point at your instance:
+
+```toml
+[permanent]
+letta_url = "http://localhost:8283"   # change host/port here
+```
+
+If Letta is unreachable at startup, L1 returns an empty facts dict and the bot continues with a warning per turn (see startup log section below). L0 identity still loads from `[identity] base_prompt` in `memory.toml`.
 
 ---
 
 ## Configuration
 
-`config/memory.toml` controls all memory tunables. Key settings:
+`config/memory.toml` is the **only** place to configure service connection strings — there are no env var equivalents. Edit this file for your local setup before running the bot.
 
 ```toml
 [identity]
 base_prompt = "You are GOAT, a helpful assistant with layered memory."
 
 [working]
-storage_url = "redis://localhost:6379/0"
+storage_url = "redis://localhost:6379/0"   # your Redis URL
 
 [permanent]
-letta_url = "http://localhost:8283"
+letta_url = "http://localhost:8283"        # your Letta server URL
 
 [aits]
 budget_base = 2000
