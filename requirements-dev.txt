@@ -1,0 +1,5 @@
+# Dev/test dependencies — not needed at runtime.
+-r requirements.txt
+
+pytest>=9.0.0          # test runner — tests/ directory
+# Note: tests use asyncio.run() directly; pytest-asyncio is not required.

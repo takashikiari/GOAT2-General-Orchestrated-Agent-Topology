@@ -1,0 +1,30 @@
+# Runtime dependencies — verified against actual imports in the codebase.
+#
+# Core bot + LLM
+openai>=1.0.0          # AsyncOpenAI client; used for any OpenAI-compatible API
+                       # (DeepSeek, etc.) — registry/registry.py
+python-telegram-bot>=21.0  # telegram_interface/bot.py
+
+# Memory backends
+chromadb>=1.1.1        # L3 episodic memory — memory/episodic/episodic.py
+redis>=5.0.0           # L2 working memory + L2.5 session cache (redis.asyncio)
+                       # — memory/working/working.py, memory/session_cache.py
+
+# HTTP client (Letta API + browse_page plugin)
+httpx>=0.27.0          # memory/permanent/permanent.py, tools/goat_skills/browse_page.py
+
+# MCP server (optional — only needed if running the MCP interface)
+mcp>=1.0.0             # mcp_server/server.py (FastMCP)
+
+# posthog is pulled in transitively by chromadb and is explicitly imported in
+# memory/episodic/episodic.py to suppress its telemetry before chromadb can
+# enable it. List here so the suppression import doesn't break if chromadb
+# changes its own transitive-dep handling.
+posthog>=3.0.0
+
+# Optional plugin dependencies — not required for core bot operation.
+# Install these only if you enable the corresponding tools/goat_skills plugins:
+#
+#   crawl4ai>=0.9.0    # tools/goat_skills/fetch_content.py  (fetch_content tool)
+#   playwright>=1.50.0 # tools/goat_skills/browse_page.py    (browse_page tool)
+#                      # After installing playwright: playwright install chromium
