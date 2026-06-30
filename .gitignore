@@ -80,3 +80,4 @@ goat_the_liar.txt
 .DS_Store
 Thumbs.db
 .env
+chroma_data/
