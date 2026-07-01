@@ -1,9 +1,37 @@
 # GOAT 2.0
 
-GOAT 2.0 is a Telegram-based AI agent with a layered memory architecture. Three
-independent physical backends are exposed through a single logical abstraction,
-giving the agent the right context at the right cost — without static similarity
-thresholds, intent classifiers, or hand-tuned cutoffs.
+GOAT 2.0 is a Telegram-based AI agent built around a **proactive** layered
+memory system. The core distinction from a standard RAG setup: memory retrieval
+runs *before* the LLM responds, on every turn, independent of the query's
+content. A one-word ambiguous message still triggers a semantic search of past
+sessions and injects whatever is structurally relevant into the prompt — the
+model never has to ask "do I remember this?" because retrieval already
+happened.
+
+The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It
+talks to memory through one façade — `MemoryLayers` in `memory/layers.py` — and
+never imports a physical backend directly.
+
+---
+
+## What makes it different
+
+- **Proactive, not reactive.** The prefetch daemon (`Orchestrator._prefetch_daemon`)
+  starts as the *first* step of every turn (`asyncio.create_task` at
+  `orchestrator.py:247`) and runs in parallel with the L0/L1/L2 fetch. Retrieval
+  precedes generation; it is not triggered by the model noticing a gap.
+- **Three independent physical backends.** Redis (working), ChromaDB (episodic),
+  and Letta (permanent) each connect lazily and fail independently — a Letta
+  outage empties L1 facts and the turn continues (`memory/layers.py:80`).
+- **No static thresholds.** The L3 relevance filter is a ratio over the score
+  distribution, scale-invariant by construction (`MemoryLayers._gap_filter`,
+  `layers.py:353`). The context budget adapts per turn from two real signals
+  (`memory/aits.py`). L3's minimum token slice is guaranteed *by construction*,
+  not tuned (`memory/context_budget.py`).
+- **Complete fidelity.** Nothing is compressed or extracted. Every turn is
+  archived verbatim (`_archive_turn`, `orchestrator.py:173`), so the full text of
+  any past exchange is retrievable from a single semantic query — no summary
+  stands between the model and the original words.
 
 ---
 
@@ -11,43 +39,158 @@ thresholds, intent classifiers, or hand-tuned cutoffs.
 
 ### Physical backends
 
-| Tier | Backend | Redis key / storage |
-|------|---------|-------------------|
-| **Working** | Redis | `goat2:working:{chat_id}` (messages), `cache:{chat_id}:{key}` (L2.5 cache) |
-| **Episodic** | ChromaDB | Local persistent collection (`./chroma_data`) |
-| **Permanent** | Letta | Core-memory `facts` block via Letta HTTP API |
+| Backend | Class | Storage | Key / location |
+|---------|-------|---------|----------------|
+| **Working** | `WorkingMemory` (`memory/working/working.py`) | Redis | `goat2:working:{chat_id}` (messages), `cache:{chat_id}:{key}` (L2.5) |
+| **Episodic** | `EpisodicMemory` (`memory/episodic/episodic.py`) | ChromaDB `PersistentClient` | local collection at `EPISODIC_STORAGE_PATH` (`./chroma_data`), name `episodic_memory` |
+| **Permanent** | `PermanentMemory` (`memory/permanent/permanent.py`) | Letta HTTP API | core-memory `facts` block on agent `goat-permanent` |
 
-All three connect lazily on first use and are independent — a Letta outage does
-not affect Redis or ChromaDB.
+All three connect lazily on first use. The Redis client is built in
+`WorkingMemory._get_client`; ChromaDB in `EpisodicMemory._get_collection`; Letta
+via `httpx.AsyncClient` in `PermanentMemory._get_http`. ChromaDB's sync API is
+bridged with `asyncio.to_thread`. The episodic collection has no `hnsw:space`
+override, so `search` returns squared-L2 distances in `result["score"]`
+(lower = closer).
 
 ### Logical layers
 
 | Layer | Content | In context | Backed by |
 |-------|---------|-----------|-----------|
-| **L0 — Identity** | Base persona from `[identity] base_prompt` in `memory.toml` | Always | — (config) |
-| **L1 — Facts** | Curated key→value facts in Letta core-memory `facts` block | Always | Permanent |
+| **L0 — Identity** | Base persona from `[identity] base_prompt` | Always | config (`memory.toml`) |
+| **L1 — Facts** | Curated key→value facts in Letta `facts` block | Always | Permanent |
 | **L2 — Working** | Full conversation history for the current chat | Always (capped) | Working / Redis |
-| **L2.5 — Session Cache** | TTL cache for L3 search results and tool outputs | When available | Working / Redis |
-| **L3 — Episodic** | Semantic long-term memory; injected when structurally relevant | Conditional | Episodic / ChromaDB |
+| **L2.5 — Session Cache** | TTL cache for L3 search results + tool outputs | When available | Working / Redis |
+| **L3 — Episodic** | Semantic long-term memory; injected when relevant | Conditional | Episodic / ChromaDB |
 
 ### The mapper (`memory/layers.py`)
 
-`MemoryLayers` is the only interface the orchestrator and bot ever touch. It maps
-all five logical layers onto the three physical tiers and exposes typed methods:
-`assemble_context`, `get_working_context`, `save_working_context`,
+`MemoryLayers` is the only memory interface the orchestrator and bot touch. It
+maps the five logical layers onto the three physical tiers and exposes typed
+methods: `assemble_context`, `get_working_context`, `save_working_context`,
 `search_episodic`, `search_episodic_with_cache`, `store_episodic`,
-`promote_fact`, and the full L2.5 cache API (`get_cache`, `set_cache`,
-`invalidate_cache`, `clear_cache`, `cache_exists`). The orchestrator and Telegram
-bot never import `WorkingMemory`, `EpisodicMemory`, or `PermanentMemory`
-directly.
+`find_by_keys`, `bump_access`, `promote_fact`, and the full L2.5 cache API
+(`get_cache`, `set_cache`, `invalidate_cache`, `clear_cache`, `cache_exists`).
+Neither `orchestrator.py` nor `telegram_interface/bot.py` imports
+`WorkingMemory`, `EpisodicMemory`, or `PermanentMemory`.
+
+### Service registry (`registry/registry.py`)
+
+`ServiceRegistry` is a lazy DI container that owns every service lifetime —
+LLM client, the three tiers, `MemoryLayers`, `MemoryAnalytics`, and
+`PluginManager`. It is a class instance passed by the caller, **not** a
+module-level singleton (the zero-singleton rule). Each backend is built on
+first property access.
 
 ---
 
-## Memory mechanics
+## The prefetch daemon
 
-### AITS — Adaptive Intent Token Scaling (`memory/aits.py`)
+This is the core differentiator. It runs on every turn, before the LLM call.
 
-Every turn starts with a dynamic token budget derived from the user message:
+### 1. Started first, in parallel with L0/L1/L2
+
+`run()` opens with `asyncio.create_task(self._prefetch_daemon(chat_id, intent))`
+(`orchestrator.py:247`). Immediately after, it starts two more tasks —
+`layers.get_identity_and_facts()` (L0+L1) and `layers.get_working_context()`
+(L2) at `orchestrator.py:250-251` — so the daemon's L3 search overlaps the tier
+fetches with real concurrency, not sequentially. The AITS classify (CPU,
+instant) runs during this overlap.
+
+### 2. Three mechanisms, evaluated independently, no gate
+
+The daemon classifies the query three ways and runs every mechanism that scores
+above zero. There is **no confidence gate** on whether prefetch runs at all —
+the timeout is the only blocker. Classification lives in
+`memory/query_classifier.py`:
+
+| Mechanism | Signal | Source | Retrieval |
+|-----------|--------|--------|-----------|
+| **Temporal** | A completed-past date range | `extract_temporal_range` (`memory/temporal_parser.py`, `dateparser`, `STRICT_PARSING`) | `search_episodic(after, before)` — filtered semantic search |
+| **Thematic** | Always 1.0 | none — unconditional | `search_episodic_with_cache` — cached semantic search (carries `cache_key`) |
+| **Specific-key** | Structural keys present | `extract_structural_keys` (`query_classifier.py:38`) — UUID, `agent-{uuid}`, `word+number`, `turn_`/`goat:` | `find_by_keys` — UUID get-by-id + content `$contains`, exact match (`score=0.0`) |
+
+The temporal mechanism uses a grammatical date parser, **not** a keyword list.
+The "completed-past" rule (`temporal_parser.py:59`, `before < now`) means
+`azi`/today yields `None` (its day-range ends tonight) while `ieri`/yesterday
+or an absolute past date yields that day's range — so `azi` used
+non-temporally does not false-trigger it. `STRICT_PARSING` rejects ambiguous
+month-only tokens (RO `mai` = adverb "still" vs month "May"). The specific-key
+mechanism matches only structural forms — there is no regex over natural
+language.
+
+The mechanisms run concurrently via
+`asyncio.gather(*tasks, return_exceptions=True)` (`orchestrator.py:434`); a
+single mechanism that raises is skipped, the rest still contribute.
+
+### 3. Merge and score
+
+`merge_results` (`memory/result_merger.py:71`) dedupes across the three result
+groups by `message_id`, scores each result, and sorts best-first. The blend is
+fixed by config weights (`[prefetch]`):
+
+```
+blended = similarity * 0.6 + recency * 0.3 + access_count * 0.1
+```
+
+- `similarity = 1 / (1 + distance)` — Chroma squared-L2 distance → 0–1; exact
+  structural matches carry distance 0 → similarity 1.0.
+- `recency` — storage-timestamp age over `recency_window_days` (30 d), 1.0 just
+  stored → 0.0 past the window.
+- `access_count` — retrieval popularity, capped at `access_count_ref` (10),
+  bumped on retrieval by `bump_access`.
+
+Each merged result carries a `blended_score` field. The list is trimmed to
+`PREFETCH_MAX_RESULTS` (15). Accessed records have their `access_count`/
+`last_accessed_ts` bumped fire-and-forget (`orchestrator.py:459`).
+
+### 4. Bounded wait, graceful degradation
+
+The daemon is awaited under
+`asyncio.wait_for(prefetch_task, timeout=PREFETCH_TIMEOUT)` (0.5 s,
+`orchestrator.py:276`). On timeout or any exception the task is cancelled and
+the turn continues without L3 (`orchestrator.py:281-287`) — the on-demand
+`search_memory` tool is the fallback. A successful run returns
+`(results, cache_hit, cache_key)`.
+
+### 5. Injection — system prompt, not conversation history
+
+Results are passed to `assemble_context`, which fits them into the L3 token
+slice and emits them as a `[Context recuperat din istoric]` block
+(`layers.py:290`). Because the daemon pre-scored the results, `assemble_context`
+detects the `blended_score` field and sorts best-first *instead of* running the
+gap filter (`layers.py:281-285`). The block is joined into `system_content`
+(`orchestrator.py:305`) — part of the system prompt. The conversation history
+sent to the API is only `[{system}, {user}]` (`orchestrator.py:314`); L3 never
+appears as fake prior turns.
+
+### 6. Relevance for non-daemon results — the gap filter
+
+When `assemble_context` receives **raw** results with no `blended_score` (the
+on-demand `search_memory` path, or direct tests), it falls back to
+`MemoryLayers._gap_filter` (`layers.py:353`):
+
+```python
+scores = [r["score"] for r in results]      # squared-L2 distances, ascending
+gaps   = [scores[i+1] - scores[i] for i in range(len(scores) - 1)]
+if max(gaps) / mean(gaps) >= L3_GAP_SIGNIFICANCE:   # default 3.0
+    keep everything before the largest gap
+else:
+    inject nothing
+```
+
+With fewer than 3 results, an absolute ceiling of 1.5 applies instead (squared-L2
+≈ "nearly orthogonal" under unit-norm MiniLM embeddings). The ratio criterion is
+scale-invariant: as the archive grows, genuine query clusters produce ratios
+>> 10 with no recalibration. Calibrated at 3.0 from 12 labeled queries
+(2026-06-29): unrelated ratios 2.33–2.76 rejected, genuine ratios 3.13–5.13
+passed.
+
+---
+
+## AITS — Adaptive Intent Token Scaling (`memory/aits.py`)
+
+Every turn computes a dynamic token budget from two signals in the user
+message:
 
 ```
 budget = BUDGET_BASE
@@ -56,97 +199,63 @@ budget = BUDGET_BASE
 (capped at BUDGET_HARD_CAP)
 ```
 
-**Confidence** (0–1): set-membership over the query's word tokens against three
-word lists — high (interrogative/analytical cues: `what`, `how`, `why`, …),
-medium (auxiliary verbs), low (greetings). High cues score 0.8–1.0; medium 0.5;
-low 0.2; unknown words default 0.5.
+**Confidence** (0–1): set-membership over the query's word tokens (split on
+whitespace, stripped of punctuation — no regex) against two lists — high
+(interrogative/analytical cues: `what`, `how`, `why`, `cum`, `dece`, `când`, …)
+and medium (auxiliary verbs). Empty query → 0.2; high cues → 0.8–1.0 scaled by
+cue count; medium cues → 0.5; any other statement → 0.5. There is **no
+low-confidence list** — greetings and short turns default to 0.5, not 0.2.
 
-**Complexity** (0–1): `(len(query) / 200) × 0.7 + connector_bonus × 0.3`, where
-`connector_bonus` fires on multi-part connectors (`and`, `or`, `;`, etc.).
+**Complexity** (0–1): `(len(query) / 200) × 0.7 + connector_bonus × 0.3`, capped
+at 1.0. `connector_bonus` fires on multi-part connectors (` and `, ` or `,
+`și`, `sau`, ` plus `, `;`, `,`).
 
-Default knobs from `config/memory.toml`: base 2000, multiplier 4000, complexity
-bonus 2000, hard cap 12000. A greeting yields ~2000 tokens; a detailed
-multi-part question approaches 12000.
+Default knobs (`config/memory.toml [aits]`): base 2000, multiplier 4000,
+complexity bonus 2000, hard cap 12000. A greeting yields ~2000 tokens; a
+detailed multi-part question approaches 12000.
 
-### Priority-inverted L2/L3 budget split (`memory/context_budget.py`)
+### Priority-inverted L2/L3 split (`memory/context_budget.py`)
 
 After L0+L1 tokens are subtracted, `allocate_context_budget` splits the
-remainder with L3 having **first claim**:
+remainder with **L3 first**:
 
 ```python
 l3_guarantee = L3_MIN_GUARANTEE_TOKENS   # 1200 by default
-l2_cap       = available - l3_guarantee  # L2 takes the rest
+l2_cap       = available - l3_guarantee  # L2 takes the rest, AITS-scaled
 ```
 
 L2 has a floor (`L2_FLOOR_TOKENS = 500`) that wins only on pathologically small
 budgets. On every realistic AITS budget, L3 is guaranteed at least 1200 tokens
-regardless of how long L2 has grown.
+regardless of how long L2 has grown — L2 can no longer eat the whole budget and
+starve L3 to zero. L3 is fit into the remainder after L0+L1+L2 in
+`assemble_context` (`layers.py:279`); `l3_used` is how many results fit.
 
-### Unconditional prefetch + dynamic gap filtering
+---
 
-The orchestrator runs an L3 search at the start of **every turn** with no
-confidence-threshold gate (see `orchestrator/orchestrator.py`, step 2 comment:
-"Pre-search confidence gating is removed"). The search routes through
-`search_episodic_with_cache` (L2.5-backed, TTL 300 s) so an identical query
-within the same session is served from Redis without re-embedding.
+## Memory mechanics
 
-Relevance is decided **post-search** by `MemoryLayers._gap_filter`:
-
-```python
-scores = [r["score"] for r in results]   # ChromaDB squared-L2 distances, ascending
-gaps   = [scores[i+1] - scores[i] for i in range(len(scores) - 1)]
-if max(gaps) / mean(gaps) >= L3_GAP_SIGNIFICANCE:   # default 3.0
-    keep everything before the largest gap
-else:
-    inject nothing
-```
-
-With fewer than 3 results, a fallback absolute ceiling of 1.5 (squared-L2,
-≈ "nearly orthogonal" under unit-norm MiniLM embeddings) applies instead.
-The ratio criterion is scale-invariant: as the archive grows with
-`l2_full_archive` entries, genuine query clusters produce ratios >> 10 with no
-recalibration needed. Calibrated at 3.0 from 12 labeled queries (2026-06-29):
-unrelated gap ratios 2.33–2.76 rejected, genuine ratios 3.13–5.13 passed.
-
-### L2.5 session cache (`memory/session_cache.py`)
-
-`SessionCache` stores arbitrary JSON dicts in Redis under
-`cache:{chat_id}:{key}` with a configurable TTL (default 300 s). Two things are
-currently cached through L2.5:
-
-- **Episodic search results** — keyed by `search:{sha256(query)[:16]}` via
-  `MemoryLayers.search_episodic_with_cache`. The orchestrator always routes the
-  unconditional prefetch through this path; a cache hit skips the ChromaDB
-  embedding call entirely.
-- **Tool outputs** — plugins and core tools can cache results explicitly via
-  `layers.get_cache` / `layers.set_cache` with deterministic exact-parameter
-  keys.
-
-The cache reuses the `WorkingMemory` Redis client — no second connection pool.
-Cache entries and conversation history live in different key namespaces
-(`cache:*` vs `goat2:working:*`) and never collide.
-
-### Write-through archive (`_archive_turn` in `orchestrator/orchestrator.py`)
+### Write-through archive (`_archive_turn`, `orchestrator.py:173`)
 
 After every turn's L2 save, the orchestrator fires `_archive_turn` as
-`asyncio.create_task` — fire-and-forget, never blocks the response:
+`asyncio.create_task` — fire-and-forget, never blocks the response, never
+raises:
 
 ```python
 content = f"user: {intent}\nassistant: {reply}"
 await layers.store_episodic(chat_id, content, tags=["l2_full_archive"])
 ```
 
-Every turn lands in L3 automatically, tagged `l2_full_archive` to distinguish
-automatic writes from GOAT's curated `store_memory` / `promote_memory` tool
-calls. L3 write failure is caught and logged as a warning — it never propagates
-to the turn response.
+Every turn lands in L3 verbatim, tagged `l2_full_archive` to distinguish
+automatic writes from GOAT's curated `store_memory` / `promote_memory` calls.
+`store_episodic` seeds `access_count=0` and `last_accessed_ts` on write
+(`layers.py:130-135`) so the merge-score terms exist from the first retrieval.
 
-### L2 conversation trim (`MemoryLayers._trim_recent_messages`)
+### L2 conversation trim (`MemoryLayers._trim_recent_messages`, `layers.py:294`)
 
-When L2 history exceeds its budget cap, messages are dropped oldest-first with
-one exception: the very first message is pinned (it sets the conversation topic)
-provided it is small enough (< 25% of the cap). This prevents a long session
-from losing all topic context while still prioritising recent messages.
+When L2 history exceeds its cap, messages are dropped oldest-first with one
+exception: the very first message (the topic-setter) is pinned provided it is
+small (< 25% of the cap). This prevents a long session from losing all topic
+context while still prioritising recent messages.
 
 ---
 
@@ -154,94 +263,102 @@ from losing all topic context while still prioritising recent messages.
 
 ### Single-round structure
 
-The orchestrator enforces a strict two-call maximum per turn: the first LLM call
-may request tools; the second call (with tool results appended) never receives a
-tool list. Runaway tool loops are structurally impossible.
+The orchestrator enforces a strict two-call maximum per turn. The first LLM
+call may request tools (`orchestrator.py:321-323`); the second call, with tool
+results appended, is made **without** a `tools` kwarg (`orchestrator.py:497`).
+Runaway tool loops are structurally impossible.
 
-### Synthesis bridge
+### Synthesis bridge (`_TOOL_SYNTHESIS_BRIDGE`, `orchestrator.py:496`)
 
-After executing tool calls, the orchestrator appends a fixed user turn before
-the second LLM call (`_TOOL_SYNTHESIS_BRIDGE` in `orchestrator/orchestrator.py`):
+After executing tool calls, a fixed user turn is appended before the second LLM
+call:
 
 > "Respond to my request based on the tool results above. Only state specific
 > numbers, counts, or names if they appear verbatim in the tool output — if a
 > figure was not returned by the tools, say so explicitly rather than guessing."
 
 This prevents raw tool-output formatting from dominating generation style (a
-context-position proximity effect that the distant system-message persona cannot
+context-position proximity effect the distant system-message persona cannot
 overcome).
 
-### Grounding check
+### Grounding check (`_ungrounded_numbers`, `orchestrator.py:154`)
 
-Before returning the synthesis reply, `_ungrounded_numbers` extracts all
-standalone 2+-digit integers from both the reply and the concatenated tool
-results. Any number present in the reply but absent from every tool result
-triggers `_run_grounding_correction`: a third LLM call that names the specific
-ungrounded figures and asks the model to correct or withdraw them. On LLM error
-the prior reply is kept as fallback.
+Before returning the synthesis reply, all standalone 2+-digit integers in the
+reply are compared against those in the concatenated tool results. Any number
+present in the reply but absent from every tool result triggers
+`_run_grounding_correction` — a third LLM call that names the specific
+ungrounded figures and asks the model to correct or withdraw them. On LLM
+error the prior reply is kept as fallback.
 
-### DSML fallback (deepseek-v4-flash)
+### DSML fallback (`_run_dsml_tool_round`, `orchestrator.py:543`)
 
-Some model versions return tool-call intent as DSML markup in the message
-content rather than the standard `tool_calls` field. The orchestrator detects
-this via regex, parses the invocations, executes them, and returns the raw tool
-output directly — no second LLM call in this path.
+`deepseek-v4-flash` sometimes returns tool-call intent as DSML markup in the
+message content instead of the standard `tool_calls` field. The orchestrator
+detects this with a regex, parses the invocations, executes them, and returns
+raw tool output directly — no second LLM call on this path.
 
-### Tool evidence in L2
+### Tool evidence in L2 (`_compact_tool_summary`, `orchestrator.py:133`)
 
 When tools were called, the saved assistant message in L2 is prefixed with a
-compact evidence record:
-
-```
-[Tool calls]
-called search_memory({"query": "..."}) → - [2026-06-29 21:00] ...
-```
-
-Each line is `called {name}({args_preview}) → {result_preview}`. Large-output
-tools (`browse_page`, `fetch_content`) store only `[N chars]`; `shell_run`
-stores head + tail. This gives future turns verifiable grounding for past tool
-use, structurally distinct from a narrated claim.
+compact evidence record, one line per call:
+`called {name}({args_preview}) → {result_preview}`. Large-output tools
+(`browse_page`, `fetch_content`) store only `[N chars]`; `shell_run` stores
+head + tail. This gives future turns verifiable grounding for past tool use,
+structurally distinct from a narrated claim.
 
 ---
 
 ## Memory tools
 
-Three core tools are wired by the Telegram bot at startup:
+Three core tools are wired by the Telegram bot at startup (`bot.py:47-50`):
 
-| Tool | Layer written | When GOAT uses it |
-|------|-------------|-------------------|
-| `search_memory` | L3 (read) | When the user references something not in the current conversation |
-| `store_memory` | L3 (write) | When the user shares something worth keeping across sessions |
-| `promote_memory` | L1 (write) | For stable facts that should be in context for every future session |
+| Tool | Layer | When GOAT uses it |
+|------|-------|-------------------|
+| `search_memory` (`tools/memory_tools.py`) | L3 read | User references something not in the current conversation; supports `after`/`before` ISO-8601 filters |
+| `store_memory` (`tools/memory_writer.py`) | L3 write | User shares something worth keeping across sessions |
+| `promote_memory` (`tools/memory_promote.py` → `memory/promote.py`) | L1 write | A stable fact that should be in context for every future session |
 
-`promote_memory` is cap-guarded (`L1_FACTS_MAX_TOKENS = 500`): promotion is
-refused when the facts block would exceed the cap, nudging GOAT to retire a fact
-first. L1 is always-in-context (off the top of every AITS budget), so it must
-stay small.
+`promote_memory` is cap-guarded: promotion is upsert-by-key, and refused when
+the formatted facts block would exceed `L1_FACTS_MAX_TOKENS` (500,
+`memory/promote.py:53`). L1 is always-in-context (off the top of every budget),
+so it must stay small and curated.
 
 ---
 
 ## Plugin system
 
-Hot-reload tool plugins live in `tools/goat_skills/`. The `PluginManager`
-rescans the directory every 30 s (via a post-init hook in the Telegram bot) and
-exposes live plugins to the orchestrator each turn via `registry.plugin_manager.tools`.
-New `.py` files dropped into `tools/goat_skills/` load without a restart; files
-with import errors are skipped, leaving other plugins unaffected.
+Hot-reload tool plugins live in `tools/goat_skills/`. The registry-owned
+`PluginManager` (`plugins/plugin_manager.py`) rescans the directory every 30 s
+(via the `post_init` hook in `telegram_interface/_plugin_scanner.py`, which also
+pre-warms ChromaDB with `EpisodicMemory.warmup()`). Each turn the orchestrator
+reads `registry.plugin_manager.tools` (`orchestrator.py:219`); `scan()`
+atomically swaps the tool list, and a plugin that fails to build is skipped
+while its last-known-good tools are kept — a broken edit never wipes a working
+tool.
 
 Bundled plugins: `browse_page` (Playwright), `fetch_content` (crawl4ai),
-`shell_run` (subprocess), `get_memory_metrics`, `get_recent_logs`.
+`shell_run` (subprocess), `get_memory_metrics`, `get_recent_logs`. Drop a `.py`
+file exposing `build(registry) -> list[ToolDefinition]` into `tools/goat_skills/`
+to add a tool without a restart.
 
 ---
 
 ## Observability
 
-One `MemoryObservation` is emitted as a JSON log line per turn and fed to the
-registry-owned `MemoryAnalytics` aggregator. Fields include: AITS
-confidence/complexity/budget, L2.5 cache hit/miss and key, latency per stage
-(classify / search / assemble / inject / llm / save), tokens per tier
-(L0+L1 / L2 / L3), prefetch outcome, and results found/used. A summary report
-is logged every `ANALYTICS_LOG_INTERVAL` requests (default 100).
+One `MemoryObservation` (`memory/observability.py`) is emitted as a JSON log
+line per turn, built by `ObservationCollector` (`memory/observability_collector.py`)
+and aggregated by the registry-owned `MemoryAnalytics`
+(`memory/analytics.py`). Fields include: AITS confidence/complexity/budget,
+L2.5 cache hit/miss + key, latency per stage (`classify` / `search` / `assemble`
+/ `inject` / `llm` / `save` / `total`), tokens per tier (L0+L1 / L2 / L3),
+prefetch outcome (attempted / succeeded / timeout / blocks injected / blocks
+used), and results found/used. A summary report is logged every
+`ANALYTICS_LOG_INTERVAL` requests (default 100).
+
+The `intent_category` field is a coarse, analytics-only label derived from the
+confidence tier (`observability_collector.py:111`): `recall` (≥ 0.4),
+`greeting` (< 0.3), else `conversational`. It labels the analytics tier and never
+gates prefetch.
 
 ---
 
@@ -250,40 +367,62 @@ is logged every `ANALYTICS_LOG_INTERVAL` requests (default 100).
 ```
 goat2/
 ├── memory/
-│   ├── layers.py            # Backend mapper — the only memory interface
-│   ├── aits.py              # Adaptive Intent Token Scaling
-│   ├── context_budget.py    # Priority-inverted L2/L3 budget split
-│   ├── session_cache.py     # L2.5 TTL cache (Redis)
-│   ├── promote.py           # L3 → L1 promotion, cap-guarded
-│   ├── budget.py            # Token estimation + result-count enforcement
-│   ├── config.py            # Reads config/memory.toml; all numeric knobs
-│   ├── working/             # Redis-backed working memory (L2)
-│   ├── episodic/            # ChromaDB-backed episodic memory (L3)
-│   └── permanent/           # Letta-backed permanent memory (L0/L1)
+│   ├── layers.py                    # Backend mapper — the only memory interface (L0-L3 + L2.5)
+│   ├── aits.py                      # Adaptive Intent Token Scaling (confidence + complexity)
+│   ├── context_budget.py            # Priority-inverted L2/L3 budget split
+│   ├── result_merger.py              # Prefetch merge: dedupe + blended score (0.6/0.3/0.1)
+│   ├── query_classifier.py          # 3-mechanism prefetch classification (temporal/thematic/specific-key)
+│   ├── temporal_parser.py           # dateparser completed-past range extraction
+│   ├── session_cache.py             # L2.5 TTL cache (Redis)
+│   ├── promote.py                   # L3 → L1 promotion, cap-guarded
+│   ├── budget.py                    # Token estimation + result-count enforcement
+│   ├── observability.py             # MemoryObservation dataclass (per-turn JSON)
+│   ├── observability_collector.py   # Per-turn observation builder + intent category
+│   ├── analytics.py                 # Registry-owned metrics aggregator + report
+│   ├── config.py                    # Reads config/memory.toml; all numeric knobs
+│   ├── working/working.py            # Redis-backed working memory (L2)
+│   ├── episodic/
+│   │   ├── episodic.py               # ChromaDB lifecycle + store/search (L3)
+│   │   ├── queries.py                # find_by_keys, bump_access, get_recent/count/delete (L3 mixin)
+│   │   └── warmup.py                 # Collection pre-warm at startup
+│   └── permanent/permanent.py        # Letta-backed permanent memory (L0/L1)
 ├── orchestrator/
-│   └── orchestrator.py      # AITS → prefetch → assemble → LLM → tool round → save + archive
+│   ├── orchestrator.py               # Per-turn driver: prefetch → AITS → assemble → LLM → tool round → save+archive
+│   └── tools.py                      # ToolDefinition type
 ├── telegram_interface/
-│   └── bot.py               # Telegram entry point; wires search/store/promote tools
-├── registry/
-│   └── registry.py          # Lazy DI container; owns all service lifetimes
-├── plugins/                 # Hot-reload plugin loader
+│   ├── bot.py                        # Telegram entry point; wires search/store/promote tools
+│   ├── _plugin_scanner.py            # post_init: ChromaDB warmup + 30 s plugin rescan
+│   └── __main__.py                   # `python3 -m telegram_interface`
+├── registry/registry.py             # Lazy DI container; owns all service lifetimes
+├── plugins/
+│   ├── plugin_manager.py             # Hot-reload plugin orchestrator (registry-owned)
+│   └── _loader.py                    # mtime-based directory reconcile
 ├── tools/
-│   ├── goat_skills/         # Hot-reload plugin tools (drop .py files here)
-│   ├── memory_tools.py      # search_memory tool definition
-│   ├── memory_writer.py     # store_memory tool definition
-│   └── memory_promote.py    # promote_memory tool definition
-├── mcp_server/              # Optional MCP introspection server
-└── config/
-    └── memory.toml          # All tunables: AITS knobs, cache TTL, budget constants, identity
+│   ├── goat_skills/                  # Hot-reload plugin tools: browse_page, fetch_content, shell_run, get_memory_metrics, get_recent_logs
+│   ├── memory_tools.py               # search_memory tool
+│   ├── memory_writer.py              # store_memory tool
+│   └── memory_promote.py             # promote_memory tool
+├── agents/                           # DAG agent pipeline — separate system, not on the memory turn path
+├── mcp_server/                       # Optional standalone MCP introspection server
+├── config/
+│   ├── memory.toml                   # All memory tunables (AITS, prefetch, budget, cache, identity)
+│   └── settings.py                   # LLM/Telegram env vars (read once at import)
+├── conftest.py                       # pytest config
+└── tests/                            # Faked-backend test suite (no external services)
 ```
+
+`agents/` and `mcp_server/` ship in the repo but are not imported by the
+orchestrator or Telegram bot — the live turn path is `telegram_interface` →
+`orchestrator` → `memory.layers` → the three tiers.
 
 ---
 
 ## Configuration
 
 All memory tunables are in `config/memory.toml`. **Redis and Letta connection
-strings have no environment variable override** — edit this file directly for
-your setup.
+strings have no environment-variable override** — `memory/config.py` reads the
+file with `tomllib.load` and never touches `os.environ`. Edit the file directly
+for your setup.
 
 ```toml
 [identity]
@@ -294,28 +433,54 @@ storage_url = "redis://localhost:6379/0"
 
 [permanent]
 letta_url = "http://localhost:8283"
+l1_facts_max_tokens = 500        # cap on the Letta facts block
 
 [aits]
 budget_base = 2000
 budget_confidence_multiplier = 4000
 budget_complexity_max_bonus = 2000
 budget_hard_cap = 12000
-prefetch_timeout = 0.5          # seconds; episodic search dropped if exceeded
+
+[prefetch]                        # the daemon — no confidence gate, timeout is the only blocker
+timeout = 0.5                     # asyncio.wait_for bound; on exceed L3 is dropped (graceful)
+max_results = 15
+recency_window_days = 30
+access_count_ref = 10
+score_similarity_weight = 0.6     # blend: similarity + recency + access_count
+score_recency_weight = 0.3
+score_access_weight = 0.1
 
 [retrieval_budget]
-l3_min_guarantee_tokens = 1200  # L3's guaranteed minimum slice of the budget
-l3_gap_significance = 3.0       # max_gap/mean_gap threshold for relevance filter
+l2_context_cap = 8000
+l2_floor_tokens = 500
+l3_min_guarantee_tokens = 1200    # L3's guaranteed minimum slice (priority-inverted)
+l3_gap_significance = 3.0        # max_gap/mean_gap threshold for the raw-result gap filter
 max_results_per_search = 15
 
 [session_cache]
-ttl_seconds = 300               # L2.5 cache TTL
-
-[permanent]
-l1_facts_max_tokens = 500       # cap on the Letta facts block
+ttl_seconds = 300                # L2.5 cache TTL
 ```
 
-LLM provider and Telegram credentials are set via environment variables — see
-[SETUP.md](SETUP.md) for the full list.
+LLM provider and Telegram credentials are environment variables, read once by
+`config/settings.py` at import time. See **[SETUP.md](SETUP.md)** for the full
+list, install steps, how to run the bot, and what a successful startup looks
+like.
+
+### Known constraints
+
+Two timing properties of the current code, both verifiable from the source:
+
+- **`wait_for` cannot interrupt an in-flight `asyncio.to_thread` Chroma call.**
+  On the rare query whose L3 search exceeds the 0.5 s bound, the turn blocks
+  until the Chroma thread returns (observed ~0.5–0.8 s) rather than returning at
+  exactly 0.5 s. Steady-state Chroma queries are ~0.2 s, so `wait_for` returns
+  the result with no timeout and no blocking on the vast majority of turns.
+- **The 0.5 s bound is tight for two-mechanism temporal queries.** A temporal
+  query runs two embedding searches (thematic + temporal) ≈ 0.47 s warm, right
+  at the edge; the first turn after process start pays a ~1 s cold start
+  (ChromaDB warmup runs at `post_init`, but the first cached-path call is still
+  lazy). Raise `timeout` in `[prefetch]` if prefetch reliability matters more
+  than the bound.
 
 ---
 
