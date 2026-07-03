@@ -15,6 +15,7 @@ import logging
 import sys
 
 from benchmark.datasets import list_datasets
+from benchmark.metrics import AggregatedMetrics
 from benchmark.results import ResultStorage
 from benchmark.runner import BenchmarkRunner
 from utils.logging.setup import get_logger
@@ -46,6 +47,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="log each test case as it runs")
     parser.add_argument("--judge-llm", action="store_true",
                         help="use an LLM judge (extra LLM call per case) to score answers")
+    parser.add_argument("--runs", type=int, default=1, metavar="N",
+                        help="repeat each dataset N times and report mean ± std (default 1)")
     parser.add_argument("--output", metavar="FILE", help="save results as JSON to FILE")
     parser.add_argument("--csv", metavar="FILE", help="export per-case rows as CSV to FILE")
     return parser
@@ -62,6 +65,8 @@ async def _run(args: argparse.Namespace) -> int:
         print("error: pass --list, --all, or --dataset NAME", file=sys.stderr)
         return 2
     runner = BenchmarkRunner()
+    if args.runs and args.runs > 1:
+        return await _run_repeated(runner, args)
     if args.all:
         out = await runner.run_all(verbose=args.verbose, judge_llm=args.judge_llm)
         runs = out["runs"]
@@ -85,6 +90,32 @@ def _serialize(runs: list[dict]) -> dict:
             for r in runs
         ]
     }
+
+
+async def _run_repeated(runner: BenchmarkRunner, args: argparse.Namespace) -> int:
+    """Run each selected dataset ``args.runs`` times and print mean ± std."""
+    targets = list_datasets() if args.all else [args.dataset]
+    bundle_runs: list[dict] = []
+    lines: list[str] = []
+    for name in targets:
+        per_run: list[dict] = []
+        for i in range(args.runs):
+            run = await runner.run_dataset(name, verbose=args.verbose, judge_llm=args.judge_llm)
+            per_run.append(run["metrics"].to_dict())
+            if args.verbose:
+                log.info("run %d/%d dataset=%s accuracy=%.1f%%",
+                         i + 1, args.runs, name, per_run[-1]["accuracy"] * 100)
+        agg = AggregatedMetrics.from_runs(per_run)
+        lines.extend(agg.summary_lines(name))
+        lines.append("")
+        bundle_runs.append({"dataset": name, "aggregated": agg.to_dict(), "per_run": per_run})
+    print("\n".join(lines).rstrip())
+    bundle = {"runs": bundle_runs}
+    if args.output:
+        ResultStorage.save(bundle, args.output)
+    if args.csv:
+        ResultStorage.export_runs_csv(bundle, args.csv)
+    return 0
 
 
 def main() -> None:

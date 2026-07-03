@@ -33,10 +33,20 @@ class Evaluator:
 
     @staticmethod
     def exact_match(response: str, expected: str) -> bool:
-        """Case-insensitive, whitespace-normalised exact match of full strings."""
-        resp = " ".join((response or "").lower().split())
-        exp = " ".join((expected or "").lower().split())
-        return bool(resp) and resp == exp
+        """Case-insensitive word-boundary phrase presence.
+
+        True when the exact ``expected`` phrase appears in ``response`` as a
+        whole-word match (``\\b…\\b``), case-insensitive. "Exact match" is read
+        as "the exact expected answer matches/appears" — so it works for
+        conversational responses (sentences, not bare tokens), multi-word
+        phrases ("blue marlin"), and tokens that must not substring-match
+        ("42" does not match "142"). Returns ``False`` when ``expected`` is
+        empty.
+        """
+        if not expected:
+            return False
+        pat = re.compile(rf"\b{re.escape(expected.lower())}\b")
+        return bool(pat.search((response or "").lower()))
 
     @staticmethod
     def contains(response: str, keywords: list[str]) -> bool:

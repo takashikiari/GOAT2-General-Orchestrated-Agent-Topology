@@ -154,13 +154,16 @@ class BenchmarkRunner:
     ) -> dict:
         """Build the per-test result dict: correctness, similarity, summed stats."""
         expected = test_case.get("expected", "")
-        contains = test_case.get("expected_contains") or ([expected] if expected else [])
-        if contains:
-            correct = Evaluator.contains(response, contains)
-            method = "contains"
-        elif expected:
+        contains = test_case.get("expected_contains") or []
+        # `expected` is the primary path: exact_match is now word-boundary
+        # phrase presence, so it scores recall from sentence responses.
+        # `expected_contains` is the fallback for multi-keyword OR-cases.
+        if expected:
             correct = Evaluator.exact_match(response, expected)
             method = "exact"
+        elif contains:
+            correct = Evaluator.contains(response, contains)
+            method = "contains"
         else:
             correct = False
             method = "none"

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field, fields
-from statistics import mean
+from statistics import mean, pstdev
 from typing import Any
 
 from utils.logging.setup import get_logger
@@ -126,7 +126,6 @@ class BenchmarkMetrics:
             tier = r.get("source_tier") or "none"
             tiers[tier] += 1
         denom = n or 1
-        cache_denom = hits + misses
         pf_denom = pf_suc or 1
         return cls(
             total_tests=n,
@@ -137,7 +136,10 @@ class BenchmarkMetrics:
             max_latency=max(lat),
             cache_hits=hits,
             cache_misses=misses,
-            cache_hit_rate=hits / cache_denom if cache_denom else 0.0,
+            # Denominator is total_tests (not hits+misses) so every case is
+            # counted: errored/no-outcome turns and repeat-collapsed cases
+            # (both flags False) register as non-hits rather than vanishing.
+            cache_hit_rate=hits / denom,
             prefetch_attempts=pf_att,
             prefetch_successes=pf_suc,
             prefetch_timeouts=pf_to,
@@ -153,3 +155,66 @@ class BenchmarkMetrics:
 def _ints(results: list[dict], key: str) -> list[int]:
     """Extract an integer per result for ``key``, defaulting to 0."""
     return [int(r.get(key, 0) or 0) for r in results]
+
+
+@dataclass
+class AggregatedMetrics:
+    """Mean ± population std of key metrics across N repetitions of one dataset.
+
+    Built by ``AggregatedMetrics.from_runs`` from a list of ``BenchmarkMetrics``
+    dicts (one per repetition). Std is population std (``pstdev``) — the N runs
+    are the whole population of interest, not a sample.
+    """
+
+    runs: int = 0
+    total_cases: int = 0
+    correct_total: int = 0
+    accuracy_mean: float = 0.0
+    accuracy_std: float = 0.0
+    avg_latency_mean: float = 0.0
+    avg_latency_std: float = 0.0
+    cache_hit_rate_mean: float = 0.0
+    cache_hit_rate_std: float = 0.0
+    prefetch_usefulness_mean: float = 0.0
+    prefetch_usefulness_std: float = 0.0
+
+    @classmethod
+    def from_runs(cls, metric_dicts: list[dict]) -> "AggregatedMetrics":
+        """Aggregate N per-run metric dicts into mean ± std. Empty input → zeros."""
+        n = len(metric_dicts)
+        if n == 0:
+            return cls()
+
+        def col(key: str) -> list[float]:
+            return [float(d.get(key, 0.0) or 0.0) for d in metric_dicts]
+
+        acc, lat, cache, pfu = col("accuracy"), col("avg_latency"), col("cache_hit_rate"), col("prefetch_usefulness")
+        std = pstdev if n > 1 else lambda _xs: 0.0
+        return cls(
+            runs=n,
+            total_cases=sum(int(d.get("total_tests", 0) or 0) for d in metric_dicts),
+            correct_total=sum(int(d.get("correct", 0) or 0) for d in metric_dicts),
+            accuracy_mean=mean(acc), accuracy_std=std(acc),
+            avg_latency_mean=mean(lat), avg_latency_std=std(lat),
+            cache_hit_rate_mean=mean(cache), cache_hit_rate_std=std(cache),
+            prefetch_usefulness_mean=mean(pfu), prefetch_usefulness_std=std(pfu),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict (JSON-friendly)."""
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    def summary_lines(self, dataset: str) -> list[str]:
+        """Compact aggregated report block (mean ± std)."""
+        per_run = self.total_cases // max(1, self.runs)
+        return [
+            "📊 BENCHMARK REPORT (aggregated)",
+            f"   Dataset: {dataset}",
+            f"   Runs: {self.runs}",
+            f"   Total cases: {self.total_cases} ({self.runs} × {per_run})",
+            f"   Correct: {self.correct_total}",
+            f"   Accuracy: {self.accuracy_mean * 100:.1f}% ± {self.accuracy_std * 100:.1f}%",
+            f"   Avg latency: {self.avg_latency_mean:.1f}s ± {self.avg_latency_std:.1f}s",
+            f"   Cache hit rate: {self.cache_hit_rate_mean * 100:.1f}% ± {self.cache_hit_rate_std * 100:.1f}%",
+            f"   Prefetch usefulness: {self.prefetch_usefulness_mean * 100:.1f}% ± {self.prefetch_usefulness_std * 100:.1f}%",
+        ]

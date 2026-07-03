@@ -26,6 +26,12 @@ _CSV_FIELDS: tuple[str, ...] = (
     "tokens_injected", "tokens_l3", "source_tier", "error",
 )
 
+# Columns for the per-(dataset, run) summary CSV emitted by ``--runs`` mode.
+_RUN_CSV_FIELDS: tuple[str, ...] = (
+    "dataset", "run", "total_tests", "correct", "accuracy",
+    "avg_latency", "cache_hit_rate", "prefetch_usefulness",
+)
+
 
 class ResultStorage:
     """Save and load benchmark results to/from disk."""
@@ -75,3 +81,32 @@ class ResultStorage:
                 merged.setdefault("dataset", dataset)
                 rows.append(merged)
         return rows
+
+    @staticmethod
+    def export_runs_csv(bundle: dict[str, Any], filename: str = "benchmark_runs.csv") -> None:
+        """Export one row per (dataset, run) from an aggregated ``--runs`` bundle.
+
+        ``bundle`` is ``{"runs": [{"dataset", "per_run": [metric_dict, ...]}]}``.
+        Each row is a single repetition's aggregate metrics for one dataset.
+        """
+        rows: list[dict] = []
+        for run in bundle.get("runs", []) or []:
+            dataset = run.get("dataset", "")
+            for i, m in enumerate(run.get("per_run", []) or []):
+                rows.append({
+                    "dataset": dataset, "run": i + 1,
+                    "total_tests": m.get("total_tests", ""),
+                    "correct": m.get("correct", ""),
+                    "accuracy": f"{float(m.get('accuracy', 0) or 0) * 100:.1f}",
+                    "avg_latency": f"{float(m.get('avg_latency', 0) or 0):.2f}",
+                    "cache_hit_rate": f"{float(m.get('cache_hit_rate', 0) or 0) * 100:.1f}",
+                    "prefetch_usefulness": f"{float(m.get('prefetch_usefulness', 0) or 0) * 100:.1f}",
+                })
+        if not rows:
+            log.warning("no per-run rows to export to %s", filename)
+            return
+        with open(filename, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(_RUN_CSV_FIELDS))
+            writer.writeheader()
+            writer.writerows(rows)
+        log.info("exported %d run rows to %s", len(rows), filename)
