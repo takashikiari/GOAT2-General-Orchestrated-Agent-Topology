@@ -66,6 +66,14 @@ class WorkingMemory:
             await client.set(key, payload)
         log.debug("WorkingMemory: saved %d messages for chat=%s", len(stamped), chat_id)
 
+        # --- auto-promote L2 → L3 if working memory exceeds cap ---
+        try:
+            from memory.auto_promote import schedule_auto_promote  # lazy cross-module
+            schedule_auto_promote(chat_id)
+        except Exception:
+            log.exception("WorkingMemory: auto-promote failed for chat=%s — non-fatal",
+                          chat_id)
+
     async def list_chat_ids(self) -> list[str]:
         """Return chat_ids with valid list-valued entries (MGET, one round-trip).
         Corrupt or non-list keys are logged as WARNING and excluded."""

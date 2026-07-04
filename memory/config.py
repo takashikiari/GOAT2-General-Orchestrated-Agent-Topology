@@ -11,6 +11,7 @@ _DEFAULTS: dict = {
     "working": {
         "storage_url": "redis://localhost:6379/0",
         "ttl_seconds": 0,
+        "max_messages": 20,
     },
     "episodic": {
         "storage_path": "./chroma_data",
@@ -98,6 +99,9 @@ WORKING_STORAGE_URL: str = str(
 )
 WORKING_TTL_SECONDS: int = int(
     _working.get("ttl_seconds", _DEFAULTS["working"]["ttl_seconds"])
+)
+WORKING_MAX_MESSAGES: Final[int] = int(
+    _working.get("max_messages", _DEFAULTS["working"]["max_messages"])
 )
 
 _episodic = _cfg.get("episodic", _DEFAULTS["episodic"])

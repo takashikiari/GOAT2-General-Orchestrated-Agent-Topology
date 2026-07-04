@@ -1,6 +1,9 @@
 [working]
 storage_url = "redis://localhost:6379/0"
 ttl_seconds = 0
+# Max messages kept in working memory per chat; older surplus is auto-promoted
+# to episodic (L3) after every save_messages call.
+max_messages = 20
 
 [episodic]
 storage_path = "./chroma_data"
@@ -102,29 +105,21 @@ drift_warm = 0.80
 drift_cold = 0.55
 lexical_low = 0.15
 # cosine(write_content_emb, thread_centroid) >= enriching_sim → enriching write
-# (on-thread): refresh the activation in place synchronously before the next
-# turn. Below this → filing write (off-thread): store in L3, leave the current
-# activation untouched; it surfaces when a future thread about that topic
-# activates.
+# (on-thread write refreshes the activation in place without drift check).
+# Below this threshold the write is off-thread and triggers a consensus-shift
+# evaluation. Tuned to 0.55 (same as drift_cold): a write that lands in the
+# DRIFT band (0.55–0.80) is still enriching enough to refresh the thread.
 enriching_sim = 0.55
-# Number of recent queries kept per thread for the lexical-overlap consensus
-# signal (a rolling window, newest last).
+# How many recent messages to track for lexical overlap (bag-of-words Jaccard
+# with the current query). 5 = enough to catch a topic-anchored follow-up
+# ("tell me more about that") without being diluted by older context.
 lexical_window = 5
 
-# Agentic tool-calling loop. The orchestrator lets the model chain tools in one
-# turn — read → search → write → verify → synthesize — in whatever order the query
-# needs, the same loop Claude Code runs. Below the cap the model is called WITH
-# tools (it decides: another tool, or a plain-text reply = natural termination);
-# at the cap it is called WITHOUT tools so a stuck model must synthesize from
-# what it has gathered. See orchestrator._run_tool_round.
+# Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is a
+# hard backstop (bounds cost/latency per turn, kills a runaway loop), never a
+# grounding decider. Below the cap the model is called with tools so it can
+# chain; at the cap tools are withheld and synthesis is forced.
 [tool_loop]
-# max_iterations = max tool-call batches executed in one turn. Each batch runs
-# the model's pending tool_calls then makes ONE follow-up LLM call, so the
-# worst-case LLM calls per turn = 1 (the initial decision in run()) +
-# max_iterations. 6 → 7 calls worst case; realistic chains (read → search →
-# write → verify → synthesize) terminate naturally at ~5. The cap is a HARD
-# backstop against a runaway loop hanging a single Telegram turn — it never
-# inspects content or withdraws a claim (not a grounding decider).
 max_iterations = 6
 
 [analytics]
