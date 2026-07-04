@@ -17,8 +17,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from memory.budget import enforce_result_limit, estimate_tokens
-from memory.config import IDENTITY_BASE_PROMPT, L3_GAP_SIGNIFICANCE, MAX_CONTEXT_TOKENS
+from memory.config import (
+    ACTIVATION_TTL_SECONDS,
+    IDENTITY_BASE_PROMPT,
+    L3_GAP_SIGNIFICANCE,
+    MAX_CONTEXT_TOKENS,
+)
 from memory.context_budget import allocate_context_budget
+from memory.activation import Activation, ActivationStore
 from memory.session_cache import SessionCache
 from utils.logging.setup import get_logger
 
@@ -66,6 +72,9 @@ class MemoryLayers:
         self._episodic = episodic
         self._permanent = permanent
         self._cache = SessionCache(working, ttl_seconds=cache_ttl)
+        # L2.5 activation layer — per-chat thread state. Distinct TTL from the
+        # search cache: a long cleanup horizon (NOT a reset). See [activation].
+        self._activation = ActivationStore(working, ttl_seconds=ACTIVATION_TTL_SECONDS)
 
     async def get_identity_and_facts(self) -> dict[str, str]:
         """L0 + L1: identity and critical facts. L0 always loads; L1 degrades to ``{}``.
@@ -212,6 +221,30 @@ class MemoryLayers:
     async def cache_exists(self, chat_id: str, key: str) -> bool:
         """L2.5: report whether a cache entry exists without reading it."""
         return await self._cache.exists(chat_id, key)
+
+    # --- L2.5 activation layer (per-chat thread state) -----------------------
+
+    async def get_activation(self, chat_id: str) -> Activation | None:
+        """L2.5: retrieve the chat's thread activation, or ``None`` if absent."""
+        return await self._activation.get(chat_id)
+
+    async def set_activation(self, chat_id: str, activation: Activation) -> None:
+        """L2.5: persist the chat's thread activation under the cleanup TTL."""
+        await self._activation.set(chat_id, activation)
+
+    async def clear_activation(self, chat_id: str) -> None:
+        """L2.5: drop the chat's thread activation (no-op if absent)."""
+        await self._activation.clear(chat_id)
+
+    async def embed_query(self, query: str) -> list[float] | None:
+        """Embed ``query`` via the episodic tier's own embedding function.
+
+        Delegates to ``EpisodicMemory.embed_query`` — the same model the semantic
+        search uses, so the thread centroid lives in the retrieval's vector
+        space. Returns ``None`` on any failure (callers treat that as a cold
+        turn); never raises.
+        """
+        return await self._episodic.embed_query(query)
 
     async def assemble_context(
         self, chat_id: str, budget: int | None = None,

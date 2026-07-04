@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from config import settings
+from memory.activation import classify_turn, rescore_recency
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
@@ -239,16 +240,21 @@ class Orchestrator:
         collector = ObservationCollector(chat_id, intent)
         start = time.time()
         try:
-            # 1. Prefetch daemon — started FIRST as a fire-and-forget task so its
-            #    L3 search overlaps the L0/L1/L2 fetch and the AITS classify stage
-            #    below (real overlap). No confidence gate: every turn attempts
-            #    prefetch; PREFETCH_TIMEOUT is the only blocker. Results come back
-            #    pre-scored (blended_score) from result_merger.
-            prefetch_task = asyncio.create_task(self._prefetch_daemon(chat_id, intent))
-            # 2. Concurrently fetch L0/L1 (facts) and L2 (working context) so the
-            #    I/O-bound tier fetches overlap with the daemon's L3 search.
+            # 1. Kick off the L0/L1/L2 tier fetch concurrently with the activation
+            #    lookup + query embed (all I/O-bound) so none blocks another. The
+            #    activation (per-chat thread state) + query embedding decide the
+            #    turn state: ``classify_turn`` returns cold / warm / drift, and the
+            #    daemon skips the L3 search on a warm turn — the brain holding its
+            #    current mental model steady instead of re-deriving it every turn.
             facts_task = asyncio.create_task(layers.get_identity_and_facts())
             msgs_task = asyncio.create_task(layers.get_working_context(chat_id))
+            activation_task = asyncio.create_task(layers.get_activation(chat_id))
+            qemb_task = asyncio.create_task(layers.embed_query(intent))
+            activation = await activation_task
+            query_emb = await qemb_task
+            turn_state = classify_turn(intent, activation, query_emb)
+            prefetch_task = asyncio.create_task(
+                self._prefetch_daemon(chat_id, intent, turn_state, activation))
             # 3. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
             confidence = calculate_confidence_from_query(intent)
@@ -277,7 +283,7 @@ class Orchestrator:
                     prefetch_task, timeout=PREFETCH_TIMEOUT,
                 )
                 prefetch_succeeded = True
-                log.info("prefetch ok chat=%s hits=%d", chat_id, len(l3_results))
+                log.info("prefetch ok chat=%s state=%s hits=%d", chat_id, turn_state, len(l3_results))
             except asyncio.TimeoutError:
                 prefetch_timeout = True
                 prefetch_task.cancel()
@@ -288,6 +294,12 @@ class Orchestrator:
             collector.end_stage("search")
             collector.set_cache(cache_hit, cache_key)
             collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
+            # Persist / refresh the activation (only on a successful prefetch; a
+            # timeout leaves it untouched so the next turn re-derives cold).
+            current_activation = None
+            if prefetch_succeeded:
+                current_activation = await self._update_activation(
+                    layers, chat_id, intent, query_emb, turn_state, activation, l3_results)
             # 5. Await the concurrent L0/L1/L2 fetch (normally done already) and
             #    assemble L0-L3 with the pre-fetched tiers (assemble stage).
             collector.start_stage("assemble")
@@ -334,8 +346,10 @@ class Orchestrator:
                 content[:80].encode("unicode_escape").decode(),
             )
             tool_summary = ""
+            stored_contents: list[str] = []
             if choice.message.tool_calls:
-                reply, tool_summary = await self._run_tool_round(api_msgs, choice, chat_id, all_tools)
+                reply, tool_summary, stored_contents = await self._run_tool_round(
+                    api_msgs, choice, chat_id, all_tools)
                 if _DSML_BLOCK.search(reply):
                     log.warning("DSML in _run_tool_round reply chat=%s; running DSML round", chat_id)
                     reply = await self._run_dsml_tool_round(reply, chat_id, all_tools)
@@ -359,7 +373,23 @@ class Orchestrator:
             await layers.save_working_context(chat_id, messages)
             asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
             collector.end_stage("save")
-            # 7. Record the observation; log a report at the configured interval.
+            # 7. Enriching-write refresh (synchronous, end of turn): if GOAT stored
+            #    on-thread facts this turn, fold them into the activation NOW so
+            #    the next turn sees them — the ordering invariant (a brain folds
+            #    new learning in before it speaks again). Off-thread/filing writes
+            #    and no-write turns add no latency.
+            write_kind = "none"
+            enriching_refresh = False
+            if stored_contents and current_activation is not None and current_activation.centroid:
+                write_kind, enriching_refresh = await self._enriching_refresh(
+                    layers, chat_id, stored_contents, current_activation)
+            collector.set_activation(
+                turn_state,
+                thread_break=(turn_state == "cold" and activation is not None),
+                write_kind=write_kind,
+                enriching_refresh=enriching_refresh,
+            )
+            # 8. Record the observation; log a report at the configured interval.
             collector.finish(time.time() - start)
             analytics.record(collector.obs)
             if analytics.total_requests % ANALYTICS_LOG_INTERVAL == 0:
@@ -373,42 +403,59 @@ class Orchestrator:
 
     async def _prefetch_daemon(
         self, chat_id: str, user_message: str,
+        state: str, activation,
     ) -> tuple[list[dict], bool, str | None]:
-        """Classify + run the 3 prefetch mechanisms in parallel, merge, score.
+        """Run the prefetch mechanisms, branched on the turn ``state``.
 
-        Started as the FIRST step of ``run()`` (a fire-and-forget task) so its L3
-        search overlaps the orchestrator's L0/L1/L2 fetch. The three mechanisms
-        evaluate independently every query — no confidence gate on whether
-        prefetch runs at all:
+        ``state`` (``cold`` / ``warm`` / ``drift``) comes from ``classify_turn``
+        over the per-chat activation (set in ``run()``):
 
-          * thematic     — always runs; cached semantic search (carries cache_key).
-          * temporal     — only when ``extract_temporal_range`` finds a
-            completed-past range; filtered semantic search on that range.
-          * specific-key — only when ``extract_structural_keys`` finds structural
-            keys; exact structural retrieval (UUID get-by-id / content contains).
+          * warm  — the thread is stable; serve the held activation's results
+            (re-scored by recency via ``rescore_recency``), skipping every L3
+            search. The brain trusts its recent activation.
+          * drift — the query moved but not enough to be a shift; a targeted
+            single-mechanism refresh re-runs the thematic search (uncached)
+            against the new query — the only mechanism that can surface new
+            associations on a moved-but-not-shifted thread.
+          * cold  — first turn, embedding degraded, or a consensus shift: the full
+            three-mechanism search (thematic cached + temporal + specific-key).
 
-        Results are merged + deduped + scored by ``result_merger.merge_results``
-        (similarity·0.6 + recency·0.3 + access_count·0.1), trimmed to
-        ``PREFETCH_MAX_RESULTS``, and the accessed records' access_count is
-        bumped fire-and-forget. Returns ``(results, cache_hit, cache_key)`` —
-        cache_hit/cache_key come from the thematic (cached) mechanism. Any single
-        mechanism that raises is skipped (``return_exceptions=True``).
+        Cold-path cache_hit/cache_key come from the thematic (cached) mechanism.
+        Any single cold-path mechanism that raises is skipped
+        (``return_exceptions=True``). Returns ``(results, cache_hit, cache_key)``.
         """
         from memory.query_classifier import (
             extract_structural_keys,
             extract_temporal_range,
         )
+        from memory.budget import enforce_result_limit
         from memory.result_merger import merge_results
 
         layers = self._registry.memory_layers
+        if state == "warm":
+            # Hold the activation steady; attenuate recency only (no search). This
+            # is the coherence payoff: the LLM builds on the same reality as the
+            # previous turn instead of re-grounding from a jittering L3 slice.
+            merged = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
+            log.info("prefetch warm chat=%s served=%d", chat_id, len(merged))
+            return merged, False, None
+
         after_before = extract_temporal_range(user_message)
         keys = extract_structural_keys(user_message)
         log.debug(
-            "prefetch classify chat=%s temporal=%s specific_key=%s keys=%s",
-            chat_id, after_before is not None, bool(keys), keys,
+            "prefetch classify chat=%s state=%s temporal=%s specific_key=%s keys=%s",
+            chat_id, state, after_before is not None, bool(keys), keys,
         )
         limit = PREFETCH_MAX_RESULTS
 
+        if state == "drift":
+            # Targeted refresh — re-run only thematic against the new query.
+            fresh = enforce_result_limit(await layers.search_episodic(user_message, limit=limit))
+            merged = merge_results([fresh])[:limit]
+            log.info("prefetch drift chat=%s merged=%d", chat_id, len(merged))
+            return merged, False, None
+
+        # cold: full three-mechanism search.
         async def _thematic() -> dict:
             results, hit, key = await layers.search_episodic_with_cache(
                 chat_id, user_message, limit=limit,
@@ -447,7 +494,7 @@ class Orchestrator:
 
         merged = merge_results(groups)[:limit]
         log.info(
-            "prefetch merge chat=%s mechanisms=%d merged=%d",
+            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d",
             chat_id, len(parts), len(merged),
         )
         ids = [
@@ -459,14 +506,84 @@ class Orchestrator:
             asyncio.create_task(layers.bump_access(chat_id, ids))
         return merged, cache_hit, cache_key
 
-    async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
-                              tools: list[ToolDefinition]) -> tuple[str, str]:
-        """Execute tool calls from choice, make one more LLM call (no tools), return (text, summary).
+    async def _update_activation(
+        self, layers, chat_id: str, intent: str, query_emb, turn_state: str,
+        activation, l3_results: list[dict],
+    ):
+        """Persist or refresh the per-chat activation after a successful prefetch.
 
-        Returns ``(reply, tool_summary)`` where ``tool_summary`` is a compact
-        evidence string (one line per call: "called {name}({args}) → {preview}")
-        built by ``_compact_tool_summary``. The caller embeds this in the saved
-        assistant message so future turns have real grounding for past tool use.
+        Returns the activation now in effect (the post-turn thread), or ``None``
+        when no activation could be built (no embedding). ``warm`` keeps the
+        centroid steady and only extends the recent-queries window (a short
+        follow-up must not move the thread); ``cold``/``drift`` build a fresh
+        activation around the new query + results. The activation is the
+        (centroid, merged, last_query, recent_queries) tuple the enriching-write
+        refresh and the next turn's ``classify_turn`` use.
+        """
+        from memory.activation import Activation, trim_recent
+
+        now = time.time()
+        if turn_state == "warm":
+            if activation is None:
+                return None
+            activation.recent_queries = trim_recent(activation.recent_queries, intent)
+            activation.ts = now
+            await layers.set_activation(chat_id, activation)
+            return activation
+        # cold or drift: a new / refreshed thread needs an embedding to anchor the
+        # centroid; without it the activation can't classify future turns, so
+        # degrade (leave absent → next turn cold).
+        if query_emb is None:
+            return None
+        recent = trim_recent(activation.recent_queries if activation else [], intent)
+        new_act = Activation(
+            centroid=query_emb, merged=l3_results, last_query=intent,
+            recent_queries=recent, ts=now,
+        )
+        await layers.set_activation(chat_id, new_act)
+        return new_act
+
+    async def _enriching_refresh(
+        self, layers, chat_id: str, stored_contents: list[str], activation,
+    ) -> tuple[str, bool]:
+        """Fold on-thread (enriching) writes into the activation before returning.
+
+        For each ``store_memory`` content this turn, classify it against the
+        current thread's centroid. If enriching (on-thread), synchronously
+        re-search the thread's ``last_query`` (uncached, fresh — the just-written
+        fact is now in L3) and replace the activation's results, so the next turn
+        sees the new learning immediately (the ordering invariant). Filing
+        (off-thread) writes leave the activation untouched — they surface when a
+        future thread about that topic activates. Returns ``(write_kind, refreshed)``.
+        """
+        from memory.activation import classify_write
+        from memory.budget import enforce_result_limit
+        from memory.result_merger import merge_results
+
+        for content in stored_contents:
+            cemb = await layers.embed_query(content)
+            if classify_write(cemb, activation.centroid) == "enriching":
+                fresh = enforce_result_limit(await layers.search_episodic(
+                    activation.last_query, limit=PREFETCH_MAX_RESULTS))
+                activation.merged = merge_results([fresh])[:PREFETCH_MAX_RESULTS]
+                await layers.set_activation(chat_id, activation)
+                log.info("enriching refresh chat=%s folded %d chars", chat_id, len(content))
+                return "enriching", True
+        return "filing", False
+
+    async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
+                              tools: list[ToolDefinition]) -> tuple[str, str, list[str]]:
+        """Execute tool calls from choice, make one more LLM call (no tools), return (text, summary, stored).
+
+        Returns ``(reply, tool_summary, stored_contents)`` where ``tool_summary``
+        is a compact evidence string (one line per call:
+        "called {name}({args}) → {preview}") built by ``_compact_tool_summary``.
+        The caller embeds this in the saved assistant message so future turns
+        have real grounding for past tool use. ``stored_contents`` is the list of
+        ``content`` args from any ``store_memory`` calls this turn — captured here
+        (not in ``_call_tool``) so the enriching-write refresh can classify them
+        against the current thread after the round completes. It excludes the
+        automatic ``_archive_turn`` write, which bypasses the tool.
 
         ``chat_id`` is threaded through to each handler so tools that need an
         origin chat (e.g. ``store_memory``) receive it without the model ever
@@ -477,6 +594,7 @@ class Orchestrator:
         drop a tool the model already called.
         """
         calls_and_results: list[tuple[str, str, str]] = []
+        stored_contents: list[str] = []
         tool_exchange = [
             {"role": "assistant", "content": choice.message.content,
              "tool_calls": [
@@ -487,6 +605,8 @@ class Orchestrator:
         ]
         for tc in choice.message.tool_calls:
             result = await self._call_tool(tc, chat_id, tools)
+            if tc.function.name == "store_memory":
+                stored_contents.append(self._extract_content(tc.function.arguments))
             log.debug(
                 "tool_result tool=%s chat=%s content=%r",
                 tc.function.name, chat_id, result,
@@ -510,7 +630,20 @@ class Orchestrator:
             r2_content = await self._run_grounding_correction(
                 api_msgs, tool_exchange, r2_content, ungrounded, chat_id,
             )
-        return r2_content, _compact_tool_summary(calls_and_results)
+        return r2_content, _compact_tool_summary(calls_and_results), stored_contents
+
+    @staticmethod
+    def _extract_content(args_json: str) -> str:
+        """Pull the ``content`` arg from a store_memory tool call.
+
+        Used by the enriching-write refresh to classify what GOAT stored this
+        turn against the current thread's centroid. Returns ``""`` on any parse
+        failure (a malformed call classifies as filing, never breaks the turn).
+        """
+        try:
+            return str(json.loads(args_json).get("content", ""))
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return ""
 
     async def _run_grounding_correction(
         self, api_msgs: list, tool_exchange: list, prior_reply: str,

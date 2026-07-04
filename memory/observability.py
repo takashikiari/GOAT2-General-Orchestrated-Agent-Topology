@@ -75,6 +75,15 @@ class MemoryObservation:
     prefetch_blocks_injected: int = 0
     prefetch_blocks_used: int = 0
 
+    # L2.5 activation (brain thread state) — how the turn related to the
+    # per-chat activation: cold (full search) / warm (served from activation) /
+    # drift (targeted refresh), whether the thread broke (consensus shift), and
+    # whether a write this turn enriched the activation in place.
+    activation_state: str = ""
+    thread_break: bool = False
+    write_kind: str = ""
+    enriching_refresh: bool = False
+
     def to_dict(self) -> dict:
         """Serialize this observation to a plain dict (for JSON logging)."""
         return asdict(self)

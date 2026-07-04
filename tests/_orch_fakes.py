@@ -81,6 +81,21 @@ class _FakeLayers:
     async def store_episodic(self, chat_id: str, content: str, tags=None) -> None:
         self.archive_calls += 1
 
+    # L2.5 activation layer — fakes return empty/None so every single-turn test
+    # sees a COLD turn (no prior activation, no embedding) and the existing
+    # behaviour (search runs, cache_key reported) is preserved.
+    async def get_activation(self, chat_id):
+        return None
+
+    async def set_activation(self, chat_id, activation):
+        self.set_activation_calls = getattr(self, "set_activation_calls", 0) + 1
+
+    async def clear_activation(self, chat_id):
+        pass
+
+    async def embed_query(self, query):
+        return None
+
 
 class _FakeAnalytics:
     def __init__(self):

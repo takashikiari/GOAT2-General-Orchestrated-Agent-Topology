@@ -100,3 +100,34 @@ class EpisodicMemory(EpisodicQueries):
             {"content": d, "metadata": m, "score": s}
             for d, m, s in zip(docs, metas, dists)
         ]
+
+    async def embed_query(self, query: str) -> list[float] | None:
+        """Embed ``query`` via the collection's own embedding function.
+
+        Reuses the same model the semantic search uses (the collection's
+        bundled ONNX MiniLM by default), so the thread centroid lives in the
+        same vector space as retrieval — at no extra dependency and no per-turn
+        API call. This is the single chokepoint for the ChromaDB private-API
+        risk: ``_embedding_function`` is internal, so any failure (missing
+        attribute, version change, model not initialised) degrades to ``None``
+        rather than raising — callers treat ``None`` as "force a cold turn".
+        """
+        if not query:
+            return None
+
+        def _sync() -> list[float] | None:
+            col = self._get_collection()
+            ef = getattr(col, "_embedding_function", None)
+            if ef is None:
+                return None
+            # Coerce to native float: the bundled ONNX embedding function returns
+            # numpy float32 scalars, which json.dumps (activation → Redis) cannot
+            # serialise. Native floats also keep the activation blob smaller and
+            # keep ``cosine`` in pure-Python math with no numpy dependency.
+            return [float(x) for x in ef([query])[0]]
+
+        try:
+            return await asyncio.to_thread(_sync)
+        except Exception as exc:  # noqa: BLE001 — embedding must never break a turn
+            log.warning("embed_query failed, degrading to cold turn: %s", exc)
+            return None

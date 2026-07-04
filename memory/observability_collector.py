@@ -108,6 +108,23 @@ class ObservationCollector:
         """
         self.obs.prefetch_blocks_used = blocks_used
 
+    def set_activation(
+        self, state: str, thread_break: bool = False,
+        write_kind: str = "", enriching_refresh: bool = False,
+    ) -> None:
+        """Set the L2.5 activation outcome for the turn.
+
+        ``state`` is ``cold`` / ``warm`` / ``drift`` (how the turn related to the
+        per-chat thread activation); ``thread_break`` is True when a consensus
+        shift ended an existing thread; ``write_kind`` is ``enriching`` /
+        ``filing`` / ``none``; ``enriching_refresh`` is True when an on-thread
+        write refreshed the activation in place this turn.
+        """
+        self.obs.activation_state = state
+        self.obs.thread_break = thread_break
+        self.obs.write_kind = write_kind
+        self.obs.enriching_refresh = enriching_refresh
+
     def categorize_intent(self, confidence: float) -> str:
         """Derive a coarse intent category from the confidence tier.
 

@@ -44,6 +44,10 @@ class BenchmarkMetrics:
     prefetch_timeouts: int = 0
     prefetch_usefulness: float = 0.0
 
+    grounded_correct: int = 0
+    ungrounded_correct: int = 0
+    grounding_fidelity: float = 0.0
+
     avg_tokens_injected: float = 0.0
     avg_tokens_l0_l1: float = 0.0
     avg_tokens_l2: float = 0.0
@@ -74,6 +78,9 @@ class BenchmarkMetrics:
             ("Prefetch successes", self.prefetch_successes),
             ("Prefetch timeouts", self.prefetch_timeouts),
             ("Prefetch usefulness", f"{self.prefetch_usefulness * 100:.1f}%"),
+            ("Grounded correct", self.grounded_correct),
+            ("Ungrounded correct (guessed)", self.ungrounded_correct),
+            ("Grounding fidelity", f"{self.grounding_fidelity * 100:.1f}%"),
             ("Avg tokens injected", f"{self.avg_tokens_injected:.0f}"),
             ("Avg tokens L0+L1", f"{self.avg_tokens_l0_l1:.0f}"),
             ("Avg tokens L2", f"{self.avg_tokens_l2:.0f}"),
@@ -97,6 +104,8 @@ class BenchmarkMetrics:
             f"   Avg latency: {self.avg_latency:.1f}s",
             f"   Cache hit rate: {self.cache_hit_rate * 100:.1f}%",
             f"   Prefetch usefulness: {self.prefetch_usefulness * 100:.1f}%",
+            f"   Grounded correct: {self.grounded_correct} (fidelity {self.grounding_fidelity * 100:.0f}%)",
+            f"   Ungrounded correct (guessed): {self.ungrounded_correct}",
         ]
 
     @classmethod
@@ -125,6 +134,8 @@ class BenchmarkMetrics:
         for r in results:
             tier = r.get("source_tier") or "none"
             tiers[tier] += 1
+        grounded_correct = sum(1 for r in results if r.get("correct") and r.get("grounded"))
+        ungrounded_correct = sum(1 for r in results if r.get("correct") and not r.get("grounded"))
         denom = n or 1
         pf_denom = pf_suc or 1
         return cls(
@@ -144,6 +155,10 @@ class BenchmarkMetrics:
             prefetch_successes=pf_suc,
             prefetch_timeouts=pf_to,
             prefetch_usefulness=useful / pf_denom if pf_suc else 0.0,
+            grounded_correct=grounded_correct,
+            ungrounded_correct=ungrounded_correct,
+            # Of the correct answers, how many were grounded in retrievable memory.
+            grounding_fidelity=grounded_correct / correct if correct else 0.0,
             avg_tokens_injected=mean(_ints(results, "tokens_injected")),
             avg_tokens_l0_l1=mean(_ints(results, "tokens_l0_l1")),
             avg_tokens_l2=mean(_ints(results, "tokens_l2")),
@@ -177,6 +192,8 @@ class AggregatedMetrics:
     cache_hit_rate_std: float = 0.0
     prefetch_usefulness_mean: float = 0.0
     prefetch_usefulness_std: float = 0.0
+    grounded_correct_mean: float = 0.0
+    ungrounded_correct_mean: float = 0.0
 
     @classmethod
     def from_runs(cls, metric_dicts: list[dict]) -> "AggregatedMetrics":
@@ -189,6 +206,7 @@ class AggregatedMetrics:
             return [float(d.get(key, 0.0) or 0.0) for d in metric_dicts]
 
         acc, lat, cache, pfu = col("accuracy"), col("avg_latency"), col("cache_hit_rate"), col("prefetch_usefulness")
+        grnd, ungrnd = col("grounded_correct"), col("ungrounded_correct")
         std = pstdev if n > 1 else lambda _xs: 0.0
         return cls(
             runs=n,
@@ -198,6 +216,7 @@ class AggregatedMetrics:
             avg_latency_mean=mean(lat), avg_latency_std=std(lat),
             cache_hit_rate_mean=mean(cache), cache_hit_rate_std=std(cache),
             prefetch_usefulness_mean=mean(pfu), prefetch_usefulness_std=std(pfu),
+            grounded_correct_mean=mean(grnd), ungrounded_correct_mean=mean(ungrnd),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,4 +236,6 @@ class AggregatedMetrics:
             f"   Avg latency: {self.avg_latency_mean:.1f}s ± {self.avg_latency_std:.1f}s",
             f"   Cache hit rate: {self.cache_hit_rate_mean * 100:.1f}% ± {self.cache_hit_rate_std * 100:.1f}%",
             f"   Prefetch usefulness: {self.prefetch_usefulness_mean * 100:.1f}% ± {self.prefetch_usefulness_std * 100:.1f}%",
+            f"   Grounded correct: {self.grounded_correct_mean:.1f}",
+            f"   Ungrounded correct (guessed): {self.ungrounded_correct_mean:.1f}",
         ]

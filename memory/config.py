@@ -44,7 +44,12 @@ _DEFAULTS: dict = {
         "budget_hard_cap": 12000,
     },
     "prefetch": {
-        "timeout": 0.5,
+        # 1.0s (was 0.5s): the benchmark cache dataset showed L2.5 cache hit rate
+        # capped at ~72% ± 18.7% because ChromaDB semantic search frequently
+        # exceeds 0.5s, cancelling the prefetch daemon before it can populate the
+        # L2.5 cache. 1.0s lets more searches complete → more cache entries on the
+        # repeat turn, without unbounded latency (still capped at 1.0s/turn).
+        "timeout": 1.0,
         "max_results": 15,
         "recency_window_days": 30,
         "access_count_ref": 10,
@@ -54,6 +59,18 @@ _DEFAULTS: dict = {
     },
     "analytics": {
         "log_interval": 100,
+    },
+    # L2.5 brain-activation layer — per-chat thread state. See config/memory.toml
+    # [activation]; time is cleanup only (not a reset), a thread breaks only on
+    # a consensus shift (drift AND lexical overlap both drop), and an on-thread
+    # write refreshes the activation in place.
+    "activation": {
+        "ttl_seconds": 604800,
+        "drift_warm": 0.80,
+        "drift_cold": 0.55,
+        "lexical_low": 0.15,
+        "enriching_sim": 0.55,
+        "lexical_window": 5,
     },
 }
 
@@ -174,6 +191,29 @@ ANALYTICS_LOG_INTERVAL: Final[int] = int(
     _analytics.get("log_interval", _DEFAULTS["analytics"]["log_interval"])
 )
 
+# Activation layer config — see config/memory.toml [activation]. TTL is a
+# cleanup horizon (NOT a reset); drift_*_warm/cold + lexical_low define the
+# consensus-shift rule; enriching_sim gates the on-thread write refresh.
+_activation_cfg = _cfg.get("activation", _DEFAULTS["activation"])
+ACTIVATION_TTL_SECONDS: Final[int] = int(
+    _activation_cfg.get("ttl_seconds", _DEFAULTS["activation"]["ttl_seconds"])
+)
+ACTIVATION_DRIFT_WARM: Final[float] = float(
+    _activation_cfg.get("drift_warm", _DEFAULTS["activation"]["drift_warm"])
+)
+ACTIVATION_DRIFT_COLD: Final[float] = float(
+    _activation_cfg.get("drift_cold", _DEFAULTS["activation"]["drift_cold"])
+)
+ACTIVATION_LEXICAL_LOW: Final[float] = float(
+    _activation_cfg.get("lexical_low", _DEFAULTS["activation"]["lexical_low"])
+)
+ACTIVATION_ENRICHING_SIM: Final[float] = float(
+    _activation_cfg.get("enriching_sim", _DEFAULTS["activation"]["enriching_sim"])
+)
+ACTIVATION_LEXICAL_WINDOW: Final[int] = int(
+    _activation_cfg.get("lexical_window", _DEFAULTS["activation"]["lexical_window"])
+)
+
 __all__ = [
     "WORKING_STORAGE_URL",
     "WORKING_TTL_SECONDS",
@@ -205,4 +245,10 @@ __all__ = [
     "PREFETCH_SCORE_RECENCY_WEIGHT",
     "PREFETCH_SCORE_ACCESS_WEIGHT",
     "ANALYTICS_LOG_INTERVAL",
+    "ACTIVATION_TTL_SECONDS",
+    "ACTIVATION_DRIFT_WARM",
+    "ACTIVATION_DRIFT_COLD",
+    "ACTIVATION_LEXICAL_LOW",
+    "ACTIVATION_ENRICHING_SIM",
+    "ACTIVATION_LEXICAL_WINDOW",
 ]

@@ -63,13 +63,53 @@ budget_hard_cap = 12000
 # recency_window_days / access_count_ref normalise the merge-score terms;
 # score_*_weight are the blend weights (similarity + recency + access_count).
 [prefetch]
-timeout = 0.5
-max_results = 15
+# 1.0s (was 0.5s): the benchmark cache dataset showed the L2.5 hit rate capped at
+# ~72% ± 18.7% because ChromaDB semantic search frequently exceeds 0.5s,
+# cancelling the daemon before it can populate the L2.5 cache for the repeat
+# turn. 1.0s lets more searches complete (→ more cache hits) without unbounded
+# latency; the daemon is still awaited for at most this long per turn.
+timeout = 1.0
+max_results = 10
 recency_window_days = 30
 access_count_ref = 10
 score_similarity_weight = 0.6
 score_recency_weight = 0.3
 score_access_weight = 0.1
+
+# L2.5 brain-activation layer — per-chat thread state that holds the recently
+# activated retrieval steady along a topic thread. Time does NOT reset it
+# (only attenuates, via the recency merge term); a thread breaks only on a
+# CONSENSUS shift (embedding drift AND lexical overlap both drop). A write
+# refreshes the activation in place when the written content is on-thread.
+# See memory/activation.py.
+[activation]
+# Redis TTL — cleanup only, NOT a reset. Expiry just means "re-derive cold next
+# time"; topic continuity is semantic, not time-based. 7 days = a thread may
+# survive across sessions.
+ttl_seconds = 604800
+# cosine(query_emb, thread_centroid) >= drift_warm → warm (same thread, serve
+# the held activation, skip all three prefetch mechanisms). Tuned to MiniLM L6
+# v2's measured geometry: paraphrases + intent follow-ups land 0.80–0.95, so
+# 0.80 keeps a real follow-up ("do you remember my wifi password?") WARM instead
+# of re-running thematic search every turn.
+drift_warm = 0.80
+# cosine < drift_cold AND lexical_overlap < lexical_low → CONSENSUS shift
+# (cold turn, full three-mechanism search, new activation). Both must drop — a
+# single jittery signal (e.g. a short "tell me more" follow-up drifts in
+# embedding space but keeps lexical overlap) must NOT reset the thread. Tuned
+# to the measured band: different-target queries land <0.57, so 0.55 makes a
+# true topic change COLD while a related glide (0.58–0.75) stays DRIFT.
+drift_cold = 0.55
+lexical_low = 0.15
+# cosine(write_content_emb, thread_centroid) >= enriching_sim → enriching write
+# (on-thread): refresh the activation in place synchronously before the next
+# turn. Below this → filing write (off-thread): store in L3, leave the current
+# activation untouched; it surfaces when a future thread about that topic
+# activates.
+enriching_sim = 0.55
+# Number of recent queries kept per thread for the lexical-overlap consensus
+# signal (a rolling window, newest last).
+lexical_window = 5
 
 [analytics]
 log_interval = 100

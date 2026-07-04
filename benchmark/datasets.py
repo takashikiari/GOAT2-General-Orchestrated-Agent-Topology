@@ -51,6 +51,14 @@ def _case(
     return case
 
 
+def _facts(items: list[str]) -> list[dict]:
+    """Alternating user/assistant preload from fact strings (generic ``Got it.`` acks)."""
+    out: list[dict] = []
+    for item in items:
+        out += [_um(item), _am("Got it.")]
+    return out
+
+
 def _memory_recall() -> list[dict]:
     """10 cases: recall a fact stated earlier in the preloaded conversation."""
     return [
@@ -193,6 +201,30 @@ def _prefetch() -> list[dict]:
     ]
 
 
+def _multi_hop() -> list[dict]:
+    """Cases requiring the model to combine two preloaded facts to answer."""
+    return [
+        _case("mh-01", "country from city", [_um("I live in Oslo."), _am("Oslo, noted."), _um("Oslo is the capital of Norway."), _am("Noted.")], "What country do I live in?", expected="Norway", tags=["multi_hop", "geo"]),
+        _case("mh-02", "sister's job", [_um("My sister's name is Elena."), _am("Elena, noted."), _um("Elena works as a doctor."), _am("A doctor, got it.")], "What does my sister do for a living?", expected="doctor", tags=["multi_hop", "family"]),
+        _case("mh-03", "fern care", [_um("I bought a fern."), _am("A fern, nice."), _um("Ferns need shade to thrive."), _am("Shade, got it.")], "What light does my fern need?", expected="shade", tags=["multi_hop", "chain"]),
+    ]
+
+
+def _distractor() -> list[dict]:
+    """Bury the target fact among ~8 others; tests selective recall."""
+    return [
+        _case("di-01", "favorite number among facts",
+              _facts(["I live in Oslo.", "I drive a Volvo.", "I have two kids.", "My favorite number is 17.", "I was born in 1990.", "I like jazz.", "My shoe size is 42.", "I work in finance."]),
+              "What is my favorite number?", expected="17", tags=["distractor", "number"]),
+        _case("di-02", "pet name among facts",
+              _facts(["I drink tea.", "I run marathons.", "My pet is a parrot named Kiwi.", "I live on the 3rd floor.", "I studied physics.", "I own a kayak.", "I dislike cilantro.", "My birthday is in May."]),
+              "What is my pet's name?", expected="Kiwi", tags=["distractor", "pet"]),
+        _case("di-03", "meeting day among facts",
+              _facts(["I take the bus.", "I play chess.", "My meeting is on Wednesday.", "I have a blue coat.", "I eat oatmeal.", "I read sci-fi.", "I own 3 guitars.", "I was born in March."]),
+              "When is my meeting?", expected="Wednesday", tags=["distractor", "schedule"]),
+    ]
+
+
 def _build() -> dict[str, list[dict]]:
     """Assemble the dataset registry in stable registration order."""
     return {
@@ -201,6 +233,8 @@ def _build() -> dict[str, list[dict]]:
         "multi_turn": _multi_turn(),
         "cache": _cache(),
         "prefetch": _prefetch(),
+        "multi_hop": _multi_hop(),
+        "distractor": _distractor(),
     }
 
 

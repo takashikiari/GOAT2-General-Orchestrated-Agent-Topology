@@ -1,15 +1,11 @@
 """benchmark.runner — run benchmark datasets against a live GOAT orchestrator.
 
-``BenchmarkRunner`` owns a ``ServiceRegistry`` + ``Orchestrator`` (built lazily;
-the registry is overridable for tests). For each test case it preloads the
-conversation into L2 working memory — or into L3 episodic memory for
-``episodic_only`` cases that exercise the prefetch path — runs the orchestrator,
-diffs the registry's ``memory_analytics`` counters to capture per-turn cache /
-prefetch / token stats, and scores the response via ``Evaluator``.
-
-Every ``orchestrator``, ``registry``, and ``memory`` import is lazy (inside
-methods), so importing this module needs no services running. No singletons:
-the runner owns its registry's lifetime.
+``BenchmarkRunner`` owns a lazily-built ``ServiceRegistry`` + ``Orchestrator``
+(registry overridable). For each case it preloads L2 (or L3 for ``episodic_only``
+cases), runs the orchestrator, diffs ``memory_analytics`` for per-turn
+cache/prefetch/token stats, and scores via ``Evaluator``. All
+orchestrator/registry/memory imports are lazy (inside methods), so importing
+this module needs no services running. No singletons.
 """
 from __future__ import annotations
 
@@ -86,6 +82,10 @@ class BenchmarkRunner:
             latency = time.time() - t0
             per_run.append(_diff(before, _snapshot(analytics), latency, response, error))
         result = self._score(test_case, response, per_run, judge_llm)
+        if test_case.get("episodic_only"):
+            # L3-only path: verify the fact was actually retrievable from L3
+            # (grounding), so a correct-but-ungrounded answer is flagged as a guess.
+            result["grounded"] = await self._grounded(test_case, chat_id)
         await self._maybe_llm_judge(test_case, result, judge_llm)
         return result
 
@@ -149,18 +149,35 @@ class BenchmarkRunner:
         ]
         await layers.save_working_context(chat_id, messages)
 
+    async def _grounded(self, test_case: dict, chat_id: str) -> bool:
+        """Grounding check: the expected fact is retrievable from L3 (mirrors the
+        orchestrator's thematic search; False on failure/absent; never raises)."""
+        from memory.config import PREFETCH_MAX_RESULTS  # lazy — no module-level memory import
+
+        expected = test_case.get("expected", "")
+        if not expected:
+            return True
+        try:
+            results, _, _ = await self._registry.memory_layers.search_episodic_with_cache(
+                chat_id, test_case["query"], limit=PREFETCH_MAX_RESULTS,
+            )
+            return Evaluator.fact_in_results(results, expected)
+        except Exception as exc:  # noqa: BLE001 — grounding failure must not abort
+            log.warning("grounding retrieval failed case=%s: %s", test_case.get("id"), exc)
+            return False
+
     def _score(
         self, test_case: dict, response: str, per_run: list[dict], judge_llm: bool,
     ) -> dict:
         """Build the per-test result dict: correctness, similarity, summed stats."""
         expected = test_case.get("expected", "")
         contains = test_case.get("expected_contains") or []
-        # `expected` is the primary path: exact_match is now word-boundary
-        # phrase presence, so it scores recall from sentence responses.
-        # `expected_contains` is the fallback for multi-keyword OR-cases.
+        # `expected`/fuzzy_match is the primary path (paraphrase-tolerant);
+        # `expected_contains` is the multi-keyword fallback. ``grounded`` defaults
+        # True for L2 cases (fact in injected history); episodic_only overrides it.
         if expected:
-            correct = Evaluator.exact_match(response, expected)
-            method = "exact"
+            correct = Evaluator.fuzzy_match(response, expected)
+            method = "fuzzy"
         elif contains:
             correct = Evaluator.contains(response, contains)
             method = "contains"
@@ -173,7 +190,7 @@ class BenchmarkRunner:
         return {
             "id": test_case.get("id"), "name": test_case.get("name"), "dataset": "",
             "query": test_case["query"], "expected": expected, "response": response,
-            "correct": correct, "score": round(score, 4), "match_method": method,
+            "correct": correct, "grounded": True, "score": round(score, 4), "match_method": method,
             "latency": round(last["latency"], 4),
             "cache_hit": any(r["cache_hit"] for r in per_run),
             "cache_miss": any(r["cache_miss"] for r in per_run),

@@ -50,6 +50,14 @@ class MemoryAnalytics:
         self.total_latency_llm = 0.0
         self.total_latency_save = 0.0
         self.total_latency = 0.0
+        # L2.5 activation (brain thread state) — see memory.activation.
+        self.cold_turns = 0
+        self.warm_turns = 0
+        self.drift_turns = 0
+        self.thread_breaks = 0
+        self.enriching_writes = 0
+        self.filing_writes = 0
+        self.enriching_refreshes = 0
 
     def record(self, obs: MemoryObservation) -> None:
         """Fold a single observation into the aggregates."""
@@ -81,6 +89,21 @@ class MemoryAnalytics:
         self.total_latency_llm += obs.latency_llm
         self.total_latency_save += obs.latency_save
         self.total_latency += obs.latency_total
+        # L2.5 activation counters — one per turn-state / write-kind.
+        if obs.activation_state == "cold":
+            self.cold_turns += 1
+        elif obs.activation_state == "warm":
+            self.warm_turns += 1
+        elif obs.activation_state == "drift":
+            self.drift_turns += 1
+        if obs.thread_break:
+            self.thread_breaks += 1
+        if obs.write_kind == "enriching":
+            self.enriching_writes += 1
+        elif obs.write_kind == "filing":
+            self.filing_writes += 1
+        if obs.enriching_refresh:
+            self.enriching_refreshes += 1
 
     def get_report(self) -> dict:
         """Build the aggregated rates/averages report."""
@@ -108,6 +131,13 @@ class MemoryAnalytics:
             "avg_latency_llm": self.total_latency_llm / n,
             "avg_latency_save": self.total_latency_save / n,
             "avg_latency_total": self.total_latency / n,
+            "activation_cold_rate": self.cold_turns / n,
+            "activation_warm_rate": self.warm_turns / n,
+            "activation_drift_rate": self.drift_turns / n,
+            "thread_breaks": self.thread_breaks,
+            "enriching_writes": self.enriching_writes,
+            "filing_writes": self.filing_writes,
+            "enriching_refreshes": self.enriching_refreshes,
         }
 
     def log_report(self) -> None:

@@ -2,10 +2,16 @@
 
 Pure-Python evaluators with no ``orchestrator`` or ``memory`` imports.
 
-* ``exact_match`` / ``contains`` — deterministic lexical checks.
-* ``semantic_similarity`` — Jaccard word-overlap score in ``[0, 1]``. Lexical
-  (no embedding dependency) so it works offline and is deterministic; a vector
-  variant can be plugged in by callers that have an embedding client.
+* ``exact_match`` — word-boundary phrase presence (strict-ish, case-insensitive).
+* ``fuzzy_match`` — paraphrase-tolerant match: normalizes ordinals (``14th``→
+  ``14``), time formats (``9:00 AM`` / ``9 am`` → ``9am``) and punctuation, then
+  checks the normalized expected phrase appears as a whole token in the
+  normalized response. This is the primary recall grader — it tolerates the LLM
+  rephrasing stored facts without the false positives of naive substring match.
+* ``contains`` — every keyword present (multi-keyword OR-cases).
+* ``semantic_similarity`` — Jaccard word-overlap in ``[0, 1]`` (offline).
+* ``fact_in_results`` — grounding check: the expected fact is retrievable from
+  L3 (appeared in retrieved episodic content), independent of the response.
 * ``llm_judge`` — async; takes the LLM client as a parameter so the evaluator
   stays decoupled from the registry, and falls back to a lexical check when no
   client is supplied.
@@ -27,13 +33,45 @@ _WORD = re.compile(r"[a-z0-9]+")
 _YES = re.compile(r"\byes\b")
 _NO = re.compile(r"\bno\b")
 
+# Normalization rules for ``fuzzy_match`` / ``fact_in_results``.
+_ORDINAL = re.compile(r"(\d+)(st|nd|rd|th)\b")                  # 14th -> 14
+_TIME_FULL = re.compile(r"(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)", re.I)  # 9:00 am -> 9am
+_TIME_HOUR = re.compile(r"(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)", re.I)          # 9 am -> 9am
+_PUNCT = re.compile(r"[^\w\s]")                                  # punctuation -> space
+
+
+def _norm_ampm(token: str) -> str:
+    """Canonicalize an am/pm marker: ``a.m.``/``AM`` → ``am``."""
+    return token.lower().replace(".", "").replace(" ", "")
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, strip ordinal suffixes, canonicalize times, drop punctuation.
+
+    Examples: ``"9:00 AM"``→``"9am"``, ``"9 am"``→``"9am"``, ``"14th"``→``"14"``,
+    ``"The National"``→``"the national"``. Whitespace is collapsed.
+    """
+    s = (text or "").lower()
+    s = _ORDINAL.sub(r"\1", s)
+    s = _TIME_FULL.sub(lambda m: m.group(1) + _norm_ampm(m.group(3)), s)
+    s = _TIME_HOUR.sub(lambda m: m.group(1) + _norm_ampm(m.group(2)), s)
+    s = _PUNCT.sub(" ", s)
+    return " ".join(s.split())
+
+
+def _phrase_in(needle: str, haystack: str) -> bool:
+    """Word-boundary search of normalized ``needle`` in normalized ``haystack``."""
+    if not needle:
+        return False
+    return bool(re.compile(rf"\b{re.escape(needle)}\b").search(haystack))
+
 
 class Evaluator:
     """Evaluate GOAT responses against expected answers."""
 
     @staticmethod
     def exact_match(response: str, expected: str) -> bool:
-        """Case-insensitive word-boundary phrase presence.
+        """Case-insensitive word-boundary phrase presence (no normalization).
 
         True when the exact ``expected`` phrase appears in ``response`` as a
         whole-word match (``\\b…\\b``), case-insensitive. "Exact match" is read
@@ -41,7 +79,8 @@ class Evaluator:
         conversational responses (sentences, not bare tokens), multi-word
         phrases ("blue marlin"), and tokens that must not substring-match
         ("42" does not match "142"). Returns ``False`` when ``expected`` is
-        empty.
+        empty. For paraphrase-tolerant grading (time formats, ordinals) see
+        ``fuzzy_match``.
         """
         if not expected:
             return False
@@ -49,10 +88,45 @@ class Evaluator:
         return bool(pat.search((response or "").lower()))
 
     @staticmethod
+    def fuzzy_match(response: str, expected: str) -> bool:
+        """Paraphrase-tolerant match — normalized expected phrase in response.
+
+        Both sides are normalized (``_normalize``: ordinals, time formats,
+        punctuation) then checked with a word boundary so ``"42"`` does not
+        match ``"142"``. Tolerates the LLM rephrasing a stored fact: expected
+        ``"9am"`` matches response ``"9:00 AM"``; expected ``"14th"`` matches
+        ``"the 14th"``. Returns ``False`` when ``expected`` is empty.
+        """
+        if not expected:
+            return False
+        needle = _normalize(expected)
+        if not needle:
+            return False
+        return _phrase_in(needle, _normalize(response))
+
+    @staticmethod
     def contains(response: str, keywords: list[str]) -> bool:
         """True when every keyword appears in the response (case-insensitive)."""
         text = (response or "").lower()
         return all(kw.lower() in text for kw in (keywords or []))
+
+    @staticmethod
+    def fact_in_results(results: list[dict], expected: str) -> bool:
+        """Grounding check: the expected fact is present in retrieved L3 content.
+
+        ``results`` is a list of ``{"content", "metadata"}`` dicts from
+        ``memory_layers`` search. Returns ``True`` when the normalized expected
+        phrase appears (word-boundary) in any result's ``content`` — i.e. the
+        memory system *could* have grounded the answer, independent of whether
+        the model actually used it. Used to flag ungrounded-correct answers
+        (correct response, but the fact was not retrievable → likely guessed).
+        """
+        if not expected or not results:
+            return False
+        needle = _normalize(expected)
+        if not needle:
+            return False
+        return any(_phrase_in(needle, _normalize(r.get("content", ""))) for r in results)
 
     @staticmethod
     def semantic_similarity(response: str, expected: str) -> float:
