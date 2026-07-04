@@ -1,7 +1,7 @@
 """tools.memory_tools — search_memory: GOAT's on-demand path to L3 (episodic memory)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
@@ -34,10 +34,19 @@ _PARAMETERS = {
 
 
 def _iso_to_ts(s: str) -> float | None:
+    """Parse an ISO 8601 string to an epoch second, pining naive input to UTC.
+
+    L3 timestamps are stored as ``time.time()`` (UTC epoch). A naive ISO string
+    (no offset) must be read as UTC, not local time, or the filter window shifts
+    by the host's UTC offset on a non-UTC server. Aware strings are honored as-is.
+    """
     try:
-        return datetime.fromisoformat(s).timestamp()
+        dt = datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _fmt_results(results: list[dict]) -> str:

@@ -1,4 +1,4 @@
-"""memory.permanent.permanent — long-term facts (core-memory) and archived history (Letta archival memory)."""
+"""memory.permanent.permanent — long-term facts in the Letta L1 core-memory 'facts' block."""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ _FACTS_LABEL = "facts"
 
 
 class PermanentMemory:
-    """Letta-backed permanent store: facts in core-memory block 'facts', history in archival memory."""
+    """Letta-backed permanent store: facts in the core-memory block 'facts'."""
 
     def __init__(self) -> None:
         self._agent_id: str | None = None
@@ -75,14 +75,3 @@ class PermanentMemory:
     async def get_all_facts(self) -> dict[str, str]:
         """Return all stored facts as a dict."""
         return await self._get_facts()
-
-    async def archive_entries(self, entries: list[dict]) -> None:
-        """Batch-store promoted episodic entries in Letta's archival memory."""
-        agent_id = await self._resolve_agent_id()
-        for e in entries:
-            ts = float(e["metadata"].get("timestamp", 0))
-            text = f"[{e['metadata'].get('role', '?')} ts={ts:.0f}] {e['content']}"
-            (await self._get_http().post(
-                f"/v1/agents/{agent_id}/archival-memory", json={"text": text}
-            )).raise_for_status()
-        log.info("PermanentMemory: archived %d entries", len(entries))

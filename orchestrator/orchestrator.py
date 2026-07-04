@@ -206,6 +206,34 @@ class Orchestrator:
     def __init__(self, registry: ServiceRegistry, tools: list[ToolDefinition] | None = None) -> None:
         self._registry = registry
         self._tools = tools or []
+        # In-flight L3 archive writes, tracked so drain_archives() can await
+        # them on shutdown — otherwise a restart in the ~100 ms ChromaDB write
+        # window silently drops the turn (violating the "every turn archived"
+        # guarantee). Each task removes itself here on completion.
+        self._pending_archives: set[asyncio.Task] = set()
+
+    async def drain_archives(self, timeout: float = 5.0) -> None:
+        """Await in-flight L3 archive writes so a clean shutdown loses no turns.
+
+        Called from the bot's ``post_shutdown`` hook before the loop exits.
+        Bounded by ``timeout`` so a stuck ChromaDB write can't hang shutdown;
+        ``_archive_turn`` already swallows+logs its own errors, so gather runs
+        with ``return_exceptions=True`` purely defensively.
+        """
+        pending = list(self._pending_archives)
+        if not pending:
+            return
+        log.info("draining %d in-flight L3 archive writes", len(pending))
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "archive drain timed out (%.1fs); %d write(s) may be lost",
+                timeout, len(self._pending_archives),
+            )
 
     def _has_search_memory(self) -> bool:
         """True when the ``search_memory`` tool is configured for this orchestrator."""
@@ -371,7 +399,9 @@ class Orchestrator:
             messages.append({"role": "user", "content": intent, "timestamp": time.time()})
             messages.append({"role": "assistant", "content": saved_reply, "timestamp": time.time()})
             await layers.save_working_context(chat_id, messages)
-            asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
+            archive_task = asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
+            self._pending_archives.add(archive_task)
+            archive_task.add_done_callback(self._pending_archives.discard)
             collector.end_stage("save")
             # 7. Enriching-write refresh (synchronous, end of turn): if GOAT stored
             #    on-thread facts this turn, fold them into the activation NOW so
@@ -473,19 +503,29 @@ class Orchestrator:
             results = await layers.find_by_keys(chat_id, matched_keys, limit=limit)
             return {"results": results, "cache_hit": False, "cache_key": None}
 
-        tasks: list = [_thematic()]
+        # Each task is tagged with its mechanism name so a per-mechanism
+        # exception (e.g. a ChromaDB HNSW/metadata desync — "Error finding
+        # id") self-identifies in the log instead of appearing as an anonymous
+        # "prefetch mechanism raised" with no source.
+        tasks: list = [("thematic", _thematic())]
         if after_before is not None:
-            tasks.append(_temporal(after_before))
+            tasks.append(("temporal", _temporal(after_before)))
         if keys:
-            tasks.append(_specific_key(keys))
-        parts = await asyncio.gather(*tasks, return_exceptions=True)
+            tasks.append(("specific_key", _specific_key(keys)))
+        names = [name for name, _ in tasks]
+        parts = await asyncio.gather(
+            *[coro for _, coro in tasks], return_exceptions=True,
+        )
 
         groups: list[list[dict]] = []
         cache_hit = False
         cache_key: str | None = None
-        for part in parts:
+        for name, part in zip(names, parts):
             if isinstance(part, BaseException):
-                log.warning("prefetch mechanism raised chat=%s: %s", chat_id, part)
+                log.warning(
+                    "prefetch mechanism raised chat=%s mechanism=%s: %s",
+                    chat_id, name, part,
+                )
                 continue
             groups.append(part["results"])
             if part.get("cache_key") is not None:

@@ -142,8 +142,10 @@ mechanism matches only structural forms — there is no regex over natural
 language.
 
 The mechanisms run concurrently via
-`asyncio.gather(*tasks, return_exceptions=True)` (`orchestrator.py:481`); a
-single mechanism that raises is skipped, the rest still contribute.
+`asyncio.gather(*tasks, return_exceptions=True)` (`orchestrator.py:486`); a
+single mechanism that raises is skipped (logged with its `mechanism=` tag —
+`thematic` / `temporal` / `specific_key` — at `orchestrator.py:496`, so a
+ChromaDB `Error finding id` desync self-identifies), the rest still contribute.
 
 ### 3. Warm — serve the activation, skip all search
 
@@ -526,7 +528,8 @@ goat2/
 │   └── tools.py                      # ToolDefinition type
 ├── scripts/
 │   ├── threshold_sanity.py           # Embedding gate: query pairs must land in their warm/drift/cold band
-│   └── enriching_check.py            # No-LLM live check: enriching write folds into activation before next turn
+│   ├── enriching_check.py            # No-LLM live check: enriching write folds into activation before next turn
+│   └── repair_episodic.py            # Detect + rebuild a ChromaDB HNSW/metadata desync ("Error finding id")
 ├── telegram_interface/
 │   ├── bot.py                        # Telegram entry point; wires search/store/promote tools
 │   ├── _plugin_scanner.py            # post_init: ChromaDB warmup + 30 s plugin rescan
@@ -633,8 +636,8 @@ Two timing properties of the current code, both verifiable from the source:
 
 ## Verification
 
-Two no-LLM live gates (run after `source .env`; they use only Redis + ChromaDB
-embeddings, no provider calls):
+Three no-LLM live scripts (run after `source .env`; they use only Redis +
+ChromaDB, no provider calls):
 
 - `python3 -m scripts.threshold_sanity` — embeds query pairs that *should* land
   in each band and checks they do. The gate the activation thresholds were tuned
@@ -642,6 +645,10 @@ embeddings, no provider calls):
 - `python3 -m scripts.enriching_check` — proves the enriching-write ordering
   invariant: an on-thread write folds into the activation in place before the
   next turn reads it.
+- `python3 -m scripts.repair_episodic` — checks the ChromaDB collection for the
+  HNSW/metadata desync behind a cold-turn `prefetch mechanism raised …
+  Error finding id` (check-only by default; `--rebuild` exports → backs up →
+  drops → recreates → re-adds the rows verbatim, then re-probes).
 
 The faked-backend test suite (`python3 -m pytest -q`) covers the pure activation
 logic (`tests/test_activation.py` — cosine, lexical overlap, turn/write

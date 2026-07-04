@@ -26,7 +26,7 @@ def _truncate(text: str) -> str:
     return text[:_MAX_TG_LEN] if len(text) > _MAX_TG_LEN else text
 
 
-def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) -> Application:
+def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     """
     Build and return a configured Telegram Application.
 
@@ -35,8 +35,10 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     (GOAT's on-demand path to write L3) and routes incoming text messages to
     it. Memory is accessed entirely through the Orchestrator, which talks to
     ``registry.memory_layers`` (the Backend Mapper); this module never touches
-    the physical tiers directly. ``post_init`` / ``post_shutdown`` are
-    forwarded to ApplicationBuilder when provided.
+    the physical tiers directly. ``post_init`` is forwarded to
+    ApplicationBuilder when provided. A ``post_shutdown`` hook is always
+    wired to call ``orchestrator.drain_archives()`` so a clean shutdown
+    awaits in-flight L3 archive writes instead of dropping them.
     """
     from orchestrator.orchestrator import Orchestrator  # lazy — avoids import cycle
     from tools.memory_tools import build_search_memory_tool  # lazy — avoids import cycle
@@ -62,11 +64,14 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         if reply:
             await update.message.reply_text(_truncate(reply))
 
+    async def drain_archives(application: Application) -> None:
+        """post_shutdown: await in-flight L3 archive writes before the loop exits."""
+        await orchestrator.drain_archives()
+
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
     if post_init:
         builder = builder.post_init(post_init)
-    if post_shutdown:
-        builder = builder.post_shutdown(post_shutdown)
+    builder = builder.post_shutdown(drain_archives)
     app = builder.build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     log.info("Telegram bot application built (model=%s)", settings.MODEL_NAME)

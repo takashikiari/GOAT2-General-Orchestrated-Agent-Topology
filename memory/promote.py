@@ -14,8 +14,8 @@ and curated — mirroring how Letta core-memory is meant to be managed:
 GOAT invokes this via the ``promote_memory`` tool (no background daemon). The
 ``store_memory`` tool writes L3 (episodic, recency-bounded, grows freely);
 ``promote_memory`` writes L1 (permanent, small, curated) — two distinct tiers.
-Letta *archival* memory (richer history, via ``PermanentMemory.archive_entries``)
-is a separate, larger store left for a follow-up tool.
+Promotion never deletes from L3: the episodic record stays as recency-bounded
+ground truth while the promoted fact lives on in core-memory.
 """
 from __future__ import annotations
 
