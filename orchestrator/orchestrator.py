@@ -15,6 +15,7 @@ from memory.aits import (
     calculate_intent_budget,
 )
 from memory.config import (
+    AGENTIC_MAX_ITERATIONS,
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
     PREFETCH_TIMEOUT,
@@ -37,11 +38,6 @@ _DSML_BLOCK = re.compile(
     r"<｜｜DSML｜｜tool_calls>(.*?)</｜｜DSML｜｜tool_calls>", re.DOTALL
 )
 
-# Matches standalone multi-digit integers in text — used by the grounding check
-# to detect numeric claims in a synthesis reply that have no basis in the tool
-# output returned that turn. Single-digit numbers excluded (too noisy: indices,
-# list markers). Only the exact token must match; "42" in "142" is not a match.
-_NUMBER_CLAIM = re.compile(r"\b\d{2,}\b")
 _DSML_INVOKE = re.compile(
     r'<｜｜DSML｜｜invoke name="([^"]+)">(.*?)</｜｜DSML｜｜invoke>', re.DOTALL
 )
@@ -102,17 +98,6 @@ _TOOL_SYNTHESIS_BRIDGE = (
     "say so explicitly rather than guessing."
 )
 
-# Injected as a correction turn when the grounding check finds the synthesis
-# reply contains numbers absent from all tool output this turn. Parallel to
-# the DSML detection→correction pattern: a structural check (regex) triggers
-# the correction, not a pre-emptive prompt. {nums} and {they} are formatted
-# in at call time with the specific ungrounded values.
-_GROUNDING_CORRECTION = (
-    "Your response contains {nums}, but {they} do not appear in the tool "
-    "output above. Please correct or withdraw those claims — only state "
-    "figures that appear verbatim in the tool results."
-)
-
 # Tool-summary evidence constants — controls what _compact_tool_summary persists
 # from each tool call into L2/L3. Without this, only the synthesized reply text
 # is saved, leaving future turns with no real grounding for "did you actually
@@ -150,25 +135,6 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
             preview = result[:_RESULT_HEAD] + "..."
         lines.append(f"called {name}({args}) → {preview}")
     return "\n".join(lines)
-
-
-def _ungrounded_numbers(reply: str, tool_exchange: list[dict]) -> frozenset[str]:
-    """Numbers asserted in reply that don't appear verbatim in any tool result.
-
-    Extracts all standalone 2+ digit integers from reply and from the
-    concatenated content of every role='tool' message in tool_exchange.
-    Returns the difference: numbers the model asserted that have no basis
-    in what the tools actually returned this turn.
-
-    Single-digit numbers are excluded to avoid noise from indices and markers.
-    False-positive risk: numbers drawn from conversation history or general
-    knowledge will be flagged if absent from tool output — the correction
-    round presents the evidence and the model self-adjudicates.
-    """
-    tool_text = " ".join(
-        m["content"] for m in tool_exchange if m.get("role") == "tool"
-    )
-    return frozenset(_NUMBER_CLAIM.findall(reply)) - frozenset(_NUMBER_CLAIM.findall(tool_text))
 
 
 async def _archive_turn(layers, chat_id: str, intent: str, reply: str) -> None:
@@ -259,9 +225,12 @@ class Orchestrator:
         ``memory_analytics`` and a report is logged every
         ``ANALYTICS_LOG_INTERVAL`` requests. On exception the partial
         observation is recorded before re-raising. The LLM call + tool round
-        fall inside the ``inject`` stage (the biggest latency), and the second
-        (tool-result) LLM call never receives tools, so runaway tool loops are
-        structurally impossible.
+        fall inside the ``inject`` stage (the biggest latency). The tool round
+        is an agentic loop (``_run_tool_round``): the model is called WITH tools
+        each iteration so it can chain tools across the turn, and WITHOUT tools
+        only at the ``AGENTIC_MAX_ITERATIONS`` cap so a stuck model must
+        synthesize. Runaway loops are bounded by the cap, not structurally
+        impossible.
         """
         layers = self._registry.memory_layers
         analytics = self._registry.memory_analytics
@@ -613,17 +582,35 @@ class Orchestrator:
 
     async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
                               tools: list[ToolDefinition]) -> tuple[str, str, list[str]]:
-        """Execute tool calls from choice, make one more LLM call (no tools), return (text, summary, stored).
+        """Execute tool calls, loop the model until it stops calling tools or the
+        iteration cap forces synthesis; return ``(reply, tool_summary, stored)``.
+
+        Agentic loop, the same shape Claude Code runs: the model chains tools in
+        one turn — read → search → write → verify → synthesize — in whatever order
+        the query needs. Each iteration executes the model's pending
+        ``tool_calls``, folds the assistant tool_calls + tool results into the
+        running conversation, and calls the model again. Below
+        ``AGENTIC_MAX_ITERATIONS`` it is called WITH tools (it decides: another
+        tool, or a plain-text reply = natural termination); at the cap it is
+        called WITHOUT tools so a stuck model must synthesize from what it has
+        gathered.
+
+        The cap is a HARD backstop, NOT a grounding decider — it never inspects
+        content or withdraws a claim (that was the harmful regex-detector path,
+        now removed). It only bounds cost/latency per turn (each iteration is one
+        paid LLM call; worst case = 1 + ``AGENTIC_MAX_ITERATIONS`` calls) and
+        prevents a runaway loop from hanging a single Telegram turn. The
+        ``_TOOL_SYNTHESIS_BRIDGE`` is appended before every post-tool call as
+        in-context support — a nudge, not a decision; the model stays decisional
+        and may call another tool instead of answering.
 
         Returns ``(reply, tool_summary, stored_contents)`` where ``tool_summary``
-        is a compact evidence string (one line per call:
-        "called {name}({args}) → {preview}") built by ``_compact_tool_summary``.
-        The caller embeds this in the saved assistant message so future turns
-        have real grounding for past tool use. ``stored_contents`` is the list of
-        ``content`` args from any ``store_memory`` calls this turn — captured here
-        (not in ``_call_tool``) so the enriching-write refresh can classify them
-        against the current thread after the round completes. It excludes the
-        automatic ``_archive_turn`` write, which bypasses the tool.
+        (built by ``_compact_tool_summary``) covers EVERY tool call across all
+        iterations, and ``stored_contents`` is every ``store_memory`` content
+        this turn — captured here (not in ``_call_tool``) so the enriching-write
+        refresh can classify them against the current thread after the round
+        completes. It excludes the automatic ``_archive_turn`` write, which
+        bypasses the tool.
 
         ``chat_id`` is threaded through to each handler so tools that need an
         origin chat (e.g. ``store_memory``) receive it without the model ever
@@ -635,42 +622,64 @@ class Orchestrator:
         """
         calls_and_results: list[tuple[str, str, str]] = []
         stored_contents: list[str] = []
-        tool_exchange = [
-            {"role": "assistant", "content": choice.message.content,
-             "tool_calls": [
-                 {"id": tc.id, "type": "function",
-                  "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                 for tc in choice.message.tool_calls
-             ]}
-        ]
-        for tc in choice.message.tool_calls:
-            result = await self._call_tool(tc, chat_id, tools)
-            if tc.function.name == "store_memory":
-                stored_contents.append(self._extract_content(tc.function.arguments))
-            log.debug(
-                "tool_result tool=%s chat=%s content=%r",
-                tc.function.name, chat_id, result,
-            )
-            tool_exchange.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            calls_and_results.append((tc.function.name, tc.function.arguments, result))
-        tool_exchange.append({"role": "user", "content": _TOOL_SYNTHESIS_BRIDGE})
-        r2 = await self._registry.llm_client.chat.completions.create(
-            model=settings.MODEL_NAME, messages=api_msgs + tool_exchange,
-            temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
-        )
-        r2_content = r2.choices[0].message.content or ""
-        log.debug("_run_tool_round r2 content_hex=%s", r2_content[:80].encode("unicode_escape").decode())
-        ungrounded = _ungrounded_numbers(r2_content, tool_exchange)
-        if ungrounded:
-            log.warning(
-                "grounding check: synthesis reply contains numbers absent from tool output "
-                "chat=%s ungrounded=%s",
-                chat_id, sorted(ungrounded),
-            )
-            r2_content = await self._run_grounding_correction(
-                api_msgs, tool_exchange, r2_content, ungrounded, chat_id,
-            )
-        return r2_content, _compact_tool_summary(calls_and_results), stored_contents
+        loop_msgs = list(api_msgs)
+        current = choice
+        reply = ""
+        for iteration in range(AGENTIC_MAX_ITERATIONS):
+            # current.message carries tool_calls — execute them and fold the
+            # assistant tool_calls + tool results into the running conversation.
+            tool_exchange = [
+                {"role": "assistant", "content": current.message.content,
+                 "tool_calls": [
+                     {"id": tc.id, "type": "function",
+                      "function": {"name": tc.function.name,
+                                   "arguments": tc.function.arguments}}
+                     for tc in current.message.tool_calls
+                 ]}
+            ]
+            for tc in current.message.tool_calls:
+                result = await self._call_tool(tc, chat_id, tools)
+                if tc.function.name == "store_memory":
+                    stored_contents.append(self._extract_content(tc.function.arguments))
+                log.debug(
+                    "tool_result tool=%s chat=%s iter=%d content=%r",
+                    tc.function.name, chat_id, iteration, result,
+                )
+                tool_exchange.append({"role": "tool", "tool_call_id": tc.id,
+                                      "content": result})
+                calls_and_results.append((tc.function.name, tc.function.arguments, result))
+            loop_msgs = loop_msgs + tool_exchange
+            # In-context grounding support, applied every iteration. Below the
+            # cap the model is offered tools so it may chain another tool instead
+            # of answering (decisional); at the cap tools are withheld so it must
+            # synthesize from what it has.
+            loop_msgs.append({"role": "user", "content": _TOOL_SYNTHESIS_BRIDGE})
+            if iteration + 1 < AGENTIC_MAX_ITERATIONS:
+                r = await self._registry.llm_client.chat.completions.create(
+                    model=settings.MODEL_NAME, messages=loop_msgs,
+                    temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                    tools=[t.to_openai_schema() for t in tools], tool_choice="auto",
+                )
+                current = r.choices[0]
+                if not current.message.tool_calls:
+                    # Natural termination — the model chose to answer with text.
+                    reply = current.message.content or ""
+                    log.debug("tool_round natural-terminate chat=%s iters=%d",
+                              chat_id, iteration + 1)
+                    break
+            else:
+                # Cap reached — force synthesis (no tools). Hard backstop.
+                r = await self._registry.llm_client.chat.completions.create(
+                    model=settings.MODEL_NAME, messages=loop_msgs,
+                    temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                )
+                reply = r.choices[0].message.content or ""
+                log.warning("tool_round cap-forced synthesis chat=%s iters=%d",
+                            chat_id, iteration + 1)
+                break
+        log.debug("_run_tool_round reply content_hex=%s",
+                  reply[:80].encode("unicode_escape").decode())
+        return reply, _compact_tool_summary(calls_and_results), stored_contents
 
     @staticmethod
     def _extract_content(args_json: str) -> str:
@@ -684,34 +693,6 @@ class Orchestrator:
             return str(json.loads(args_json).get("content", ""))
         except (json.JSONDecodeError, AttributeError, TypeError):
             return ""
-
-    async def _run_grounding_correction(
-        self, api_msgs: list, tool_exchange: list, prior_reply: str,
-        ungrounded: frozenset[str], chat_id: str,
-    ) -> str:
-        """One corrective LLM call when the grounding check fires.
-
-        Parallel to the DSML detection→correction pattern: a structural
-        regex detected fabricated numbers; this round presents the specific
-        ungrounded values and asks the model to self-correct using only
-        what the tools returned. Falls back to prior_reply on LLM error —
-        a correction failure is never worse than the original fabrication.
-        """
-        nums = ", ".join(sorted(ungrounded))
-        they = "it" if len(ungrounded) == 1 else "they"
-        correction_msgs = api_msgs + tool_exchange + [
-            {"role": "assistant", "content": prior_reply},
-            {"role": "user", "content": _GROUNDING_CORRECTION.format(nums=nums, they=they)},
-        ]
-        try:
-            r3 = await self._registry.llm_client.chat.completions.create(
-                model=settings.MODEL_NAME, messages=correction_msgs,
-                temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
-            )
-            return r3.choices[0].message.content or prior_reply
-        except Exception as exc:
-            log.warning("grounding correction LLM call failed chat=%s: %s; using prior reply", chat_id, exc)
-            return prior_reply
 
     async def _run_dsml_tool_round(self, content: str, chat_id: str,
                                    tools: list[ToolDefinition]) -> str:

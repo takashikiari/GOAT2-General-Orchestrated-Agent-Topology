@@ -8,7 +8,7 @@ from a jittering slice every turn — and re-searches only when the thread shift
 The model never has to ask "do I remember this?" because retrieval already
 happened.
 
-The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py:226`).
+The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py:220`).
 It talks to memory through one façade — `MemoryLayers` in `memory/layers.py` —
 and never imports a physical backend directly.
 
@@ -17,8 +17,8 @@ and never imports a physical backend directly.
 ## What makes it different
 
 - **Proactive, not reactive.** The prefetch daemon (`Orchestrator._prefetch_daemon`,
-  `orchestrator.py:404`) starts as the *first* step of every turn
-  (`asyncio.create_task` at `orchestrator.py:256`) and runs in parallel with the
+  `orchestrator.py:403`) starts as the *first* step of every turn
+  (`asyncio.create_task` at `orchestrator.py:253`) and runs in parallel with the
   L0/L1/L2 fetch. Retrieval precedes generation; it is not triggered by the model
   noticing a gap.
 - **Brain activation, not a cache.** L2.5 holds per-chat *thread state* — the
@@ -40,7 +40,7 @@ and never imports a physical backend directly.
   tuned — but to the measured embedding geometry, not guessed (see
   [Activation thresholds](#activation-thresholds)).
 - **Complete fidelity.** Nothing is compressed or extracted. Every turn is
-  archived verbatim (`_archive_turn`, `orchestrator.py:174`), so the full text of
+  archived verbatim (`_archive_turn`, `orchestrator.py:140`), so the full text of
   any past exchange is retrievable from a single semantic query — no summary
   stands between the model and the original words.
 
@@ -105,8 +105,8 @@ branches on the turn's relation to the per-chat activation: **cold** searches,
 
 Before creating the prefetch task, `run()` fetches the chat's activation and a
 query embedding concurrently with the L0/L1/L2 fetch
-(`orchestrator.py:249-252`), then classifies the turn
-(`classify_turn` at `orchestrator.py:255`, logic in `memory/activation.py:192`):
+(`orchestrator.py:246-249`), then classifies the turn
+(`classify_turn` at `orchestrator.py:252`, logic in `memory/activation.py:192`):
 
 | State | Trigger | What the daemon does |
 |-------|---------|----------------------|
@@ -142,15 +142,15 @@ mechanism matches only structural forms — there is no regex over natural
 language.
 
 The mechanisms run concurrently via
-`asyncio.gather(*tasks, return_exceptions=True)` (`orchestrator.py:486`); a
+`asyncio.gather(*tasks, return_exceptions=True)` (`orchestrator.py:485`); a
 single mechanism that raises is skipped (logged with its `mechanism=` tag —
-`thematic` / `temporal` / `specific_key` — at `orchestrator.py:496`, so a
+`thematic` / `temporal` / `specific_key` — at `orchestrator.py:495`, so a
 ChromaDB `Error finding id` desync self-identifies), the rest still contribute.
 
 ### 3. Warm — serve the activation, skip all search
 
 When the query sits on the same thread, the daemon serves
-`rescore_recency(activation.merged, now)` (`orchestrator.py:439`) — the held
+`rescore_recency(activation.merged, now)` (`orchestrator.py:438`) — the held
 results re-scored against the current time so older facts attenuate. **No
 ChromaDB query runs.** The centroid is held steady (a short follow-up must not
 move the thread); only the recent-queries window is extended for the lexical
@@ -160,7 +160,7 @@ builds on the exact same reality as the first, with zero retrieval cost.
 ### 4. Drift — targeted single-mechanism refresh
 
 When the query moved but not enough to be a shift, the daemon re-runs **only
-the thematic mechanism** uncached (`search_episodic`, `orchestrator.py:453`) and
+the thematic mechanism** uncached (`search_episodic`, `orchestrator.py:452`) and
 replaces the activation's results around the new query — the centroid moves to
 the new query embedding. The temporal and specific-key mechanisms are skipped:
 on a moved-but-not-shifted thread, only thematic can surface new associations.
@@ -184,17 +184,17 @@ blended = similarity * 0.6 + recency * 0.3 + access_count * 0.1
 
 Each merged result carries a `blended_score` field. The list is trimmed to
 `PREFETCH_MAX_RESULTS` (15). Accessed records have their `access_count`/
-`last_accessed_ts` bumped fire-and-forget (`orchestrator.py:506`).
+`last_accessed_ts` bumped fire-and-forget (`orchestrator.py:515`).
 
 ### 6. Bounded wait, graceful degradation
 
 The daemon is awaited under
 `asyncio.wait_for(prefetch_task, timeout=PREFETCH_TIMEOUT)` (0.5 s,
-`orchestrator.py:282`). On timeout or any exception the task is cancelled and
-the turn continues without L3 (`orchestrator.py:287`) — the on-demand
+`orchestrator.py:279`). On timeout or any exception the task is cancelled and
+the turn continues without L3 (`orchestrator.py:286`) — the on-demand
 `search_memory` tool is the fallback. A successful run returns
 `(results, cache_hit, cache_key)`; the orchestrator then persists/refreshes the
-activation via `_update_activation` (`orchestrator.py:301`).
+activation via `_update_activation` (`orchestrator.py:298`).
 
 ### 7. Injection — system prompt, not conversation history
 
@@ -203,8 +203,8 @@ slice and emits them as a `[Context recuperat din istoric]` block
 (`layers.py:323`). Because the daemon pre-scored the results, `assemble_context`
 detects the `blended_score` field and sorts best-first *instead of* running the
 gap filter (`layers.py:314-316`). The block is joined into `system_content`
-(`orchestrator.py:317`) — part of the system prompt. The conversation history
-sent to the API is only `[{system}, {user}]` (`orchestrator.py:326-328`); L3 never
+(`orchestrator.py:314`) — part of the system prompt. The conversation history
+sent to the API is only `[{system}, {user}]` (`orchestrator.py:323-325`); L3 never
 appears as fake prior turns.
 
 ### 8. Relevance for non-daemon results — the gap filter
@@ -269,7 +269,7 @@ the write against the current thread's centroid (`classify_write`,
 - **enriching** — `cosine(write_content, centroid) ≥ enriching_sim`: the content
   belongs to the current thread. The activation is refreshed **in place,
   synchronously before `run()` returns** (`_enriching_refresh`,
-  `orchestrator.py:546`): it re-searches the thread's `last_query` (uncached, so
+  `orchestrator.py:555`): it re-searches the thread's `last_query` (uncached, so
   the just-written fact is now retrievable) and replaces the activation's
   results. The next turn sees the new learning folded in — a brain files new
   learning in before it speaks again.
@@ -366,7 +366,7 @@ starve L3 to zero. L3 is fit into the remainder after L0+L1+L2 in
 
 ## Memory mechanics
 
-### Write-through archive (`_archive_turn`, `orchestrator.py:174`)
+### Write-through archive (`_archive_turn`, `orchestrator.py:140`)
 
 After every turn's L2 save, the orchestrator fires `_archive_turn` as
 `asyncio.create_task` — fire-and-forget, never blocks the response, never
@@ -393,50 +393,70 @@ context while still prioritising recent messages.
 
 ## Tool-calling flow
 
-### Single-round structure
+### Agentic loop (`_run_tool_round`, `orchestrator.py:583`)
 
-The orchestrator enforces a strict two-call maximum per turn. The first LLM
-call may request tools (`orchestrator.py:334`); the second call, with tool
-results appended, is made **without** a `tools` kwarg (`orchestrator.py:618`).
-Runaway tool loops are structurally impossible.
+The tool round is an agentic loop — the same shape Claude Code runs. Each
+iteration executes the model's pending `tool_calls`, folds the assistant
+`tool_calls` + tool results into the running conversation, and calls the model
+again. Below `AGENTIC_MAX_ITERATIONS` (`config/memory.toml [tool_loop]`,
+default 6) it is called WITH tools (`orchestrator.py:661`) so the model can
+chain tools across the turn — read → search → write → verify → synthesise —
+in whatever order the query needs; a plain-text reply (no `tool_calls`) is
+natural termination. At the cap it is called WITHOUT tools
+(`orchestrator.py:672`) so a stuck model must synthesise from what it has
+gathered. The cap is a HARD backstop, not a grounding decider: it never inspects
+content or withdraws a claim (that was the harmful regex-detector path, now
+removed). It only bounds cost/latency per turn — worst case
+`1 + AGENTIC_MAX_ITERATIONS` LLM calls (the +1 is the initial decision call in
+`run()`) — and prevents a runaway loop from hanging a single Telegram turn. A
+turn that uses no tools never enters the loop and stays a single LLM call.
 
-### Synthesis bridge (`_TOOL_SYNTHESIS_BRIDGE`, `orchestrator.py:98`)
+### Synthesis bridge (`_TOOL_SYNTHESIS_BRIDGE`, `orchestrator.py:94`)
 
-After executing tool calls, a fixed user turn is appended before the second LLM
-call:
+After executing each batch of tool calls, a fixed user turn is appended before
+the next LLM call (every iteration — both "continue with tools" and the
+cap-forced synthesis):
 
 > "Respond to my request based on the tool results above. Only state specific
 > numbers, counts, or names if they appear verbatim in the tool output — if a
 > figure was not returned by the tools, say so explicitly rather than guessing."
 
-This prevents raw tool-output formatting from dominating generation style (a
-context-position proximity effect the distant system-message persona cannot
-overcome).
+This is in-context support, not a decision: offered tools, the model may still
+call another tool instead of answering. It also prevents raw tool-output
+formatting from dominating generation style (a context-position proximity effect
+the distant system-message persona cannot overcome).
 
-### Grounding check (`_ungrounded_numbers`, `orchestrator.py:155`)
+### Grounding — in-context, by the orchestrator (no post-hoc mechanism)
 
-Before returning the synthesis reply, all standalone 2+-digit integers in the
-reply are compared against those in the concatenated tool results. Any number
-present in the reply but absent from every tool result triggers
-`_run_grounding_correction` (`orchestrator.py:648`) — a third LLM call that names
-the specific ungrounded figures and asks the model to correct or withdraw them.
-On LLM error the prior reply is kept as fallback.
+There is no separate verifier and no corrective LLM call after synthesis. The
+model grounds itself in the synthesis call: it has the tool output in context,
+and `_TOOL_SYNTHESIS_BRIDGE` (`orchestrator.py:94`) tells it to state only
+figures that appear verbatim in the tool results and to say so explicitly
+rather than guess. Grounding is the LLM's job *because only it has the context*
+— the query, the conversation history, and the tool output. A mechanism that
+sees only text fragments cannot judge groundedness: it would flag real numbers
+drawn from history as ungrounded, and a corrective call would then force the
+model to withdraw true facts. Mechanisms here are support only — the cap bounds
+the loop, the bridge nudges each generation, the `[Tool calls]` evidence block
+(below) gives future turns context — and the orchestrator stays decisional.
 
-### DSML fallback (`_run_dsml_tool_round`, `orchestrator.py:676`)
+### DSML fallback (`_run_dsml_tool_round`, `orchestrator.py:697`)
 
 `deepseek-v4-flash` sometimes returns tool-call intent as DSML markup in the
 message content instead of the standard `tool_calls` field. The orchestrator
 detects this with a regex, parses the invocations, executes them, and returns
-raw tool output directly — no second LLM call on this path.
+raw tool output directly — no second LLM call on this path. This is a separate
+fallback, not part of the agentic loop.
 
-### Tool evidence in L2 (`_compact_tool_summary`, `orchestrator.py:134`)
+### Tool evidence in L2 (`_compact_tool_summary`, `orchestrator.py:119`)
 
 When tools were called, the saved assistant message in L2 is prefixed with a
 compact evidence record, one line per call:
-`called {name}({args_preview}) → {result_preview}`. Large-output tools
-(`browse_page`, `fetch_content`) store only `[N chars]`; `shell_run` stores
-head + tail. This gives future turns verifiable grounding for past tool use,
-structurally distinct from a narrated claim.
+`called {name}({args_preview}) → {result_preview}` — accumulated across **every
+iteration** of the loop. Large-output tools (`browse_page`, `fetch_content`)
+store only `[N chars]`; `shell_run` stores head + tail. This gives future turns
+verifiable grounding for past tool use, structurally distinct from a narrated
+claim.
 
 ---
 
@@ -463,7 +483,7 @@ Hot-reload tool plugins live in `tools/goat_skills/`. The registry-owned
 `PluginManager` (`plugins/plugin_manager.py`) rescans the directory every 30 s
 (via the `post_init` hook in `telegram_interface/_plugin_scanner.py`, which also
 pre-warms ChromaDB with `EpisodicMemory.warmup()`). Each turn the orchestrator
-reads `registry.plugin_manager.tools` (`orchestrator.py:220`); `scan()`
+reads `registry.plugin_manager.tools` (`orchestrator.py:214`); `scan()`
 atomically swaps the tool list, and a plugin that fails to build is skipped
 while its last-known-good tools are kept — a broken edit never wipes a working
 tool.

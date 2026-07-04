@@ -111,5 +111,21 @@ enriching_sim = 0.55
 # signal (a rolling window, newest last).
 lexical_window = 5
 
+# Agentic tool-calling loop. The orchestrator lets the model chain tools in one
+# turn — read → search → write → verify → synthesize — in whatever order the query
+# needs, the same loop Claude Code runs. Below the cap the model is called WITH
+# tools (it decides: another tool, or a plain-text reply = natural termination);
+# at the cap it is called WITHOUT tools so a stuck model must synthesize from
+# what it has gathered. See orchestrator._run_tool_round.
+[tool_loop]
+# max_iterations = max tool-call batches executed in one turn. Each batch runs
+# the model's pending tool_calls then makes ONE follow-up LLM call, so the
+# worst-case LLM calls per turn = 1 (the initial decision in run()) +
+# max_iterations. 6 → 7 calls worst case; realistic chains (read → search →
+# write → verify → synthesize) terminate naturally at ~5. The cap is a HARD
+# backstop against a runaway loop hanging a single Telegram turn — it never
+# inspects content or withdraws a claim (not a grounding decider).
+max_iterations = 6
+
 [analytics]
 log_interval = 100

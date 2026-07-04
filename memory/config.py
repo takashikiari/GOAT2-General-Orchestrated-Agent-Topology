@@ -72,6 +72,13 @@ _DEFAULTS: dict = {
         "enriching_sim": 0.55,
         "lexical_window": 5,
     },
+    # Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is
+    # a hard backstop (bounds cost/latency per turn, kills a runaway loop), never
+    # a grounding decider. Below the cap the model is called with tools so it can
+    # chain; at the cap tools are withheld and synthesis is forced.
+    "tool_loop": {
+        "max_iterations": 6,
+    },
 }
 
 
@@ -214,6 +221,12 @@ ACTIVATION_LEXICAL_WINDOW: Final[int] = int(
     _activation_cfg.get("lexical_window", _DEFAULTS["activation"]["lexical_window"])
 )
 
+# Agentic tool-calling loop — see config/memory.toml [tool_loop].
+_tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
+AGENTIC_MAX_ITERATIONS: Final[int] = int(
+    _tool_loop.get("max_iterations", _DEFAULTS["tool_loop"]["max_iterations"])
+)
+
 __all__ = [
     "WORKING_STORAGE_URL",
     "WORKING_TTL_SECONDS",
@@ -251,4 +264,5 @@ __all__ = [
     "ACTIVATION_LEXICAL_LOW",
     "ACTIVATION_ENRICHING_SIM",
     "ACTIVATION_LEXICAL_WINDOW",
+    "AGENTIC_MAX_ITERATIONS",
 ]
