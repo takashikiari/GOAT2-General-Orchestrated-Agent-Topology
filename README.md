@@ -469,9 +469,10 @@ while its last-known-good tools are kept — a broken edit never wipes a working
 tool.
 
 Bundled plugins: `browse_page` (Playwright), `fetch_content` (crawl4ai),
-`shell_run` (subprocess), `get_memory_metrics`, `get_recent_logs`. Drop a `.py`
-file exposing `build(registry) -> list[ToolDefinition]` into `tools/goat_skills/`
-to add a tool without a restart.
+`shell_run` (subprocess), `read_file` (bounded host file read), `write_file`
+(bounded host file write/append), `get_memory_metrics`, `get_recent_logs`.
+Drop a `.py` file exposing `build(registry) -> list[ToolDefinition]`
+into `tools/goat_skills/` to add a tool without a restart.
 
 ---
 
@@ -539,7 +540,7 @@ goat2/
 │   ├── plugin_manager.py             # Hot-reload plugin orchestrator (registry-owned)
 │   └── _loader.py                    # mtime-based directory reconcile
 ├── tools/
-│   ├── goat_skills/                  # Hot-reload plugin tools: browse_page, fetch_content, shell_run, get_memory_metrics, get_recent_logs
+│   ├── goat_skills/                  # Hot-reload plugin tools: browse_page, fetch_content, shell_run, read_file, write_file, get_memory_metrics, get_recent_logs
 │   ├── memory_tools.py               # search_memory tool
 │   ├── memory_writer.py              # store_memory tool
 │   └── memory_promote.py             # promote_memory tool
