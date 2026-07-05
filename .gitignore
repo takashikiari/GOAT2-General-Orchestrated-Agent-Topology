@@ -84,3 +84,6 @@ chroma_data/
 chroma_data/
 chroma_data/
 chroma_data/
+
+# DAG runtime workspace
+dag_workspace/
