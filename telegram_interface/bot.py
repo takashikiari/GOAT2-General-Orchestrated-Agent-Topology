@@ -4,16 +4,16 @@ build_app(registry) wires handlers; run_polling() starts daemon + long-polling.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from config import settings
+from orchestrator.orchestrator import Orchestrator
+from registry.registry import ServiceRegistry
+from tools.memory_promote import build_promote_memory_tool
+from tools.memory_tools import build_search_memory_tool
+from tools.memory_writer import build_store_memory_tool
 from utils.logging.setup import get_logger
-
-if TYPE_CHECKING:
-    from registry.registry import ServiceRegistry
 
 log = get_logger(__name__)
 
@@ -27,29 +27,25 @@ def _truncate(text: str) -> str:
 
 
 def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
-    """
-    Build and return a configured Telegram Application.
+    """Build and return a configured Telegram Application.
 
-    Creates the Orchestrator from registry (DI) with the ``search_memory``
-    tool (GOAT's on-demand path to read L3) and the ``store_memory`` tool
-    (GOAT's on-demand path to write L3) and routes incoming text messages to
-    it. Memory is accessed entirely through the Orchestrator, which talks to
-    ``registry.memory_layers`` (the Backend Mapper); this module never touches
-    the physical tiers directly. ``post_init`` is forwarded to
-    ApplicationBuilder when provided. A ``post_shutdown`` hook is always
-    wired to call ``orchestrator.drain_archives()`` so a clean shutdown
-    awaits in-flight L3 archive writes instead of dropping them.
+    Creates the Orchestrator with direct dependency references (not the
+    registry itself) and routes incoming text messages to it.  Memory is
+    accessed entirely through the Orchestrator → MemoryLayers path; this
+    module never touches the physical tiers directly.  A ``post_shutdown``
+    hook drains in-flight L3 archive writes on clean shutdown.
     """
-    from orchestrator.orchestrator import Orchestrator  # lazy — avoids import cycle
-    from tools.memory_tools import build_search_memory_tool  # lazy — avoids import cycle
-    from tools.memory_writer import build_store_memory_tool  # lazy — avoids import cycle
-    from tools.memory_promote import build_promote_memory_tool  # lazy — avoids import cycle
-
     layers = registry.memory_layers
     search_memory = build_search_memory_tool(layers)
     store_memory = build_store_memory_tool(layers)
     promote_memory = build_promote_memory_tool(layers)
-    orchestrator = Orchestrator(registry, tools=[search_memory, store_memory, promote_memory])
+    orchestrator = Orchestrator(
+        layers=layers,
+        llm_client=registry.llm_client,
+        plugin_manager=registry.plugin_manager,
+        analytics=registry.memory_analytics,
+        tools=[search_memory, store_memory, promote_memory],
+    )
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""
@@ -80,8 +76,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
 
 def run_polling() -> None:
     """Build registry, wire the plugin scanner, and start long-polling."""
-    from registry.registry import ServiceRegistry  # lazy
-    from telegram_interface._plugin_scanner import post_init_hook  # lazy
+    from telegram_interface._plugin_scanner import post_init_hook  # cycle-safe: telegram only
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()

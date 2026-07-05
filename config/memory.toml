@@ -26,7 +26,7 @@ ttl_seconds = 300
 base_prompt = "You are GOAT, a helpful assistant with layered memory."
 
 [retrieval_budget]
-max_results_per_search = 15
+max_results_per_search = 20
 max_context_tokens = 4000
 l2_context_cap = 8000
 # Fraction of the budget (after L0+L1) reserved for L3 when episodic results are
@@ -72,7 +72,7 @@ budget_hard_cap = 12000
 # turn. 1.0s lets more searches complete (→ more cache hits) without unbounded
 # latency; the daemon is still awaited for at most this long per turn.
 timeout = 1.0
-max_results = 10
+max_results = 20
 recency_window_days = 30
 access_count_ref = 10
 score_similarity_weight = 0.6

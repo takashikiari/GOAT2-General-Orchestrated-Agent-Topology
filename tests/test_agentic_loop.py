@@ -120,7 +120,7 @@ def test_loop_chains_multiple_tools_then_synthesizes():
     layers = _FakeLayers(results=[])
     reg = _Reg(layers, _SeqLLM(msgs), _FakeAnalytics())
 
-    reply = asyncio.run(Orchestrator(reg, tools=tools).run("do it", "chat"))
+    reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=tools).run("do it", "chat"))
 
     assert reply == "synthesis from both tools"
     assert reg.llm_client.chat.completions.calls == 3  # init + 2 loop calls
@@ -142,7 +142,7 @@ def test_loop_single_tool_terminates_after_one_batch():
     layers = _FakeLayers(results=[])
     reg = _Reg(layers, _SeqLLM(msgs), _FakeAnalytics())
 
-    reply = asyncio.run(Orchestrator(reg, tools=tools).run("count", "chat"))
+    reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=tools).run("count", "chat"))
 
     assert reply == "done"
     assert reg.llm_client.chat.completions.calls == 2
@@ -167,7 +167,7 @@ def test_cap_forces_synthesis_when_model_keeps_calling_tools():
     layers = _FakeLayers(results=[])
     reg = _Reg(layers, _SeqLLM(msgs), _FakeAnalytics())
 
-    reply = asyncio.run(Orchestrator(reg, tools=tools).run("loop forever", "chat"))
+    reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=tools).run("loop forever", "chat"))
 
     assert reply == "forced synthesis"
     assert reg.llm_client.chat.completions.calls == AGENTIC_MAX_ITERATIONS + 1

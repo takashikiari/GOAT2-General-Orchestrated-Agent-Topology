@@ -90,23 +90,40 @@ class ObservationCollector:
 
     def set_prefetch(
         self, attempted: bool, succeeded: bool, timeout: bool,
-        blocks_injected: int, blocks_used: int,
+        results_returned: int, blocks_used: int,
     ) -> None:
         """Set the L3 prefetch outcome."""
         self.obs.prefetch_attempted = attempted
         self.obs.prefetch_succeeded = succeeded
         self.obs.prefetch_timeout = timeout
-        self.obs.prefetch_blocks_injected = blocks_injected
+        self.obs.prefetch_results_returned = results_returned
         self.obs.prefetch_blocks_used = blocks_used
 
     def set_prefetch_blocks_used(self, blocks_used: int) -> None:
-        """Patch in the real L3 usage count once assemble_context has run.
-
-        ``set_prefetch`` is called before assemble (only the raw result count is
-        known then); this sets ``prefetch_blocks_used`` to the ``l3_used`` value
-        ``assemble_context`` returns, replacing the placeholder 0.
-        """
+        """Patch in the real L3 usage count once assemble_context has run."""
         self.obs.prefetch_blocks_used = blocks_used
+
+    def set_prefetch_mechanisms(
+        self, warm_served: bool,
+        thematic: int, temporal: int, specific_key: int,
+    ) -> None:
+        """Set warm-served flag and per-mechanism result counts."""
+        self.obs.warm_served = warm_served
+        self.obs.prefetch_thematic_count = thematic
+        self.obs.prefetch_temporal_count = temporal
+        self.obs.prefetch_specific_key_count = specific_key
+
+    def set_llm_usage(self, prompt: int, completion: int, total: int, calls: int) -> None:
+        """Set real API token counts from response.usage (billed, not estimated)."""
+        self.obs.tokens_prompt_api = prompt
+        self.obs.tokens_completion_api = completion
+        self.obs.tokens_total_api = total
+        self.obs.llm_calls = calls
+
+    def set_llm_latency_breakdown(self, first: float, tool_rounds: float) -> None:
+        """Set per-phase LLM latency: first planning call vs. tool-round calls."""
+        self.obs.latency_llm_first = first
+        self.obs.latency_tool_rounds = tool_rounds
 
     def set_activation(
         self, state: str, thread_break: bool = False,

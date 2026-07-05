@@ -6,6 +6,10 @@ live there; these admin/bulk-query methods live here as a mixin so
 ``episodic.get_recent / count / get_oldest / delete_entries`` unchanged. All
 access the lazily-built collection via ``self._get_collection`` (defined on the
 core class) and bridge ChromaDB's sync API with ``asyncio.to_thread``.
+
+Write operations (``bump_access``, ``delete_entries``) hold ``self._write_lock``
+(set by ``EpisodicMemory.__init__``) to prevent concurrent writes from racing on
+the HNSW index.
 """
 from __future__ import annotations
 
@@ -17,9 +21,6 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-# Detects UUID-form keys for the specific-key mechanism's get-by-id path.
-# Local copy (not imported from query_classifier) so episodic stays free of any
-# prefetch/orchestrator dependency.
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I,
 )
@@ -29,7 +30,7 @@ class EpisodicQueries:
     """Bulk read/delete mixin for ``EpisodicMemory`` (uses ``self._get_collection``)."""
 
     async def get_recent(self, chat_id: str, limit: int = 20) -> list[dict]:
-        """Most recent N entries for chat_id in chronological order."""
+        """Most recent N entries for chat_id in chronological order (read-only)."""
         results = await asyncio.to_thread(
             self._get_collection().get,
             where={"chat_id": chat_id}, include=["documents", "metadatas"],
@@ -44,13 +45,10 @@ class EpisodicQueries:
     async def find_by_keys(
         self, chat_id: str, keys: list[str], limit: int = 15,
     ) -> list[dict]:
-        """Specific-key retrieval: exact structural matches, scoped to ``chat_id``.
+        """Specific-key retrieval: exact structural matches, scoped to ``chat_id`` (read-only).
 
-        UUID-form keys are looked up by ChromaDB id (``get(ids=...)``); other
-        structural keys (word+number, turn_/goat:) are matched as content
-        substrings via ``where_document $contains`` (``$or`` when several).
-        Results carry ``score = 0.0`` so the merger treats them as exact matches
-        (similarity 1.0). Pure structural lookup — no semantic search.
+        UUID-form keys are looked up by ChromaDB id; other structural keys are
+        matched as content substrings.  Results carry ``score = 0.0``.
         """
         if not keys:
             return []
@@ -93,11 +91,8 @@ class EpisodicQueries:
     async def bump_access(self, chat_id: str, ids: list[str]) -> None:
         """Best-effort retrieval-popularity bump; never raises.
 
-        Reads current metadata for ``ids`` (scoped to ``chat_id``), increments
-        ``access_count`` and stamps ``last_accessed_ts``, and rewrites the full
-        metadata dict (merge-safe regardless of Chroma update semantics). Called
-        fire-and-forget by the prefetch daemon; failure is logged at DEBUG and
-        swallowed so a Chroma hiccup never affects the turn.
+        Holds ``_write_lock`` around the read-modify-write so concurrent bumps
+        on the same documents don't produce lost increments.
         """
         if not ids:
             return
@@ -118,12 +113,13 @@ class EpisodicQueries:
                 col.update(ids=out_ids, metadatas=out_metas)
 
         try:
-            await asyncio.to_thread(_sync)
-        except Exception as exc:                    # noqa: BLE001 — best-effort, never fatal
+            async with self._write_lock:
+                await asyncio.to_thread(_sync)
+        except Exception as exc:  # noqa: BLE001
             log.debug("bump_access failed chat=%s: %s", chat_id, exc)
 
     async def count(self, chat_id: str | None = None) -> int:
-        """Return total entry count (global) or filtered by chat_id."""
+        """Return total entry count (global) or filtered by chat_id (read-only)."""
         if chat_id is None:
             return await asyncio.to_thread(self._get_collection().count)
         r = await asyncio.to_thread(
@@ -132,7 +128,7 @@ class EpisodicQueries:
         return len(r["ids"])
 
     async def get_oldest(self, limit: int, chat_id: str | None = None) -> list[dict]:
-        """Return oldest N entries (timestamp asc). Each entry includes 'id' for deletion."""
+        """Return oldest N entries (timestamp asc) (read-only)."""
         kwargs: dict = {"include": ["documents", "metadatas"]}
         if chat_id is not None:
             kwargs["where"] = {"chat_id": chat_id}
@@ -142,8 +138,9 @@ class EpisodicQueries:
         return sorted(all_e, key=lambda e: float(e["metadata"].get("timestamp", 0)))[:limit]
 
     async def delete_entries(self, entry_ids: list[str]) -> None:
-        """Delete entries by their ChromaDB document IDs."""
+        """Delete entries by their ChromaDB document IDs (write-locked)."""
         if not entry_ids:
             return
-        await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
+        async with self._write_lock:
+            await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
         log.debug("EpisodicMemory: deleted %d entries", len(entry_ids))

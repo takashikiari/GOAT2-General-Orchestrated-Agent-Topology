@@ -68,12 +68,26 @@ class MemoryObservation:
     tokens_l2: int = 0
     tokens_l3: int = 0
 
+    # Real API token usage (from response.usage — billed counts, not estimated)
+    tokens_prompt_api: int = 0
+    tokens_completion_api: int = 0
+    tokens_total_api: int = 0
+    llm_calls: int = 0  # total LLM API calls this turn (first + tool rounds)
+
+    # LLM latency breakdown: first planning call vs. subsequent tool-round calls
+    latency_llm_first: float = 0.0
+    latency_tool_rounds: float = 0.0
+
     # L3 prefetch
     prefetch_attempted: bool = False
     prefetch_succeeded: bool = False
     prefetch_timeout: bool = False
-    prefetch_blocks_injected: int = 0
-    prefetch_blocks_used: int = 0
+    prefetch_results_returned: int = 0  # raw L3 result count from prefetch daemon
+    prefetch_blocks_used: int = 0       # how many actually fit the budget
+    warm_served: bool = False           # True when results came from activation (no search ran)
+    prefetch_thematic_count: int = 0    # results from thematic (cached) mechanism
+    prefetch_temporal_count: int = 0    # results from temporal mechanism (0 if not run)
+    prefetch_specific_key_count: int = 0  # results from specific_key mechanism (0 if not run)
 
     # L2.5 activation (brain thread state) — how the turn related to the
     # per-chat activation: cold (full search) / warm (served from activation) /

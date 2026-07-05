@@ -5,27 +5,29 @@ import asyncio
 import json
 import re
 import time
-from typing import TYPE_CHECKING
 
 from config import settings
-from memory.activation import classify_turn, rescore_recency
+from memory.activation import Activation, classify_turn, classify_write, rescore_recency, trim_recent
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
     calculate_intent_budget,
 )
+from memory.analytics import MemoryAnalytics
+from memory.budget import enforce_result_limit
 from memory.config import (
     AGENTIC_MAX_ITERATIONS,
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
     PREFETCH_TIMEOUT,
 )
+from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
+from memory.query_classifier import extract_structural_keys, extract_temporal_range
+from memory.result_merger import merge_results
+from orchestrator.tools import ToolDefinition
+from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
-
-if TYPE_CHECKING:
-    from orchestrator.tools import ToolDefinition
-    from registry.registry import ServiceRegistry
 
 log = get_logger(__name__)
 
@@ -155,22 +157,31 @@ async def _archive_turn(layers, chat_id: str, intent: str, reply: str) -> None:
 class Orchestrator:
     """Stateless (intent, chat_id)→LLM→reply driver with AITS + observability.
 
-    All memory access flows through ``registry.memory_layers`` (the Backend
-    Mapper); the orchestrator never imports the physical tiers. Per turn it
-    starts a prefetch daemon (the FIRST step, fire-and-forget) whose 3
-    mechanisms classify and search L3 in parallel with the L0/L1/L2 fetch,
-    computes a dynamic AITS token budget (confidence + complexity), awaits the
-    daemon under a bounded timeout (no confidence gate — every turn attempts
-    prefetch), then assembles context via ``memory_layers.assemble_context``
-    (L0+L1 protected, L2 protected to ``L2_CONTEXT_CAP``, L3 AITS-gated). One
-    ``ObservationCollector`` records the turn (latency per stage, tokens per
-    tier, cache/prefetch outcome) and feeds the registry-owned
-    ``memory_analytics`` aggregator. Memory is the kernel's context only;
-    tools and agents are separate systems, not budget inputs.
+    All memory access flows through ``layers`` (the Backend Mapper); the
+    orchestrator never imports the physical tiers. Per turn it starts a prefetch
+    daemon (the FIRST step, fire-and-forget) whose 3 mechanisms classify and
+    search L3 in parallel with the L0/L1/L2 fetch, computes a dynamic AITS token
+    budget (confidence + complexity), awaits the daemon under a bounded timeout
+    (no confidence gate — every turn attempts prefetch), then assembles context
+    via ``layers.assemble_context`` (L0+L1 protected, L2 protected to
+    ``L2_CONTEXT_CAP``, L3 AITS-gated). One ``ObservationCollector`` records the
+    turn (latency per stage, tokens per tier, cache/prefetch outcome) and feeds
+    ``analytics``. Memory is the kernel's context only; tools and agents are
+    separate systems, not budget inputs.
     """
 
-    def __init__(self, registry: ServiceRegistry, tools: list[ToolDefinition] | None = None) -> None:
-        self._registry = registry
+    def __init__(
+        self,
+        layers: MemoryLayers,
+        llm_client,
+        plugin_manager: PluginManager,
+        analytics: MemoryAnalytics,
+        tools: list[ToolDefinition] | None = None,
+    ) -> None:
+        self._layers = layers
+        self._llm = llm_client
+        self._plugin_manager = plugin_manager
+        self._analytics = analytics
         self._tools = tools or []
         # In-flight L3 archive writes, tracked so drain_archives() can await
         # them on shutdown — otherwise a restart in the ~100 ms ChromaDB write
@@ -211,7 +222,7 @@ class Orchestrator:
 
     def _all_tools(self) -> list[ToolDefinition]:
         """Core tools plus the live plugin tools (re-read each turn)."""
-        return [*self._tools, *self._registry.plugin_manager.tools]
+        return [*self._tools, *self._plugin_manager.tools]
 
     def _has_tool(self, name: str) -> bool:
         """True when a tool named ``name`` (core or plugin) is configured."""
@@ -232,8 +243,8 @@ class Orchestrator:
         synthesize. Runaway loops are bounded by the cap, not structurally
         impossible.
         """
-        layers = self._registry.memory_layers
-        analytics = self._registry.memory_analytics
+        layers = self._layers
+        analytics = self._analytics
         collector = ObservationCollector(chat_id, intent)
         start = time.time()
         try:
@@ -275,8 +286,9 @@ class Orchestrator:
             prefetch_attempted = True
             prefetch_succeeded = False
             prefetch_timeout = False
+            _prefetch_meta: dict = {"warm_served": False, "thematic": 0, "temporal": 0, "specific_key": 0}
             try:
-                l3_results, cache_hit, cache_key = await asyncio.wait_for(
+                l3_results, cache_hit, cache_key, _prefetch_meta = await asyncio.wait_for(
                     prefetch_task, timeout=PREFETCH_TIMEOUT,
                 )
                 prefetch_succeeded = True
@@ -291,6 +303,12 @@ class Orchestrator:
             collector.end_stage("search")
             collector.set_cache(cache_hit, cache_key)
             collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
+            collector.set_prefetch_mechanisms(
+                _prefetch_meta["warm_served"],
+                _prefetch_meta["thematic"],
+                _prefetch_meta["temporal"],
+                _prefetch_meta["specific_key"],
+            )
             # Persist / refresh the activation (only on a successful prefetch; a
             # timeout leaves it untouched so the next turn re-derives cold).
             current_activation = None
@@ -333,7 +351,9 @@ class Orchestrator:
             collector.end_stage("inject")
             # 5. LLM call + tool round (llm stage — the dominant latency).
             collector.start_stage("llm")
-            response = await self._registry.llm_client.chat.completions.create(**kw)
+            _t_first_start = time.time()
+            response = await self._llm.chat.completions.create(**kw)
+            _t_first = time.time() - _t_first_start
             choice = response.choices[0]
             content = choice.message.content or ""
             log.debug(
@@ -342,11 +362,22 @@ class Orchestrator:
                 bool(choice.message.tool_calls),
                 content[:80].encode("unicode_escape").decode(),
             )
+            _u = getattr(response, "usage", None)
+            _usage_prompt = (getattr(_u, "prompt_tokens", 0) or 0)
+            _usage_completion = (getattr(_u, "completion_tokens", 0) or 0)
+            _usage_total = (getattr(_u, "total_tokens", 0) or 0)
+            _llm_calls = 1
+            _t_tool_rounds = 0.0
             tool_summary = ""
             stored_contents: list[str] = []
             if choice.message.tool_calls:
-                reply, tool_summary, stored_contents = await self._run_tool_round(
+                reply, tool_summary, stored_contents, round_usage = await self._run_tool_round(
                     api_msgs, choice, chat_id, all_tools)
+                _usage_prompt += round_usage["prompt_tokens"]
+                _usage_completion += round_usage["completion_tokens"]
+                _usage_total += round_usage["total_tokens"]
+                _llm_calls += round_usage["calls"]
+                _t_tool_rounds = round_usage["latency"]
                 if _DSML_BLOCK.search(reply):
                     log.warning("DSML in _run_tool_round reply chat=%s; running DSML round", chat_id)
                     reply = await self._run_dsml_tool_round(reply, chat_id, all_tools)
@@ -356,6 +387,8 @@ class Orchestrator:
             else:
                 reply = content
             collector.end_stage("llm")
+            collector.set_llm_usage(_usage_prompt, _usage_completion, _usage_total, _llm_calls)
+            collector.set_llm_latency_breakdown(_t_first, _t_tool_rounds)
             # 6. Persist this turn: reload history, append user + assistant, save (L2).
             #    When tools were used, embed a compact evidence record in the assistant
             #    message so future turns have real grounding for past tool calls.
@@ -364,10 +397,12 @@ class Orchestrator:
             #    Also fire an async L3 archive write (full message pair, non-blocking).
             collector.start_stage("save")
             saved_reply = f"[Tool calls]\n{tool_summary}\n\n{reply}" if tool_summary else reply
-            messages = await layers.get_working_context(chat_id)
-            messages.append({"role": "user", "content": intent, "timestamp": time.time()})
-            messages.append({"role": "assistant", "content": saved_reply, "timestamp": time.time()})
-            await layers.save_working_context(chat_id, messages)
+            now = time.time()
+            await layers.append_and_save_working_context(
+                chat_id,
+                {"role": "user", "content": intent, "timestamp": now},
+                {"role": "assistant", "content": saved_reply, "timestamp": now},
+            )
             archive_task = asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
             self._pending_archives.add(archive_task)
             archive_task.add_done_callback(self._pending_archives.discard)
@@ -403,7 +438,7 @@ class Orchestrator:
     async def _prefetch_daemon(
         self, chat_id: str, user_message: str,
         state: str, activation,
-    ) -> tuple[list[dict], bool, str | None]:
+    ) -> tuple[list[dict], bool, str | None, dict]:
         """Run the prefetch mechanisms, branched on the turn ``state``.
 
         ``state`` (``cold`` / ``warm`` / ``drift``) comes from ``classify_turn``
@@ -423,21 +458,15 @@ class Orchestrator:
         Any single cold-path mechanism that raises is skipped
         (``return_exceptions=True``). Returns ``(results, cache_hit, cache_key)``.
         """
-        from memory.query_classifier import (
-            extract_structural_keys,
-            extract_temporal_range,
-        )
-        from memory.budget import enforce_result_limit
-        from memory.result_merger import merge_results
-
-        layers = self._registry.memory_layers
+        layers = self._layers
         if state == "warm":
             # Hold the activation steady; attenuate recency only (no search). This
             # is the coherence payoff: the LLM builds on the same reality as the
             # previous turn instead of re-grounding from a jittering L3 slice.
             merged = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
             log.info("prefetch warm chat=%s served=%d", chat_id, len(merged))
-            return merged, False, None
+            meta = {"warm_served": True, "thematic": len(merged), "temporal": 0, "specific_key": 0}
+            return merged, False, None, meta
 
         after_before = extract_temporal_range(user_message)
         keys = extract_structural_keys(user_message)
@@ -452,7 +481,8 @@ class Orchestrator:
             fresh = enforce_result_limit(await layers.search_episodic(user_message, limit=limit))
             merged = merge_results([fresh])[:limit]
             log.info("prefetch drift chat=%s merged=%d", chat_id, len(merged))
-            return merged, False, None
+            meta = {"warm_served": False, "thematic": len(fresh), "temporal": 0, "specific_key": 0}
+            return merged, False, None, meta
 
         # cold: full three-mechanism search.
         async def _thematic() -> dict:
@@ -489,6 +519,7 @@ class Orchestrator:
         groups: list[list[dict]] = []
         cache_hit = False
         cache_key: str | None = None
+        thematic_count = temporal_count = specific_key_count = 0
         for name, part in zip(names, parts):
             if isinstance(part, BaseException):
                 log.warning(
@@ -496,6 +527,13 @@ class Orchestrator:
                     chat_id, name, part,
                 )
                 continue
+            count = len(part["results"])
+            if name == "thematic":
+                thematic_count = count
+            elif name == "temporal":
+                temporal_count = count
+            elif name == "specific_key":
+                specific_key_count = count
             groups.append(part["results"])
             if part.get("cache_key") is not None:
                 cache_hit = part["cache_hit"]
@@ -503,8 +541,8 @@ class Orchestrator:
 
         merged = merge_results(groups)[:limit]
         log.info(
-            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d",
-            chat_id, len(parts), len(merged),
+            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d thematic=%d temporal=%d specific_key=%d",
+            chat_id, len(parts), len(merged), thematic_count, temporal_count, specific_key_count,
         )
         ids = [
             r.get("metadata", {}).get("message_id")
@@ -513,7 +551,13 @@ class Orchestrator:
         ]
         if ids:
             asyncio.create_task(layers.bump_access(chat_id, ids))
-        return merged, cache_hit, cache_key
+        meta = {
+            "warm_served": False,
+            "thematic": thematic_count,
+            "temporal": temporal_count,
+            "specific_key": specific_key_count,
+        }
+        return merged, cache_hit, cache_key, meta
 
     async def _update_activation(
         self, layers, chat_id: str, intent: str, query_emb, turn_state: str,
@@ -529,8 +573,6 @@ class Orchestrator:
         (centroid, merged, last_query, recent_queries) tuple the enriching-write
         refresh and the next turn's ``classify_turn`` use.
         """
-        from memory.activation import Activation, trim_recent
-
         now = time.time()
         if turn_state == "warm":
             if activation is None:
@@ -565,10 +607,6 @@ class Orchestrator:
         (off-thread) writes leave the activation untouched — they surface when a
         future thread about that topic activates. Returns ``(write_kind, refreshed)``.
         """
-        from memory.activation import classify_write
-        from memory.budget import enforce_result_limit
-        from memory.result_merger import merge_results
-
         for content in stored_contents:
             cemb = await layers.embed_query(content)
             if classify_write(cemb, activation.centroid) == "enriching":
@@ -581,7 +619,7 @@ class Orchestrator:
         return "filing", False
 
     async def _run_tool_round(self, api_msgs: list, choice, chat_id: str,
-                              tools: list[ToolDefinition]) -> tuple[str, str, list[str]]:
+                              tools: list[ToolDefinition]) -> tuple[str, str, list[str], dict]:
         """Execute tool calls, loop the model until it stops calling tools or the
         iteration cap forces synthesis; return ``(reply, tool_summary, stored)``.
 
@@ -625,6 +663,11 @@ class Orchestrator:
         loop_msgs = list(api_msgs)
         current = choice
         reply = ""
+        _round_prompt = 0
+        _round_completion = 0
+        _round_total = 0
+        _round_calls = 0
+        _t_rounds_start = time.time()
         for iteration in range(AGENTIC_MAX_ITERATIONS):
             # current.message carries tool_calls — execute them and fold the
             # assistant tool_calls + tool results into the running conversation.
@@ -655,11 +698,17 @@ class Orchestrator:
             # synthesize from what it has.
             loop_msgs.append({"role": "user", "content": _TOOL_SYNTHESIS_BRIDGE})
             if iteration + 1 < AGENTIC_MAX_ITERATIONS:
-                r = await self._registry.llm_client.chat.completions.create(
+                r = await self._llm.chat.completions.create(
                     model=settings.MODEL_NAME, messages=loop_msgs,
                     temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
                     tools=[t.to_openai_schema() for t in tools], tool_choice="auto",
                 )
+                _round_calls += 1
+                _ru = getattr(r, "usage", None)
+                if _ru is not None:
+                    _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
+                    _round_completion += getattr(_ru, "completion_tokens", 0) or 0
+                    _round_total += getattr(_ru, "total_tokens", 0) or 0
                 current = r.choices[0]
                 if not current.message.tool_calls:
                     # Natural termination — the model chose to answer with text.
@@ -669,17 +718,31 @@ class Orchestrator:
                     break
             else:
                 # Cap reached — force synthesis (no tools). Hard backstop.
-                r = await self._registry.llm_client.chat.completions.create(
+                r = await self._llm.chat.completions.create(
                     model=settings.MODEL_NAME, messages=loop_msgs,
                     temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
                 )
+                _round_calls += 1
+                _ru = getattr(r, "usage", None)
+                if _ru is not None:
+                    _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
+                    _round_completion += getattr(_ru, "completion_tokens", 0) or 0
+                    _round_total += getattr(_ru, "total_tokens", 0) or 0
                 reply = r.choices[0].message.content or ""
                 log.warning("tool_round cap-forced synthesis chat=%s iters=%d",
                             chat_id, iteration + 1)
                 break
+        _t_rounds = time.time() - _t_rounds_start
         log.debug("_run_tool_round reply content_hex=%s",
                   reply[:80].encode("unicode_escape").decode())
-        return reply, _compact_tool_summary(calls_and_results), stored_contents
+        round_usage = {
+            "prompt_tokens": _round_prompt,
+            "completion_tokens": _round_completion,
+            "total_tokens": _round_total,
+            "calls": _round_calls,
+            "latency": _t_rounds,
+        }
+        return reply, _compact_tool_summary(calls_and_results), stored_contents, round_usage
 
     @staticmethod
     def _extract_content(args_json: str) -> str:

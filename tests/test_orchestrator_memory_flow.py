@@ -14,7 +14,7 @@ def test_search_runs_unconditionally_and_reports_cache_key():
     intent = "Pai și după atâtea tokens prefetchul a folosit 0 blocks la fiecare qwery"
     layers = _FakeLayers(results=[{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
-    reply = asyncio.run(Orchestrator(reg, tools=[]).run(intent, "chat"))
+    reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run(intent, "chat"))
     assert layers.search_calls == 1                # search ran despite low confidence
     assert reply == "reply"
     obs = reg.memory_analytics.records[-1]
@@ -30,7 +30,7 @@ def test_prefetch_blocks_used_reflects_real_l3_used():
         l3_used=3,
     )
     reg = _FakeRegistry(layers, _LLMClient(_Completions("r")), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[]).run("what is X", "c"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run("what is X", "c"))
     obs = reg.memory_analytics.records[-1]
     assert obs.prefetch_blocks_used == 3            # no longer 0
     assert obs.results_used == 3
@@ -48,7 +48,7 @@ def test_archive_turn_calls_store_episodic():
     """
     layers = _FakeLayers(results=[])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[]).run("hello", "c"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run("hello", "c"))
     assert layers.archive_calls >= 1
 
 
@@ -57,7 +57,7 @@ def test_latency_split_llm_vs_inject():
     layers = _FakeLayers(results=[])
     # 20ms LLM call so latency_llm is measurably the dominant stage.
     reg = _FakeRegistry(layers, _LLMClient(_Completions("r", delay=0.02)), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[]).run("hello", "c"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run("hello", "c"))
     obs = reg.memory_analytics.records[-1]
     assert obs.latency_llm >= 0.015                 # the LLM call, isolated
     assert obs.latency_inject < 0.01                # prompt build only — no longer the 30s

@@ -31,10 +31,13 @@ def _bump(path: Path) -> None:
 
 
 class _Reg:
-    """Fake registry exposing only the plugin_manager (no backends needed)."""
+    """Fake — only plugin_manager is needed; tests never call run()."""
 
     def __init__(self, plugins_dir: Path) -> None:
         self.plugin_manager = PluginManager(self, plugins_dir)
+        self.memory_layers = None
+        self.llm_client = None
+        self.memory_analytics = None
 
 
 class _Func:
@@ -53,7 +56,7 @@ def test_plugin_tool_visible_and_callable(tmp_path: Path) -> None:
     _write(tmp_path / "p.py", "p")
     reg = _Reg(tmp_path)
     reg.plugin_manager.scan()
-    o = Orchestrator(reg, tools=[])
+    o = Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[])
     names = [t.name for t in o._all_tools()]
     assert "p" in names
     assert o._has_tool("p")
@@ -66,7 +69,7 @@ def test_midrun_scan_adds_plugin(tmp_path: Path) -> None:
     reg = _Reg(tmp_path)
     reg.plugin_manager.scan()
     assert reg.plugin_manager.tools == []
-    o = Orchestrator(reg, tools=[])
+    o = Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[])
     assert [t.name for t in o._all_tools()] == []
     _write(tmp_path / "late.py", "late")
     reg.plugin_manager.scan()

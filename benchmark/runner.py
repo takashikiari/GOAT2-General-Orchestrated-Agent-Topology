@@ -42,7 +42,10 @@ class BenchmarkRunner:
         self._registry = registry or ServiceRegistry()
         layers = self._registry.memory_layers
         self._orchestrator = Orchestrator(
-            self._registry,
+            layers=layers,
+            llm_client=self._registry.llm_client,
+            plugin_manager=self._registry.plugin_manager,
+            analytics=self._registry.memory_analytics,
             tools=[
                 build_search_memory_tool(layers),
                 build_store_memory_tool(layers),

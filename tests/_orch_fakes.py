@@ -78,6 +78,10 @@ class _FakeLayers:
     async def save_working_context(self, chat_id, messages):
         self.saved = messages
 
+    async def append_and_save_working_context(self, chat_id, *messages_to_append):
+        existing = getattr(self, "saved", []) or []
+        self.saved = list(existing) + list(messages_to_append)
+
     async def store_episodic(self, chat_id: str, content: str, tags=None) -> None:
         self.archive_calls += 1
 

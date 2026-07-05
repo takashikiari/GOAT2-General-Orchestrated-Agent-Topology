@@ -119,7 +119,7 @@ def test_tool_call_turn_saves_compact_summary_in_l2():
 
     layers = _FakeLayers(results=[])
     reg = _ToolSeqRegistry(layers, _ToolSeqLLM(synthesis), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[tool]).run("count lines in py files", "chat1"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[tool]).run("count lines in py files", "chat1"))
 
     saved = layers.saved
     assistant_entries = [m for m in saved if m["role"] == "assistant"]
@@ -150,7 +150,7 @@ def test_second_turn_context_contains_tool_evidence():
 
     layers = _FakeLayers(results=[])
     reg = _ToolSeqRegistry(layers, _ToolSeqLLM(synthesis), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[tool]).run("count lines in py files", "chat1"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[tool]).run("count lines in py files", "chat1"))
 
     # Simulate what the next turn assembles as [Conversation History]
     history_block = MemoryLayers._format_messages(layers.saved)
@@ -166,7 +166,7 @@ def test_no_tool_call_turn_saves_plain_reply():
 
     layers = _FakeLayers(results=[])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("just a plain reply")), _FakeAnalytics())
-    asyncio.run(Orchestrator(reg, tools=[]).run("hello", "chat2"))
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run("hello", "chat2"))
 
     saved = layers.saved
     assistant_entries = [m for m in saved if m["role"] == "assistant"]

@@ -3,6 +3,11 @@
 Core lifecycle + store/search live here; bulk read/delete (get_recent/count/
 get_oldest/delete_entries) live in ``memory.episodic.queries`` and are mixed in,
 to keep this module within the file-size limit. Lazily connected.
+
+``_write_lock`` serialises all mutating ChromaDB calls (``col.add``,
+``col.update``, ``col.delete``) so concurrent async callers sharing one
+EpisodicMemory instance never race on the HNSW index.  Read-only calls
+(``col.query``, ``col.get``) are unaffected — hnswlib allows concurrent reads.
 """
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import uuid
 
 from memory.config import EPISODIC_COLLECTION_NAME, EPISODIC_STORAGE_PATH
 from memory.episodic.queries import EpisodicQueries
+from memory.episodic.warmup import warmup_collection
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
@@ -25,6 +31,7 @@ class EpisodicMemory(EpisodicQueries):
 
     def __init__(self) -> None:
         self._collection = None
+        self._write_lock = asyncio.Lock()
 
     def _get_collection(self):
         if self._collection is None:
@@ -43,15 +50,14 @@ class EpisodicMemory(EpisodicQueries):
 
     async def warmup(self) -> None:
         """Pre-warm the collection at startup (delegates to ``episodic.warmup``)."""
-        from memory.episodic.warmup import warmup_collection
         await warmup_collection(self._get_collection)
 
     async def store(self, chat_id: str, content: str, metadata: dict) -> None:
-        """Store content + metadata. chat_id, message_id, sequence_number merged.
+        """Store content + metadata under the write lock.
 
-        ``access_count`` (retrieval popularity) and ``last_accessed_ts`` are
-        initialised here so the merge-score terms exist from the first write;
-        ``bump_access`` updates them on retrieval (best-effort, fire-and-forget).
+        ``access_count`` and ``last_accessed_ts`` initialised so merge-score
+        terms exist from the first write; ``bump_access`` updates them on
+        retrieval (best-effort, fire-and-forget).
         """
         doc_id = str(uuid.uuid4())
         merged = {"chat_id": chat_id, **metadata}
@@ -64,21 +70,20 @@ class EpisodicMemory(EpisodicQueries):
             merged["sequence_number"] = col.count() + 1
             col.add(ids=[doc_id], documents=[content], metadatas=[merged])
 
-        await asyncio.to_thread(_sync)
+        async with self._write_lock:
+            await asyncio.to_thread(_sync)
         log.debug("L3 write ok: chat=%s doc_id=%s tags=%r", chat_id, doc_id, metadata.get("tags", ""))
 
     async def search(
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
     ) -> list[dict]:
-        """Semantic search with optional timestamp filter.
+        """Semantic search with optional timestamp filter (read-only, no lock).
 
         Returns ``{"content", "metadata", "score"}`` dicts, closest first.
         ``score`` is ChromaDB's distance (lower = closer under the default L2
-        metric; the collection has no ``hnsw:space`` override, so squared-L2).
-        Callers use it to similarity-filter L3 injection. A custom collection
-        that omits distances degrades to ``score = 0.0`` (passes any filter)
-        rather than crashing the turn.
+        metric).  A custom collection that omits distances degrades to
+        ``score = 0.0`` rather than crashing the turn.
         """
         where: dict | None = None
         if after is not None and before is not None:
@@ -94,7 +99,7 @@ class EpisodicMemory(EpisodicQueries):
         docs = results["documents"][0]
         metas = results["metadatas"][0]
         dists = results.get("distances", [[]])[0]
-        if len(dists) != len(docs):                      # defensive: degrade to 0.0
+        if len(dists) != len(docs):
             dists = [0.0] * len(docs)
         return [
             {"content": d, "metadata": m, "score": s}
@@ -105,11 +110,7 @@ class EpisodicMemory(EpisodicQueries):
         """Embed ``query`` via the collection's own embedding function.
 
         Reuses the same model the semantic search uses (the collection's
-        bundled ONNX MiniLM by default), so the thread centroid lives in the
-        same vector space as retrieval — at no extra dependency and no per-turn
-        API call. This is the single chokepoint for the ChromaDB private-API
-        risk: ``_embedding_function`` is internal, so any failure (missing
-        attribute, version change, model not initialised) degrades to ``None``
+        bundled ONNX MiniLM by default).  Any failure degrades to ``None``
         rather than raising — callers treat ``None`` as "force a cold turn".
         """
         if not query:
@@ -120,14 +121,10 @@ class EpisodicMemory(EpisodicQueries):
             ef = getattr(col, "_embedding_function", None)
             if ef is None:
                 return None
-            # Coerce to native float: the bundled ONNX embedding function returns
-            # numpy float32 scalars, which json.dumps (activation → Redis) cannot
-            # serialise. Native floats also keep the activation blob smaller and
-            # keep ``cosine`` in pure-Python math with no numpy dependency.
             return [float(x) for x in ef([query])[0]]
 
         try:
             return await asyncio.to_thread(_sync)
-        except Exception as exc:  # noqa: BLE001 — embedding must never break a turn
+        except Exception as exc:  # noqa: BLE001
             log.warning("embed_query failed, degrading to cold turn: %s", exc)
             return None

@@ -14,8 +14,9 @@ from __future__ import annotations
 import hashlib
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING
 
+from memory.activation import Activation, ActivationStore
+from memory.auto_promote import schedule_auto_promote
 from memory.budget import enforce_result_limit, estimate_tokens
 from memory.config import (
     ACTIVATION_TTL_SECONDS,
@@ -24,14 +25,12 @@ from memory.config import (
     MAX_CONTEXT_TOKENS,
 )
 from memory.context_budget import allocate_context_budget
-from memory.activation import Activation, ActivationStore
+from memory.episodic import EpisodicMemory
+from memory.permanent import PermanentMemory
+from memory.promote import promote_fact as _promote_fact
 from memory.session_cache import SessionCache
+from memory.working import WorkingMemory
 from utils.logging.setup import get_logger
-
-if TYPE_CHECKING:
-    from memory.episodic import EpisodicMemory
-    from memory.permanent import PermanentMemory
-    from memory.working import WorkingMemory
 
 log = get_logger(__name__)
 
@@ -106,6 +105,22 @@ class MemoryLayers:
         """
         await self._working.save_messages(chat_id, messages)
 
+    async def append_and_save_working_context(
+        self, chat_id: str, *messages_to_append: dict,
+    ) -> None:
+        """L2: atomic read → append → save under the per-chat lock, then schedule auto-promote.
+
+        Holds ``chat_lock`` for the entire read-modify-write so a concurrent
+        auto-promote task cannot overwrite messages appended here.  The
+        auto-promote task is fired *after* the lock is released so it sees the
+        updated message list and holds the same lock for its own cycle.
+        """
+        async with self._working.chat_lock(chat_id):
+            messages = await self._working.get_messages_raw(chat_id)
+            messages.extend(messages_to_append)
+            await self._working.save_messages_raw(chat_id, messages)
+        schedule_auto_promote(chat_id, self._working)
+
     async def search_episodic(
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
@@ -172,8 +187,7 @@ class MemoryLayers:
         grows freely) because L1 is permanent, always-in-context, and bounded.
         Returns a status string (never raises).
         """
-        from memory.promote import promote_fact as _promote
-        return await _promote(self._permanent, key, value)
+        return await _promote_fact(self._permanent, key, value)
 
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,

@@ -48,8 +48,15 @@ class MemoryAnalytics:
         self.total_latency_assemble = 0.0
         self.total_latency_inject = 0.0
         self.total_latency_llm = 0.0
+        self.total_latency_llm_first = 0.0
+        self.total_latency_tool_rounds = 0.0
         self.total_latency_save = 0.0
         self.total_latency = 0.0
+        # Real API token usage (billed, from response.usage)
+        self.total_tokens_prompt_api = 0
+        self.total_tokens_completion_api = 0
+        self.total_tokens_total_api = 0
+        self.total_llm_calls = 0
         # L2.5 activation (brain thread state) — see memory.activation.
         self.cold_turns = 0
         self.warm_turns = 0
@@ -58,6 +65,11 @@ class MemoryAnalytics:
         self.enriching_writes = 0
         self.filing_writes = 0
         self.enriching_refreshes = 0
+        # L2.5 prefetch mechanism breakdown
+        self.warm_served_turns = 0
+        self.total_prefetch_thematic = 0
+        self.total_prefetch_temporal = 0
+        self.total_prefetch_specific_key = 0
 
     def record(self, obs: MemoryObservation) -> None:
         """Fold a single observation into the aggregates."""
@@ -87,8 +99,14 @@ class MemoryAnalytics:
         self.total_latency_assemble += obs.latency_assemble
         self.total_latency_inject += obs.latency_inject
         self.total_latency_llm += obs.latency_llm
+        self.total_latency_llm_first += obs.latency_llm_first
+        self.total_latency_tool_rounds += obs.latency_tool_rounds
         self.total_latency_save += obs.latency_save
         self.total_latency += obs.latency_total
+        self.total_tokens_prompt_api += obs.tokens_prompt_api
+        self.total_tokens_completion_api += obs.tokens_completion_api
+        self.total_tokens_total_api += obs.tokens_total_api
+        self.total_llm_calls += obs.llm_calls
         # L2.5 activation counters — one per turn-state / write-kind.
         if obs.activation_state == "cold":
             self.cold_turns += 1
@@ -104,6 +122,11 @@ class MemoryAnalytics:
             self.filing_writes += 1
         if obs.enriching_refresh:
             self.enriching_refreshes += 1
+        if obs.warm_served:
+            self.warm_served_turns += 1
+        self.total_prefetch_thematic += obs.prefetch_thematic_count
+        self.total_prefetch_temporal += obs.prefetch_temporal_count
+        self.total_prefetch_specific_key += obs.prefetch_specific_key_count
 
     def get_report(self) -> dict:
         """Build the aggregated rates/averages report."""
@@ -129,8 +152,14 @@ class MemoryAnalytics:
             "avg_latency_assemble": self.total_latency_assemble / n,
             "avg_latency_inject": self.total_latency_inject / n,
             "avg_latency_llm": self.total_latency_llm / n,
+            "avg_latency_llm_first": self.total_latency_llm_first / n,
+            "avg_latency_tool_rounds": self.total_latency_tool_rounds / n,
             "avg_latency_save": self.total_latency_save / n,
             "avg_latency_total": self.total_latency / n,
+            "avg_tokens_prompt_api": self.total_tokens_prompt_api / n,
+            "avg_tokens_completion_api": self.total_tokens_completion_api / n,
+            "avg_tokens_total_api": self.total_tokens_total_api / n,
+            "avg_llm_calls": self.total_llm_calls / n,
             "activation_cold_rate": self.cold_turns / n,
             "activation_warm_rate": self.warm_turns / n,
             "activation_drift_rate": self.drift_turns / n,
@@ -138,6 +167,10 @@ class MemoryAnalytics:
             "enriching_writes": self.enriching_writes,
             "filing_writes": self.filing_writes,
             "enriching_refreshes": self.enriching_refreshes,
+            "warm_served_rate": self.warm_served_turns / n,
+            "avg_prefetch_thematic": self.total_prefetch_thematic / n,
+            "avg_prefetch_temporal": self.total_prefetch_temporal / n,
+            "avg_prefetch_specific_key": self.total_prefetch_specific_key / n,
         }
 
     def log_report(self) -> None:
