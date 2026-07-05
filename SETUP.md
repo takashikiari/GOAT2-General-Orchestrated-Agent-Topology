@@ -153,6 +153,89 @@ Tests use no external services — all backends are faked. The suite should comp
 
 ---
 
+## Benchmark suite
+
+The benchmark suite runs against a **live** orchestrator with real Redis, ChromaDB and the configured LLM provider. Redis and ChromaDB must be running and the LLM API key must be set before you start.
+
+### List available datasets
+
+```bash
+python3 -m benchmark --list
+```
+
+### Run a single dataset
+
+```bash
+python3 -m benchmark --dataset memory_recall
+python3 -m benchmark --dataset distractor_30 --verbose   # per-case log lines
+```
+
+### Run all datasets
+
+```bash
+python3 -m benchmark --all
+python3 -m benchmark --all --verbose
+```
+
+### Save results to disk
+
+```bash
+python3 -m benchmark --all --output results.json --csv results.csv
+```
+
+### Available datasets
+
+| Dataset | Cases | What it tests |
+|---------|-------|--------------|
+| `memory_recall` | 10 | Single-fact recall from L2 |
+| `temporal` | 5 | Facts anchored to a time reference |
+| `multi_turn` | 3 | Fact buried mid-thread |
+| `cache` | 4 | L2.5 search cache hit on repeated query |
+| `prefetch` | 4 | L3-only retrieval via prefetch daemon |
+| `multi_hop` | 3 | Two facts combined to answer |
+| `distractor` | 3 | Target among ~8 distractors in L2 |
+| `distractor_15` | 3 | 15 distractors, L3-only, `episodic_only` |
+| `distractor_20` | 3 | 20 distractors, L3-only, `episodic_only` |
+| `distractor_25` | 3 | 25 distractors, multi-sentence, lexical decoys |
+| `distractor_30` | 3 | 30 distractors, multi-sentence, lexical decoys |
+| `distractor_50` | 3 | 50 distractors, programmatic generation |
+| `distractor_100` | 3 | 100 distractors |
+| `distractor_200` | 3 | 200 distractors |
+| `distractor_400` | 3 | 400 distractors |
+| `distractor_800` | 3 | 800 distractors — preloading takes ~8 min total |
+
+> **Note on `distractor_400` and `distractor_800`:** preloading writes 800 and 1 600 messages to ChromaDB respectively. This takes several minutes per case. The LLM query itself remains fast (~2–5 s); only the setup is slow. Use `--dataset distractor_400` / `--dataset distractor_800` separately if you want to run just those tiers.
+
+### LLM judge (optional)
+
+Pass `--judge` to override lexical scoring with an LLM verdict on ambiguous cases:
+
+```bash
+python3 -m benchmark --dataset multi_hop --judge
+```
+
+### What the report shows
+
+```
+📊 BENCHMARK REPORT
+   Dataset: distractor_30
+   Total tests: 3
+   Correct: 3
+   Accuracy: 100.0%
+   Avg latency: 1.9s
+   Cache hit rate: 0.0%
+   Prefetch usefulness: 100.0%
+   Grounded correct: 3 (fidelity 100%)
+   Ungrounded correct (guessed): 0
+```
+
+- **Accuracy** — fraction of cases where the response matches the expected answer (fuzzy match by default)
+- **Grounded correct** — correct answers that were actually retrieved from L3 (verified by re-querying ChromaDB after scoring)
+- **Ungrounded correct** — correct answers where the fact was *not* in the retrieved results — the model guessed. This is the dangerous case: right answer, wrong source
+- **Prefetch usefulness** — fraction of turns where the prefetch daemon returned at least one result
+
+---
+
 ## MCP server (optional)
 
 An MCP server exposing memory introspection tools is included at `mcp_server/`. Run it with:
