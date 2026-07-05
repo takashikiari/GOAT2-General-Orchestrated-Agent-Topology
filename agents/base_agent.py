@@ -129,6 +129,34 @@ def tool(
 
 from utils.llm_utils import _get_client
 
+# ── DSML tool-call parser ─────────────────────────────────────────────────────
+# DeepSeek sometimes emits its native DSML (｜｜DSML｜｜) markup in `content`
+# instead of the structured `tool_calls` field.  Parse and dispatch it.
+
+_DSML_V = "｜｜"  # two U+FF5C fullwidth vertical lines: ｜｜
+
+import re as _re
+
+_DSML_INVOKE = _re.compile(
+    r"<｜｜DSML｜｜invoke name=\"([^\"]+)\">(.*?)</｜｜DSML｜｜invoke>",
+    _re.DOTALL,
+)
+_DSML_PARAM = _re.compile(
+    r"<｜｜DSML｜｜parameter name=\"([^\"]+)\"[^>]*>(.*?)</｜｜DSML｜｜parameter>",
+    _re.DOTALL,
+)
+
+
+def _parse_dsml(content: str) -> list[dict] | None:
+    """Return [{name, arguments_json}] if DSML tool-call markup is present, else None."""
+    if f"<{_DSML_V}DSML{_DSML_V}" not in content:
+        return None
+    calls = []
+    for m in _DSML_INVOKE.finditer(content):
+        args = {pm.group(1): pm.group(2) for pm in _DSML_PARAM.finditer(m.group(2))}
+        calls.append({"name": m.group(1), "arguments": json.dumps(args)})
+    return calls or None
+
 
 # ---------------------------------------------------------------------------
 # BaseAgent
@@ -316,19 +344,35 @@ class BaseAgent(ABC):
             # No tool calls → model is done; return the text content.
             if not msg.tool_calls:
                 content = msg.content or ""
-                # DeepSeek sometimes leaks raw DSML tool-call markup into
-                # content instead of populating the structured tool_calls field.
-                # Detect this and force one clean plain-text reply without tools.
-                if "<｜｜DSML｜｜" in content:
-                    log.warning("%r: DSML tool-call markup leaked into content; forcing plain text reply", self)
-                    history.append({"role": "assistant", "content": content})
-                    history.append({"role": "user", "content": "Please provide your final answer as plain text."})
-                    resp2 = await client.chat.completions.create(
-                        model=self.spec.model_id,
-                        messages=history,
-                        temperature=temp,
+                # DeepSeek sometimes leaks raw DSML tool-call markup into content
+                # instead of the structured tool_calls field.  Parse and dispatch.
+                dsml_calls = _parse_dsml(content) if use_tools else None
+                if dsml_calls:
+                    log.warning(
+                        "%r: DSML markup in content (%d call(s)); dispatching",
+                        self, len(dsml_calls),
                     )
-                    return resp2.choices[0].message.content or ""
+                    fake_tcs = [
+                        {
+                            "id": f"dsml_{round_idx}_{i}",
+                            "type": "function",
+                            "function": {"name": c["name"], "arguments": c["arguments"]},
+                        }
+                        for i, c in enumerate(dsml_calls)
+                    ]
+                    history.append({"role": "assistant", "content": None, "tool_calls": fake_tcs})
+                    for i, c in enumerate(dsml_calls):
+                        try:
+                            args = json.loads(c["arguments"])
+                        except json.JSONDecodeError:
+                            args = {}
+                        result = await self._dispatch_tool(c["name"], args, tool_map)
+                        history.append({
+                            "role": "tool",
+                            "tool_call_id": f"dsml_{round_idx}_{i}",
+                            "content": str(result),
+                        })
+                    continue  # next round: model sees tool results and responds
                 return content
 
             # --- Tool-call round ---
