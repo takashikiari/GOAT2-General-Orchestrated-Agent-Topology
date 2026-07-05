@@ -66,7 +66,28 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         )
 
     agent_router = AgentRouter()
-    dag_manager = DagManager(wf_runner, _channel_factory, router=agent_router)
+
+    async def _on_dag_complete(dag_id: str, chat_id: str, state: str, result: dict) -> None:
+        """Notify the user when a DAG workflow finishes."""
+        if not chat_id:
+            return
+        emoji = "✅" if state == "done" else "❌"
+        lines = [f"{emoji} Workflow *{dag_id}* finished — state: *{state}*"]
+        for nid, val in (result.get("results") or {}).items():
+            preview = str(val)[:200] + "…" if len(str(val)) > 200 else str(val)
+            lines.append(f"• *{nid}*: {preview}")
+        for nid, err in (result.get("errors") or {}).items():
+            lines.append(f"• *{nid}* ❌: {err}")
+        text = _truncate("\n".join(lines))
+        try:
+            from telegram import Bot
+            await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
+                chat_id=int(chat_id), text=text, parse_mode="Markdown"
+            )
+        except Exception as exc:
+            log.warning("dag completion notify failed chat=%s: %s", chat_id, exc)
+
+    dag_manager = DagManager(wf_runner, _channel_factory, router=agent_router, on_complete=_on_dag_complete)
     workflow_tools = build_workflow_tools(dag_manager, _channel_factory)
 
     orchestrator = Orchestrator(

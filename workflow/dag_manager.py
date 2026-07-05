@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from workflow.agent_node import make_runner, make_stub_runner
@@ -28,6 +28,8 @@ from workflow.runner import WorkflowRunner
 log = logging.getLogger("goat2.workflow.dag_manager")
 
 ChannelFactory = Callable[[str], DagChannel]
+CompletionCallback = Callable[[str, str, str, dict], Awaitable[None]]
+"""Signature: async (dag_id, chat_id, state, result) -> None"""
 
 
 class DagManager:
@@ -38,6 +40,10 @@ class DagManager:
         channel_factory: Callable ``(dag_id: str) -> DagChannel``.
         router: ``AgentRouter`` for resolving agent roles to instances.
             If ``None``, stub runners are used (useful for testing).
+        on_complete: Optional async callback invoked when a DAG finishes.
+            Signature: ``async (dag_id, chat_id, state, result) -> None``.
+            ``state`` is ``"done"`` or ``"failed"``.
+            ``result`` is ``{"results": {...}, "errors": {...}}``.
     """
 
     def __init__(
@@ -45,10 +51,12 @@ class DagManager:
         runner: WorkflowRunner,
         channel_factory: ChannelFactory,
         router: AgentRouter | None = None,
+        on_complete: CompletionCallback | None = None,
     ) -> None:
         self._runner = runner
         self._channel_factory = channel_factory
         self._router = router
+        self._on_complete = on_complete
         self._tasks: dict[str, asyncio.Task] = {}
         self._channels: dict[str, DagChannel] = {}
 
@@ -198,6 +206,16 @@ class DagManager:
         except Exception as exc:
             await channel.set_status("failed")
             log.exception("dag_manager: dag_id=%s unhandled error: %s", dag_id, exc)
+        finally:
+            if self._on_complete is not None:
+                chat_id = str(initial_context.get("chat_id", ""))
+                status = await channel.get_status() or {}
+                state = status.get("state", "unknown")
+                res = await channel.get_result() or {}
+                try:
+                    await self._on_complete(dag_id, chat_id, state, res)
+                except Exception as cb_exc:
+                    log.warning("dag_manager: on_complete callback error: %s", cb_exc)
 
     def _cleanup(self, dag_id: str) -> None:
         self._tasks.pop(dag_id, None)

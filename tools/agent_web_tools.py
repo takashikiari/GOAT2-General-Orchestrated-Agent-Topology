@@ -19,14 +19,25 @@ _SEARCH_URL = "https://lite.duckduckgo.com/lite/"
 _SEARCH_MAX = 6_000
 
 
+class _SilentLogger:
+    """No-op crawl4ai logger — suppresses all console output."""
+    def debug(self, message, tag="DEBUG", **kw): pass
+    def info(self, message, tag="INFO", **kw): pass
+    def success(self, message, tag="SUCCESS", **kw): pass
+    def warning(self, message, tag="WARNING", **kw): pass
+    def error(self, message, tag="ERROR", **kw): pass
+    def url_status(self, url, success, timing, tag="FETCH", url_length=100): pass
+    def error_status(self, url, error, tag="ERROR", url_length=100): pass
+
+
 async def _crawl(url: str, max_chars: int) -> str:
     """Shared crawl4ai fetch — mirrors fetch_content.py exactly."""
     try:
-        from crawl4ai import AsyncWebCrawler, BrowserConfig
+        from crawl4ai import AsyncWebCrawler
     except ImportError:
         return "(crawl4ai not installed — run: pip install crawl4ai)"
     try:
-        async with AsyncWebCrawler(config=BrowserConfig(verbose=False)) as crawler:
+        async with AsyncWebCrawler(logger=_SilentLogger()) as crawler:
             result = await crawler.arun(url=url, page_timeout=WEB_TIMEOUT * 1000)
         if not result.success:
             return f"(failed to fetch {url}: {result.error_message})"

@@ -29,12 +29,22 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
 
     async def handler(url: str, max_chars: int = WEB_MAX_CHARS, chat_id: str = "") -> str:
         try:
-            from crawl4ai import AsyncWebCrawler, BrowserConfig
+            from crawl4ai import AsyncWebCrawler
         except ImportError:
             return "(crawl4ai not installed — run: pip install crawl4ai)"
+
+        class _Silent:
+            def debug(self, *a, **kw): pass
+            def info(self, *a, **kw): pass
+            def success(self, *a, **kw): pass
+            def warning(self, *a, **kw): pass
+            def error(self, *a, **kw): pass
+            def url_status(self, *a, **kw): pass
+            def error_status(self, *a, **kw): pass
+
         log.info("fetch_content url=%s max_chars=%d", url, max_chars)
         try:
-            async with AsyncWebCrawler(config=BrowserConfig(verbose=False)) as crawler:
+            async with AsyncWebCrawler(logger=_Silent()) as crawler:
                 result = await crawler.arun(
                     url=url,
                     page_timeout=WEB_TIMEOUT * 1000,
