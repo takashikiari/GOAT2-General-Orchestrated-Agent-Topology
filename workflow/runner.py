@@ -72,6 +72,8 @@ class WorkflowRunner:
         skipped: set[str] = set()
         errors: dict[str, Exception] = {}
         order: list[str] = []
+        node_states: dict[str, str] = {}
+        channel = context.get("__dag_channel__")
         sem = asyncio.Semaphore(self._max_concurrent)
 
         ready: asyncio.Queue[str] = asyncio.Queue()
@@ -86,7 +88,7 @@ class WorkflowRunner:
             while not ready.empty():
                 nid = ready.get_nowait()
                 task = asyncio.create_task(
-                    self._execute_node(nid, graph, context, results, skipped, errors, sem),
+                    self._execute_node(nid, graph, context, results, skipped, errors, sem, node_states, channel),
                     name=nid,
                 )
                 active[nid] = task
@@ -152,6 +154,8 @@ class WorkflowRunner:
         skipped: set[str],
         errors: dict[str, Exception],
         sem: asyncio.Semaphore,
+        node_states: dict[str, str],
+        channel: Any,
     ) -> None:
         node: TaskNode = graph.get_node(nid)
         local_ctx = dict(context)  # snapshot: deps already present at launch time
@@ -170,11 +174,19 @@ class WorkflowRunner:
                 return
             if not should_run:
                 skipped.add(nid)
+                node_states[nid] = "skipped"
                 return
 
         if node.runner is None:
             results[nid] = None
             return
+
+        node_states[nid] = "running"
+        if channel is not None:
+            try:
+                await channel.set_status("running", node_states=dict(node_states))
+            except Exception:
+                pass
 
         log.info("node start  dag=%s node=%s", graph.dag_id, nid)
         try:
@@ -186,12 +198,21 @@ class WorkflowRunner:
             preview = (str(output or "")[:120] + "…") if len(str(output or "")) > 120 else str(output or "")
             log.info("node done   dag=%s node=%s output=%r", graph.dag_id, nid, preview)
             results[nid] = output
+            node_states[nid] = "done"
         except asyncio.TimeoutError as exc:
             log.error("node timeout dag=%s node=%s timeout=%.0fs", graph.dag_id, nid, self._node_timeout)
             errors[nid] = exc
+            node_states[nid] = "error"
         except Exception as exc:
             log.error("node error  dag=%s node=%s error=%s", graph.dag_id, nid, exc)
             errors[nid] = exc
+            node_states[nid] = "error"
+
+        if channel is not None:
+            try:
+                await channel.set_status("running", node_states=dict(node_states))
+            except Exception:
+                pass
 
     @staticmethod
     def _build_adjacency(graph: DAGGraph) -> tuple[dict[str, int], dict[str, list[str]]]:
