@@ -380,10 +380,15 @@ class Orchestrator:
                 _t_tool_rounds = round_usage["latency"]
                 if _DSML_BLOCK.search(reply):
                     log.warning("DSML in _run_tool_round reply chat=%s; running DSML round", chat_id)
-                    reply = await self._run_dsml_tool_round(reply, chat_id, all_tools)
+                    reply, dsml_summary, dsml_stored = await self._run_dsml_tool_round(
+                        reply, chat_id, all_tools, api_msgs)
+                    if dsml_summary:
+                        tool_summary = f"{tool_summary}\n{dsml_summary}".strip()
+                    stored_contents.extend(dsml_stored)
             elif _DSML_BLOCK.search(content):
                 log.warning("DSML tool calls in content (model=%s); running DSML round", settings.MODEL_NAME)
-                reply = await self._run_dsml_tool_round(content, chat_id, all_tools)
+                reply, tool_summary, stored_contents = await self._run_dsml_tool_round(
+                    content, chat_id, all_tools, api_msgs)
             else:
                 reply = content
             collector.end_stage("llm")
@@ -757,18 +762,31 @@ class Orchestrator:
         except (json.JSONDecodeError, AttributeError, TypeError):
             return ""
 
-    async def _run_dsml_tool_round(self, content: str, chat_id: str,
-                                   tools: list[ToolDefinition]) -> str:
+    async def _run_dsml_tool_round(
+        self, content: str, chat_id: str,
+        tools: list[ToolDefinition],
+        api_msgs: list | None = None,
+    ) -> tuple[str, str, list[str]]:
         """Handle DSML-format tool calls (deepseek-v4-flash fallback path).
 
-        Parses DSML markup from content, executes each tool, returns the raw
-        tool output directly — no second LLM call.
+        Parses DSML markup from content, executes each tool, then makes one
+        synthesis LLM call (when api_msgs is provided) so the user sees a
+        natural reply rather than raw tool output.
+
+        Previously this returned raw joined tool output with no synthesis call —
+        the root cause of raw tool results appearing in chat. The fix mirrors
+        _run_tool_round: execute tools, then call the LLM with
+        _TOOL_SYNTHESIS_BRIDGE so it composes a response from the results.
+
+        Returns (reply, tool_summary, stored_contents) to match _run_tool_round
+        so call sites can update tracking uniformly.
         """
         invocations = _DSML_INVOKE.findall(content)
         if not invocations:
             log.warning("DSML block detected but no parseable invocations chat=%s", chat_id)
-            return ""
-        results: list[str] = []
+            return "", "", []
+        calls_and_results: list[tuple[str, str, str]] = []
+        stored_contents: list[str] = []
         for name, raw_args in invocations:
             stripped = raw_args.strip()
             try:
@@ -785,16 +803,43 @@ class Orchestrator:
                             pass
                     args[param_name] = val
             handler = next((t for t in tools if t.name == name), None)
+            args_json = json.dumps(args)
             if handler is None:
-                results.append(json.dumps({"error": f"unknown tool: {name}"}))
+                result = json.dumps({"error": f"unknown tool: {name}"})
             else:
                 try:
                     args["chat_id"] = chat_id
-                    results.append(str(await handler.handler(**args)))
+                    result = str(await handler.handler(**args))
                 except Exception as exc:
                     log.warning("DSML tool %s raised: %s", name, exc)
-                    results.append(json.dumps({"error": str(exc)}))
-        return "\n\n".join(results)
+                    result = json.dumps({"error": str(exc)}
+)
+            calls_and_results.append((name, args_json, result))
+            if name == "store_memory":
+                stored_contents.append(self._extract_content(args_json))
+        raw = "\n\n".join(r for _, _, r in calls_and_results)
+        tool_summary = _compact_tool_summary(calls_and_results)
+        if not api_msgs:
+            # No conversation context available — return raw output as fallback.
+            log.warning("DSML synthesis skipped (no api_msgs) chat=%s", chat_id)
+            return raw, tool_summary, stored_contents
+        # Synthesize: present the tool results to the model and ask it to respond
+        # naturally. This mirrors the synthesis step in _run_tool_round and is
+        # the fix for raw tool output reaching the user on the DSML path.
+        synth_msgs = list(api_msgs) + [
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": f"Tool results:\n{raw}\n\n{_TOOL_SYNTHESIS_BRIDGE}"},
+        ]
+        try:
+            r = await self._llm.chat.completions.create(
+                model=settings.MODEL_NAME, messages=synth_msgs,
+                temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+            )
+            reply = r.choices[0].message.content or raw
+        except Exception as exc:
+            log.warning("DSML synthesis LLM call failed chat=%s: %s — returning raw", chat_id, exc)
+            reply = raw
+        return reply, tool_summary, stored_contents
 
     async def _call_tool(self, tc, chat_id: str, tools: list[ToolDefinition]) -> str:
         """Dispatch a tool call. Returns str(result) or JSON {"error": ...} on failure.
