@@ -50,7 +50,13 @@ Output format:
 3. (optional) A brief note on usage, limitations, or next steps
 
 Use the `validate_syntax` tool to check Python or JSON code before returning. \
-If validation fails, fix the error and revalidate before submitting.\
+If validation fails, fix the error and revalidate before submitting.
+
+File output rule:
+When your task requires writing content to a file (reports, documents, data), \
+always include the COMPLETE written content verbatim in your final response. \
+Downstream agents receive only your text output — they cannot read files directly. \
+Write the file AND echo its full content in your response.\
 """
 
 
