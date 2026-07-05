@@ -299,7 +299,7 @@ class MemoryLayers:
         # L0 + L1: identity + facts — mandatory, never dropped.
         if facts is None:
             facts = await self.get_identity_and_facts()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
         identity = f"[Identity]\n{_BASE_IDENTITY}\nCurrent time: {now}"
         if facts:
             identity += f"\n\nKnown facts:\n{self._format_facts(facts)}"
