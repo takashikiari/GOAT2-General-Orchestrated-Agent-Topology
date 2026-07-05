@@ -166,9 +166,12 @@ class DagManager:
         channel: DagChannel,
         initial_context: dict[str, Any],
     ) -> None:
+        # Inject channel so agents can use dag_push_update / dag_check_inbox
+        ctx = dict(initial_context)
+        ctx["__dag_channel__"] = channel
         await channel.set_status("running")
         try:
-            result = await self._runner.run(graph, initial_context)
+            result = await self._runner.run(graph, ctx)
             state = "done" if result.success else "failed"
             await channel.set_status(
                 state,

@@ -59,6 +59,24 @@ class AgentRouter:
             self._cache[role] = self._instantiate(role)
         return self._cache[role]
 
+    def instantiate(self, role: str) -> "BaseAgent":
+        """Return a FRESH (uncached) agent instance for ``role``.
+
+        Unlike ``get()``, this never returns a cached object.  Use it when
+        per-task tools need to be added to the agent without affecting other
+        concurrent tasks that share the same cached instance.
+
+        Raises:
+            ValueError: If ``role`` is not registered.
+            ImportError: If the agent module is not importable.
+        """
+        if role not in _ROLE_MAP:
+            raise ValueError(
+                f"Unknown agent role {role!r}. "
+                f"Registered roles: {sorted(_ROLE_MAP)}"
+            )
+        return self._instantiate(role)
+
     def supports(self, role: str) -> bool:
         """Return ``True`` if ``role`` is a known, importable role."""
         if role not in _ROLE_MAP:

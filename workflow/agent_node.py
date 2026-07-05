@@ -5,9 +5,10 @@ A ``NodeRunner`` has signature ``async (task_id, context) -> Any``.
 translating the DAG context dict into ``AgentTask`` / ``AgentResult``
 objects that agents understand.
 
-Agent availability is checked at runner-creation time, not at module import,
-so the workflow engine stays importable even when ``config.agent_types`` does
-not yet exist.
+When the DAG injects a ``DagChannel`` into context (key ``__dag_channel__``),
+the runner creates a FRESH agent instance and adds per-task communication
+tools (``dag_push_update``, ``dag_check_inbox``) so the agent can interact
+with the orchestrator mid-task without polluting the shared cached instance.
 """
 from __future__ import annotations
 
@@ -27,10 +28,12 @@ def make_runner(
     """Build a ``NodeRunner`` that delegates to the agent identified by ``role``.
 
     The runner:
-    1. Retrieves the agent from ``router`` (cached instantiation).
-    2. Converts the DAG context into ``{dep_id: AgentResult}`` objects.
-    3. Constructs an ``AgentTask`` with ``task_description`` as prompt.
-    4. Calls ``agent.execute(task, dep_context)`` and returns the string result.
+    1. Checks context for an injected ``DagChannel`` (``__dag_channel__``).
+    2. If a channel is present: creates a fresh agent instance and adds
+       ``dag_push_update`` / ``dag_check_inbox`` tools bound to that channel.
+    3. If no channel: uses the cached agent from the router (no overhead).
+    4. Converts the DAG context into ``{dep_id: AgentResult}`` objects.
+    5. Calls ``agent.execute(task, dep_context)`` and returns the string result.
 
     Args:
         role: Agent role name (e.g. ``"planner"``).
@@ -41,33 +44,39 @@ def make_runner(
         An async callable compatible with ``TaskNode.runner``.
 
     Raises:
+        ValueError: At creation time if ``role`` is not registered.
         ImportError: At call time if ``config.agent_types`` is not importable.
     """
-    # Validate role is known before returning runner
     if role not in AgentRouter.registered_roles():
         raise ValueError(f"Unknown agent role: {role!r}")
 
     async def _runner(task_id: str, context: dict[str, Any]) -> str:
-        # Lazy import — only fails at call time, not at module import
         try:
-            from config.agent_types import AgentResult, AgentTask  # type: ignore[import]
+            from config.agent_types import AgentResult, AgentTask
         except ImportError as exc:
             raise ImportError(
                 "config.agent_types is required to run agent nodes. "
                 f"Original error: {exc}"
             ) from exc
 
-        agent = router.get(role)
+        channel = context.get("__dag_channel__")
 
-        # Convert DAG context values to AgentResult objects for deps that have
-        # run before this node.  Plain strings pass through; other types are
-        # wrapped in a minimal AgentResult.
+        if channel is not None:
+            # Fresh instance — dag_tools are task-specific, must not leak
+            # to other concurrent tasks sharing the cached agent.
+            agent = router.instantiate(role)
+            from tools.dag_tools import build_channel_tools
+            for t in build_channel_tools(channel, task_id):
+                agent.add_tool(t.name, t.description, t.parameters, t.handler)
+        else:
+            agent = router.get(role)
+
         dep_context: dict[str, Any] = {}
         for dep_id, dep_value in context.items():
             if dep_id.startswith("__"):
-                continue  # skip internal keys like __working_dir__
+                continue
             if hasattr(dep_value, "output"):
-                dep_context[dep_id] = dep_value  # already an AgentResult
+                dep_context[dep_id] = dep_value
             elif isinstance(dep_value, str):
                 dep_context[dep_id] = AgentResult(role="unknown", output=dep_value)
             elif dep_value is not None:
