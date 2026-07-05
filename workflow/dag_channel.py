@@ -116,8 +116,8 @@ class DagChannel:
 
     async def pop_inbox(self, timeout: float = 0.0) -> str | None:
         """Non-blocking pop of the oldest inbox message (``None`` if empty)."""
-        result = await self._get_client().brpop(self._k("inbox"), timeout=timeout)
-        return result[1] if result else None
+        result = await self._get_client().rpop(self._k("inbox"))
+        return result if result else None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

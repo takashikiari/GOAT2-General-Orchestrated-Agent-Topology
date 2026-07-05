@@ -82,7 +82,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         try:
             from telegram import Bot
             await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
-                chat_id=int(chat_id), text=text, parse_mode="Markdown"
+                chat_id=int(chat_id), text=text
             )
         except Exception as exc:
             log.warning("dag completion notify failed chat=%s: %s", chat_id, exc)
