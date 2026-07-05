@@ -20,6 +20,7 @@ from utils.logging.setup import get_logger
 from workflow.config import WorkflowConfig
 from workflow.dag_channel import DagChannel
 from workflow.dag_manager import DagManager
+from workflow.routing import AgentRouter
 from workflow.runner import WorkflowRunner
 
 log = get_logger(__name__)
@@ -64,7 +65,8 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
             ttl=wf_config.dag_ttl_seconds,
         )
 
-    dag_manager = DagManager(wf_runner, _channel_factory)
+    agent_router = AgentRouter()
+    dag_manager = DagManager(wf_runner, _channel_factory, router=agent_router)
     workflow_tools = build_workflow_tools(dag_manager, _channel_factory)
 
     orchestrator = Orchestrator(
