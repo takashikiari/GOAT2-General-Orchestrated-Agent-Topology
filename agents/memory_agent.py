@@ -37,12 +37,10 @@ Rules:
 
 
 class MemoryAgent(BaseAgent):
-    """
-    Reads and writes working memory for DAG context persistence.
+    """Reads and writes working memory for DAG context persistence.
 
     Tools: 4 DAG memory tools only (working tier — Redis, dag:* namespace).
-    Reuses the tool_caller model (deepseek-chat by default).
-    Override: MemoryAgent(spec=get_model("gpt-4o-mini"))
+    Model is read from GOAT_AGENT_MEMORY_MODEL (falls back to MODEL_NAME).
     """
 
     role = "memory"

@@ -18,12 +18,10 @@ __all__ = ["ResearcherAgent", "run_researcher"]
 
 
 class ResearcherAgent(BaseAgent):
-    """
-    Synthesises deep knowledge for a given research task.
+    """Synthesises deep knowledge for a given research task.
 
-    Default model: deepseek-r1 (ModelSpec.tool_calling=False — tools suppressed automatically).
-    Tool suppression is driven by spec.tool_calling, not a hardcoded model list.
-    Override: ResearcherAgent(spec=get_model("gpt-4o"))
+    Tools are suppressed automatically when spec.tool_calling is False.
+    Model is read from GOAT_AGENT_RESEARCHER_MODEL (falls back to MODEL_NAME).
     """
 
     role = "researcher"

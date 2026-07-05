@@ -1,9 +1,4 @@
-"""
-GOAT 2.0 — CriticAgent
-
-Rigorously evaluates work produced by other agents and returns a structured
-critique. Defaults to llama-3.3-70b on Groq for fast, high-quality review.
-"""
+"""GOAT 2.0 — CriticAgent: rigorously evaluates agent outputs and returns a structured critique."""
 
 from __future__ import annotations
 
@@ -77,15 +72,10 @@ Rules:
 # ---------------------------------------------------------------------------
 
 class CriticAgent(BaseAgent):
-    """
-    Reviews and critiques agent outputs with a structured verdict.
+    """Reviews and critiques agent outputs with a structured verdict.
 
-    The output always contains ## Assessment, ## Issues, ## Suggestions,
-    and ## Verdict sections. The supervisor uses this output both as
-    feedback context and as input to the final synthesis step.
-
-    Default model: llama-3.3-70b via Groq — fast, analytical, cost-effective.
-    Override: CriticAgent(spec=get_model("gpt-4o"))
+    Output always contains ## Assessment, ## Issues, ## Suggestions, ## Verdict.
+    Model is read from GOAT_AGENT_CRITIC_MODEL (falls back to MODEL_NAME).
     """
 
     role = "critic"

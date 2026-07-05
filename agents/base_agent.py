@@ -281,8 +281,8 @@ class BaseAgent(ABC):
 
         Note:
             Tool calling is only supported on models that accept the `tools`
-            parameter (OpenAI, Groq llama-3.x, DeepSeek deepseek-chat).
-            deepseek-reasoner (R1) does not support tool calling.
+            parameter. Models with tool_calling=False in their ModelSpec skip
+            tool dispatch entirely regardless of which tools are registered.
         """
         client   = _get_client(self.spec)
         temp     = temperature if temperature is not None else self.temperature

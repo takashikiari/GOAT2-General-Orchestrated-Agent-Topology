@@ -39,13 +39,11 @@ Rules:
 
 
 class ToolCallerAgent(BaseAgent):
-    """
-    Executes file operations and working memory queries on behalf of the DAG.
+    """Executes file operations and working memory queries on behalf of the DAG.
 
     Tools: 8 file tools + 4 DAG memory tools (working tier — Redis, dag:* namespace).
     Requires spec.tool_calling=True; raises RuntimeError at execute() time otherwise.
-    Default model: deepseek-chat (tool_calling=True).
-    Override: ToolCallerAgent(spec=get_model("gpt-4o-mini"))
+    Model is read from GOAT_AGENT_TOOL_CALLER_MODEL (falls back to MODEL_NAME).
     """
 
     role = "tool_caller"
@@ -84,7 +82,7 @@ class ToolCallerAgent(BaseAgent):
         if not self.spec.tool_calling:
             raise RuntimeError(
                 f"tool_caller model '{self.spec.model_id}' has tool_calling=False; "
-                "use deepseek-chat or gpt-4o-mini."
+                "set GOAT_AGENT_TOOL_CALLER_TOOL_CALLING=true or use a model that supports tools."
             )
         messages = self._build_messages(task, context)
         output = await self._chat(messages)

@@ -1,10 +1,4 @@
-"""
-GOAT 2.0 — CoderAgent
-
-Writes production-quality code and validates its own output. Defaults to
-deepseek-coder for strong code generation. Includes a built-in
-`validate_syntax` tool so the model can self-check before returning.
-"""
+"""GOAT 2.0 — CoderAgent: writes and self-validates code; includes a built-in validate_syntax tool."""
 
 from __future__ import annotations
 
@@ -65,14 +59,10 @@ If validation fails, fix the error and revalidate before submitting.\
 # ---------------------------------------------------------------------------
 
 class CoderAgent(BaseAgent):
-    """
-    Generates and self-validates code for a given task.
+    """Generates and self-validates code for a given task.
 
-    Default model: deepseek-coder — strong code generation across languages.
-    Override: CoderAgent(spec=get_model("gpt-4o"))
-
-    Built-in tools:
-      - validate_syntax: check Python or JSON code for errors before returning
+    Built-in tool: validate_syntax — checks Python or JSON before returning.
+    Model is read from GOAT_AGENT_CODER_MODEL (falls back to MODEL_NAME).
     """
 
     role = "coder"

@@ -1,10 +1,4 @@
-"""
-GOAT 2.0 — PlannerAgent
-
-Decomposes an objective into a structured, actionable plan that downstream
-agents (researcher, coder, critic) can execute against. Defaults to gpt-4o
-for strong instruction-following and structured output.
-"""
+"""GOAT 2.0 — PlannerAgent: decomposes an objective into an actionable plan for downstream agents."""
 
 from __future__ import annotations
 
@@ -71,14 +65,11 @@ Rules:
 # ---------------------------------------------------------------------------
 
 class PlannerAgent(BaseAgent):
-    """
-    Produces a structured plan from an objective.
+    """Produces a structured plan from an objective.
 
     Downstream agents receive this plan as context so they know the overall
     strategy, their individual step, and what success looks like.
-
-    Default model: gpt-4o (strong structured-output and reasoning).
-    Override: PlannerAgent(spec=get_model("gpt-4-turbo"))
+    Model is read from GOAT_AGENT_PLANNER_MODEL (falls back to MODEL_NAME).
     """
 
     role = "planner"

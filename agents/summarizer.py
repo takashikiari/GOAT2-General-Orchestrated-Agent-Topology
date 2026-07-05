@@ -30,13 +30,10 @@ Rules:
 
 
 class SummarizerAgent(BaseAgent):
-    """
-    Synthesizes upstream agent outputs into a concise final answer.
+    """Synthesizes upstream agent outputs into a concise final answer.
 
     Uses no tools — pure synthesis from context. Reports only verified facts.
-    No inference or invention; empty upstream outputs are reported as-is.
-    Default model: llama-3.1-8b (fast, sufficient for synthesis tasks).
-    Override: SummarizerAgent(spec=get_model("gpt-4o"))
+    Model is read from GOAT_AGENT_SUMMARIZER_MODEL (falls back to MODEL_NAME).
     """
 
     role = "summarizer"
