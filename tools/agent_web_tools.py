@@ -22,11 +22,11 @@ _SEARCH_MAX = 6_000
 async def _crawl(url: str, max_chars: int) -> str:
     """Shared crawl4ai fetch — mirrors fetch_content.py exactly."""
     try:
-        from crawl4ai import AsyncWebCrawler
+        from crawl4ai import AsyncWebCrawler, BrowserConfig
     except ImportError:
         return "(crawl4ai not installed — run: pip install crawl4ai)"
     try:
-        async with AsyncWebCrawler() as crawler:
+        async with AsyncWebCrawler(config=BrowserConfig(verbose=False)) as crawler:
             result = await crawler.arun(url=url, page_timeout=WEB_TIMEOUT * 1000)
         if not result.success:
             return f"(failed to fetch {url}: {result.error_message})"
