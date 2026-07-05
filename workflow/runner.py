@@ -1,238 +1,219 @@
+"""workflow.runner — parallel async DAG executor.
+
+Executes a ``DAGGraph`` with true asyncio concurrency: sibling nodes (no
+mutual dependency) run as concurrent ``asyncio.Task`` s.  Execution order
+follows topological constraints; nodes within the same dependency wave
+overlap freely up to ``max_concurrent`` via a ``Semaphore``.
+
+Cycle detection is performed upfront via Kahn's algorithm.  On the first
+node failure all in-flight tasks are cancelled and a ``WorkflowResult``
+with ``success=False`` is returned immediately.
 """
-GOAT 2.0 — Workflow runner.
-
-Pure DAG executor using Kahn's algorithm for topological sort.
-Zero AI, zero LLM, zero tool calls — just graph execution.
-
-The runner receives a ``DAGGraph``, validates it, topologically sorts
-the nodes, then executes each node in order, propagating results
-through a shared context dictionary.
-
-Conditional execution
----------------------
-Each node may declare a ``condition`` predicate (``Callable[[dict], bool]``).
-If the predicate returns ``False``, the node is skipped — its runner is
-not called, its result is ``None``, and it's recorded in ``WorkflowResult.skipped``.
-Skipped nodes do **not** block subsequent nodes; downstream nodes decide
-for themselves via their own conditions.
-
-Per-node sandbox
-----------------
-If the graph has a ``working_dir`` set, each node gets a private folder
-created at ``working_dir / dag_id / task_id /`` before it runs.
-The path is injected into context as ``"__working_dir__"`` (a ``Path``).
-Nodes never share a folder — zero race conditions on disk.
-
-Cleanup
--------
-Runner does **not** auto-clean. Call ``cleanup(dag_id)`` explicitly
-when you want to remove a DAG's working directory. You decide when.
-
-Usage::
-
-    graph = DAGGraph(
-        nodes=[...],
-        dag_id="my-pipeline",
-        working_dir=Path("/tmp/dags"),
-    )
-    runner = WorkflowRunner()
-    result = await runner.run(graph, initial_context={"query": "..."})
-    # inspect result, debug if needed, then:
-    await runner.cleanup("my-pipeline")
-"""
-
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from pathlib import Path
 from shutil import rmtree
 from typing import Any
 
-from workflow.errors import (
-    CycleDetected,
-    NodeNotFound,
-    WorkflowError,
-)
-from workflow.models import DAGGraph, WorkflowResult
+from workflow.errors import CycleDetected, NodeNotFound, WorkflowError
+from workflow.models import DAGGraph, TaskNode, WorkflowResult
 
 
 class WorkflowRunner:
-    """Pure DAG executor — topological sort + sequential node execution.
+    """Parallel async DAG executor.
 
-    Stateless by design: instantiate once, call ``run()`` as many times
-    as needed. Each call builds its own execution context.
+    Stateless by design: instantiate once, call ``run()`` many times.
+    Each ``run()`` call owns its own execution context and task set.
+
+    Args:
+        working_dir: Base directory for per-node sandbox folders.
+        max_concurrent: Max nodes running simultaneously within one DAG.
+        node_timeout: Per-node timeout in seconds (``asyncio.TimeoutError``
+            is caught and recorded in ``WorkflowResult.errors``).
     """
 
-    def __init__(self, working_dir: Path | None = None) -> None:
-        """Store a reference working dir so cleanup knows where to look.
-
-        Parameters
-        ----------
-        working_dir:
-            Base directory under which DAG sandboxes live.
-            If omitted, cleanup() will refuse to run — you must
-            pass ``working_dir`` via the graph or the constructor.
-        """
+    def __init__(
+        self,
+        working_dir: Path | None = None,
+        max_concurrent: int = 8,
+        node_timeout: float = 300.0,
+    ) -> None:
         self._working_dir = working_dir
-
-    # ── public API ──────────────────────────────────────────────
+        self._max_concurrent = max_concurrent
+        self._node_timeout = node_timeout
 
     async def run(
         self,
         graph: DAGGraph,
         initial_context: dict[str, Any] | None = None,
     ) -> WorkflowResult:
-        """Execute a DAG from start to finish.
+        """Execute ``graph`` with parallel node scheduling.
 
-        Parameters
-        ----------
-        graph:
-            The DAG to execute. Must contain at least one node and
-            must be acyclic (validated at runtime).
-        initial_context:
-            Optional seed data passed to every node.
+        Args:
+            graph: The validated DAG to run.
+            initial_context: Optional seed data available to all nodes.
 
-        Returns
-        -------
-        WorkflowResult
-            Structured result with per-node outputs and execution
-            order.
+        Returns:
+            ``WorkflowResult`` with per-node outputs, skips, and errors.
+
+        Raises:
+            CycleDetected: If the graph contains a cycle.
         """
+        in_degree, adjacency = self._build_adjacency(graph)
+        self._assert_acyclic(graph, in_degree, adjacency)
+
         context: dict[str, Any] = dict(initial_context or {})
         results: dict[str, Any] = {}
         skipped: set[str] = set()
         errors: dict[str, Exception] = {}
-        execution_order: list[str] = []
+        order: list[str] = []
+        sem = asyncio.Semaphore(self._max_concurrent)
 
-        order = self._topological_sort(graph)
+        ready: asyncio.Queue[str] = asyncio.Queue()
+        for nid, deg in in_degree.items():
+            if deg == 0:
+                ready.put_nowait(nid)
 
-        for node_id in order:
-            node = graph.get_node(node_id)
+        active: dict[str, asyncio.Task] = {}
+        remaining = len(graph.nodes)
 
-            # ── per-node sandbox folder ─────────────────────────
-            wd = graph.working_dir or self._working_dir
-            if wd is not None:
-                sandbox = wd / graph.dag_id / node_id
-                sandbox.mkdir(parents=True, exist_ok=True)
-                context["__working_dir__"] = sandbox
+        while remaining > 0:
+            while not ready.empty():
+                nid = ready.get_nowait()
+                task = asyncio.create_task(
+                    self._execute_node(nid, graph, context, results, skipped, errors, sem),
+                    name=nid,
+                )
+                active[nid] = task
 
-            # ── condition check ─────────────────────────────────
-            if node.condition is not None:
-                try:
-                    should_run = node.condition(context)
-                except Exception as exc:
-                    errors[node_id] = exc
+            if not active:
+                break  # guarded by cycle check above; shouldn't reach here
+
+            done, _ = await asyncio.wait(active.values(), return_when=asyncio.FIRST_COMPLETED)
+
+            for task in done:
+                nid = task.get_name()
+                del active[nid]
+                remaining -= 1
+                order.append(nid)
+
+                if nid in errors:
+                    for pending in active.values():
+                        pending.cancel()
+                    await asyncio.gather(*active.values(), return_exceptions=True)
                     return WorkflowResult(
                         success=False,
                         results=results,
                         skipped=skipped,
                         errors=errors,
-                        execution_order=tuple(execution_order),
+                        execution_order=tuple(order),
                     )
-                if not should_run:
-                    skipped.add(node_id)
-                    context[node_id] = None
-                    execution_order.append(node_id)
-                    continue
 
-            # ── execute ─────────────────────────────────────────
-            try:
-                output = await node.runner(node_id, context)
-                results[node_id] = output
-                context[node_id] = output
-                execution_order.append(node_id)
-            except Exception as exc:
-                errors[node_id] = exc
-                return WorkflowResult(
-                    success=False,
-                    results=results,
-                    skipped=skipped,
-                    errors=errors,
-                    execution_order=tuple(execution_order),
-                )
+                context[nid] = results.get(nid)
+                for successor in adjacency.get(nid, []):
+                    in_degree[successor] -= 1
+                    if in_degree[successor] == 0:
+                        ready.put_nowait(successor)
 
         return WorkflowResult(
             success=True,
             results=results,
             skipped=skipped,
             errors=errors,
-            execution_order=tuple(execution_order),
+            execution_order=tuple(order),
         )
 
     async def cleanup(self, dag_id: str) -> None:
-        """Remove the working directory for a specific DAG.
+        """Remove the working directory for a DAG.  Silently no-ops if absent.
 
-        Only removes ``<working_dir>/<dag_id>/``.  Safe to call
-        even if the folder doesn't exist — silently no-ops.
-
-        Raises
-        ------
-        WorkflowError
-            If no ``working_dir`` was configured (neither via
-            constructor nor graph).
+        Raises:
+            WorkflowError: If no ``working_dir`` is configured.
         """
         wd = self._working_dir
         if wd is None:
-            raise WorkflowError(
-                "Cannot cleanup: no working_dir configured. "
-                "Pass it to the constructor or via DAGGraph."
-            )
+            raise WorkflowError("Cannot cleanup: no working_dir configured.")
         target = wd / dag_id
         if target.is_dir():
             rmtree(target)
 
-    # ── topological sort ────────────────────────────────────────
+    # ── internal ─────────────────────────────────────────────────────────────
 
-    def _topological_sort(self, graph: DAGGraph) -> list[str]:
-        """Kahn's algorithm — returns nodes in execution order.
+    async def _execute_node(
+        self,
+        nid: str,
+        graph: DAGGraph,
+        context: dict[str, Any],
+        results: dict[str, Any],
+        skipped: set[str],
+        errors: dict[str, Exception],
+        sem: asyncio.Semaphore,
+    ) -> None:
+        node: TaskNode = graph.get_node(nid)
+        local_ctx = dict(context)  # snapshot: deps already present at launch time
 
-        Raises
-        ------
-        CycleDetected
-            If the graph contains a cycle.
-        NodeNotFound
-            If a dependency references a non-existent node.
-        """
-        nodes_by_id = graph.nodes_by_id
+        wd = graph.working_dir or self._working_dir
+        if wd is not None:
+            sandbox = wd / graph.dag_id / nid
+            sandbox.mkdir(parents=True, exist_ok=True)
+            local_ctx["__working_dir__"] = sandbox
 
-        in_degree: dict[str, int] = {}
-        adjacency: dict[str, list[str]] = {}
+        if node.condition is not None:
+            try:
+                should_run = node.condition(local_ctx)
+            except Exception as exc:
+                errors[nid] = exc
+                return
+            if not should_run:
+                skipped.add(nid)
+                return
 
+        if node.runner is None:
+            results[nid] = None
+            return
+
+        try:
+            async with sem:
+                output = await asyncio.wait_for(
+                    node.runner(nid, local_ctx),
+                    timeout=self._node_timeout,
+                )
+            results[nid] = output
+        except Exception as exc:
+            errors[nid] = exc
+
+    @staticmethod
+    def _build_adjacency(graph: DAGGraph) -> tuple[dict[str, int], dict[str, list[str]]]:
+        in_degree: dict[str, int] = {node.task_id: 0 for node in graph.nodes}
+        adjacency: dict[str, list[str]] = {node.task_id: [] for node in graph.nodes}
         for node in graph.nodes:
-            nid = node.task_id
-            in_degree.setdefault(nid, 0)
-            adjacency.setdefault(nid, [])
+            for dep in node.dependencies:
+                if dep not in in_degree:
+                    raise NodeNotFound(dep, graph_nodes=list(in_degree))
+                adjacency[dep].append(node.task_id)
+                in_degree[node.task_id] += 1
+        return in_degree, adjacency
 
-        for node in graph.nodes:
-            for dep_id in node.dependencies:
-                if dep_id not in nodes_by_id:
-                    raise NodeNotFound(
-                        f"Dependency '{dep_id}' not found "
-                        f"(required by '{node.task_id}')",
-                        node_id=dep_id,
-                        graph_nodes=list(nodes_by_id),
-                    )
-                adjacency.setdefault(dep_id, []).append(node.task_id)
-                in_degree[node.task_id] = in_degree.get(node.task_id, 0) + 1
-
-        queue: deque[str] = deque(
-            nid for nid, deg in in_degree.items() if deg == 0
-        )
-        order: list[str] = []
-
+    @staticmethod
+    def _assert_acyclic(
+        graph: DAGGraph,
+        in_degree: dict[str, int],
+        adjacency: dict[str, list[str]],
+    ) -> None:
+        degree = dict(in_degree)
+        queue: deque[str] = deque(nid for nid, d in degree.items() if d == 0)
+        visited = 0
         while queue:
             nid = queue.popleft()
-            order.append(nid)
-            for successor in adjacency.get(nid, []):
-                in_degree[successor] -= 1
-                if in_degree[successor] == 0:
-                    queue.append(successor)
-
-        if len(order) != len(graph.nodes):
-            remaining = set(nodes_by_id) - set(order)
+            visited += 1
+            for succ in adjacency.get(nid, []):
+                degree[succ] -= 1
+                if degree[succ] == 0:
+                    queue.append(succ)
+        if visited != len(graph.nodes):
+            remaining = sorted(set(graph.nodes_by_id) - {n for n, d in degree.items() if d == 0})
             raise CycleDetected(
-                f"Cycle detected among nodes: {sorted(remaining)}",
-                remaining_nodes=sorted(remaining),
+                f"Cycle detected among nodes: {remaining}",
+                remaining_nodes=remaining,
             )
-
-        return order

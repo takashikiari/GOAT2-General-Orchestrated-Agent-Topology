@@ -8,13 +8,19 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from config import settings
+from memory.config import WORKING_STORAGE_URL
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
 from tools.memory_manager import build_memory_manager_tools
 from tools.memory_promote import build_promote_memory_tool
 from tools.memory_tools import build_search_memory_tool
 from tools.memory_writer import build_store_memory_tool
+from tools.workflow_tools import build_workflow_tools
 from utils.logging.setup import get_logger
+from workflow.config import WorkflowConfig
+from workflow.dag_channel import DagChannel
+from workflow.dag_manager import DagManager
+from workflow.runner import WorkflowRunner
 
 log = get_logger(__name__)
 
@@ -37,16 +43,36 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     hook drains in-flight L3 archive writes on clean shutdown.
     """
     layers = registry.memory_layers
+
+    # Memory tools
     search_memory = build_search_memory_tool(layers)
     store_memory = build_store_memory_tool(layers)
     promote_memory = build_promote_memory_tool(layers)
     manager_tools = build_memory_manager_tools(layers)
+
+    # Workflow tools — DagManager is scoped to this app instance (no singleton)
+    wf_config = WorkflowConfig.from_toml(redis_url=WORKING_STORAGE_URL)
+    wf_runner = WorkflowRunner(
+        max_concurrent=wf_config.max_concurrent_nodes,
+        node_timeout=wf_config.node_timeout_seconds,
+    )
+
+    def _channel_factory(dag_id: str) -> DagChannel:
+        return DagChannel(
+            wf_config.redis_url, dag_id,
+            prefix=wf_config.dag_key_prefix,
+            ttl=wf_config.dag_ttl_seconds,
+        )
+
+    dag_manager = DagManager(wf_runner, _channel_factory)
+    workflow_tools = build_workflow_tools(dag_manager, _channel_factory)
+
     orchestrator = Orchestrator(
         layers=layers,
         llm_client=registry.llm_client,
         plugin_manager=registry.plugin_manager,
         analytics=registry.memory_analytics,
-        tools=[search_memory, store_memory, promote_memory, *manager_tools],
+        tools=[search_memory, store_memory, promote_memory, *manager_tools, *workflow_tools],
     )
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

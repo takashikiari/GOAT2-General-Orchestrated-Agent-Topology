@@ -1,133 +1,78 @@
-"""
-GOAT 2.0 — Workflow registry.
+"""workflow.registry — named DAG graph store.
 
-Stores named DAG graphs for the workflow engine.
-Completely separate from AgentRegistry (agents/) and ServiceRegistry (registry/).
+Decoupled from ``WorkflowRunner`` and ``DagManager``:
+the registry only stores graph definitions; execution is the manager's job.
 """
-
 from __future__ import annotations
 
 from typing import Any
 
-from workflow.errors import NodeNotFound
+from workflow.errors import WorkflowNotFound
 from workflow.models import DAGGraph
-from workflow.runner import WorkflowRunner
 
 
 class WorkflowRegistry:
-    """Registry for named DAG workflows.
+    """In-memory registry for named ``DAGGraph`` definitions.
 
-    Graphs are stored by name and retrieved on demand.
-    A shared ``WorkflowRunner`` is lazily created on first use.
+    Graphs are registered by name and retrieved on demand.
+    Thread-safe for read access; writes are not concurrent-safe
+    (register / unregister at startup, not during execution).
+
+    No singleton — instantiate one per application scope.
     """
 
     def __init__(self) -> None:
         self._graphs: dict[str, DAGGraph] = {}
-        self._runner: WorkflowRunner | None = None
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    # ── registration ─────────────────────────────────────────────────────────
 
     def register(self, name: str, graph: DAGGraph) -> None:
         """Register a named DAG graph.
 
         Args:
             name: Unique workflow name.
-            graph: The DAG to register.
+            graph: The ``DAGGraph`` to store.
 
         Raises:
+            TypeError: If ``graph`` is not a ``DAGGraph``.
             ValueError: If ``name`` is already registered.
         """
         if not isinstance(graph, DAGGraph):
             raise TypeError(f"Expected DAGGraph, got {type(graph).__name__}")
-
         if name in self._graphs:
             raise ValueError(f"Workflow {name!r} is already registered")
-
         self._graphs[name] = graph
 
     def get(self, name: str) -> DAGGraph:
         """Retrieve a registered DAG graph by name.
 
-        Args:
-            name: Workflow name.
-
-        Returns:
-            The registered ``DAGGraph``.
-
         Raises:
-            NodeNotFound: If no workflow with that name exists.
+            WorkflowNotFound: If no workflow with that name exists.
         """
         graph = self._graphs.get(name)
         if graph is None:
-            raise NodeNotFound(
-                node_id=name,
-                graph_nodes=list(self._graphs),
-                message=f"Workflow {name!r} not found in registry",
-            )
+            raise WorkflowNotFound(name, registered=list(self._graphs))
         return graph
 
     def unregister(self, name: str) -> None:
-        """Remove a registered workflow.
-
-        Args:
-            name: Workflow name to remove.
+        """Remove a registered workflow by name.
 
         Raises:
-            NodeNotFound: If no workflow with that name exists.
+            WorkflowNotFound: If no workflow with that name exists.
         """
         if name not in self._graphs:
-            raise NodeNotFound(
-                node_id=name,
-                graph_nodes=list(self._graphs),
-                message=f"Cannot unregister {name!r} — not found",
-            )
+            raise WorkflowNotFound(name, registered=list(self._graphs))
         del self._graphs[name]
 
     def list(self) -> list[str]:
-        """List all registered workflow names.
-
-        Returns:
-            Sorted list of workflow names.
-        """
+        """Return a sorted list of all registered workflow names."""
         return sorted(self._graphs)
 
     def clear(self) -> None:
         """Remove all registered workflows."""
         self._graphs.clear()
 
-    # ------------------------------------------------------------------
-    # Runner access
-    # ------------------------------------------------------------------
-
-    @property
-    def runner(self) -> WorkflowRunner:
-        """Lazy-initialized shared ``WorkflowRunner``."""
-        if self._runner is None:
-            self._runner = WorkflowRunner()
-        return self._runner
-
-    def run(
-        self,
-        name: str,
-        initial_context: dict[str, Any] | None = None,
-    ) -> Any:
-        """Convenience: get a workflow by name and run it immediately.
-
-        Args:
-            name: Workflow name.
-            initial_context: Optional initial context dict.
-
-        Returns:
-            ``WorkflowResult`` from the runner.
-        """
-        graph = self.get(name)
-        return self.runner.run(graph, initial_context=initial_context)
-
-    # ------------------------------------------------------------------
-    # Container protocol
-    # ------------------------------------------------------------------
+    # ── container protocol ────────────────────────────────────────────────────
 
     def __contains__(self, name: str) -> bool:
         return name in self._graphs
@@ -136,4 +81,4 @@ class WorkflowRegistry:
         return len(self._graphs)
 
     def __repr__(self) -> str:
-        return f"WorkflowRegistry({len(self)} workflows)"
+        return f"WorkflowRegistry({len(self)} workflows: {self.list()})"
