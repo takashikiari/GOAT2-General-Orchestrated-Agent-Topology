@@ -4,6 +4,7 @@
 openai>=1.0.0          # AsyncOpenAI client; used for any OpenAI-compatible API
                        # (DeepSeek, etc.) — registry/registry.py
 python-telegram-bot>=21.0  # telegram_interface/bot.py
+python-dotenv>=1.0.0   # loads .env into os.environ at startup — config/settings.py
 
 # Memory backends
 chromadb>=1.1.1        # L3 episodic memory — memory/episodic/episodic.py

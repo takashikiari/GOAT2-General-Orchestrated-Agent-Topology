@@ -1,0 +1,35 @@
+# Agent model and behaviour configuration.
+# Non-secret — safe to commit. API keys and bot tokens go in .env.
+#
+# Precedence (highest → lowest):
+#   GOAT_AGENT_{ROLE}_MODEL env var  >  [role] section  >  [defaults]  >  MODEL_NAME env var
+#
+# Supported providers: openai | deepseek | groq
+
+[defaults]
+model        = "deepseek-v4-flash"
+provider     = "deepseek"
+temperature  = 0.4
+tool_calling = true
+
+[planner]
+temperature = 0.2
+
+[researcher]
+temperature = 0.4
+
+[coder]
+temperature = 0.2
+
+[critic]
+temperature = 0.2
+
+[summarizer]
+temperature = 0.2
+
+[tool_caller]
+temperature  = 0.1
+tool_calling = true
+
+[memory]
+temperature = 0.2
