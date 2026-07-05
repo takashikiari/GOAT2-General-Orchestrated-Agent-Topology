@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 import os
+from pathlib import Path
 
 
 # ── Base env vars (unchanged) ─────────────────────────────────────────────────
@@ -36,6 +37,12 @@ TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.5"))
 MAX_TOKENS: int = int(os.environ.get("MAX_TOKENS", "2048"))
 TIMEOUT_SECONDS: float = float(os.environ.get("TIMEOUT_SECONDS", "30.0"))
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+# DAG sandbox root — agents running inside a DAG can only access this directory.
+# Override with GOAT_DAG_WORKSPACE env var (absolute path).
+DAG_WORKSPACE: Path = Path(
+    os.environ.get("GOAT_DAG_WORKSPACE", "/home/lenovo/workspace/goat2/dag_workspace")
+).resolve()
 
 
 # ── Provider enum ─────────────────────────────────────────────────────────────

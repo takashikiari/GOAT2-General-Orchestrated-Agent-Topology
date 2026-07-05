@@ -65,6 +65,20 @@ def make_runner(
             # Fresh instance — dag_tools are task-specific, must not leak
             # to other concurrent tasks sharing the cached agent.
             agent = router.instantiate(role)
+
+            # Replace any file tools with sandboxed versions restricted to dag_workspace.
+            dag_workspace = context.get("__dag_workspace__")
+            if dag_workspace is not None:
+                from tools.agent_file_tools import make_file_tools
+                _FILE_TOOL_NAMES = {
+                    "file_read", "file_read_lines", "file_write", "file_create",
+                    "file_list", "file_search", "file_grep", "file_info", "shell",
+                }
+                for name in _FILE_TOOL_NAMES:
+                    agent.remove_tool(name)
+                for t in make_file_tools(dag_workspace):
+                    agent.add_tool(t.name, t.description, t.parameters, t.handler)
+
             from tools.dag_tools import build_channel_tools
             for t in build_channel_tools(channel, task_id):
                 agent.add_tool(t.name, t.description, t.parameters, t.handler)

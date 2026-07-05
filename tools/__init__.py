@@ -19,6 +19,7 @@ from tools.agent_file_tools import (
     FILE_INFO,
     FILE_READ_LINES,
     SHELL,
+    make_file_tools,
 )
 from tools.agent_dag_tools import (
     MEMORY_RECENT_DAG,
@@ -29,7 +30,7 @@ from tools.agent_dag_tools import (
 from tools.agent_web_tools import FETCH_URL, WEB_SEARCH
 
 __all__ = [
-    # File tools
+    # File tools (full workspace)
     "FILE_READ",
     "FILE_WRITE",
     "FILE_CREATE",
@@ -39,6 +40,7 @@ __all__ = [
     "FILE_INFO",
     "FILE_READ_LINES",
     "SHELL",
+    "make_file_tools",
     # DAG memory tools
     "MEMORY_RECENT_DAG",
     "MEMORY_GET_DAG",

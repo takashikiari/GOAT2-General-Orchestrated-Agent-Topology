@@ -166,9 +166,14 @@ class DagManager:
         channel: DagChannel,
         initial_context: dict[str, Any],
     ) -> None:
-        # Inject channel so agents can use dag_push_update / dag_check_inbox
+        from config.settings import DAG_WORKSPACE
+        DAG_WORKSPACE.mkdir(parents=True, exist_ok=True)
+        log.debug("dag_manager: sandbox root=%s", DAG_WORKSPACE)
+
+        # Inject channel and sandbox root so agent_node can build scoped file tools
         ctx = dict(initial_context)
         ctx["__dag_channel__"] = channel
+        ctx["__dag_workspace__"] = DAG_WORKSPACE
         await channel.set_status("running")
         try:
             result = await self._runner.run(graph, ctx)
