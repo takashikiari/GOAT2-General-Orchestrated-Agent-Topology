@@ -38,8 +38,10 @@ class ServiceRegistry:
     def llm_client(self) -> AsyncOpenAI:
         """Shared AsyncOpenAI-compatible LLM client, built once."""
         if self._llm_client is None:
+            from config.settings import get_api_key, _infer_provider
+            provider = _infer_provider(settings.BASE_URL)
             self._llm_client = AsyncOpenAI(
-                api_key=settings.API_KEY,
+                api_key=get_api_key(provider),
                 base_url=settings.BASE_URL,
                 timeout=httpx.Timeout(settings.TIMEOUT_SECONDS),
             )

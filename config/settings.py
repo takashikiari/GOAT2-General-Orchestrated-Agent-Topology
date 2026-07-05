@@ -56,10 +56,9 @@ _agents_cfg: dict = _load_agents_toml()
 
 # ── Base env vars ─────────────────────────────────────────────────────────────
 
-API_KEY: str = os.environ.get("DEEPSEEK_API_KEY", "")
 MODEL_NAME: str = os.environ.get(
     "MODEL_NAME",
-    _agents_cfg.get("defaults", {}).get("model", "deepseek-v4-flash"),
+    _agents_cfg.get("defaults", {}).get("model", "deepseek-chat"),
 )
 BASE_URL: str = os.environ.get("BASE_URL", "https://api.deepseek.com")
 TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.5"))
@@ -86,6 +85,11 @@ PROVIDER_BASE_URLS: dict[Provider, str] = {
     Provider.DEEPSEEK: "https://api.deepseek.com",
     Provider.GROQ:     "https://api.groq.com/openai/v1",
 }
+
+
+def get_api_key(provider: "Provider") -> str:
+    """Return the API key for *provider* from ``GOAT_{PROVIDER}_API_KEY``."""
+    return os.environ.get(f"GOAT_{provider.value.upper()}_API_KEY", "")
 
 
 def _infer_provider(url: str) -> Provider:

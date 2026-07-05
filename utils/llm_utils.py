@@ -26,18 +26,18 @@ _client_cache: dict[str, AsyncOpenAI] = {}
 def _get_client(spec: "ModelSpec") -> AsyncOpenAI:
     """Return a cached AsyncOpenAI-compatible client for the spec's provider.
 
-    Uses ``GOAT_{PROVIDER}_API_KEY`` env var first, then falls back to the
-    global ``DEEPSEEK_API_KEY`` / ``API_KEY``.
+    Reads ``GOAT_{PROVIDER}_API_KEY`` from the environment.
+    Example: provider=groq → GOAT_GROQ_API_KEY, provider=deepseek → GOAT_DEEPSEEK_API_KEY.
     """
     import os
-    from config.settings import API_KEY, PROVIDER_BASE_URLS, TIMEOUT_SECONDS
+    from config.settings import PROVIDER_BASE_URLS, TIMEOUT_SECONDS
 
     base_url = PROVIDER_BASE_URLS.get(spec.provider, "https://api.deepseek.com")
     cache_key = f"{spec.provider.value}:{base_url}"
 
     if cache_key not in _client_cache:
         provider_key_env = f"GOAT_{spec.provider.value.upper()}_API_KEY"
-        api_key = os.environ.get(provider_key_env, API_KEY)
+        api_key = os.environ.get(provider_key_env, "")
         _client_cache[cache_key] = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
