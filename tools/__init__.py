@@ -26,7 +26,7 @@ from tools.agent_dag_tools import (
     MEMORY_STORE_DAG,
     MEMORY_SEARCH_DAG,
 )
-from tools.agent_web_tools import WEB_SEARCH
+from tools.agent_web_tools import FETCH_URL, WEB_SEARCH
 
 __all__ = [
     # File tools
@@ -46,4 +46,5 @@ __all__ = [
     "MEMORY_SEARCH_DAG",
     # Web tools
     "WEB_SEARCH",
+    "FETCH_URL",
 ]

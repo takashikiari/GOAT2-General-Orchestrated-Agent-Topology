@@ -1,68 +1,98 @@
-"""tools.agent_web_tools — web search tool for DAG agents.
+"""tools.agent_web_tools — web tools for DAG agents using crawl4ai.
 
-WEB_SEARCH fetches results from DuckDuckGo Lite (no API key required)
-and returns a text summary.  Optionally falls back to crawl4ai for
-richer extraction on individual URLs.
+Uses the same AsyncWebCrawler backend as GOAT's fetch_content goat_skill,
+so search and fetch quality is identical between orchestrator and DAG agents.
+
+WEB_SEARCH  — query a search engine, return markdown results
+FETCH_URL   — fetch a specific URL and return LLM-ready markdown
 """
 from __future__ import annotations
 
 import logging
 
 from tools.types import AgentTool
+from tools.web_config import WEB_MAX_CHARS, WEB_TIMEOUT
 
 log = logging.getLogger("goat2.tools.agent_web")
 
-_DDG_URL = "https://lite.duckduckgo.com/lite/"
-_MAX_CHARS = 6_000
-_TIMEOUT = 20
+_SEARCH_URL = "https://lite.duckduckgo.com/lite/"
+_SEARCH_MAX = 6_000
 
 
-async def _web_search(query: str, max_chars: int = _MAX_CHARS) -> str:
+async def _crawl(url: str, max_chars: int) -> str:
+    """Shared crawl4ai fetch — mirrors fetch_content.py exactly."""
     try:
-        import httpx
+        from crawl4ai import AsyncWebCrawler
     except ImportError:
-        return "ERROR: httpx not installed"
-
-    mc = max(500, min(int(max_chars), 20_000))
+        return "(crawl4ai not installed — run: pip install crawl4ai)"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
-            resp = await client.post(
-                _DDG_URL,
-                data={"q": query, "kl": "us-en"},
-                headers={"User-Agent": "Mozilla/5.0 (compatible; GOAT-agent/2.0)"},
-            )
-            resp.raise_for_status()
-            html = resp.text
+        async with AsyncWebCrawler() as crawler:
+            result = await crawler.arun(url=url, page_timeout=WEB_TIMEOUT * 1000)
+        if not result.success:
+            return f"(failed to fetch {url}: {result.error_message})"
+        content = result.markdown or result.cleaned_html or ""
+        if not content:
+            return f"(no content extracted from {url})"
+        if len(content) > max_chars:
+            omitted = len(content) - max_chars
+            return content[:max_chars] + f"\n...[{omitted} chars omitted]"
+        return content
     except Exception as exc:
-        log.warning("web_search: fetch failed query=%r: %s", query, exc)
-        return f"ERROR: web search failed: {exc}"
+        log.warning("crawl error url=%s: %s", url, exc)
+        return f"(error fetching {url}: {exc})"
 
-    # Extract text lines from DDG Lite HTML (simple, no heavy parser needed)
-    import re
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"\s{2,}", "\n", text).strip()
-    lines = [l.strip() for l in text.splitlines() if len(l.strip()) > 20]
-    result = "\n".join(lines)
-    if len(result) > mc:
-        result = result[:mc] + f"\n...[{len(result) - mc} chars truncated]"
 
-    log.info("web_search: query=%r chars=%d", query, len(result))
-    return result or f"No results found for: {query}"
+# ── WEB_SEARCH ────────────────────────────────────────────────────────────────
 
+async def _web_search(query: str, max_chars: int = _SEARCH_MAX) -> str:
+    import urllib.parse
+    mc = max(500, min(int(max_chars), 20_000))
+    search_url = f"{_SEARCH_URL}?q={urllib.parse.quote_plus(query)}&kl=us-en"
+    log.info("web_search query=%r url=%s", query, search_url)
+    return await _crawl(search_url, mc)
 
 WEB_SEARCH = AgentTool(
     name="web_search",
     description=(
-        "Search the web using DuckDuckGo and return text results. "
-        "Use for finding current information, documentation, or facts not in memory."
+        "Search the web using DuckDuckGo and return LLM-ready markdown results. "
+        "Use for finding current information, documentation, or facts not in memory. "
+        "Same crawl4ai backend as GOAT's fetch_content skill."
     ),
     parameters={
         "type": "object",
         "properties": {
             "query":     {"type": "string", "description": "Search query"},
-            "max_chars": {"type": "integer", "description": f"Max chars to return (default {_MAX_CHARS})"},
+            "max_chars": {"type": "integer",
+                          "description": f"Max chars to return (default {_SEARCH_MAX})"},
         },
         "required": ["query"],
     },
     handler=_web_search,
+)
+
+
+# ── FETCH_URL ─────────────────────────────────────────────────────────────────
+
+async def _fetch_url(url: str, max_chars: int = WEB_MAX_CHARS) -> str:
+    mc = max(500, min(int(max_chars), 100_000))
+    log.info("fetch_url url=%s max_chars=%d", url, mc)
+    return await _crawl(url, mc)
+
+FETCH_URL = AgentTool(
+    name="fetch_url",
+    description=(
+        "Fetch a specific URL and return its content as LLM-ready markdown. "
+        "Same crawl4ai backend as GOAT's fetch_content skill. "
+        "Use after web_search when you need the full content of a specific result."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url":       {"type": "string", "description": "URL to fetch"},
+            "max_chars": {"type": "integer",
+                          "description": f"Max chars to return (default {WEB_MAX_CHARS})"},
+        },
+        "required": ["url"],
+    },
+    handler=_fetch_url,
 )
