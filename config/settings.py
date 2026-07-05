@@ -195,3 +195,14 @@ class Settings:
             return float(role_cfg["temperature"])
         toml_defaults = _agents_cfg.get("defaults", {})
         return float(toml_defaults.get("temperature", default))
+
+    def get_agent_tool_rounds(self, role: str, *, default: int = 6) -> int:
+        """Return max_tool_rounds for *role*: env var > agents.toml [role] > agents.toml [defaults] > default."""
+        env_val = os.environ.get(f"GOAT_AGENT_{role.upper()}_MAX_TOOL_ROUNDS")
+        if env_val:
+            return int(env_val)
+        role_cfg = _agents_cfg.get(role, {})
+        if "max_tool_rounds" in role_cfg:
+            return int(role_cfg["max_tool_rounds"])
+        toml_defaults = _agents_cfg.get("defaults", {})
+        return int(toml_defaults.get("max_tool_rounds", default))

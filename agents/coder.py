@@ -76,10 +76,12 @@ class CoderAgent(BaseAgent):
             FILE_READ, FILE_WRITE, FILE_CREATE, FILE_LIST,
             FILE_SEARCH, FILE_GREP, FILE_INFO, FILE_READ_LINES, SHELL,
         ]
+        _s = Settings()
         super().__init__(
-            spec=spec or Settings().agents.get("coder"),
+            spec=spec or _s.agents.get("coder"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=Settings().get_agent_temperature("coder", default=0.1),
+            temperature=_s.get_agent_temperature("coder", default=0.1),
+            max_tool_rounds=_s.get_agent_tool_rounds("coder", default=6),
             tools=_file_tools,
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)

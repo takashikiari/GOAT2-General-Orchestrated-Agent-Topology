@@ -28,10 +28,12 @@ class ResearcherAgent(BaseAgent):
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
         from tools import FETCH_URL, MEMORY_SEARCH_DAG, WEB_SEARCH  # lazy — avoids agent↔tools cycle
+        _s = Settings()
         super().__init__(
-            spec=spec or Settings().agents.get("researcher"),
+            spec=spec or _s.agents.get("researcher"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=Settings().get_agent_temperature("researcher", default=0.2),
+            temperature=_s.get_agent_temperature("researcher", default=0.2),
+            max_tool_rounds=_s.get_agent_tool_rounds("researcher", default=8),
             tools=[WEB_SEARCH, FETCH_URL, MEMORY_SEARCH_DAG],
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)

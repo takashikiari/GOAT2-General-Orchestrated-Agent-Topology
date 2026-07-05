@@ -51,10 +51,12 @@ class MemoryAgent(BaseAgent):
             MEMORY_RECENT_DAG, MEMORY_GET_DAG, MEMORY_STORE_DAG, MEMORY_SEARCH_DAG,
         )
         _tools = [MEMORY_RECENT_DAG, MEMORY_GET_DAG, MEMORY_STORE_DAG, MEMORY_SEARCH_DAG]
+        _s = Settings()
         super().__init__(
-            spec=spec or Settings().agents.get("tool_caller"),
+            spec=spec or _s.agents.get("memory"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=Settings().get_agent_temperature("memory", default=0.1),
+            temperature=_s.get_agent_temperature("memory", default=0.1),
+            max_tool_rounds=_s.get_agent_tool_rounds("memory", default=4),
             tools=_tools,
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)

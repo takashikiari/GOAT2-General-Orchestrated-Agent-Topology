@@ -2,48 +2,56 @@
 # Non-secret — safe to commit. API keys go in .env.
 #
 # Precedence (highest → lowest):
-#   GOAT_AGENT_{ROLE}_MODEL env var  >  [role] section  >  [defaults]
+#   GOAT_AGENT_{ROLE}_* env var  >  [role] section  >  [defaults]
 #
 # Supported providers: openai | deepseek | groq
 
 [defaults]
-model        = "deepseek-chat"
-provider     = "deepseek"
-temperature  = 0.4
-tool_calling = true
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.4
+tool_calling    = true
+max_tool_rounds = 6
 
 [planner]
-model       = "deepseek-chat"
-provider    = "deepseek"
-temperature = 0.2
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.2
+max_tool_rounds = 0   # pure reasoning — no tools
 
 [researcher]
-model       = "deepseek-chat"
-provider    = "deepseek"
-temperature = 0.4
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.4
+max_tool_rounds = 8   # may chain several web searches
 
 [coder]
-model       = "deepseek-chat"
-provider    = "deepseek"
-temperature = 0.2
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.2
+max_tool_rounds = 6   # file ops + validate_syntax rounds
 
 [critic]
-model       = "llama-3.1-8b-instant"
-provider    = "groq"
-temperature = 0.2
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.2
+max_tool_rounds = 0   # pure analysis — no tools
 
 [summarizer]
-model       = "llama-3.3-70b-versatile"
-provider    = "groq"
-temperature = 0.2
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.2
+max_tool_rounds = 0   # pure synthesis — no tools
 
 [tool_caller]
-model        = "deepseek-chat"
-provider     = "deepseek"
-temperature  = 0.1
-tool_calling = true
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.1
+tool_calling    = true
+max_tool_rounds = 6
 
 [memory]
-model       = "deepseek-chat"
-provider    = "deepseek"
-temperature = 0.2
+model           = "deepseek-chat"
+provider        = "deepseek"
+temperature     = 0.2
+max_tool_rounds = 4   # memory reads/writes only

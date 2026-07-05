@@ -39,10 +39,12 @@ class SummarizerAgent(BaseAgent):
     role = "summarizer"
 
     def __init__(self, spec: ModelSpec | None = None) -> None:
+        _s = Settings()
         super().__init__(
-            spec=spec or Settings().agents.get("summarizer"),
+            spec=spec or _s.agents.get("summarizer"),
             system_prompt=_SYSTEM_PROMPT,
-            temperature=Settings().get_agent_temperature("summarizer", default=0.2),
+            temperature=_s.get_agent_temperature("summarizer", default=0.2),
+            max_tool_rounds=_s.get_agent_tool_rounds("summarizer", default=0),
         )
         log.debug("%s ready spec=%s tools=%s", self.__class__.__name__, self.spec, self.tool_names)
 
