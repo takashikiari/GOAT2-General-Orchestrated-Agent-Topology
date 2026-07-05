@@ -1,28 +1,17 @@
-"""
-config.settings — single source of truth for GOAT 2.0 configuration.
+"""config.settings — single source of truth for GOAT 2.0 configuration.
 
-Non-secret agent config (model, provider, temperature) is read from
+Non-secret agent config (model, provider, temperature) lives in
 ``config/agents.toml`` — version-controlled, safe to commit.
 
 Secrets and infrastructure endpoints come from ``.env`` (gitignored),
-loaded automatically via python-dotenv.  Real environment variables always
+loaded automatically via python-dotenv. Real environment variables always
 take precedence over ``.env`` values, so CI/CD and container deployments
 work without a file on disk.
 
 Precedence for agent config (highest → lowest):
-  GOAT_AGENT_{ROLE}_MODEL env var  >  agents.toml [role]  >  agents.toml [defaults]
+  GOAT_AGENT_{ROLE}_* env var  >  agents.toml [role]  >  agents.toml [defaults]
 
-Environment variables (secrets / infra):
-    DEEPSEEK_API_KEY    — LLM provider API key (required)
-    TELEGRAM_BOT_TOKEN  — Telegram bot token from @BotFather (required for bot)
-    MODEL_NAME          — global model fallback (default: from agents.toml [defaults])
-    BASE_URL            — provider base URL   (default: derived from provider)
-    TEMPERATURE         — global sampling temperature (default: 0.5)
-    MAX_TOKENS          — max tokens per LLM response  (default: 2048)
-    TIMEOUT_SECONDS     — HTTP timeout for LLM calls   (default: 30.0)
-    GOAT_DAG_WORKSPACE  — DAG sandbox directory        (default: ./dag_workspace)
-
-See .env.example for the full list of supported variables.
+See ``.env.example`` for the full list of supported environment variables.
 """
 from __future__ import annotations
 
