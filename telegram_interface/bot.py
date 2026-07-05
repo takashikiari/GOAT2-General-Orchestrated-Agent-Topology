@@ -4,6 +4,9 @@ build_app(registry) wires handlers; run_polling() starts daemon + long-polling.
 """
 from __future__ import annotations
 
+import asyncio
+from collections import defaultdict
+
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -34,6 +37,21 @@ def _truncate(text: str) -> str:
     return text[:_MAX_TG_LEN] if len(text) > _MAX_TG_LEN else text
 
 
+def _pick_dag_summary(result: dict) -> str:
+    """Return the best single-node output to forward to GOAT as DAG summary.
+
+    Priority: any node whose id contains 'summarizer', then the last result
+    value, then empty string.
+    """
+    results: dict = result.get("results") or {}
+    if not results:
+        return ""
+    for nid, val in results.items():
+        if "summarizer" in nid.lower():
+            return str(val)
+    return str(next(reversed(results.values())))
+
+
 def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     """Build and return a configured Telegram Application.
 
@@ -42,8 +60,18 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     accessed entirely through the Orchestrator → MemoryLayers path; this
     module never touches the physical tiers directly.  A ``post_shutdown``
     hook drains in-flight L3 archive writes on clean shutdown.
+
+    Per-chat asyncio locks (``_chat_locks``) serialize all traffic into the
+    orchestrator for a given chat_id — both live user messages and DAG
+    completion notifications — so GOAT is never called concurrently for the
+    same chat.  DAG completion waits for the lock without a timeout; the lock
+    is always released (``async with`` guarantees this even on exception) so
+    there is no deadlock risk.
     """
     layers = registry.memory_layers
+
+    # One asyncio.Lock per chat_id — created lazily on first access.
+    _chat_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     # Memory tools
     search_memory = build_search_memory_tool(layers)
@@ -68,24 +96,42 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     agent_router = AgentRouter()
 
     async def _on_dag_complete(dag_id: str, chat_id: str, state: str, result: dict) -> None:
-        """Notify the user when a DAG workflow finishes."""
+        """Route DAG completion through GOAT so only GOAT speaks to the user.
+
+        Waits for the per-chat lock (no timeout — the lock is always released
+        after each message handler turn) then calls orchestrator.run() with a
+        synthetic notification message.  GOAT reads the workflow summary and
+        composes the reply; the bot sends it normally.
+        """
         if not chat_id:
             return
-        emoji = "✅" if state == "done" else "❌"
-        lines = [f"{emoji} Workflow {dag_id} finished — state: {state}"]
-        for nid, val in (result.get("results") or {}).items():
-            preview = str(val)[:200] + "…" if len(str(val)) > 200 else str(val)
-            lines.append(f"• {nid}: {preview}")
-        for nid, err in (result.get("errors") or {}).items():
-            lines.append(f"• {nid} ❌: {err}")
-        text = _truncate("\n".join(lines))
-        try:
-            from telegram import Bot
-            await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
-                chat_id=int(chat_id), text=text
-            )
-        except Exception as exc:
-            log.warning("dag completion notify failed chat=%s: %s", chat_id, exc)
+        summary = _pick_dag_summary(result)
+        errors = result.get("errors") or {}
+        state_label = "completed successfully" if state == "done" else f"finished with state: {state}"
+        parts = [f"[Workflow '{dag_id}' {state_label}]"]
+        if summary:
+            parts.append(summary[:3000])
+        if errors:
+            err_lines = [f"{nid}: {err}" for nid, err in errors.items()]
+            parts.append("Errors:\n" + "\n".join(err_lines))
+        synthetic = "\n\n".join(parts)
+
+        log.info("dag_complete: waiting for chat lock chat=%s dag=%s", chat_id, dag_id)
+        async with _chat_locks[chat_id]:
+            log.info("dag_complete: lock acquired chat=%s dag=%s; running orchestrator", chat_id, dag_id)
+            try:
+                reply = await orchestrator.run(synthetic, chat_id)
+            except Exception:
+                log.exception("dag completion orchestrator.run() failed chat=%s dag=%s", chat_id, dag_id)
+                return
+            if reply:
+                try:
+                    from telegram import Bot
+                    await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
+                        chat_id=int(chat_id), text=_truncate(reply)
+                    )
+                except Exception as exc:
+                    log.warning("dag completion send failed chat=%s: %s", chat_id, exc)
 
     dag_manager = DagManager(wf_runner, _channel_factory, router=agent_router, on_complete=_on_dag_complete)
     workflow_tools = build_workflow_tools(dag_manager, _channel_factory)
@@ -103,11 +149,12 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         text = update.message.text or ""
         chat_id = str(update.effective_chat.id)
         log.info("chat=%s text=%r", chat_id, text[:80])
-        try:
-            reply = await orchestrator.run(text, chat_id)
-        except Exception:
-            log.exception("orchestrator.run() failed for chat=%s", chat_id)
-            reply = _ERROR_REPLY
+        async with _chat_locks[chat_id]:
+            try:
+                reply = await orchestrator.run(text, chat_id)
+            except Exception:
+                log.exception("orchestrator.run() failed for chat=%s", chat_id)
+                reply = _ERROR_REPLY
         if reply:
             await update.message.reply_text(_truncate(reply))
 
