@@ -72,12 +72,12 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         if not chat_id:
             return
         emoji = "✅" if state == "done" else "❌"
-        lines = [f"{emoji} Workflow *{dag_id}* finished — state: *{state}*"]
+        lines = [f"{emoji} Workflow {dag_id} finished — state: {state}"]
         for nid, val in (result.get("results") or {}).items():
             preview = str(val)[:200] + "…" if len(str(val)) > 200 else str(val)
-            lines.append(f"• *{nid}*: {preview}")
+            lines.append(f"• {nid}: {preview}")
         for nid, err in (result.get("errors") or {}).items():
-            lines.append(f"• *{nid}* ❌: {err}")
+            lines.append(f"• {nid} ❌: {err}")
         text = _truncate("\n".join(lines))
         try:
             from telegram import Bot

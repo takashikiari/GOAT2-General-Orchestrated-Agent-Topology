@@ -315,7 +315,21 @@ class BaseAgent(ABC):
 
             # No tool calls → model is done; return the text content.
             if not msg.tool_calls:
-                return msg.content or ""
+                content = msg.content or ""
+                # DeepSeek sometimes leaks raw DSML tool-call markup into
+                # content instead of populating the structured tool_calls field.
+                # Detect this and force one clean plain-text reply without tools.
+                if "<｜｜DSML｜｜" in content:
+                    log.warning("%r: DSML tool-call markup leaked into content; forcing plain text reply", self)
+                    history.append({"role": "assistant", "content": content})
+                    history.append({"role": "user", "content": "Please provide your final answer as plain text."})
+                    resp2 = await client.chat.completions.create(
+                        model=self.spec.model_id,
+                        messages=history,
+                        temperature=temp,
+                    )
+                    return resp2.choices[0].message.content or ""
+                return content
 
             # --- Tool-call round ---
             log.debug(
