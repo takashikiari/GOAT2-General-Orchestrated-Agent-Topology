@@ -9,14 +9,15 @@ FETCH_URL   — fetch a specific URL and return LLM-ready markdown
 from __future__ import annotations
 
 import logging
+import urllib.parse
 
 from tools.types import AgentTool
 from tools.web_config import WEB_MAX_CHARS, WEB_TIMEOUT
 
 log = logging.getLogger("goat2.tools.agent_web")
 
-_SEARCH_URL = "https://lite.duckduckgo.com/lite/"
-_SEARCH_MAX = 6_000
+_GOOGLE_SEARCH_URL = "https://www.google.com/search"
+_SEARCH_MAX = 8_000
 
 
 class _SilentLogger:
@@ -30,15 +31,18 @@ class _SilentLogger:
     def error_status(self, url, error, tag="ERROR", url_length=100): pass
 
 
-async def _crawl(url: str, max_chars: int) -> str:
-    """Shared crawl4ai fetch — mirrors fetch_content.py exactly."""
+async def _crawl(url: str, max_chars: int, *, wait_for: str | None = None) -> str:
+    """Shared crawl4ai+Playwright fetch."""
     try:
         from crawl4ai import AsyncWebCrawler
     except ImportError:
         return "(crawl4ai not installed — run: pip install crawl4ai)"
     try:
+        kw: dict = {"url": url, "page_timeout": WEB_TIMEOUT * 1000}
+        if wait_for:
+            kw["wait_for"] = wait_for
         async with AsyncWebCrawler(logger=_SilentLogger()) as crawler:
-            result = await crawler.arun(url=url, page_timeout=WEB_TIMEOUT * 1000)
+            result = await crawler.arun(**kw)
         if not result.success:
             return f"(failed to fetch {url}: {result.error_message})"
         content = result.markdown or result.cleaned_html or ""
@@ -56,18 +60,17 @@ async def _crawl(url: str, max_chars: int) -> str:
 # ── WEB_SEARCH ────────────────────────────────────────────────────────────────
 
 async def _web_search(query: str, max_chars: int = _SEARCH_MAX) -> str:
-    import urllib.parse
     mc = max(500, min(int(max_chars), 20_000))
-    search_url = f"{_SEARCH_URL}?q={urllib.parse.quote_plus(query)}&kl=us-en"
-    log.info("web_search query=%r url=%s", query, search_url)
-    return await _crawl(search_url, mc)
+    url = f"{_GOOGLE_SEARCH_URL}?q={urllib.parse.quote_plus(query)}&hl=en&num=10"
+    log.info("web_search query=%r url=%s", query, url)
+    return await _crawl(url, mc, wait_for="css:#search")
 
 WEB_SEARCH = AgentTool(
     name="web_search",
     description=(
-        "Search the web using DuckDuckGo and return LLM-ready markdown results. "
+        "Search the web using Google and return LLM-ready markdown results. "
         "Use for finding current information, documentation, or facts not in memory. "
-        "Same crawl4ai backend as GOAT's fetch_content skill."
+        "Powered by crawl4ai+Playwright for full JS rendering."
     ),
     parameters={
         "type": "object",
