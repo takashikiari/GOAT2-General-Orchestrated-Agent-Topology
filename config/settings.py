@@ -69,7 +69,7 @@ TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # DAG sandbox root — agents running inside a DAG can only access this directory.
 DAG_WORKSPACE: Path = Path(
-    os.environ.get("GOAT_DAG_WORKSPACE", str(Path(__file__).parent.parent / "dag_workspace"))
+    os.environ.get("DAG_WORKSPACE", str(Path(__file__).parent.parent / "dag_workspace"))
 ).resolve()
 
 
