@@ -376,7 +376,7 @@ class BaseAgent(ABC):
                 return content
 
             # --- Tool-call round ---
-            log.debug(
+            log.info(
                 "%r: tool round %d/%d — calls: %s",
                 self, round_idx + 1, rounds,
                 [tc.function.name for tc in msg.tool_calls],
@@ -416,7 +416,6 @@ class BaseAgent(ABC):
                     "content":      str(result),
                 })
 
-        # Every round returned tool_calls — force a plain text reply.
         log.warning(
             "%r: exhausted %d tool rounds; forcing final text answer", self, rounds
         )

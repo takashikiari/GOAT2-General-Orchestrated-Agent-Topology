@@ -12,6 +12,7 @@ with ``success=False`` is returned immediately.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from pathlib import Path
 from shutil import rmtree
@@ -19,6 +20,8 @@ from typing import Any
 
 from workflow.errors import CycleDetected, NodeNotFound, WorkflowError
 from workflow.models import DAGGraph, TaskNode, WorkflowResult
+
+log = logging.getLogger("goat2.workflow.runner")
 
 
 class WorkflowRunner:
@@ -173,14 +176,21 @@ class WorkflowRunner:
             results[nid] = None
             return
 
+        log.info("node start  dag=%s node=%s", graph.dag_id, nid)
         try:
             async with sem:
                 output = await asyncio.wait_for(
                     node.runner(nid, local_ctx),
                     timeout=self._node_timeout,
                 )
+            preview = (str(output or "")[:120] + "…") if len(str(output or "")) > 120 else str(output or "")
+            log.info("node done   dag=%s node=%s output=%r", graph.dag_id, nid, preview)
             results[nid] = output
+        except asyncio.TimeoutError as exc:
+            log.error("node timeout dag=%s node=%s timeout=%.0fs", graph.dag_id, nid, self._node_timeout)
+            errors[nid] = exc
         except Exception as exc:
+            log.error("node error  dag=%s node=%s error=%s", graph.dag_id, nid, exc)
             errors[nid] = exc
 
     @staticmethod
