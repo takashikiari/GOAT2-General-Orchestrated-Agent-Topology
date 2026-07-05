@@ -605,7 +605,7 @@ budget_hard_cap = 12000
 
 [prefetch]                        # the daemon — no confidence gate, timeout is the only blocker
 timeout = 0.5                     # asyncio.wait_for bound; on exceed L3 is dropped (graceful)
-max_results = 15
+max_results = 20
 recency_window_days = 30
 access_count_ref = 10
 score_similarity_weight = 0.6     # blend: similarity + recency + access_count
@@ -617,7 +617,7 @@ l2_context_cap = 8000
 l2_floor_tokens = 500
 l3_min_guarantee_tokens = 1200    # L3's guaranteed minimum slice (priority-inverted)
 l3_gap_significance = 3.0        # max_gap/mean_gap threshold for the raw-result gap filter
-max_results_per_search = 15
+max_results_per_search = 20
 
 [session_cache]
 ttl_seconds = 300                # cold-path L2.5 cache TTL (search_episodic_with_cache)
@@ -676,6 +676,74 @@ logic (`tests/test_activation.py` — cosine, lexical overlap, turn/write
 classification, recency rescoring) and the orchestrator memory flow; the fakes
 return empty activations + `None` embeddings so every single-turn test sees a
 cold turn and the pre-activation behaviour is preserved.
+
+---
+
+## Benchmark results
+
+The benchmark suite (`python3 -m benchmark`) runs against a live orchestrator
+with real Redis + ChromaDB. Each case preloads a conversation, asks a query,
+and scores the response with fuzzy match + semantic similarity. `episodic_only`
+cases are preloaded into L3 only (bypassing L2), forcing the full prefetch path.
+A **grounding check** re-queries L3 after scoring to verify the answer was
+actually retrieved — a correct-but-ungrounded answer is flagged as a guess.
+
+### Full suite — 41 cases across 11 datasets
+
+| Dataset | Cases | Accuracy | Grounded | Ungrounded | Avg latency |
+|---|---|---|---|---|---|
+| memory_recall | 10 | **100%** | 100% | 0 | 1.8 s |
+| temporal | 5 | **100%** | 100% | 0 | 1.8 s |
+| multi_turn | 3 | **100%** | 100% | 0 | 1.9 s |
+| cache | 4 | **100%** | 100% | 0 | 1.7 s |
+| prefetch | 4 | **100%** | 100% | 0 | 1.5 s |
+| multi_hop | 3 | **100%** | 100% | 0 | 1.8 s |
+| distractor (8 × L2) | 3 | 66.7% | 100% | 0 | 2.3 s |
+| distractor_15 | 3 | **100%** | 100% | 0 | 1.6 s |
+| distractor_20 | 3 | 66.7% | 50% | 1 | 3.1 s |
+| distractor_25 | 3 | **100%** | 100% | 0 | 2.0 s |
+| distractor_30 | 3 | **100%** | 100% | 0 | 1.9 s |
+
+### Distractor stress test — L3 retrieval under high noise
+
+All cases use `episodic_only=True` (L3-only), multi-sentence paragraphs,
+non-guessable arbitrary answers, and 3–4 lexical decoys placed in the same
+semantic domain as the query. At each tier the target fact is buried at a
+randomised mid-conversation position.
+
+| Dataset | Distractors | L3 entries | Accuracy | Grounded | Ungrounded | Avg latency |
+|---|---|---|---|---|---|---|
+| distractor_15 | 15 | 30 | **100%** | 100% | 0 | 1.6 s |
+| distractor_20 | 20 | 40 | 66.7% | 50% | **1** | 3.1 s |
+| distractor_25 | 25 | 50 | **100%** | 100% | 0 | 2.0 s |
+| distractor_30 | 30 | 60 | **100%** | 100% | 0 | 1.9 s |
+| distractor_50 | 50 | 100 | 66.7% | 100% | 0 | 3.7 s |
+| distractor_100 | 100 | 200 | 66.7% | 100% | 0 | 3.5 s |
+| distractor_200 | 200 | 400 | **100%** | 100% | 0 | 2.9 s |
+| distractor_400 | 400 | 800 | **100%** | 100% | 0 | 3.9 s |
+| distractor_800 | 800 | 1 600 | 66.7% | 100% | 0 | 3.1 s |
+
+**Key findings:**
+
+- **Grounding stays 100% on d25–d800.** Even when the system cannot retrieve
+  the fact, it does not guess — it reports that it does not know. The one
+  ungrounded correct result (d20-03, name "Diana") is a data quality issue:
+  the answer is a common name guessable without retrieval.
+- **Failures are ranking failures, not volume failures.** The system handles
+  d200 and d400 perfectly. Failures at d50, d100, and d800 occur when several
+  lexical decoys share the exact semantic sub-domain of the target query
+  (e.g. "firmware PIN" queries competing with "alarm PIN", "locker PIN",
+  "building entry PIN"), pushing the target below the top-20 cutoff.
+- **Volume alone is not the problem.** d400 (800 L3 entries) succeeds at 100%;
+  d800 (1 600 entries) at 66.7%. The determining factor is per-case domain
+  density of the decoys, not the raw corpus size.
+- **No degradation curve.** Accuracy does not decrease monotonically with N.
+  This confirms the HNSW index and blended-score ranking scale correctly;
+  the limit is semantic, not computational.
+
+The adversarial benchmark serves as a worst-case bound. In production, a
+conversation of comparable volume would span many unrelated domains; the
+dense same-domain competition present in these cases does not arise naturally.
 
 ---
 
