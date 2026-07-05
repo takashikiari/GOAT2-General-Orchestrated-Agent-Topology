@@ -75,3 +75,13 @@ class PermanentMemory:
     async def get_all_facts(self) -> dict[str, str]:
         """Return all stored facts as a dict."""
         return await self._get_facts()
+
+    async def delete_fact(self, key: str) -> bool:
+        """Remove a fact by key. Returns True if it existed, False if not found."""
+        facts = await self._get_facts()
+        if key not in facts:
+            return False
+        del facts[key]
+        await self._save_facts(facts)
+        log.debug("PermanentMemory: deleted fact key=%s", key)
+        return True

@@ -11,6 +11,7 @@ budget + async prefetch (``assemble_context``).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from datetime import datetime
@@ -188,6 +189,29 @@ class MemoryLayers:
         Returns a status string (never raises).
         """
         return await _promote_fact(self._permanent, key, value)
+
+    async def get_l1_facts(self) -> dict[str, str]:
+        """L1: return all stored facts."""
+        return await self._permanent.get_all_facts()
+
+    async def delete_l1_fact(self, key: str) -> bool:
+        """L1: delete a fact by key. Returns True if it existed."""
+        return await self._permanent.delete_fact(key)
+
+    async def get_layer_counts(self, chat_id: str) -> dict:
+        """Return entry counts for L1, L2, and L3 (global + per-chat)."""
+        facts, messages, l3_total, l3_chat = await asyncio.gather(
+            self._permanent.get_all_facts(),
+            self._working.get_messages(chat_id),
+            self._episodic.count(),
+            self._episodic.count(chat_id),
+        )
+        return {
+            "l1_facts": len(facts),
+            "l2_messages": len(messages),
+            "l3_total": l3_total,
+            "l3_this_chat": l3_chat,
+        }
 
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,

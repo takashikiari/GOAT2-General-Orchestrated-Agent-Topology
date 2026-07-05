@@ -15,7 +15,7 @@ agent_name = "goat-permanent"
 letta_model = "letta/letta-free"
 # Token cap on the L1 facts (core-memory) block — promotion is refused past this
 # so L1 stays small, curated and always-in-context (off the top of every budget).
-l1_facts_max_tokens = 500
+l1_facts_max_tokens = 2000
 
 [session_cache]
 ttl_seconds = 300

@@ -10,6 +10,7 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from config import settings
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
+from tools.memory_manager import build_memory_manager_tools
 from tools.memory_promote import build_promote_memory_tool
 from tools.memory_tools import build_search_memory_tool
 from tools.memory_writer import build_store_memory_tool
@@ -39,12 +40,13 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     search_memory = build_search_memory_tool(layers)
     store_memory = build_store_memory_tool(layers)
     promote_memory = build_promote_memory_tool(layers)
+    manager_tools = build_memory_manager_tools(layers)
     orchestrator = Orchestrator(
         layers=layers,
         llm_client=registry.llm_client,
         plugin_manager=registry.plugin_manager,
         analytics=registry.memory_analytics,
-        tools=[search_memory, store_memory, promote_memory],
+        tools=[search_memory, store_memory, promote_memory, *manager_tools],
     )
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
