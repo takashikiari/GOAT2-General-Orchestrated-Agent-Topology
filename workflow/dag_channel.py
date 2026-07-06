@@ -2,18 +2,26 @@
 
 Key schema (all keys get ``dag_ttl_seconds`` TTL):
 
-    ``{prefix}:{dag_id}:status``   JSON dict  — current DAG state
+    ``{prefix}:{dag_id}:status``   JSON dict  — current DAG state + live node_states
     ``{prefix}:{dag_id}:outbox``   Redis list — DAG → orchestrator messages
     ``{prefix}:{dag_id}:inbox``    Redis list — orchestrator → DAG messages
     ``{prefix}:{dag_id}:result``   JSON dict  — final output on completion
+    ``{prefix}:{dag_id}:spec``     JSON list  — raw node_specs for restart capability
+    ``{prefix}:{dag_id}:events``   Redis pub/sub channel — push node state-change events
 
 The orchestrator reads ``outbox`` passively on each relevant turn; it writes
 to ``inbox`` to send instructions mid-run.  No polling daemon required.
+
+``events`` is a Redis pub/sub channel: any subscriber receives a JSON payload
+on every node state transition without polling (see ``subscribe_events``).
+``spec`` persists the raw node specs so a failed DAG can be restarted by
+``DagManager.restart_failed()`` even after a process restart.
 """
 from __future__ import annotations
 
 import json
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -118,6 +126,72 @@ class DagChannel:
         """Non-blocking pop of the oldest inbox message (``None`` if empty)."""
         result = await self._get_client().rpop(self._k("inbox"))
         return result if result else None
+
+    # ── streaming events (push notifications) ─────────────────────────────────
+
+    async def publish_event(
+        self,
+        event_type: str,
+        node_id: str,
+        node_states: dict[str, str],
+    ) -> None:
+        """Publish a node state-change event to the Redis pub/sub events channel.
+
+        Any process subscribed via ``subscribe_events()`` receives this
+        immediately without polling.  Payload keys: event, node, dag_id,
+        states, ts.
+        """
+        payload = json.dumps({
+            "event": event_type,
+            "node": node_id,
+            "dag_id": self._dag_id,
+            "states": node_states,
+            "ts": time.time(),
+        })
+        await self._get_client().publish(self._k("events"), payload)
+
+    async def subscribe_events(self) -> AsyncGenerator[dict[str, Any], None]:
+        """Async generator that yields node state-change event dicts in real time.
+
+        Opens a dedicated Redis connection with pub/sub — do NOT share the
+        main client.  The generator runs until it is closed by the caller
+        (``aclose()`` or ``async for`` loop break).
+
+        Usage::
+
+            async for event in channel.subscribe_events():
+                node_id = event["node"]
+                state   = event["event"]   # running / done / error / retrying / skipped
+                states  = event["states"]  # full snapshot of all node states
+        """
+        client = aioredis.from_url(self._url, decode_responses=True)
+        pubsub = client.pubsub()
+        await pubsub.subscribe(self._k("events"))
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    yield json.loads(message["data"])
+        finally:
+            await pubsub.unsubscribe(self._k("events"))
+            await client.aclose()
+
+    # ── graph spec persistence (for restart-after-failure) ───────────────────
+
+    async def set_graph_spec(self, node_specs: list[dict[str, Any]]) -> None:
+        """Persist the raw node specs so the DAG can be restarted after failure.
+
+        Stores the same list of dicts passed to ``DagManager.build_graph``:
+        each dict has keys ``id``, ``role``, ``task``, ``deps``.  Agents are
+        not included (they are reconstructed from roles at restart time).
+        """
+        await self._get_client().setex(
+            self._k("spec"), self._ttl, json.dumps(node_specs)
+        )
+
+    async def get_graph_spec(self) -> list[dict[str, Any]] | None:
+        """Return the persisted node specs, or ``None`` if not found."""
+        raw = await self._get_client().get(self._k("spec"))
+        return json.loads(raw) if raw else None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 

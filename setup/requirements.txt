@@ -1,0 +1,7 @@
+# GOAT 2.0 — Setup wizard dependencies
+# These are the ONLY packages needed to run the setup wizard.
+# Install with: pip install -r setup/requirements.txt
+
+questionary>=2.0.0
+rich>=13.0.0
+requests>=2.28.0

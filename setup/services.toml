@@ -1,0 +1,46 @@
+# GOAT 2.0 — Optional Services
+# This file lists all services GOAT can use.
+# Recommended services improve functionality but are not required to start.
+
+[[services]]
+id          = "redis"
+name        = "Redis"
+recommended = true
+required    = false
+description = "Enables DAG state, session memory, and update notifications."
+env_key     = "REDIS_URL"
+default_url = "redis://localhost:6379/0"
+install_url = "https://redis.io/docs/getting-started/"
+notes       = "Install: brew install redis (Mac) / apt install redis (Linux)"
+
+[[services]]
+id          = "chroma"
+name        = "ChromaDB"
+recommended = true
+required    = false
+description = "Enables long-term vector memory across sessions."
+env_key     = ""
+persist_dir = "./chroma_data"
+install_url = "https://docs.trychroma.com/getting-started"
+notes       = "Installed automatically with pip install -r requirements.txt"
+
+[[services]]
+id          = "letta"
+name        = "Letta"
+recommended = false
+required    = false
+description = "Advanced stateful memory backend. Alternative to ChromaDB."
+env_key     = "LETTA_URL"
+default_url = "http://localhost:8283"
+install_url = "https://docs.letta.com"
+notes       = "Requires Letta server running separately."
+
+[[services]]
+id          = "telegram"
+name        = "Telegram Bot"
+recommended = true
+required    = true
+description = "Primary communication interface. Required to run GOAT."
+env_key     = "TELEGRAM_TOKEN"
+docs_url    = "https://t.me/BotFather"
+notes       = "Create a bot via @BotFather on Telegram. Takes ~1 minute."

@@ -1,0 +1,73 @@
+# GOAT 2.0 — Supported LLM Providers
+# This file is the source of truth for the setup wizard.
+# To add a new provider: add a [[providers]] block below.
+
+[[providers]]
+id          = "deepseek"
+name        = "DeepSeek"
+models      = ["deepseek-chat", "deepseek-reasoner"]
+env_key     = "DEEPSEEK_API_KEY"
+base_url    = "https://api.deepseek.com/v1"
+docs_url    = "https://platform.deepseek.com"
+notes       = "Best price/quality ratio. Recommended default."
+recommended = true
+
+[[providers]]
+id          = "openai"
+name        = "OpenAI"
+models      = ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"]
+env_key     = "OPENAI_API_KEY"
+base_url    = "https://api.openai.com/v1"
+docs_url    = "https://platform.openai.com/api-keys"
+notes       = "Industry standard. Get key at platform.openai.com"
+recommended = false
+
+[[providers]]
+id          = "anthropic"
+name        = "Anthropic (Claude)"
+models      = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+env_key     = "ANTHROPIC_API_KEY"
+base_url    = "https://api.anthropic.com/v1"
+docs_url    = "https://console.anthropic.com"
+notes       = "Strong reasoning. Get key at console.anthropic.com"
+recommended = false
+
+[[providers]]
+id          = "groq"
+name        = "Groq"
+models      = ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"]
+env_key     = "GROQ_API_KEY"
+base_url    = "https://api.groq.com/openai/v1"
+docs_url    = "https://console.groq.com"
+notes       = "Very fast inference. Free tier available."
+recommended = false
+
+[[providers]]
+id          = "ollama"
+name        = "Ollama (local, no API key)"
+models      = ["llama3.3", "mistral", "qwen2.5-coder", "phi4"]
+env_key     = ""
+base_url    = "http://localhost:11434/v1"
+docs_url    = "https://ollama.ai"
+notes       = "Runs 100% locally. No API key needed. Requires Ollama installed."
+recommended = false
+
+[[providers]]
+id          = "openrouter"
+name        = "OpenRouter"
+models      = ["meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-001", "mistralai/mistral-large"]
+env_key     = "OPENROUTER_API_KEY"
+base_url    = "https://openrouter.ai/api/v1"
+docs_url    = "https://openrouter.ai/keys"
+notes       = "Access to 200+ models via one API key."
+recommended = false
+
+[[providers]]
+id          = "gemini"
+name        = "Google Gemini"
+models      = ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+env_key     = "GEMINI_API_KEY"
+base_url    = "https://generativelanguage.googleapis.com/v1beta/openai"
+docs_url    = "https://aistudio.google.com/app/apikey"
+notes       = "Get key at aistudio.google.com — free tier available."
+recommended = false

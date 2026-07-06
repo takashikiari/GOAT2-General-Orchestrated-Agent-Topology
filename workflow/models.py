@@ -59,7 +59,17 @@ class TaskNode:
         skipped — its runner is not called and its result is ``None``.
         The predicate receives the shared context dict.
     metadata:
-        Optional arbitrary payload (tags, priority, timeout, ...).
+        Optional arbitrary payload (tags, priority, ...).
+    timeout:
+        Per-node execution timeout in seconds. Overrides the runner-level
+        ``node_timeout`` when set. ``None`` means use the runner default.
+    max_retries:
+        Number of additional attempts after the first failure. 0 means no
+        retries (fail immediately). Each attempt uses the same runner and
+        a fresh copy of the context snapshot.
+    retry_delay:
+        Seconds to wait between retry attempts. The semaphore is released
+        during the sleep so other nodes can run concurrently.
     """
 
     task_id: str
@@ -67,6 +77,9 @@ class TaskNode:
     runner: NodeRunner | None = None
     condition: ConditionFn | None = None
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
+    timeout: float | None = None
+    max_retries: int = 0
+    retry_delay: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate basic invariants."""
@@ -78,6 +91,12 @@ class TaskNode:
             raise TypeError(
                 f"condition must be callable or None, got {type(self.condition)}"
             )
+        if self.max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
+        if self.retry_delay < 0:
+            raise ValueError(f"retry_delay must be >= 0, got {self.retry_delay}")
+        if self.timeout is not None and self.timeout <= 0:
+            raise ValueError(f"timeout must be > 0, got {self.timeout}")
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +213,14 @@ class WorkflowResult:
     execution_order:
         The topological order in which nodes were executed (including
         skipped nodes — they still appear in order).
+    confidence_score:
+        Float in [0.0, 1.0]. 1.0 means every node succeeded on first
+        attempt. Reduced by node failures (proportional) and by retries
+        (3% per node that needed at least one retry). Skipped nodes are
+        neutral (intentional branching does not reduce confidence).
+    retries_used:
+        Mapping from ``task_id`` to the number of retries consumed (0 for
+        nodes that succeeded or failed on the first attempt).
     """
 
     success: bool
@@ -201,3 +228,5 @@ class WorkflowResult:
     skipped: set[str] = dataclasses.field(default_factory=set)
     errors: dict[str, Exception] = dataclasses.field(default_factory=dict)
     execution_order: tuple[str, ...] = ()
+    confidence_score: float = 0.0
+    retries_used: dict[str, int] = dataclasses.field(default_factory=dict)

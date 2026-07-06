@@ -442,7 +442,22 @@ class BaseAgent(ABC):
             log.error("%r: %s", self, msg)
             return f"ERROR: {msg}"
 
-        handler = tool_map[name].handler
+        td = tool_map[name]
+
+        # Validate required parameters before calling — returns a clear,
+        # actionable error the model can use to retry with correct arguments,
+        # rather than a raw Python TypeError traceback.
+        required: list[str] = td.parameters.get("required", [])
+        missing = [k for k in required if k not in args]
+        if missing:
+            msg = (
+                f"Tool '{name}' called without required parameter(s): {missing}. "
+                f"Retry the call and include ALL required fields: {required}."
+            )
+            log.error("%r: %s (received keys=%s)", self, msg, list(args))
+            return f"ERROR: {msg}"
+
+        handler = td.handler
         try:
             if inspect.iscoroutinefunction(handler):
                 return await handler(**args)
