@@ -114,6 +114,10 @@ enriching_sim = 0.55
 # with the current query). 5 = enough to catch a topic-anchored follow-up
 # ("tell me more about that") without being diluted by older context.
 lexical_window = 5
+# Topic identity for L3 pre-filtering — a topic_id UUID is attached to every
+# auto-archived turn and used to narrow the prefetch search space.
+topic_return_threshold = 0.75   # cosine sim required to recognise a topic return
+topic_archive_max = 10          # past topic centroids kept per chat (newest-last)
 
 # Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is a
 # hard backstop (bounds cost/latency per turn, kills a runaway loop), never a

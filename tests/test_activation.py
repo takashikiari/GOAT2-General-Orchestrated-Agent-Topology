@@ -163,3 +163,119 @@ def test_trim_recent_appends_within_window():
 def test_trim_recent_caps_at_window():
     # window is 5 → the oldest drops when a 6th is appended
     assert trim_recent(["a", "b", "c", "d", "e"], "f") == ["b", "c", "d", "e", "f"]
+
+
+from memory.activation import (
+    update_centroid_weighted,
+    find_topic_return,
+    archive_current_topic,
+)
+
+
+# --- update_centroid_weighted -----------------------------------------------
+
+def test_update_centroid_weighted_full_replace_at_turn_one():
+    # turn_count=1 → alpha = 1/min(1,20) = 1.0 → result is pure query_emb
+    result = update_centroid_weighted([1.0, 0.0], [0.0, 1.0], 1)
+    assert result == [0.0, 1.0]
+
+
+def test_update_centroid_weighted_blend_at_turn_two():
+    # turn_count=2 → alpha = 0.5 → 50/50 blend
+    result = update_centroid_weighted([1.0, 0.0], [0.0, 1.0], 2)
+    assert abs(result[0] - 0.5) < 1e-9
+    assert abs(result[1] - 0.5) < 1e-9
+
+
+def test_update_centroid_weighted_stable_at_high_turn_count():
+    # turn_count=20 → alpha = 1/20 = 0.05 → 95% centroid + 5% query
+    result = update_centroid_weighted([1.0, 0.0], [0.0, 1.0], 20)
+    assert abs(result[0] - 0.95) < 1e-9
+    assert abs(result[1] - 0.05) < 1e-9
+
+
+def test_update_centroid_weighted_caps_alpha_at_twenty():
+    # turn_count=50 → min(50, 20) = 20 → same as turn_count=20
+    r20 = update_centroid_weighted([1.0, 0.0], [0.0, 1.0], 20)
+    r50 = update_centroid_weighted([1.0, 0.0], [0.0, 1.0], 50)
+    assert r20 == r50
+
+
+# --- find_topic_return -------------------------------------------------------
+
+def test_find_topic_return_matches_closest_above_threshold():
+    archived = [
+        {"topic_id": "t1", "centroid": [1.0, 0.0], "ts": 1.0},
+        {"topic_id": "t2", "centroid": [0.0, 1.0], "ts": 2.0},
+    ]
+    result = find_topic_return([1.0, 0.0], archived, threshold=0.75)
+    assert result == "t1"
+
+
+def test_find_topic_return_none_when_below_threshold():
+    # cosine([0.6, 0.8], [1.0, 0.0]) = 0.6 < 0.75
+    archived = [{"topic_id": "t1", "centroid": [1.0, 0.0], "ts": 1.0}]
+    result = find_topic_return([0.6, 0.8], archived, threshold=0.75)
+    assert result is None
+
+
+def test_find_topic_return_none_on_empty_inputs():
+    assert find_topic_return(None, [{"topic_id": "t1", "centroid": [1.0, 0.0], "ts": 1.0}], 0.75) is None
+    assert find_topic_return([1.0, 0.0], [], 0.75) is None
+
+
+# --- archive_current_topic ---------------------------------------------------
+
+def test_archive_current_topic_appends_entry():
+    act = Activation(centroid=[1.0, 0.0], topic_id="t1", ts=1.0, archived_topics=[])
+    result = archive_current_topic(act, max_archived=10)
+    assert len(result) == 1
+    assert result[0]["topic_id"] == "t1"
+    assert result[0]["centroid"] == [1.0, 0.0]
+
+
+def test_archive_current_topic_trims_to_max_and_drops_oldest():
+    existing = [{"topic_id": f"t{i}", "centroid": [float(i), 0.0], "ts": float(i)} for i in range(10)]
+    act = Activation(centroid=[10.0, 0.0], topic_id="t10", ts=10.0, archived_topics=existing)
+    result = archive_current_topic(act, max_archived=10)
+    assert len(result) == 10
+    assert result[-1]["topic_id"] == "t10"
+    assert result[0]["topic_id"] == "t1"   # t0 dropped
+
+
+def test_archive_current_topic_deduplicates_same_topic_id():
+    existing = [{"topic_id": "t1", "centroid": [0.5, 0.5], "ts": 1.0}]
+    act = Activation(centroid=[1.0, 0.0], topic_id="t1", ts=2.0, archived_topics=existing)
+    result = archive_current_topic(act, max_archived=10)
+    t1_entries = [e for e in result if e["topic_id"] == "t1"]
+    assert len(t1_entries) == 1
+    assert t1_entries[0]["ts"] == 2.0
+
+
+def test_archive_current_topic_noop_when_no_topic_id():
+    act = Activation(centroid=[1.0, 0.0], topic_id="", ts=1.0, archived_topics=[])
+    result = archive_current_topic(act, max_archived=10)
+    assert result == []
+
+
+def test_activation_roundtrip_preserves_new_fields():
+    act = Activation(
+        centroid=[1.0, 0.0], merged=[], last_query="q", recent_queries=["q"],
+        ts=1.0, topic_id="abc-123", turn_count=5,
+        archived_topics=[{"topic_id": "old", "centroid": [0.0, 1.0], "ts": 0.5}],
+    )
+    restored = Activation.from_dict(act.to_dict())
+    assert restored.topic_id == "abc-123"
+    assert restored.turn_count == 5
+    assert len(restored.archived_topics) == 1
+    assert restored.archived_topics[0]["topic_id"] == "old"
+
+
+def test_activation_from_dict_defaults_new_fields_when_missing():
+    # Old Redis blob — no topic fields. Must deserialise safely.
+    old_blob = {"centroid": [1.0, 0.0], "merged": [], "last_query": "q",
+                "recent_queries": [], "ts": 1.0}
+    act = Activation.from_dict(old_blob)
+    assert act.topic_id == ""
+    assert act.turn_count == 0
+    assert act.archived_topics == []

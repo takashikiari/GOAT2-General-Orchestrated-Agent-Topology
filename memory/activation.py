@@ -52,6 +52,9 @@ __all__ = [
     "classify_write",
     "rescore_recency",
     "trim_recent",
+    "update_centroid_weighted",
+    "find_topic_return",
+    "archive_current_topic",
 ]
 
 
@@ -76,6 +79,9 @@ class Activation:
     last_query: str = ""
     recent_queries: list[str] = field(default_factory=list)
     ts: float = 0.0
+    topic_id: str = ""
+    turn_count: int = 0
+    archived_topics: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-friendly dict for Redis storage."""
@@ -85,6 +91,9 @@ class Activation:
             "last_query": self.last_query,
             "recent_queries": self.recent_queries,
             "ts": self.ts,
+            "topic_id": self.topic_id,
+            "turn_count": self.turn_count,
+            "archived_topics": self.archived_topics,
         }
 
     @classmethod
@@ -96,6 +105,9 @@ class Activation:
             last_query=str(data.get("last_query") or ""),
             recent_queries=list(data.get("recent_queries") or []),
             ts=float(data.get("ts") or 0.0),
+            topic_id=str(data.get("topic_id") or ""),
+            turn_count=int(data.get("turn_count") or 0),
+            archived_topics=list(data.get("archived_topics") or []),
         )
 
 
@@ -255,3 +267,53 @@ def trim_recent(recent: list[str], query: str) -> list[str]:
     if len(out) > ACTIVATION_LEXICAL_WINDOW:
         out = out[-ACTIVATION_LEXICAL_WINDOW:]
     return out
+
+
+def update_centroid_weighted(
+    centroid: list[float], query_emb: list[float], turn_count: int,
+) -> list[float]:
+    """Stability-weighted centroid update.
+
+    Early turns (turn_count small) allow large moves; a stable topic
+    (turn_count → 20) resists drift with alpha → 0.05. Caps at turn 20
+    so the minimum alpha is 5% (centroid can always track the thread).
+    """
+    alpha = 1.0 / min(max(turn_count, 1), 20)
+    return [(1.0 - alpha) * c + alpha * q for c, q in zip(centroid, query_emb)]
+
+
+def find_topic_return(
+    query_emb: list[float] | None,
+    archived_topics: list[dict],
+    threshold: float,
+) -> str | None:
+    """Return the archived ``topic_id`` whose centroid best matches ``query_emb``.
+
+    Compares the new query embedding against every archived topic centroid via
+    cosine similarity. Returns the best-matching ``topic_id`` when the best
+    similarity meets ``threshold``, else ``None``. None-safe on both inputs.
+    """
+    if not query_emb or not archived_topics:
+        return None
+    best_sim, best_id = 0.0, None
+    for entry in archived_topics:
+        sim = cosine(query_emb, entry.get("centroid") or [])
+        if sim > best_sim:
+            best_sim, best_id = sim, entry.get("topic_id")
+    return best_id if best_id and best_sim >= threshold else None
+
+
+def archive_current_topic(activation: "Activation", max_archived: int) -> list[dict]:
+    """Snapshot the current topic centroid into the archived list.
+
+    Removes any prior entry with the same ``topic_id`` (dedup on re-visit),
+    appends the current centroid as a new snapshot, then trims to
+    ``max_archived`` (newest-last). Returns a new list; ``activation`` is
+    not mutated.
+    """
+    if not activation.centroid or not activation.topic_id:
+        return list(activation.archived_topics)
+    entry = {"topic_id": activation.topic_id, "centroid": activation.centroid, "ts": activation.ts}
+    deduped = [a for a in activation.archived_topics if a.get("topic_id") != activation.topic_id]
+    deduped.append(entry)
+    return deduped[-max_archived:]

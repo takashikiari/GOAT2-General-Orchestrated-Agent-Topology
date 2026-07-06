@@ -72,6 +72,8 @@ _DEFAULTS: dict = {
         "lexical_low": 0.15,
         "enriching_sim": 0.55,
         "lexical_window": 5,
+        "topic_return_threshold": 0.75,
+        "topic_archive_max": 10,
     },
     # Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is
     # a hard backstop (bounds cost/latency per turn, kills a runaway loop), never
@@ -224,6 +226,12 @@ ACTIVATION_ENRICHING_SIM: Final[float] = float(
 ACTIVATION_LEXICAL_WINDOW: Final[int] = int(
     _activation_cfg.get("lexical_window", _DEFAULTS["activation"]["lexical_window"])
 )
+TOPIC_RETURN_THRESHOLD: Final[float] = float(
+    _activation_cfg.get("topic_return_threshold", _DEFAULTS["activation"]["topic_return_threshold"])
+)
+TOPIC_ARCHIVE_MAX: Final[int] = int(
+    _activation_cfg.get("topic_archive_max", _DEFAULTS["activation"]["topic_archive_max"])
+)
 
 # Agentic tool-calling loop — see config/memory.toml [tool_loop].
 _tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
@@ -268,5 +276,7 @@ __all__ = [
     "ACTIVATION_LEXICAL_LOW",
     "ACTIVATION_ENRICHING_SIM",
     "ACTIVATION_LEXICAL_WINDOW",
+    "TOPIC_RETURN_THRESHOLD",
+    "TOPIC_ARCHIVE_MAX",
     "AGENTIC_MAX_ITERATIONS",
 ]
