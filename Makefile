@@ -1,7 +1,7 @@
 # GOAT 2.0 — Developer shortcuts
 # Usage: make <target>
 
-.PHONY: run setup reconfigure test update rollback clean lint
+.PHONY: run setup reconfigure test test-fast checks update rollback clean lint
 
 run:
 	bash run.sh
