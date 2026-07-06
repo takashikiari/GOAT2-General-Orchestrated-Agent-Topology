@@ -5,10 +5,24 @@ build_app(registry) wires handlers; run_polling() starts daemon + long-polling.
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
+import tomllib
 from collections import defaultdict
+from pathlib import Path
 
-from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+_ROOT = Path(__file__).parent.parent
 
 from config import settings
 from memory.config import WORKING_STORAGE_URL
@@ -35,6 +49,72 @@ _ERROR_REPLY = "Something went wrong, please try again."
 def _truncate(text: str) -> str:
     """Truncate text to Telegram's 4096-character message limit."""
     return text[:_MAX_TG_LEN] if len(text) > _MAX_TG_LEN else text
+
+
+def _load_admin_chat_id() -> str:
+    """Read admin_chat_id from goat2.toml, or empty string if not configured."""
+    cfg = _ROOT / "goat2.toml"
+    if not cfg.exists():
+        return ""
+    try:
+        with open(cfg, "rb") as f:
+            data = tomllib.load(f)
+        return str(data.get("interface", {}).get("telegram", {}).get("admin_chat_id", ""))
+    except Exception:
+        return ""
+
+
+def _current_version() -> str:
+    try:
+        sys.path.insert(0, str(_ROOT))
+        from version import __version__
+        return __version__
+    except Exception:
+        return "unknown"
+
+
+async def _git_run(*args: str) -> subprocess.CompletedProcess:
+    return await asyncio.to_thread(
+        lambda: subprocess.run(["git"] + list(args), cwd=_ROOT, capture_output=True, text=True)
+    )
+
+
+async def _pip_install() -> subprocess.CompletedProcess:
+    return await asyncio.to_thread(
+        lambda: subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r", str(_ROOT / "requirements.txt")],
+            cwd=_ROOT, capture_output=True, text=True,
+        )
+    )
+
+
+def _check_update_sync() -> dict | None:
+    """Synchronous GitHub release check — run via asyncio.to_thread."""
+    try:
+        cfg_path = _ROOT / "goat2.toml"
+        repo = ""
+        channel = "stable"
+        if cfg_path.exists():
+            with open(cfg_path, "rb") as f:
+                cfg = tomllib.load(f)
+            repo    = cfg.get("updates", {}).get("github_repo", "")
+            channel = cfg.get("updates", {}).get("channel", "stable")
+        if not repo:
+            return None
+        import urllib.request, json as _json
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            release = _json.loads(r.read())
+        remote = release.get("tag_name", "v0.0.0").lstrip("v")
+        def _parts(v: str) -> tuple:
+            try: return tuple(int(x) for x in v.split(".")[:3])
+            except ValueError: return (0, 0, 0)
+        if _parts(remote) > _parts(_current_version()):
+            return release
+        return None
+    except Exception:
+        return None
 
 
 def _pick_dag_summary(result: dict) -> str:
@@ -144,6 +224,155 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         tools=[search_memory, store_memory, promote_memory, *manager_tools, *workflow_tools],
     )
 
+    admin_chat_id = _load_admin_chat_id()
+
+    def _is_admin(update: Update) -> bool:
+        if not admin_chat_id:
+            return True  # no admin configured → allow everyone (open instance)
+        return str(update.effective_chat.id) == admin_chat_id
+
+    # ── /update ───────────────────────────────────────────────────────────────
+
+    async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_admin(update):
+            await update.message.reply_text("⛔ This command is restricted to the bot admin.")
+            return
+
+        msg = await update.message.reply_text("🔍 Checking for updates...")
+        release = await asyncio.to_thread(_check_update_sync)
+        current = _current_version()
+
+        if release is None:
+            await msg.edit_text(f"✅ GOAT is up to date (v{current}).")
+            return
+
+        remote_tag  = release.get("tag_name", "?")
+        changelog   = (release.get("body") or "No changelog provided.").strip()
+        if len(changelog) > 800:
+            changelog = changelog[:800] + "…"
+        release_url = release.get("html_url", "")
+
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Update now", callback_data="update:confirm"),
+            InlineKeyboardButton("❌ Cancel",     callback_data="update:cancel"),
+        ]])
+        text = (
+            f"🆕 *New version available: {remote_tag}*\n"
+            f"Current: v{current}\n\n"
+            f"*What's new:*\n{changelog}\n\n"
+            f"[View on GitHub]({release_url})"
+        )
+        await msg.edit_text(text, reply_markup=keyboard, parse_mode="Markdown",
+                            disable_web_page_preview=True)
+
+    # ── /rollback ─────────────────────────────────────────────────────────────
+
+    async def handle_rollback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_admin(update):
+            await update.message.reply_text("⛔ This command is restricted to the bot admin.")
+            return
+
+        result = await _git_run("tag", "--sort=-version:refname")
+        tags = [t for t in result.stdout.strip().splitlines() if t.startswith("v")][:6]
+        current = _current_version()
+
+        if not tags:
+            await update.message.reply_text("No release tags found in the repository.")
+            return
+
+        buttons = [
+            [InlineKeyboardButton(
+                f"{'▶ ' if t == f'v{current}' else ''}{t}",
+                callback_data=f"rollback:select:{t}",
+            )]
+            for t in tags
+        ]
+        buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="rollback:cancel")])
+        await update.message.reply_text(
+            f"Current version: *v{current}*\nSelect a version to restore:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+
+    # ── inline keyboard callbacks ─────────────────────────────────────────────
+
+    async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+
+        # ── update flow ───────────────────────────────────────────────────────
+        if data == "update:confirm":
+            await query.edit_message_text("⏳ Pulling latest code...")
+            pull = await _git_run("pull", "--ff-only")
+            if pull.returncode != 0:
+                await query.edit_message_text(
+                    f"❌ *git pull failed:*\n```{pull.stderr[:500]}```",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await query.edit_message_text("⏳ Installing dependencies...")
+            pip = await _pip_install()
+            if pip.returncode != 0:
+                await query.edit_message_text(
+                    f"❌ *pip install failed:*\n```{pip.stderr[:500]}```",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await query.edit_message_text("✅ Update installed. Restarting GOAT…")
+            await asyncio.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        elif data == "update:cancel":
+            await query.edit_message_text("Update cancelled.")
+
+        # ── rollback flow ─────────────────────────────────────────────────────
+        elif data.startswith("rollback:select:"):
+            tag = data.split(":", 2)[2]
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"✅ Confirm — restore {tag}", callback_data=f"rollback:confirm:{tag}"),
+                InlineKeyboardButton("❌ Cancel", callback_data="rollback:cancel"),
+            ]])
+            await query.edit_message_text(
+                f"⚠️ Roll back to *{tag}*?\n\nGOAT will restart on the older version.",
+                reply_markup=keyboard,
+                parse_mode="Markdown",
+            )
+
+        elif data.startswith("rollback:confirm:"):
+            tag = data.split(":", 2)[2]
+            await query.edit_message_text(f"⏳ Checking out {tag}…")
+
+            await _git_run("stash", "--include-untracked")
+            checkout = await _git_run("checkout", tag)
+            if checkout.returncode != 0:
+                await query.edit_message_text(
+                    f"❌ *git checkout failed:*\n```{checkout.stderr[:500]}```",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await query.edit_message_text(f"⏳ Reinstalling dependencies for {tag}…")
+            pip = await _pip_install()
+            if pip.returncode != 0:
+                await query.edit_message_text(
+                    f"❌ *pip install failed:*\n```{pip.stderr[:500]}```",
+                    parse_mode="Markdown",
+                )
+                return
+
+            await query.edit_message_text(f"✅ Rolled back to *{tag}*. Restarting GOAT…",
+                                          parse_mode="Markdown")
+            await asyncio.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        elif data == "rollback:cancel":
+            await query.edit_message_text("Rollback cancelled.")
+
+    # ── message handler ───────────────────────────────────────────────────────
+
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""
         text = update.message.text or ""
@@ -167,6 +396,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         builder = builder.post_init(post_init)
     builder = builder.post_shutdown(drain_archives)
     app = builder.build()
+    app.add_handler(CommandHandler("update",   handle_update))
+    app.add_handler(CommandHandler("rollback", handle_rollback))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     log.info("Telegram bot application built (model=%s)", settings.MODEL_NAME)
     return app
