@@ -632,7 +632,9 @@ class Orchestrator:
             new_turn_count = activation.turn_count + 1
             topic_id = activation.topic_id or str(uuid.uuid4())
         else:
-            # cold — reuse recovered topic or mint fresh UUID
+            # cold — reuse recovered topic or mint fresh UUID.
+            # topic_return_id may still be present in archived_topics; archive_current_topic
+            # will dedup it on the next cold break (self-healing, no action needed here).
             new_centroid = query_emb
             new_turn_count = 1
             topic_id = topic_return_id or str(uuid.uuid4())
