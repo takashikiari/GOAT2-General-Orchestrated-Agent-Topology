@@ -112,8 +112,11 @@ class PermanentMemory:
     async def set_identity_override(self, text: str) -> None:
         """Write (or create) the identity block in Letta.
 
-        Tries PATCH first; if the block doesn't exist on an older agent (404),
-        falls back to POST to create it. Raises on any other HTTP error.
+        Tries PATCH first (update existing block). On 404 the block doesn't
+        exist on this agent yet — use the two-step Letta flow: create a
+        standalone block via POST /v1/blocks, then attach it to the agent via
+        POST /v1/agents/{id}/core-memory/blocks/{block_id}.
+        Raises on any other HTTP error.
         """
         agent_id = await self._resolve_agent_id()
         http = self._get_http()
@@ -122,9 +125,16 @@ class PermanentMemory:
             json={"value": text},
         )
         if resp.status_code == 404:
+            # Step 1: create standalone block
+            r = await http.post(
+                "/v1/blocks",
+                json={"label": _IDENTITY_LABEL, "value": text, "template": False},
+            )
+            r.raise_for_status()
+            block_id = r.json()["id"]
+            # Step 2: attach to agent
             resp = await http.post(
-                f"/v1/agents/{agent_id}/core-memory/blocks",
-                json={"label": _IDENTITY_LABEL, "value": text},
+                f"/v1/agents/{agent_id}/core-memory/blocks/{block_id}",
             )
         resp.raise_for_status()
         log.debug("PermanentMemory: identity override set (%d chars)", len(text))

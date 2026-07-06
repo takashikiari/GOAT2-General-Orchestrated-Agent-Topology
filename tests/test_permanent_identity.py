@@ -65,10 +65,16 @@ async def test_set_identity_override_patches_existing_block():
 
 @pytest.mark.asyncio
 async def test_set_identity_override_creates_block_on_404():
+    # Two-step flow: POST /v1/blocks → POST /v1/agents/{id}/core-memory/blocks/{block_id}
     pm, http = _make_pm()
     http.patch.return_value = _resp(404)
-    http.post.return_value = _resp(200)
+    create_resp = _resp(200, {"id": "block-abc"})
+    attach_resp = _resp(200)
+    http.post.side_effect = [create_resp, attach_resp]
     await pm.set_identity_override("New identity.")
-    http.post.assert_called_once()
-    call_kwargs = http.post.call_args
-    assert "identity" in str(call_kwargs)
+    assert http.post.call_count == 2
+    first_call = str(http.post.call_args_list[0])
+    assert "/v1/blocks" in first_call
+    assert "identity" in first_call
+    second_call = str(http.post.call_args_list[1])
+    assert "block-abc" in second_call
