@@ -268,7 +268,85 @@ enriching_sim = 0.55
 lexical_low = 0.15
 ```
 
-See **[SETUP.md](SETUP.md)** for install steps, environment variables, and startup verification.
+See **[SETUP.md](SETUP.md)** for environment variables and startup verification.
+
+---
+
+## Setup
+
+```bash
+git clone https://github.com/takashikiari/GOAT2-General-Orchestrated-Agent-Topology.git
+cd GOAT2-General-Orchestrated-Agent-Topology
+./run.sh          # Windows: run.bat
+```
+
+The first launch detects a missing `goat2.toml` and starts the wizard automatically.
+
+### Wizard (`setup/wizard.py`)
+
+Interactive TUI (built on `questionary` + `rich`). Generates two files:
+
+| File | Contents |
+|------|----------|
+| `goat2.toml` | Provider choice, model, service URLs, feature flags |
+| `.env` | API keys — never commit this file |
+
+Re-run at any time to change provider or keys:
+```bash
+python3 setup/wizard.py --reconfigure
+```
+
+### Supported providers (`setup/providers.toml`)
+
+| Provider | Recommended | Notes |
+|----------|-------------|-------|
+| **DeepSeek** | ✓ | Best price/quality ratio |
+| OpenAI | | GPT-4o, o1, o3-mini |
+| Anthropic | | Claude Opus/Sonnet/Haiku |
+| Groq | | Very fast inference, free tier |
+| Ollama | | Runs locally, no API key |
+| OpenRouter | | 200+ models via one key |
+| Google Gemini | | Free tier at aistudio.google.com |
+
+### Optional services (`setup/services.toml`)
+
+| Service | Required | Purpose |
+|---------|----------|---------|
+| **Telegram Bot** | Yes | Primary interface — create via @BotFather |
+| Redis | Recommended | DAG state, session memory, update notifications |
+| ChromaDB | Recommended | Long-term vector memory across sessions |
+| Letta | No | Advanced stateful memory backend (alternative to ChromaDB) |
+
+### Pre-flight checks (`setup/checks.py`)
+
+Run automatically by `run.sh` and the wizard before every launch. Also standalone:
+
+```bash
+python3 setup/checks.py
+```
+
+Checks: Python ≥ 3.11, git, pip, Redis reachability, ChromaDB import, disk space (500 MB). Required failures abort; optional failures warn and continue.
+
+### Updater (`setup/updater.py`)
+
+Checks GitHub Releases, shows changelog, runs `git pull` + `pip install` + restart.
+
+```bash
+python3 setup/updater.py          # interactive
+python3 setup/updater.py --check  # check only, no install
+```
+
+Also triggered from Telegram: send `/update` to your bot.
+
+### Rollback (`setup/rollback.py`)
+
+Reverts to any prior release tag and reinstalls dependencies for that version.
+
+```bash
+python3 setup/rollback.py            # interactive picker
+python3 setup/rollback.py --to v0.2.1
+python3 setup/rollback.py --list
+```
 
 ---
 
@@ -334,6 +412,15 @@ goat2/
 ├── utils/llm_utils.py             # _get_client (cached per provider), _call_llm, _extract_json
 ├── registry/registry.py           # Lazy DI container
 ├── plugins/plugin_manager.py      # Hot-reload plugin orchestrator
+├── setup/
+│   ├── wizard.py                  # Interactive first-run TUI (questionary + rich); --reconfigure to re-run
+│   ├── checks.py                  # Pre-flight: Python/git/pip/Redis/ChromaDB/disk — run by run.sh
+│   ├── updater.py                 # GitHub Releases check + git pull + pip install + restart
+│   ├── rollback.py                # Revert to any prior release tag (interactive picker or --to <tag>)
+│   ├── providers.toml             # Supported LLM providers (DeepSeek, OpenAI, Anthropic, Groq, Ollama, OpenRouter, Gemini)
+│   ├── services.toml              # Optional services (Telegram, Redis, ChromaDB, Letta)
+│   ├── templates/goat2.default.toml  # Config template the wizard writes from
+│   └── requirements.txt           # questionary + rich (wizard-only deps)
 ├── mcp_server/                    # Optional standalone MCP introspection server
 ├── scripts/                       # threshold_sanity.py, enriching_check.py, repair_episodic.py
 ├── benchmark/                     # Live benchmark suite
