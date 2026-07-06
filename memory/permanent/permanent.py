@@ -9,7 +9,9 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 _FACTS_LABEL = "facts"
-_IDENTITY_LABEL = "identity"
+# Identity override is stored inside the facts block under this reserved key so
+# it shares the same PATCH endpoint and never needs a separate Letta block.
+_IDENTITY_KEY = "__identity__"
 
 
 class PermanentMemory:
@@ -43,7 +45,6 @@ class PermanentMemory:
                 "model": PERMANENT_LETTA_MODEL,
                 "memory_blocks": [
                     {"label": _FACTS_LABEL, "value": "{}"},
-                    {"label": _IDENTITY_LABEL, "value": ""},
                 ],
             })
             r.raise_for_status()
@@ -79,8 +80,8 @@ class PermanentMemory:
         return (await self._get_facts()).get(key)
 
     async def get_all_facts(self) -> dict[str, str]:
-        """Return all stored facts as a dict."""
-        return await self._get_facts()
+        """Return all stored facts as a dict, excluding internal reserved keys."""
+        return {k: v for k, v in (await self._get_facts()).items() if k != _IDENTITY_KEY}
 
     async def delete_fact(self, key: str) -> bool:
         """Remove a fact by key. Returns True if it existed, False if not found."""
@@ -93,51 +94,17 @@ class PermanentMemory:
         return True
 
     async def get_identity_override(self) -> str | None:
-        """Return the Letta identity override, or None if unset / unavailable.
-
-        Never raises — a 404 (block absent on old agents) or any network error
-        returns None, which signals the caller to fall back to the config prompt.
-        """
+        """Return the identity override from the facts block, or None if unset / unavailable."""
         try:
-            agent_id = await self._resolve_agent_id()
-            resp = await self._get_http().get(
-                f"/v1/agents/{agent_id}/core-memory/blocks/{_IDENTITY_LABEL}"
-            )
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            value = resp.json().get("value", "").strip()
+            value = (await self._get_facts()).get(_IDENTITY_KEY, "").strip()
             return value or None
         except Exception:  # noqa: BLE001 — identity is best-effort
             return None
 
     async def set_identity_override(self, text: str) -> None:
-        """Write (or create) the identity block in Letta.
-
-        Tries PATCH first (update existing block). On 404 the block doesn't
-        exist on this agent yet — use the two-step Letta flow: create a
-        standalone block via POST /v1/blocks, then attach it to the agent via
-        POST /v1/agents/{id}/core-memory/blocks/{block_id}.
-        Raises on any other HTTP error.
-        """
-        agent_id = await self._resolve_agent_id()
-        http = self._get_http()
-        resp = await http.patch(
-            f"/v1/agents/{agent_id}/core-memory/blocks/{_IDENTITY_LABEL}",
-            json={"value": text},
-        )
-        if resp.status_code == 404:
-            # Step 1: create standalone block
-            r = await http.post(
-                "/v1/blocks",
-                json={"label": _IDENTITY_LABEL, "value": text, "template": False},
-            )
-            r.raise_for_status()
-            block_id = r.json()["id"]
-            # Step 2: attach to agent (PATCH, not POST — Letta 405 on POST)
-            resp = await http.patch(
-                f"/v1/agents/{agent_id}/core-memory/blocks/{block_id}",
-                json={"value": text},
-            )
-        resp.raise_for_status()
+        """Write or clear the identity override stored inside the facts block."""
+        if text:
+            await self.store_fact(_IDENTITY_KEY, text)
+        else:
+            await self.delete_fact(_IDENTITY_KEY)
         log.debug("PermanentMemory: identity override set (%d chars)", len(text))
