@@ -29,43 +29,37 @@ log = get_logger(__name__)
 PROMOTE_CHUNK_SIZE = 50
 
 
-async def maybe_auto_promote(chat_id: str, working: WorkingMemory) -> None:
-    """Trim L2 working memory to ``WORKING_MAX_MESSAGES``, dropping oldest first.
+async def maybe_auto_promote(
+    chat_id: str,
+    working: WorkingMemory,
+    episodic=None,
+    extractor=None,
+) -> None:
+    """Trim L2 working memory to WORKING_MAX_MESSAGES and enrich dropped entries.
 
-    Holds the per-chat lock for the entire read → trim → save cycle so no
-    concurrent turn save can overwrite the reduced message list mid-trim. Uses
-    the raw (no-lock) variants internally because the lock is already held.
-
-    When the surplus exceeds ``PROMOTE_CHUNK_SIZE``, multiple iterations run
-    with an ``asyncio.sleep(0)`` yield between them so the event loop stays
-    responsive under a large backlog. Each iteration saves the reduced list
-    immediately after dropping a chunk, so a crash mid-backlog does not lose
-    more than one chunk.
-
-    Does NOT write to L3 — ``_archive_turn`` (orchestrator) handles that on
-    every turn. Writing here too would produce duplicate entries in ChromaDB.
+    For each dropped user+assistant pair that has an ``l3_id`` field, fires
+    ``pair_and_enrich_dropped`` to update the corresponding L3 ChromaDB entry
+    with GLiNER-extracted entities, memory_type, and importance.
     """
+    from memory.enrichment import pair_and_enrich_dropped  # local import avoids circular
     async with working.chat_lock(chat_id):
         messages = await working.get_messages_raw(chat_id)
         total = len(messages)
         if total <= WORKING_MAX_MESSAGES:
             return
-
         surplus = total - WORKING_MAX_MESSAGES
         log.info(
             "auto_promote: chat=%s total=%d surplus=%d cap=%d",
             chat_id, total, surplus, WORKING_MAX_MESSAGES,
         )
         dropped_total = 0
-
+        all_dropped: list[dict] = []
         while len(messages) > WORKING_MAX_MESSAGES:
-            # Drop at most PROMOTE_CHUNK_SIZE, but never more than the actual
-            # surplus — this is the fix for the previous bug where chunk_size
-            # (50) > cap (20) caused the entire L2 to be emptied in one pass.
             surplus_now = len(messages) - WORKING_MAX_MESSAGES
             chunk_size = min(PROMOTE_CHUNK_SIZE, surplus_now)
             dropped = messages[:chunk_size]
             messages = messages[chunk_size:]
+            all_dropped.extend(dropped)
             dropped_total += len(dropped)
             await working.save_messages_raw(chat_id, messages)
             log.debug(
@@ -78,8 +72,15 @@ async def maybe_auto_promote(chat_id: str, working: WorkingMemory) -> None:
         "auto_promote: chat=%s done total_dropped=%d kept=%d",
         chat_id, dropped_total, WORKING_MAX_MESSAGES,
     )
+    if all_dropped and episodic is not None:
+        asyncio.create_task(pair_and_enrich_dropped(all_dropped, episodic, extractor))
 
 
-def schedule_auto_promote(chat_id: str, working: WorkingMemory) -> None:
-    """Fire-and-forget: schedule a background L2 trim for ``chat_id``."""
-    asyncio.create_task(maybe_auto_promote(chat_id, working))
+def schedule_auto_promote(
+    chat_id: str,
+    working: WorkingMemory,
+    episodic=None,
+    extractor=None,
+) -> None:
+    """Fire-and-forget: schedule a background L2 trim + L3 enrichment for chat_id."""
+    asyncio.create_task(maybe_auto_promote(chat_id, working, episodic=episodic, extractor=extractor))

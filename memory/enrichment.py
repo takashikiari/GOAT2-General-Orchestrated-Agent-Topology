@@ -52,3 +52,31 @@ async def enrich_l3_entry(
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("enrich_l3_entry failed doc_id=%s: %s", doc_id, exc)
+
+
+async def pair_and_enrich_dropped(
+    dropped: list[dict],
+    episodic: "EpisodicMemory",
+    extractor: "GLiNERExtractor | None",
+) -> None:
+    """Extract user+assistant pairs from dropped L2 messages and enrich their L3 entries.
+
+    Only messages with an ``l3_id`` field are enriched — older messages without
+    this field (pre-Task 4 format) are silently skipped. Pairs are identified by
+    matching ``l3_id`` across adjacent user/assistant messages.
+    """
+    by_l3_id: dict[str, dict] = {}
+    for msg in dropped:
+        l3_id = msg.get("l3_id")
+        if not l3_id:
+            continue
+        role = msg.get("role", "")
+        if l3_id not in by_l3_id:
+            by_l3_id[l3_id] = {}
+        by_l3_id[l3_id][role] = msg.get("content", "")
+
+    for l3_id, roles in by_l3_id.items():
+        user_msg = roles.get("user", "")
+        assistant_msg = roles.get("assistant", "")
+        if user_msg or assistant_msg:
+            await enrich_l3_entry(l3_id, user_msg, assistant_msg, episodic, extractor)

@@ -61,6 +61,7 @@ class MemoryLayers:
         episodic: "EpisodicMemory",
         permanent: "PermanentMemory",
         cache_ttl: int = 300,
+        extractor=None,
     ) -> None:
         """
         Store the three physical tier instances and build the L2.5 cache.
@@ -71,10 +72,12 @@ class MemoryLayers:
             permanent: PermanentMemory instance (backs L0, L1).
             cache_ttl: TTL in seconds for L2.5 cache entries; config supplies
                 the active value, this default is a fallback only.
+            extractor: Optional GLiNERExtractor for L3 enrichment at trim time.
         """
         self._working = working
         self._episodic = episodic
         self._permanent = permanent
+        self._extractor = extractor
         self._cache = SessionCache(working, ttl_seconds=cache_ttl)
         # L2.5 activation layer — per-chat thread state. Distinct TTL from the
         # search cache: a long cleanup horizon (NOT a reset). See [activation].
@@ -146,7 +149,7 @@ class MemoryLayers:
             messages = await self._working.get_messages_raw(chat_id)
             messages.extend(messages_to_append)
             await self._working.save_messages_raw(chat_id, messages)
-        schedule_auto_promote(chat_id, self._working)
+        schedule_auto_promote(chat_id, self._working, episodic=self._episodic, extractor=self._extractor)
 
     async def search_episodic(
         self, query: str, limit: int = 5,
