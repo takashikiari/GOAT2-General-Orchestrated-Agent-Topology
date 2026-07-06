@@ -50,13 +50,10 @@ if errorlevel 1 (
 )
 
 REM ── First-run wizard ───────────────────────────────────────────────────────
-if not exist "goat2.toml" (
-    echo.
-    echo   First run detected - launching setup wizard...
-    echo.
-    python setup\wizard.py
-)
-if not exist ".env" (
+set RUN_WIZARD=0
+if not exist "goat2.toml" set RUN_WIZARD=1
+if not exist ".env" set RUN_WIZARD=1
+if !RUN_WIZARD!==1 (
     echo.
     echo   First run detected - launching setup wizard...
     echo.
