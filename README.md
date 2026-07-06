@@ -10,6 +10,7 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 
 - **Proactive, not reactive.** The prefetch daemon starts as the *first* step of every turn and runs in parallel with L0/L1/L2 fetch. Retrieval precedes generation; it is not triggered by the model noticing a gap.
 - **Brain activation, not a cache.** L2.5 holds per-chat *thread state* — the centroid of the current topic and the retrieval it produced. A follow-up on the same thread is served from the held activation (no search); the thread breaks only on a consensus shift (semantic drift AND lexical overlap both drop). The LLM builds on a stable reality instead of a flickering one.
+- **Topic-aware memory.** Every conversation belongs to a topic (UUID, stored in the activation blob). Each L3 archive entry is tagged with its `topic_id`. The prefetch daemon scopes L3 search to the current topic on drift turns and adds a parallel topic-return mechanism on cold breaks. Centroid updates are stability-weighted (`alpha = 1/min(turn_count, 20)`) — early turns move fast, stable topics resist drift. When a cold break matches an archived topic centroid (cosine ≥ 0.75), the session resumes that topic instead of minting a new one.
 - **Three independent physical backends.** Redis (working + activation), ChromaDB (episodic), and Letta (permanent) each connect lazily and fail independently — a Letta outage empties L1 facts and the turn continues.
 - **No static thresholds.** The L3 relevance filter is a ratio over the score distribution, scale-invariant by construction. The context budget adapts per turn from two real signals. L3's minimum token slice is guaranteed by construction.
 - **Complete fidelity.** Every turn is archived verbatim; the full text of any past exchange is retrievable from a single semantic query — no summary stands between the model and the original words.
@@ -49,16 +50,17 @@ On every turn, before the LLM call, the daemon classifies the turn against the p
 
 | State | Trigger | What the daemon does |
 |-------|---------|----------------------|
-| **cold** | No prior activation, or consensus shift (drift < `drift_cold` AND lexical overlap < `lexical_low`) | Full three-mechanism search; build fresh activation |
+| **cold** | No prior activation, or consensus shift (drift < `drift_cold` AND lexical overlap < `lexical_low`) | Up to four concurrent mechanisms; detect topic return; mint or resume topic UUID; build fresh activation |
 | **warm** | `cosine(query, centroid) ≥ drift_warm` | Serve held activation re-scored by recency; skip all search |
-| **drift** | Middle band | Targeted thematic refresh against new query |
+| **drift** | Middle band | Targeted search scoped to current `topic_id`; global fallback if no tagged entries; weighted centroid update |
 
-**Cold — three mechanisms, run concurrently via `asyncio.gather`:**
+**Cold — up to four mechanisms, run concurrently via `asyncio.gather`:**
 
 | Mechanism | Signal | Retrieval |
 |-----------|--------|-----------|
+| **Thematic** | Always (unconditional) | Global cached semantic search |
+| **Topic-return** | Archived topic centroid matches query (cosine ≥ 0.75) | Semantic search scoped to that `topic_id` |
 | **Temporal** | Completed-past date range | Filtered semantic search |
-| **Thematic** | Always (unconditional) | Cached semantic search |
 | **Specific-key** | Structural keys (UUID, `word+number`, `turn_`/`goat:`) | Exact get-by-id or content match |
 
 **Merge:** `blended = similarity × 0.6 + recency × 0.3 + access_count × 0.1`. Deduped by `message_id`, sorted best-first, trimmed to `max_results` (20).
@@ -71,9 +73,11 @@ On every turn, before the LLM call, the daemon classifies the turn against the p
 
 ## L2.5 — activation layer (brain thread state)
 
-Stored as one JSON blob per chat in Redis (`activation:{chat_id}`, 7-day cleanup TTL — not a reset). Holds: `centroid` (thread embedding), `merged` (held L3 results), `last_query`, `recent_queries` (rolling window for lexical signal).
+Stored as one JSON blob per chat in Redis (`activation:{chat_id}`, 7-day cleanup TTL — not a reset). Holds: `centroid` (thread embedding), `merged` (held L3 results), `last_query`, `recent_queries` (rolling window for lexical signal), `topic_id` (UUID of current topic), `turn_count` (turns since last cold start), `archived_topics` (up to 10 past topic centroids, newest-last).
 
 - **Warm turns:** serve `rescore_recency(activation.merged, now)` — time attenuates, never resets. No ChromaDB query runs.
+- **Drift turns:** weighted centroid update (`alpha = 1/min(turn_count, 20)`); L3 search scoped to current `topic_id` with global fallback when no tagged entries exist yet.
+- **Cold turns:** departing topic centroid is archived (up to `TOPIC_ARCHIVE_MAX = 10`). A new UUID is minted — unless `find_topic_return` matches an archived centroid (cosine ≥ `TOPIC_RETURN_THRESHOLD = 0.75`), in which case that topic resumes.
 - **Enriching writes:** when GOAT stores a fact on-thread (`cosine(content, centroid) ≥ enriching_sim`), the activation is refreshed in-place synchronously before `run()` returns — the next turn sees the new learning folded in.
 - **Embeddings:** reuse ChromaDB's bundled ONNX MiniLM — same vector space as retrieval, no extra API call, degrades to `None` on any failure (turn falls back to cold, never breaks).
 
@@ -266,6 +270,8 @@ drift_warm = 0.80
 drift_cold = 0.55
 enriching_sim = 0.55
 lexical_low = 0.15
+topic_return_threshold = 0.75    # cosine sim required to resume an archived topic
+topic_archive_max = 10           # past topic centroids kept per chat (newest-last)
 ```
 
 See **[SETUP.md](SETUP.md)** for environment variables and startup verification.
@@ -354,7 +360,7 @@ python3 setup/rollback.py --list
 
 ## Benchmark results
 
-Full suite — 116 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
+Full suite — 136 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
 
 | Dataset | Cases | Accuracy | Grounded |
 |---------|-------|----------|----------|
@@ -426,7 +432,7 @@ goat2/
 ├── mcp_server/                    # Optional standalone MCP introspection server
 ├── scripts/                       # threshold_sanity.py, enriching_check.py, repair_episodic.py
 ├── benchmark/                     # Live benchmark suite
-└── tests/                         # 116 unit tests (faked backends, no external services)
+└── tests/                         # 136 unit tests (faked backends, no external services)
 ```
 
 ---

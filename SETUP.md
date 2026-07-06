@@ -120,6 +120,10 @@ timeout = 1.0                     # asyncio.wait_for bound; graceful degradation
 l3_min_guarantee_tokens = 1200
 l3_gap_significance = 3.0
 
+[activation]
+topic_return_threshold = 0.75    # cosine sim to resume an archived topic on cold break
+topic_archive_max = 10           # past topic centroids kept per chat
+
 [session_cache]
 ttl_seconds = 300
 ```
