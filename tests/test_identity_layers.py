@@ -1,7 +1,7 @@
 """Tests for MemoryLayers identity prompt plumbing (no real backends)."""
 from __future__ import annotations
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from memory.config import IDENTITY_BASE_PROMPT
 
 
