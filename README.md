@@ -362,7 +362,7 @@ python3 setup/rollback.py --list
 
 ## Benchmark results
 
-Full suite — 136 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
+Full suite — 149 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
 
 | Dataset | Cases | Accuracy | Grounded |
 |---------|-------|----------|----------|
@@ -413,7 +413,8 @@ goat2/
 │   ├── memory_tools.py            # search_memory
 │   ├── memory_writer.py           # store_memory
 │   ├── memory_promote.py          # promote_memory
-│   └── memory_manager.py          # read_l1, forget_fact, memory_status
+│   ├── memory_manager.py          # read_l1, forget_fact, memory_status
+│   └── identity_tool.py           # set_identity (L0 write — Letta identity block)
 ├── config/
 │   ├── memory.toml                # All memory + DAG tunables
 │   ├── settings.py                # LLM/Telegram env vars + ModelSpec + Settings (per-agent)
@@ -434,7 +435,7 @@ goat2/
 ├── mcp_server/                    # Optional standalone MCP introspection server
 ├── scripts/                       # threshold_sanity.py, enriching_check.py, repair_episodic.py
 ├── benchmark/                     # Live benchmark suite
-└── tests/                         # 136 unit tests (faked backends, no external services)
+└── tests/                         # 149 unit tests (faked backends, no external services)
 ```
 
 ---
