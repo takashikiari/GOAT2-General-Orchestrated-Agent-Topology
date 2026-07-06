@@ -1,11 +1,10 @@
 """tests.test_topic_search — unit tests for topic_id metadata flow.
 
 Tests that topic_id is plumbed correctly through store and search without
-hitting a real ChromaDB instance. Uses a spy on the collection._embedding_function
-path to verify the where-clause is built correctly.
+hitting a real ChromaDB instance. Mirrors the where-clause builder logic from
+episodic.search() and asserts the correct ChromaDB filter structure.
 """
 from __future__ import annotations
-import pytest
 
 
 def _build_where(after, before, topic_id):
