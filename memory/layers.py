@@ -90,6 +90,28 @@ class MemoryLayers:
             log.warning("PermanentMemory unavailable, L1 facts empty: %s", exc)
             return {}
 
+    async def get_identity_prompt(self) -> str:
+        """L0: return Letta identity override if set, else fall back to config base_prompt.
+
+        Never raises — any Letta failure returns the config prompt so every turn
+        has a guaranteed identity even when the permanent tier is unreachable.
+        """
+        try:
+            override = await self._permanent.get_identity_override()
+            if override:
+                return override
+        except Exception:  # noqa: BLE001 — L0 is always guaranteed
+            pass
+        return _BASE_IDENTITY
+
+    async def set_identity_override(self, text: str) -> None:
+        """Write a new L0 identity override to Letta.
+
+        Passing an empty string clears the override so the config prompt
+        is used again. Raises if Letta is unavailable.
+        """
+        await self._permanent.set_identity_override(text)
+
     async def get_working_context(self, chat_id: str) -> list[dict]:
         """L2: current conversation messages for this chat.
 
@@ -306,6 +328,7 @@ class MemoryLayers:
         l3_results: list[dict] | None = None,
         facts: dict[str, str] | None = None,
         messages: list[dict] | None = None,
+        identity_prompt: str | None = None,
     ) -> tuple[list[str], int]:
         """Assemble L0-L3 prompt blocks under a dynamic (AITS) budget; returns ``(blocks, l3_used)``.
 
@@ -334,6 +357,9 @@ class MemoryLayers:
             l3_results: Prefetched episodic results (closest first) or ``None``.
             facts: Pre-fetched L0+L1 facts (``None`` → fetch here).
             messages: Pre-fetched L2 working messages (``None`` → fetch here).
+            identity_prompt: Pre-fetched L0 identity text (``None`` → use
+                ``_BASE_IDENTITY``). Supplied by the orchestrator after a
+                concurrent ``get_identity_prompt()`` call (Task 3).
         """
         if budget is None:
             budget = MAX_CONTEXT_TOKENS
@@ -341,7 +367,8 @@ class MemoryLayers:
         if facts is None:
             facts = await self.get_identity_and_facts()
         now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-        identity = f"[Identity]\n{_BASE_IDENTITY}\nCurrent time: {now}"
+        base = identity_prompt if identity_prompt is not None else _BASE_IDENTITY
+        identity = f"[Identity]\n{base}\nCurrent time: {now}"
         if facts:
             identity += f"\n\nKnown facts:\n{self._format_facts(facts)}"
         mandatory_tokens = estimate_tokens(identity)

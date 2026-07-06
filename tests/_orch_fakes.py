@@ -65,11 +65,15 @@ class _FakeLayers:
     async def get_identity_and_facts(self):
         return {}
 
+    async def get_identity_prompt(self):
+        from memory.config import IDENTITY_BASE_PROMPT
+        return IDENTITY_BASE_PROMPT
+
     async def bump_access(self, chat_id, ids):
         return None
 
     async def assemble_context(self, chat_id, budget=None, l3_results=None,
-                               facts=None, messages=None):
+                               facts=None, messages=None, identity_prompt=None):
         return list(self._blocks), self._l3_used
 
     async def get_working_context(self, chat_id):
