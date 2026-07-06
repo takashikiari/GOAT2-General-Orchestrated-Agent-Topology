@@ -134,9 +134,10 @@ class PermanentMemory:
             )
             r.raise_for_status()
             block_id = r.json()["id"]
-            # Step 2: attach to agent
-            resp = await http.post(
+            # Step 2: attach to agent (PATCH, not POST — Letta 405 on POST)
+            resp = await http.patch(
                 f"/v1/agents/{agent_id}/core-memory/blocks/{block_id}",
+                json={"value": text},
             )
         resp.raise_for_status()
         log.debug("PermanentMemory: identity override set (%d chars)", len(text))
