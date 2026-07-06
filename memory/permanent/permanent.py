@@ -9,6 +9,7 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 _FACTS_LABEL = "facts"
+_IDENTITY_LABEL = "identity"
 
 
 class PermanentMemory:
@@ -38,7 +39,10 @@ class PermanentMemory:
             r = await http.post("/v1/agents/", json={
                 "name": PERMANENT_AGENT_NAME,
                 "model": PERMANENT_LETTA_MODEL,
-                "memory_blocks": [{"label": _FACTS_LABEL, "value": "{}"}],
+                "memory_blocks": [
+                    {"label": _FACTS_LABEL, "value": "{}"},
+                    {"label": _IDENTITY_LABEL, "value": ""},
+                ],
             })
             r.raise_for_status()
             self._agent_id = r.json()["id"]
@@ -85,3 +89,42 @@ class PermanentMemory:
         await self._save_facts(facts)
         log.debug("PermanentMemory: deleted fact key=%s", key)
         return True
+
+    async def get_identity_override(self) -> str | None:
+        """Return the Letta identity override, or None if unset / unavailable.
+
+        Never raises — a 404 (block absent on old agents) or any network error
+        returns None, which signals the caller to fall back to the config prompt.
+        """
+        try:
+            agent_id = await self._resolve_agent_id()
+            resp = await self._get_http().get(
+                f"/v1/agents/{agent_id}/core-memory/blocks/{_IDENTITY_LABEL}"
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            value = resp.json().get("value", "").strip()
+            return value or None
+        except Exception:  # noqa: BLE001 — identity is best-effort
+            return None
+
+    async def set_identity_override(self, text: str) -> None:
+        """Write (or create) the identity block in Letta.
+
+        Tries PATCH first; if the block doesn't exist on an older agent (404),
+        falls back to POST to create it. Raises on any other HTTP error.
+        """
+        agent_id = await self._resolve_agent_id()
+        http = self._get_http()
+        resp = await http.patch(
+            f"/v1/agents/{agent_id}/core-memory/blocks/{_IDENTITY_LABEL}",
+            json={"value": text},
+        )
+        if resp.status_code == 404:
+            resp = await http.post(
+                f"/v1/agents/{agent_id}/core-memory/blocks",
+                json={"label": _IDENTITY_LABEL, "value": text},
+            )
+        resp.raise_for_status()
+        log.debug("PermanentMemory: identity override set (%d chars)", len(text))
