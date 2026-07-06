@@ -86,8 +86,9 @@ class _FakeLayers:
         existing = getattr(self, "saved", []) or []
         self.saved = list(existing) + list(messages_to_append)
 
-    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "") -> None:
+    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "", doc_id: str | None = None) -> str:
         self.archive_calls += 1
+        return doc_id or str(__import__("uuid").uuid4())
 
     # L2.5 activation layer — fakes return empty/None so every single-turn test
     # sees a COLD turn (no prior activation, no embedding) and the existing

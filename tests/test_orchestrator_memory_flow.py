@@ -79,9 +79,10 @@ class _TopicCaptureLayers(_FakeLayers):
         self.stored_topic_ids: list[str] = []
         self._activation_store: Activation | None = None
 
-    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "") -> None:
+    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "", doc_id: str | None = None) -> str:
         self.stored_topic_ids.append(topic_id)
         self.archive_calls += 1
+        return doc_id or str(__import__("uuid").uuid4())
 
     async def set_activation(self, chat_id, activation):
         self._activation_store = activation
