@@ -72,6 +72,11 @@ class Activation:
         recent_queries: rolling window of recent queries for the lexical-overlap
             consensus signal (newest last, capped at ``ACTIVATION_LEXICAL_WINDOW``).
         ts: last-write wall clock (housekeeping; never a reset trigger).
+        topic_id: UUID string for the current conversation topic; assigned on cold
+            break, empty string for blobs written before this field existed.
+        turn_count: number of turns in the current topic; drives centroid alpha.
+        archived_topics: up to ``TOPIC_ARCHIVE_MAX`` past topic centroids, each a
+            dict with ``topic_id`` and ``centroid`` keys (newest last).
     """
 
     centroid: list[float] = field(default_factory=list)
