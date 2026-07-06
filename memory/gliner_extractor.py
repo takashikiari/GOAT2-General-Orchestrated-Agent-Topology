@@ -12,21 +12,26 @@ _ENTITY_LABELS = [
     "location", "organization", "event", "preference",
 ]
 
+_MODEL_NAME = "urchade/gliner_multi-v2.1"
+_gliner_model = None
+
+
+def _get_shared_model():
+    global _gliner_model
+    if _gliner_model is None:
+        from gliner import GLiNER  # lazy import — not installed by default
+        _gliner_model = GLiNER.from_pretrained(_MODEL_NAME)
+        log.info("GLiNERExtractor: model loaded (%s)", _MODEL_NAME)
+    return _gliner_model
+
 
 class GLiNERExtractor:
-    """Zero-shot NER using GLiNER; model loads lazily on first call."""
+    """Zero-shot NER using GLiNER; shares one module-level model instance."""
 
-    MODEL_NAME = "urchade/gliner_multi-v2.1"
-
-    def __init__(self) -> None:
-        self._model = None
+    MODEL_NAME = _MODEL_NAME
 
     def _get_model(self):
-        if self._model is None:
-            from gliner import GLiNER  # lazy import — not installed by default
-            self._model = GLiNER.from_pretrained(self.MODEL_NAME)
-            log.info("GLiNERExtractor: model loaded (%s)", self.MODEL_NAME)
-        return self._model
+        return _get_shared_model()
 
     def _extract_sync(self, text: str) -> dict:
         model = self._get_model()
