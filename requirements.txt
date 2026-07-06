@@ -26,10 +26,17 @@ posthog>=3.0.0
 # Temporal parsing — memory/temporal_parser.py
 dateparser>=1.2.0
 
+# Entity enrichment (L3 metadata — entities, memory_type, importance at L2 trim time)
+gliner>=0.2.0          # memory/gliner_extractor.py — zero-shot multilingual NER
+                       # Model (urchade/gliner_multi-v2.1, ~200 MB) downloaded from
+                       # HuggingFace on first use; cached in ~/.cache/huggingface.
+                       # Requires: torch, transformers, onnxruntime (transitively pulled).
+                       # Without gliner installed, enrichment degrades gracefully to
+                       # memory_type="conversation" with no entities — no errors raised.
+
 # Optional plugin dependencies — not required for core bot operation.
 # Install these only if you enable the corresponding tools/goat_skills plugins:
 #
 #   crawl4ai>=0.9.0    # tools/goat_skills/fetch_content.py  (fetch_content tool)
 #   playwright>=1.50.0 # tools/goat_skills/browse_page.py    (browse_page tool)
 #                      # After installing playwright: playwright install chromium
-#   gliner>=0.2.0      # memory/gliner_extractor.py (L3 entity enrichment; ~200MB model download on first use)

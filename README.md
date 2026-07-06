@@ -15,6 +15,7 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 - **Three independent physical backends.** Redis (working + activation), ChromaDB (episodic), and Letta (permanent) each connect lazily and fail independently — a Letta outage empties L1 facts, falls back to config identity, and the turn continues.
 - **No static thresholds.** The L3 relevance filter is a ratio over the score distribution, scale-invariant by construction. The context budget adapts per turn from two real signals. L3's minimum token slice is guaranteed by construction.
 - **Complete fidelity.** Every turn is archived verbatim; the full text of any past exchange is retrievable from a single semantic query — no summary stands between the model and the original words.
+- **L3 enrichment.** At L2 trim time, dropped messages are enriched in the background via GLiNER (zero-shot NER): `entities`, `entity_types`, `memory_type`, and `importance` are written into the ChromaDB entry's metadata. This improves future retrieval quality without any LLM call and degrades gracefully when GLiNER is not installed.
 - **Background multi-agent DAG.** The orchestrator can spawn a parallel async DAG of specialist agents (planner → researcher → coder → critic → summarizer) for complex tasks, communicate with it mid-run, and retrieve results — while continuing to answer other messages.
 
 ---
@@ -59,10 +60,10 @@ On every turn, before the LLM call, the daemon classifies the turn against the p
 
 | Mechanism | Signal | Retrieval |
 |-----------|--------|-----------|
-| **Thematic** | Always (unconditional) | Global cached semantic search |
+| **Thematic** | Always (unconditional) | Global cached semantic search (all chats) |
+| **Thematic-scoped** | Always (unconditional) | Semantic search scoped to the current `chat_id` |
 | **Topic-return** | Archived topic centroid matches query (cosine ≥ 0.75) | Semantic search scoped to that `topic_id` |
 | **Temporal** | Completed-past date range | Filtered semantic search |
-| **Specific-key** | Structural keys (UUID, `word+number`, `turn_`/`goat:`) | Exact get-by-id or content match |
 
 **Merge:** `blended = similarity × 0.6 + recency × 0.3 + access_count × 0.1`. Deduped by `message_id`, sorted best-first, trimmed to `max_results` (20).
 
@@ -238,7 +239,7 @@ Bundled: `browse_page` (Playwright), `fetch_content` (crawl4ai), `shell_run`, `r
 
 ## Configuration
 
-**`config/memory.toml`** — all memory tunables (Redis/Letta URLs, AITS, prefetch, budget, cache, activation, identity). Read with `tomllib.load`; no env-var override.
+**`config/memory.toml`** — all memory tunables (Redis/Letta URLs, AITS, prefetch, budget, cache, activation, identity, enrichment). Read with `tomllib.load`; no env-var override.
 
 **`config/settings.py`** — LLM provider + Telegram credentials from env vars (`DEEPSEEK_API_KEY`, `MODEL_NAME`, `BASE_URL`, `TELEGRAM_BOT_TOKEN`). Per-agent model overrides via `GOAT_AGENT_{ROLE}_MODEL`, `GOAT_AGENT_{ROLE}_TOOL_CALLING`, `GOAT_AGENT_{ROLE}_TEMPERATURE`.
 
@@ -362,7 +363,7 @@ python3 setup/rollback.py --list
 
 ## Benchmark results
 
-Full suite — 149 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
+Full suite — 179 unit tests pass. Live benchmark (`python3 -m benchmark`) against real Redis + ChromaDB:
 
 | Dataset | Cases | Accuracy | Grounded |
 |---------|-------|----------|----------|
@@ -392,12 +393,15 @@ goat2/
 │   ├── aits.py                    # Adaptive Intent Token Scaling
 │   ├── context_budget.py          # Priority-inverted L2/L3 budget split
 │   ├── result_merger.py           # Dedupe + blended score across prefetch mechanisms
-│   ├── query_classifier.py        # 3-mechanism prefetch classification
+│   ├── query_classifier.py        # Temporal range extraction + prefetch classification
 │   ├── temporal_parser.py         # dateparser completed-past range extraction
 │   ├── session_cache.py           # L2.5 cold-path TTL cache (Redis)
 │   ├── promote.py                 # L3 → L1 promotion, cap-guarded
+│   ├── auto_promote.py            # L2 trim + fire-and-forget L3 enrichment at trim time
+│   ├── gliner_extractor.py        # GLiNER zero-shot NER (lazy model load, asyncio.to_thread)
+│   ├── enrichment.py              # compute_importance + enrich_l3_entry + pair_and_enrich_dropped
 │   ├── working/working.py         # Redis-backed working memory + activation store
-│   ├── episodic/                  # ChromaDB lifecycle, search, embed_query, queries mixin
+│   ├── episodic/                  # ChromaDB lifecycle, search (chat_id_filter), update_metadata
 │   └── permanent/permanent.py     # Letta-backed permanent memory
 ├── orchestrator/
 │   ├── orchestrator.py            # Per-turn driver: classify → prefetch → AITS → assemble → LLM → tool loop → save
@@ -435,8 +439,29 @@ goat2/
 ├── mcp_server/                    # Optional standalone MCP introspection server
 ├── scripts/                       # threshold_sanity.py, enriching_check.py, repair_episodic.py
 ├── benchmark/                     # Live benchmark suite
-└── tests/                         # 149 unit tests (faked backends, no external services)
+└── tests/                         # 179 unit tests (faked backends, no external services)
 ```
+
+---
+
+## Changelog
+
+### v0.1.1 — 2026-07-06
+
+**L3 enrichment + chat-scoped prefetch**
+
+- **GLiNER L3 enrichment.** At L2 trim time, dropped message pairs are enriched in the background via `GLiNERExtractor` (zero-shot multilingual NER, `urchade/gliner_multi-v2.1`). Each ChromaDB entry gains `entities`, `entity_types`, `memory_type`, and `importance` metadata fields — no LLM call, no summary, full verbatim text preserved. Degrades gracefully if `gliner` is not installed (`memory_type="conversation"`, empty entity lists).
+- **doc_id chain.** Orchestrator pre-generates one UUID (`l3_doc_id`) per turn, stores it as `l3_id` in both L2 messages (user + assistant), and passes it to `_archive_turn`. This creates a pre-wired L2↔L3 link — enrichment can update the correct ChromaDB entry at trim time without any additional query.
+- **Chat-scoped thematic search.** Cold-path prefetch now always runs two parallel thematic mechanisms: global (all chats, unchanged) and `_thematic_scoped` (filtered to the current `chat_id`). This surfaces recent conversation-local context that the global search may rank below older unrelated entries. The regex-based `_specific_key` mechanism and `extract_structural_keys` are fully removed.
+- **ChromaDB desync fix.** `EpisodicMemory.search()` now holds `_write_lock` during `col.query()`, preventing the HNSW/metadata desync ("Error finding id") that occurred when concurrent archive writes raced against reads.
+- **L3 quality gate.** `_blended_gap_filter` applied to all L3 results before injection: structural gap detection (ratio of max gap to mean gap ≥ 3.0) or minimum score floor (`_BLENDED_MIN_SCORE = 0.35`). Prevents low-relevance fragments from reaching the LLM on turns with uniform mediocre scores.
+
+**New files:** `memory/gliner_extractor.py`, `memory/enrichment.py`  
+**Modified:** `memory/episodic/episodic.py`, `memory/episodic/queries.py`, `memory/layers.py`, `memory/auto_promote.py`, `orchestrator/orchestrator.py`, `registry/registry.py`, `requirements.txt`
+
+### v0.1.0 — initial release
+
+Layered memory system (L0–L3), AITS dynamic budget, async prefetch daemon, topic-aware activation, multi-agent DAG engine, hot-reload plugin system, set_identity tool, benchmark suite.
 
 ---
 
