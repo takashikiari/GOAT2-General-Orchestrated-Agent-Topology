@@ -63,3 +63,59 @@ def test_latency_split_llm_vs_inject():
     assert obs.latency_inject < 0.01                # prompt build only — no longer the 30s
     assert obs.latency_save >= 0.0
     assert obs.latency_llm + obs.latency_inject + obs.latency_save <= obs.latency_total + 0.05
+
+
+# --- topic_id flows through archive -----------------------------------------
+
+from memory.activation import Activation
+from tests._orch_fakes import _FakePluginManager
+
+
+class _TopicCaptureLayers(_FakeLayers):
+    """Extends _FakeLayers to capture topic_id passed to store_episodic."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stored_topic_ids: list[str] = []
+        self._activation_store: Activation | None = None
+
+    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "") -> None:
+        self.stored_topic_ids.append(topic_id)
+        self.archive_calls += 1
+
+    async def set_activation(self, chat_id, activation):
+        self._activation_store = activation
+        self.set_activation_calls = getattr(self, "set_activation_calls", 0) + 1
+
+    async def embed_query(self, query):
+        # Return a non-None embedding so turn_state can be computed
+        return [1.0, 0.0]
+
+
+def _make_orch(layers):
+    llm = _LLMClient(_Completions("ok"))
+    return Orchestrator(layers, llm, _FakePluginManager(), _FakeAnalytics())
+
+
+def test_archive_turn_receives_topic_id_after_cold_turn():
+    """On a cold turn a fresh topic_id must be generated and passed to store_episodic."""
+    layers = _TopicCaptureLayers()
+    orch = _make_orch(layers)
+    asyncio.run(orch.run("hello world", "chat1"))
+    # At least one store_episodic call should have a non-empty topic_id
+    assert any(tid for tid in layers.stored_topic_ids), \
+        "expected a non-empty topic_id in at least one store_episodic call"
+
+
+def test_topic_id_is_uuid_format():
+    """Generated topic_id must be a valid UUID string (8-4-4-4-12 hex)."""
+    import re
+    UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    layers = _TopicCaptureLayers()
+    orch = _make_orch(layers)
+    asyncio.run(orch.run("hello world", "chat1"))
+    non_empty = [tid for tid in layers.stored_topic_ids if tid]
+    assert non_empty, "no non-empty topic_ids stored"
+    assert UUID_RE.match(non_empty[0]), f"topic_id not UUID format: {non_empty[0]!r}"

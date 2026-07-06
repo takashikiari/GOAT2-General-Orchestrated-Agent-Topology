@@ -5,9 +5,13 @@ import asyncio
 import json
 import re
 import time
+import uuid
 
 from config import settings
-from memory.activation import Activation, classify_turn, classify_write, rescore_recency, trim_recent
+from memory.activation import (
+    Activation, classify_turn, classify_write, rescore_recency, trim_recent,
+    update_centroid_weighted, find_topic_return, archive_current_topic,
+)
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
@@ -20,6 +24,8 @@ from memory.config import (
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
     PREFETCH_TIMEOUT,
+    TOPIC_ARCHIVE_MAX,
+    TOPIC_RETURN_THRESHOLD,
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
@@ -139,17 +145,16 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
     return "\n".join(lines)
 
 
-async def _archive_turn(layers, chat_id: str, intent: str, reply: str) -> None:
+async def _archive_turn(layers, chat_id: str, intent: str, reply: str, topic_id: str = "") -> None:
     """Fire-and-forget: archive the full message pair into L3 episodic memory.
 
-    Tagged 'l2_full_archive' to distinguish raw archival writes from GOAT's
-    curated store_memory/promote_memory calls. Never raises — L3 write failure
-    must not affect the turn response.
+    Tagged 'l2_full_archive'. ``topic_id`` links the entry to its topic thread
+    so the prefetch daemon can filter by topic on future turns.
     """
     try:
         content = f"user: {intent}\nassistant: {reply}"
-        await layers.store_episodic(chat_id, content, tags=["l2_full_archive"])
-        log.debug("L3 archive write ok: chat=%s", chat_id)
+        await layers.store_episodic(chat_id, content, tags=["l2_full_archive"], topic_id=topic_id)
+        log.debug("L3 archive write ok: chat=%s topic=%s", chat_id, topic_id)
     except Exception as exc:
         log.warning("L3 archive dump failed chat=%s: %s", chat_id, exc)
 
@@ -261,8 +266,15 @@ class Orchestrator:
             activation = await activation_task
             query_emb = await qemb_task
             turn_state = classify_turn(intent, activation, query_emb)
+            # Compute topic return before the daemon starts (pure CPU, no I/O).
+            topic_return_id: str | None = None
+            if turn_state == "cold" and activation and activation.archived_topics:
+                topic_return_id = find_topic_return(
+                    query_emb, activation.archived_topics, TOPIC_RETURN_THRESHOLD,
+                )
             prefetch_task = asyncio.create_task(
-                self._prefetch_daemon(chat_id, intent, turn_state, activation))
+                self._prefetch_daemon(chat_id, intent, turn_state, activation,
+                                      topic_return_id=topic_return_id))
             # 3. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
             confidence = calculate_confidence_from_query(intent)
@@ -314,7 +326,8 @@ class Orchestrator:
             current_activation = None
             if prefetch_succeeded:
                 current_activation = await self._update_activation(
-                    layers, chat_id, intent, query_emb, turn_state, activation, l3_results)
+                    layers, chat_id, intent, query_emb, turn_state, activation, l3_results,
+                    topic_return_id=topic_return_id)
             # 5. Await the concurrent L0/L1/L2 fetch (normally done already) and
             #    assemble L0-L3 with the pre-fetched tiers (assemble stage).
             collector.start_stage("assemble")
@@ -408,7 +421,11 @@ class Orchestrator:
                 {"role": "user", "content": intent, "timestamp": now},
                 {"role": "assistant", "content": saved_reply, "timestamp": now},
             )
-            archive_task = asyncio.create_task(_archive_turn(layers, chat_id, intent, saved_reply))
+            archive_task = asyncio.create_task(
+                _archive_turn(
+                    layers, chat_id, intent, saved_reply,
+                    topic_id=current_activation.topic_id if current_activation else "",
+                ))
             self._pending_archives.add(archive_task)
             archive_task.add_done_callback(self._pending_archives.discard)
             collector.end_stage("save")
@@ -443,6 +460,7 @@ class Orchestrator:
     async def _prefetch_daemon(
         self, chat_id: str, user_message: str,
         state: str, activation,
+        topic_return_id: str | None = None,
     ) -> tuple[list[dict], bool, str | None, dict]:
         """Run the prefetch mechanisms, branched on the turn ``state``.
 
@@ -480,12 +498,17 @@ class Orchestrator:
             chat_id, state, after_before is not None, bool(keys), keys,
         )
         limit = PREFETCH_MAX_RESULTS
+        current_topic_id: str | None = activation.topic_id if activation else None
 
         if state == "drift":
-            # Targeted refresh — re-run only thematic against the new query.
-            fresh = enforce_result_limit(await layers.search_episodic(user_message, limit=limit))
+            # Targeted refresh scoped to current topic; fallback to global if no tagged entries yet.
+            fresh = enforce_result_limit(
+                await layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)
+            )
+            if not fresh:
+                fresh = enforce_result_limit(await layers.search_episodic(user_message, limit=limit))
             merged = merge_results([fresh])[:limit]
-            log.info("prefetch drift chat=%s merged=%d", chat_id, len(merged))
+            log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
             meta = {"warm_served": False, "thematic": len(fresh), "temporal": 0, "specific_key": 0}
             return merged, False, None, meta
 
@@ -507,11 +530,17 @@ class Orchestrator:
             results = await layers.find_by_keys(chat_id, matched_keys, limit=limit)
             return {"results": results, "cache_hit": False, "cache_key": None}
 
+        async def _topic_filtered(tid: str) -> dict:
+            results = await layers.search_episodic(user_message, limit=limit, topic_id=tid)
+            return {"results": results, "cache_hit": False, "cache_key": None}
+
         # Each task is tagged with its mechanism name so a per-mechanism
         # exception (e.g. a ChromaDB HNSW/metadata desync — "Error finding
         # id") self-identifies in the log instead of appearing as an anonymous
         # "prefetch mechanism raised" with no source.
         tasks: list = [("thematic", _thematic())]
+        if topic_return_id:
+            tasks.append(("topic_return", _topic_filtered(topic_return_id)))
         if after_before is not None:
             tasks.append(("temporal", _temporal(after_before)))
         if keys:
@@ -527,14 +556,11 @@ class Orchestrator:
         thematic_count = temporal_count = specific_key_count = 0
         for name, part in zip(names, parts):
             if isinstance(part, BaseException):
-                log.warning(
-                    "prefetch mechanism raised chat=%s mechanism=%s: %s",
-                    chat_id, name, part,
-                )
+                log.warning("prefetch mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
                 continue
             count = len(part["results"])
-            if name == "thematic":
-                thematic_count = count
+            if name in ("thematic", "topic_return"):
+                thematic_count += count
             elif name == "temporal":
                 temporal_count = count
             elif name == "specific_key":
@@ -567,34 +593,61 @@ class Orchestrator:
     async def _update_activation(
         self, layers, chat_id: str, intent: str, query_emb, turn_state: str,
         activation, l3_results: list[dict],
+        topic_return_id: str | None = None,
     ):
         """Persist or refresh the per-chat activation after a successful prefetch.
 
-        Returns the activation now in effect (the post-turn thread), or ``None``
-        when no activation could be built (no embedding). ``warm`` keeps the
-        centroid steady and only extends the recent-queries window (a short
-        follow-up must not move the thread); ``cold``/``drift`` build a fresh
-        activation around the new query + results. The activation is the
-        (centroid, merged, last_query, recent_queries) tuple the enriching-write
-        refresh and the next turn's ``classify_turn`` use.
+        * warm  — hold centroid steady; increment turn_count; extend recent_queries.
+        * drift — weighted centroid update toward the new query; same topic_id.
+        * cold  — archive old centroid, reuse returned topic_id or mint new UUID.
         """
         now = time.time()
         if turn_state == "warm":
             if activation is None:
                 return None
             activation.recent_queries = trim_recent(activation.recent_queries, intent)
+            activation.turn_count += 1
             activation.ts = now
             await layers.set_activation(chat_id, activation)
             return activation
-        # cold or drift: a new / refreshed thread needs an embedding to anchor the
-        # centroid; without it the activation can't classify future turns, so
-        # degrade (leave absent → next turn cold).
+
         if query_emb is None:
             return None
+
         recent = trim_recent(activation.recent_queries if activation else [], intent)
+
+        # Archive the departing topic on a cold break.
+        archived: list[dict] = []
+        if activation:
+            if turn_state == "cold" and activation.topic_id:
+                archived = archive_current_topic(activation, TOPIC_ARCHIVE_MAX)
+            else:
+                archived = list(activation.archived_topics)
+
+        # Centroid: weighted blend on drift (keeps thread memory); fresh on cold.
+        if turn_state == "drift" and activation and activation.centroid:
+            new_centroid = update_centroid_weighted(
+                activation.centroid, query_emb, activation.turn_count + 1,
+            )
+            new_turn_count = activation.turn_count + 1
+            topic_id = activation.topic_id or str(uuid.uuid4())
+        else:
+            # cold — reuse recovered topic or mint fresh UUID
+            new_centroid = query_emb
+            new_turn_count = 1
+            topic_id = topic_return_id or str(uuid.uuid4())
+            if topic_return_id:
+                log.info("topic return chat=%s topic=%s", chat_id, topic_return_id)
+
         new_act = Activation(
-            centroid=query_emb, merged=l3_results, last_query=intent,
-            recent_queries=recent, ts=now,
+            centroid=new_centroid,
+            merged=l3_results,
+            last_query=intent,
+            recent_queries=recent,
+            ts=now,
+            topic_id=topic_id,
+            turn_count=new_turn_count,
+            archived_topics=archived,
         )
         await layers.set_activation(chat_id, new_act)
         return new_act
