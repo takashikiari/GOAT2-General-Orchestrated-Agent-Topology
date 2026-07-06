@@ -22,7 +22,9 @@ class PermanentMemory:
     def _get_http(self):
         if self._http is None:
             import httpx  # lazy — avoids import-time network activity
-            self._http = httpx.AsyncClient(base_url=PERMANENT_LETTA_URL, timeout=10.0)
+            self._http = httpx.AsyncClient(
+                base_url=PERMANENT_LETTA_URL, timeout=10.0, follow_redirects=True
+            )
         return self._http
 
     async def _resolve_agent_id(self) -> str:
