@@ -308,14 +308,16 @@ python3 setup/wizard.py --reconfigure
 | OpenRouter | | 200+ models via one key |
 | Google Gemini | | Free tier at aistudio.google.com |
 
-### Optional services (`setup/services.toml`)
+### Services (`setup/services.toml`)
 
-| Service | Required | Purpose |
-|---------|----------|---------|
-| **Telegram Bot** | Yes | Primary interface — create via @BotFather |
-| Redis | Recommended | DAG state, session memory, update notifications |
-| ChromaDB | Recommended | Long-term vector memory across sessions |
-| Letta | No | Advanced stateful memory backend (alternative to ChromaDB) |
+All three memory backends are recommended — without them the corresponding memory layers are silently disabled.
+
+| Service | Required | Memory layer | Purpose |
+|---------|----------|--------------|---------|
+| **Telegram Bot** | Yes | — | Primary interface — create via @BotFather |
+| Redis | Recommended | L2 + L2.5 | Current conversation history and per-chat activation state (thread centroid + held retrieval) |
+| ChromaDB | Recommended | L3 | All past conversations — long-term episodic vector memory retrieved by semantic search |
+| Letta | Recommended | L1 | Permanent facts, preferences, and knowledge promoted across sessions |
 
 ### Pre-flight checks (`setup/checks.py`)
 
