@@ -23,6 +23,9 @@ mcp>=1.0.0             # mcp_server/server.py (FastMCP)
 # changes its own transitive-dep handling.
 posthog>=3.0.0
 
+# Temporal parsing — memory/temporal_parser.py
+dateparser>=1.2.0
+
 # Optional plugin dependencies — not required for core bot operation.
 # Install these only if you enable the corresponding tools/goat_skills plugins:
 #
