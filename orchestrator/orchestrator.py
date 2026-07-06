@@ -260,6 +260,7 @@ class Orchestrator:
             #    daemon skips the L3 search on a warm turn — the brain holding its
             #    current mental model steady instead of re-deriving it every turn.
             facts_task = asyncio.create_task(layers.get_identity_and_facts())
+            identity_task = asyncio.create_task(layers.get_identity_prompt())
             msgs_task = asyncio.create_task(layers.get_working_context(chat_id))
             activation_task = asyncio.create_task(layers.get_activation(chat_id))
             qemb_task = asyncio.create_task(layers.embed_query(intent))
@@ -332,10 +333,12 @@ class Orchestrator:
             #    assemble L0-L3 with the pre-fetched tiers (assemble stage).
             collector.start_stage("assemble")
             facts = await facts_task
+            identity_prompt = await identity_task
             messages = await msgs_task
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
+                identity_prompt=identity_prompt,
             )
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)

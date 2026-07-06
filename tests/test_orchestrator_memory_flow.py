@@ -119,3 +119,28 @@ def test_topic_id_is_uuid_format():
     non_empty = [tid for tid in layers.stored_topic_ids if tid]
     assert non_empty, "no non-empty topic_ids stored"
     assert UUID_RE.match(non_empty[0]), f"topic_id not UUID format: {non_empty[0]!r}"
+
+
+# --- identity_prompt flows through assemble_context --------------------------
+
+def test_identity_prompt_is_fetched_and_used():
+    """Orchestrator must call get_identity_prompt and pass it to assemble_context."""
+    identity_used = []
+
+    class _IdentityCaptureLayers(_FakeLayers):
+        async def get_identity_prompt(self):
+            return "Custom identity for this test."
+
+        async def assemble_context(self, chat_id, budget=None, l3_results=None,
+                                   facts=None, messages=None, identity_prompt=None):
+            identity_used.append(identity_prompt)
+            return list(self._blocks), self._l3_used
+
+    layers = _IdentityCaptureLayers()
+    llm = _LLMClient(_Completions("ok"))
+    orch = Orchestrator(layers, llm, _FakePluginManager(), _FakeAnalytics())
+    asyncio.run(orch.run("hello", "chat1"))
+    assert identity_used, "assemble_context was never called"
+    assert identity_used[0] == "Custom identity for this test.", (
+        f"expected custom identity, got {identity_used[0]!r}"
+    )
