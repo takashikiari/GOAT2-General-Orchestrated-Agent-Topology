@@ -125,6 +125,7 @@ class MemoryLayers:
     async def search_episodic(
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
+        topic_id: str | None = None,
     ) -> list[dict]:
         """L3 (uncached): semantic search with optional timestamp filter.
 
@@ -133,11 +134,14 @@ class MemoryLayers:
         returns ``{"content","metadata"}`` closest-first, capped to
         ``MAX_RESULTS_PER_SEARCH``.
         """
-        results = await self._episodic.search(query, limit=limit, after=after, before=before)
+        results = await self._episodic.search(
+            query, limit=limit, after=after, before=before, topic_id=topic_id,
+        )
         return enforce_result_limit(results)
 
     async def store_episodic(
         self, chat_id: str, content: str, tags: list[str] | None = None,
+        topic_id: str = "",
     ) -> None:
         """L3: write content to episodic memory — the only L3 write path.
 
@@ -150,14 +154,18 @@ class MemoryLayers:
             chat_id: Origin chat — labels the entry for per-chat recency.
             content: The information to store.
             tags: Optional retrieval tags; joined into one metadata string.
+            topic_id: Topic thread ID; written to metadata when non-empty so
+                future topic-filtered searches can narrow to this thread.
         """
         now = time.time()
-        metadata = {
+        metadata: dict = {
             "tags": ",".join(tags or []),
             "timestamp": now,
             "access_count": 0,
             "last_accessed_ts": now,
         }
+        if topic_id:
+            metadata["topic_id"] = topic_id
         await self._episodic.store(chat_id, content, metadata)
 
     async def find_by_keys(
@@ -215,29 +223,38 @@ class MemoryLayers:
 
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,
+        topic_id: str | None = None,
     ) -> tuple[list[dict], bool, str]:
         """L3 + L2.5: semantic search, served from the session cache on repeat.
 
         Returns ``(results, cache_hit, cache_key)``: the results, whether they
         came from the cache, and the deterministic key (so the orchestrator can
-        report it in observability). Key is ``search:{sha256(query)[:16]}`` —
-        SHA-256 (not Python's randomised ``hash``) for cross-restart stability.
-        Results capped to ``MAX_RESULTS_PER_SEARCH`` before caching so cache
-        hits need no re-cap.
+        report it in observability). Key is ``search:{sha256(query+topic_id)[:16]}``
+        — SHA-256 (not Python's randomised ``hash``) for cross-restart stability.
+        Different ``topic_id`` values produce distinct cache keys so topic-scoped
+        and global searches never share an entry. Results capped to
+        ``MAX_RESULTS_PER_SEARCH`` before caching so cache hits need no re-cap.
         """
-        cache_key = self._search_cache_key(query)
+        cache_key = self._search_cache_key(query, topic_id)
         cached = await self._cache.get(chat_id, cache_key)
         if cached is not None:
             return cached["results"], True, cache_key
         log.debug("episodic search (cache miss) chat=%s query=%r", chat_id, query[:80])
-        results = enforce_result_limit(await self._episodic.search(query, limit=limit))
+        results = enforce_result_limit(
+            await self._episodic.search(query, limit=limit, topic_id=topic_id)
+        )
         await self._cache.set(chat_id, cache_key, {"results": results})
         return results, False, cache_key
 
     @staticmethod
-    def _search_cache_key(query: str) -> str:
-        """Deterministic L2.5 key for an episodic query: ``search:{digest}``."""
-        digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+    def _search_cache_key(query: str, topic_id: str | None = None) -> str:
+        """Deterministic L2.5 key for an episodic query: ``search:{digest}``.
+
+        ``topic_id`` is included in the digest so searches with different topics
+        never collide in the L2.5 cache.
+        """
+        key_str = query + (topic_id or "")
+        digest = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         return f"{_SEARCH_NAMESPACE}:{digest}"
 
     async def get_cache(self, chat_id: str, key: str) -> dict | None:

@@ -50,12 +50,12 @@ class _FakeLayers:
         self.last_query = None
         self.archive_calls = 0
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5):
+    async def search_episodic_with_cache(self, chat_id, query, limit=5, topic_id=None):
         self.search_calls += 1
         self.last_query = query
         return list(self._results), False, "search:deadbeef"
 
-    async def search_episodic(self, query, limit=5, after=None, before=None):
+    async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None):
         self.search_calls += 1
         return list(self._results)
 
@@ -82,7 +82,7 @@ class _FakeLayers:
         existing = getattr(self, "saved", []) or []
         self.saved = list(existing) + list(messages_to_append)
 
-    async def store_episodic(self, chat_id: str, content: str, tags=None) -> None:
+    async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "") -> None:
         self.archive_calls += 1
 
     # L2.5 activation layer — fakes return empty/None so every single-turn test

@@ -77,21 +77,29 @@ class EpisodicMemory(EpisodicQueries):
     async def search(
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
+        topic_id: str | None = None,
     ) -> list[dict]:
-        """Semantic search with optional timestamp filter (read-only, no lock).
+        """Semantic search with optional timestamp and topic_id filters (read-only).
 
-        Returns ``{"content", "metadata", "score"}`` dicts, closest first.
-        ``score`` is ChromaDB's distance (lower = closer under the default L2
-        metric).  A custom collection that omits distances degrades to
-        ``score = 0.0`` rather than crashing the turn.
+        ``topic_id`` narrows results to entries stored under that topic thread.
+        Entries stored before topic tracking was introduced have no ``topic_id``
+        metadata and will not match the filter — the caller is responsible for
+        providing a global fallback when topic-filtered results are empty.
         """
+        clauses: list[dict] = []
+        if after is not None:
+            clauses.append({"timestamp": {"$gte": after}})
+        if before is not None:
+            clauses.append({"timestamp": {"$lte": before}})
+        if topic_id:
+            clauses.append({"topic_id": {"$eq": topic_id}})
+
         where: dict | None = None
-        if after is not None and before is not None:
-            where = {"$and": [{"timestamp": {"$gte": after}}, {"timestamp": {"$lte": before}}]}
-        elif after is not None:
-            where = {"timestamp": {"$gte": after}}
-        elif before is not None:
-            where = {"timestamp": {"$lte": before}}
+        if len(clauses) == 1:
+            where = clauses[0]
+        elif len(clauses) > 1:
+            where = {"$and": clauses}
+
         kw: dict = {"query_texts": [query], "n_results": limit}
         if where:
             kw["where"] = where
