@@ -144,3 +144,22 @@ class EpisodicQueries:
         async with self._write_lock:
             await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
         log.debug("EpisodicMemory: deleted %d entries", len(entry_ids))
+
+    async def update_metadata(self, doc_id: str, updates: dict) -> None:
+        """Update metadata fields on an existing L3 entry (write-locked).
+
+        Merges ``updates`` into existing metadata so callers only specify the
+        fields they want to change. Silently no-ops if ``doc_id`` is not found.
+        """
+        def _sync() -> None:
+            col = self._get_collection()
+            r = col.get(ids=[doc_id], include=["metadatas"])
+            existing = dict((r.get("metadatas") or [{}])[0] or {})
+            existing.update(updates)
+            col.update(ids=[doc_id], metadatas=[existing])
+
+        try:
+            async with self._write_lock:
+                await asyncio.to_thread(_sync)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("update_metadata failed doc_id=%s: %s", doc_id, exc)
