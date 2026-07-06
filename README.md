@@ -11,7 +11,8 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 - **Proactive, not reactive.** The prefetch daemon starts as the *first* step of every turn and runs in parallel with L0/L1/L2 fetch. Retrieval precedes generation; it is not triggered by the model noticing a gap.
 - **Brain activation, not a cache.** L2.5 holds per-chat *thread state* — the centroid of the current topic and the retrieval it produced. A follow-up on the same thread is served from the held activation (no search); the thread breaks only on a consensus shift (semantic drift AND lexical overlap both drop). The LLM builds on a stable reality instead of a flickering one.
 - **Topic-aware memory.** Every conversation belongs to a topic (UUID, stored in the activation blob). Each L3 archive entry is tagged with its `topic_id`. The prefetch daemon scopes L3 search to the current topic on drift turns and adds a parallel topic-return mechanism on cold breaks. Centroid updates are stability-weighted (`alpha = 1/min(turn_count, 20)`) — early turns move fast, stable topics resist drift. When a cold break matches an archived topic centroid (cosine ≥ 0.75), the session resumes that topic instead of minting a new one.
-- **Three independent physical backends.** Redis (working + activation), ChromaDB (episodic), and Letta (permanent) each connect lazily and fail independently — a Letta outage empties L1 facts and the turn continues.
+- **Live identity updates.** GOAT can update its own L0 persona at runtime via the `set_identity` tool — stored in a Letta `identity` block and fetched concurrently each turn. The config `base_prompt` is always the fallback: if Letta is unreachable, identity loads from config exactly as before.
+- **Three independent physical backends.** Redis (working + activation), ChromaDB (episodic), and Letta (permanent) each connect lazily and fail independently — a Letta outage empties L1 facts, falls back to config identity, and the turn continues.
 - **No static thresholds.** The L3 relevance filter is a ratio over the score distribution, scale-invariant by construction. The context budget adapts per turn from two real signals. L3's minimum token slice is guaranteed by construction.
 - **Complete fidelity.** Every turn is archived verbatim; the full text of any past exchange is retrievable from a single semantic query — no summary stands between the model and the original words.
 - **Background multi-agent DAG.** The orchestrator can spawn a parallel async DAG of specialist agents (planner → researcher → coder → critic → summarizer) for complex tasks, communicate with it mid-run, and retrieve results — while continuing to answer other messages.
@@ -26,13 +27,13 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 |---------|-------|---------|
 | **Working** | `WorkingMemory` (`memory/working/working.py`) | Redis — messages, L2.5 cache, activation state |
 | **Episodic** | `EpisodicMemory` (`memory/episodic/episodic.py`) | ChromaDB `PersistentClient` at `./chroma_data` |
-| **Permanent** | `PermanentMemory` (`memory/permanent/permanent.py`) | Letta HTTP API — `facts` block on `goat-permanent` |
+| **Permanent** | `PermanentMemory` (`memory/permanent/permanent.py`) | Letta HTTP API — `facts` block (L1) + `identity` block (L0 override) on `goat-permanent` |
 
 ### Logical layers
 
 | Layer | Content | In context | Backed by |
 |-------|---------|-----------|-----------|
-| **L0** | Base persona from `[identity] base_prompt` | Always | config |
+| **L0** | Identity prompt — Letta override if set, else `[identity] base_prompt` from config | Always | Permanent / Letta (override) + config (fallback) |
 | **L1** | Curated key→value facts | Always | Permanent / Letta |
 | **L2** | Full conversation history (current chat) | Always (capped) | Working / Redis |
 | **L2.5** | Per-chat thread state (centroid + held retrieval) | When thread is active | Working / Redis |
@@ -124,6 +125,7 @@ budget = BUDGET_BASE + confidence × 4000 + complexity × 2000  (cap: 12000)
 | `search_memory` | L3 read | On-demand semantic search; supports `after`/`before` ISO-8601 filters |
 | `store_memory` | L3 write | Persist across sessions; may trigger enriching refresh |
 | `promote_memory` | L1 write | Stable fact into Letta facts block; cap-guarded upsert-by-key |
+| `set_identity` | L0 write | Update or clear the Letta identity override; empty string restores config default |
 | `read_l1` | L1 read | Returns all facts + token usage vs cap |
 | `forget_fact` | L1 delete | Remove a key from permanent facts |
 | `memory_status` | L1+L2+L3 | Count of facts / messages / episodic entries (total + this chat) |

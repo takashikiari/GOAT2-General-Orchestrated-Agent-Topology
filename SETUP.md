@@ -84,14 +84,14 @@ Start a local instance with:
 redis-server
 ```
 
-**Letta** — required for L1 permanent memory (facts, preferences, knowledge promoted across sessions). L0 identity always loads from `[identity] base_prompt` in `memory.toml` regardless of Letta. Edit `config/memory.toml` to point at your instance:
+**Letta** — required for L1 permanent memory (facts, preferences, knowledge promoted across sessions) and the optional L0 identity override (`set_identity` tool). L0 always loads from `[identity] base_prompt` in `memory.toml` as a fallback; if a Letta identity override is set it takes precedence. Edit `config/memory.toml` to point at your instance:
 
 ```toml
 [permanent]
 letta_url = "http://localhost:8283"   # change host/port here
 ```
 
-If Letta is unreachable at startup, L1 returns an empty facts dict and the bot continues with a warning per turn (see startup log section below). L0 identity still loads from `[identity] base_prompt` in `memory.toml`.
+If Letta is unreachable at startup, L1 returns an empty facts dict, the L0 identity falls back to `[identity] base_prompt` in `memory.toml`, and the bot continues with a warning per turn. The `set_identity` tool will return an error if Letta is down, but no turn crashes.
 
 ---
 
