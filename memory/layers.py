@@ -155,6 +155,7 @@ class MemoryLayers:
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
         topic_id: str | None = None,
+        chat_id_filter: str | None = None,
     ) -> list[dict]:
         """L3 (uncached): semantic search with optional timestamp filter.
 
@@ -162,9 +163,13 @@ class MemoryLayers:
         ``search_episodic_with_cache``. Maps to ``EpisodicMemory.search``,
         returns ``{"content","metadata"}`` closest-first, capped to
         ``MAX_RESULTS_PER_SEARCH``.
+
+        ``chat_id_filter`` restricts results to entries from a specific chat
+        session; passed through to ``EpisodicMemory.search``.
         """
         results = await self._episodic.search(
-            query, limit=limit, after=after, before=before, topic_id=topic_id,
+            query, limit=limit, after=after, before=before,
+            topic_id=topic_id, chat_id_filter=chat_id_filter,
         )
         return enforce_result_limit(results)
 
@@ -252,36 +257,41 @@ class MemoryLayers:
     async def search_episodic_with_cache(
         self, chat_id: str, query: str, limit: int = 5,
         topic_id: str | None = None,
+        chat_id_filter: str | None = None,
     ) -> tuple[list[dict], bool, str]:
         """L3 + L2.5: semantic search, served from the session cache on repeat.
 
         Returns ``(results, cache_hit, cache_key)``: the results, whether they
         came from the cache, and the deterministic key (so the orchestrator can
-        report it in observability). Key is ``search:{sha256(query+topic_id)[:16]}``
+        report it in observability). Key is ``search:{sha256(query+topic_id+chat_id_filter)[:16]}``
         — SHA-256 (not Python's randomised ``hash``) for cross-restart stability.
-        Different ``topic_id`` values produce distinct cache keys so topic-scoped
-        and global searches never share an entry. Results capped to
+        Different ``topic_id`` or ``chat_id_filter`` values produce distinct cache
+        keys so scoped and global searches never share an entry. Results capped to
         ``MAX_RESULTS_PER_SEARCH`` before caching so cache hits need no re-cap.
         """
-        cache_key = self._search_cache_key(query, topic_id)
+        cache_key = self._search_cache_key(query, topic_id, chat_id_filter)
         cached = await self._cache.get(chat_id, cache_key)
         if cached is not None:
             return cached["results"], True, cache_key
         log.debug("episodic search (cache miss) chat=%s query=%r", chat_id, query[:80])
         results = enforce_result_limit(
-            await self._episodic.search(query, limit=limit, topic_id=topic_id)
+            await self._episodic.search(
+                query, limit=limit, topic_id=topic_id, chat_id_filter=chat_id_filter,
+            )
         )
         await self._cache.set(chat_id, cache_key, {"results": results})
         return results, False, cache_key
 
     @staticmethod
-    def _search_cache_key(query: str, topic_id: str | None = None) -> str:
+    def _search_cache_key(
+        query: str, topic_id: str | None = None, chat_id_filter: str | None = None,
+    ) -> str:
         """Deterministic L2.5 key for an episodic query: ``search:{digest}``.
 
-        ``topic_id`` is included in the digest so searches with different topics
-        never collide in the L2.5 cache.
+        ``topic_id`` and ``chat_id_filter`` are included in the digest so searches
+        with different scopes never collide in the L2.5 cache.
         """
-        key_str = query + (topic_id or "")
+        key_str = query + (topic_id or "") + (chat_id_filter or "")
         digest = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         return f"{_SEARCH_NAMESPACE}:{digest}"
 

@@ -79,13 +79,18 @@ class EpisodicMemory(EpisodicQueries):
         self, query: str, limit: int = 5,
         after: float | None = None, before: float | None = None,
         topic_id: str | None = None,
+        chat_id_filter: str | None = None,
     ) -> list[dict]:
-        """Semantic search with optional timestamp and topic_id filters (read-only).
+        """Semantic search with optional timestamp, topic_id, and chat_id filters (read-only).
 
         ``topic_id`` narrows results to entries stored under that topic thread.
         Entries stored before topic tracking was introduced have no ``topic_id``
         metadata and will not match the filter — the caller is responsible for
         providing a global fallback when topic-filtered results are empty.
+
+        ``chat_id_filter`` restricts results to entries from a specific chat session.
+        When provided, adds a ``{"chat_id": {"$eq": chat_id_filter}}`` clause to
+        the ChromaDB ``where`` filter.
         """
         clauses: list[dict] = []
         if after is not None:
@@ -94,6 +99,8 @@ class EpisodicMemory(EpisodicQueries):
             clauses.append({"timestamp": {"$lte": before}})
         if topic_id:
             clauses.append({"topic_id": {"$eq": topic_id}})
+        if chat_id_filter is not None:
+            clauses.append({"chat_id": {"$eq": chat_id_filter}})
 
         where: dict | None = None
         if len(clauses) == 1:

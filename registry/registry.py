@@ -16,6 +16,7 @@ from config import settings
 from memory.analytics import MemoryAnalytics
 from memory.config import SESSION_CACHE_TTL
 from memory.episodic import EpisodicMemory
+from memory.gliner_extractor import GLiNERExtractor
 from memory.layers import MemoryLayers
 from memory.permanent import PermanentMemory
 from memory.working import WorkingMemory
@@ -33,6 +34,7 @@ class ServiceRegistry:
         self._memory_layers: MemoryLayers | None = None
         self._memory_analytics: MemoryAnalytics | None = None
         self._plugin_manager: PluginManager | None = None
+        self._gliner_extractor: GLiNERExtractor | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
@@ -69,12 +71,20 @@ class ServiceRegistry:
         return self._permanent_memory
 
     @property
+    def gliner_extractor(self) -> GLiNERExtractor:
+        """Shared GLiNERExtractor; model loads lazily on first extraction call."""
+        if self._gliner_extractor is None:
+            self._gliner_extractor = GLiNERExtractor()
+        return self._gliner_extractor
+
+    @property
     def memory_layers(self) -> MemoryLayers:
         """Shared MemoryLayers (Backend Mapper), built from the three tiers."""
         if self._memory_layers is None:
             self._memory_layers = MemoryLayers(
                 self.working_memory, self.episodic_memory, self.permanent_memory,
                 cache_ttl=SESSION_CACHE_TTL,
+                extractor=self.gliner_extractor,
             )
         return self._memory_layers
 

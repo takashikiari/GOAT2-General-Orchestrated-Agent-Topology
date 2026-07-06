@@ -29,7 +29,7 @@ from memory.config import (
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
-from memory.query_classifier import extract_structural_keys, extract_temporal_range
+from memory.query_classifier import extract_temporal_range
 from memory.result_merger import merge_results
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
@@ -503,10 +503,9 @@ class Orchestrator:
             return merged, False, None, meta
 
         after_before = extract_temporal_range(user_message)
-        keys = extract_structural_keys(user_message)
         log.debug(
-            "prefetch classify chat=%s state=%s temporal=%s specific_key=%s keys=%s",
-            chat_id, state, after_before is not None, bool(keys), keys,
+            "prefetch classify chat=%s state=%s temporal=%s",
+            chat_id, state, after_before is not None,
         )
         limit = PREFETCH_MAX_RESULTS
         current_topic_id: str | None = activation.topic_id if activation else None
@@ -523,10 +522,16 @@ class Orchestrator:
             meta = {"warm_served": False, "thematic": len(fresh), "temporal": 0, "specific_key": 0}
             return merged, False, None, meta
 
-        # cold: full three-mechanism search.
+        # cold: full multi-mechanism search.
         async def _thematic() -> dict:
             results, hit, key = await layers.search_episodic_with_cache(
                 chat_id, user_message, limit=limit,
+            )
+            return {"results": results, "cache_hit": hit, "cache_key": key}
+
+        async def _thematic_scoped() -> dict:
+            results, hit, key = await layers.search_episodic_with_cache(
+                chat_id, user_message, limit=limit, chat_id_filter=chat_id,
             )
             return {"results": results, "cache_hit": hit, "cache_key": key}
 
@@ -537,10 +542,6 @@ class Orchestrator:
             )
             return {"results": results, "cache_hit": False, "cache_key": None}
 
-        async def _specific_key(matched_keys: list[str]) -> dict:
-            results = await layers.find_by_keys(chat_id, matched_keys, limit=limit)
-            return {"results": results, "cache_hit": False, "cache_key": None}
-
         async def _topic_filtered(tid: str) -> dict:
             results = await layers.search_episodic(user_message, limit=limit, topic_id=tid)
             return {"results": results, "cache_hit": False, "cache_key": None}
@@ -549,13 +550,11 @@ class Orchestrator:
         # exception (e.g. a ChromaDB HNSW/metadata desync — "Error finding
         # id") self-identifies in the log instead of appearing as an anonymous
         # "prefetch mechanism raised" with no source.
-        tasks: list = [("thematic", _thematic())]
+        tasks: list = [("thematic", _thematic()), ("thematic_scoped", _thematic_scoped())]
         if topic_return_id:
             tasks.append(("topic_return", _topic_filtered(topic_return_id)))
         if after_before is not None:
             tasks.append(("temporal", _temporal(after_before)))
-        if keys:
-            tasks.append(("specific_key", _specific_key(keys)))
         names = [name for name, _ in tasks]
         parts = await asyncio.gather(
             *[coro for _, coro in tasks], return_exceptions=True,
@@ -564,18 +563,16 @@ class Orchestrator:
         groups: list[list[dict]] = []
         cache_hit = False
         cache_key: str | None = None
-        thematic_count = temporal_count = specific_key_count = 0
+        thematic_count = temporal_count = 0
         for name, part in zip(names, parts):
             if isinstance(part, BaseException):
                 log.warning("prefetch mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
                 continue
             count = len(part["results"])
-            if name in ("thematic", "topic_return"):
+            if name in ("thematic", "topic_return", "thematic_scoped"):
                 thematic_count += count
             elif name == "temporal":
                 temporal_count = count
-            elif name == "specific_key":
-                specific_key_count = count
             groups.append(part["results"])
             if part.get("cache_key") is not None:
                 cache_hit = part["cache_hit"]
@@ -583,8 +580,8 @@ class Orchestrator:
 
         merged = merge_results(groups)[:limit]
         log.info(
-            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d thematic=%d temporal=%d specific_key=%d",
-            chat_id, len(parts), len(merged), thematic_count, temporal_count, specific_key_count,
+            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d thematic=%d temporal=%d",
+            chat_id, len(parts), len(merged), thematic_count, temporal_count,
         )
         ids = [
             r.get("metadata", {}).get("message_id")
@@ -597,7 +594,7 @@ class Orchestrator:
             "warm_served": False,
             "thematic": thematic_count,
             "temporal": temporal_count,
-            "specific_key": specific_key_count,
+            "specific_key": 0,  # removed mechanism; kept key for observability compat
         }
         return merged, cache_hit, cache_key, meta
 
