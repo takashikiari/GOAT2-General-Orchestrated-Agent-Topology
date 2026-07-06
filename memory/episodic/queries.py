@@ -154,6 +154,10 @@ class EpisodicQueries:
         def _sync() -> None:
             col = self._get_collection()
             r = col.get(ids=[doc_id], include=["metadatas"])
+            ids_found = r.get("ids") or []
+            if not ids_found:
+                log.debug("update_metadata: doc_id=%s not found, skipping enrichment", doc_id)
+                return
             existing = dict((r.get("metadatas") or [{}])[0] or {})
             existing.update(updates)
             col.update(ids=[doc_id], metadatas=[existing])

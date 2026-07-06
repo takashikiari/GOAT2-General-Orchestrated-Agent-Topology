@@ -207,8 +207,8 @@ class MemoryLayers:
         """L3 specific-key retrieval: exact structural matches, scoped to ``chat_id``.
 
         Maps to ``EpisodicMemory.find_by_keys`` (UUID get-by-id + content
-        ``$contains``). Used by the prefetch daemon's specific-key mechanism;
-        results carry ``score = 0.0`` so the merger treats them as exact matches.
+        ``$contains``). Not currently used by the prefetch daemon (specific-key mechanism removed in Task 6); retained for potential future use or on-demand key lookups.
+        Results carry ``score = 0.0`` so the merger treats them as exact matches.
         """
         return await self._episodic.find_by_keys(chat_id, keys, limit=limit)
 
