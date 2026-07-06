@@ -579,6 +579,9 @@ class Orchestrator:
                 cache_key = part["cache_key"]
 
         merged = merge_results(groups)[:limit]
+        # Recount thematic from post-merge slice: global + scoped overlap heavily,
+        # so pre-merge sum double-counts. All non-temporal results are thematic.
+        thematic_count = len(merged) - temporal_count
         log.info(
             "prefetch merge chat=%s state=cold mechanisms=%d merged=%d thematic=%d temporal=%d",
             chat_id, len(parts), len(merged), thematic_count, temporal_count,
