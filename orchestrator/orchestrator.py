@@ -425,15 +425,17 @@ class Orchestrator:
             collector.start_stage("save")
             saved_reply = f"[Tool calls]\n{tool_summary}\n\n{reply}" if tool_summary else reply
             now = time.time()
+            l3_doc_id = str(uuid.uuid4())
             await layers.append_and_save_working_context(
                 chat_id,
-                {"role": "user", "content": intent, "timestamp": now},
-                {"role": "assistant", "content": saved_reply, "timestamp": now},
+                {"role": "user", "content": intent, "timestamp": now, "l3_id": l3_doc_id},
+                {"role": "assistant", "content": saved_reply, "timestamp": now, "l3_id": l3_doc_id},
             )
             archive_task = asyncio.create_task(
                 _archive_turn(
                     layers, chat_id, intent, saved_reply,
                     topic_id=current_activation.topic_id if current_activation else "",
+                    doc_id=l3_doc_id,
                 ))
             self._pending_archives.add(archive_task)
             archive_task.add_done_callback(self._pending_archives.discard)
