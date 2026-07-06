@@ -85,6 +85,21 @@ async def _probe(col) -> list[str]:
                     errors.append(f"query {q!r}: {exc!r}")
                 else:
                     errors.append(f"other-error query {q!r}: {exc!r}")
+        # Also probe with a timestamp where-clause — a separate class of desync
+        # that only surfaces when DuckDB filters by metadata before HNSW lookup.
+        import time
+        ts_now = time.time()
+        try:
+            col.query(
+                query_texts=[_PROBE_TEXTS[0]],
+                n_results=5,
+                where={"timestamp": {"$gte": ts_now - 86400 * 30}},
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_desync(exc):
+                errors.append(f"where-filter probe: {exc!r}")
+            else:
+                errors.append(f"other-error where-filter: {exc!r}")
 
     await asyncio.to_thread(_sync)
     return errors
