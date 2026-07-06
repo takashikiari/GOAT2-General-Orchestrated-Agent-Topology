@@ -103,7 +103,11 @@ class EpisodicMemory(EpisodicQueries):
         kw: dict = {"query_texts": [query], "n_results": limit}
         if where:
             kw["where"] = where
-        results = await asyncio.to_thread(self._get_collection().query, **kw)
+        # Hold _write_lock during query: prevents the HNSW/metadata desync
+        # ("Error finding id") that occurs when col.add() runs concurrently with
+        # col.query() — hnswlib is not read/write thread-safe.
+        async with self._write_lock:
+            results = await asyncio.to_thread(self._get_collection().query, **kw)
         docs = results["documents"][0]
         metas = results["metadatas"][0]
         dists = results.get("distances", [[]])[0]

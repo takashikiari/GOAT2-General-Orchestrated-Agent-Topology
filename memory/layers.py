@@ -39,6 +39,10 @@ log = get_logger(__name__)
 # so search caches are distinguishable from tool-output caches inside L2.5.
 _SEARCH_NAMESPACE = "search"
 
+# Minimum blended_score for pre-scored L3 results when no structural gap is found.
+# Prevents uniformly-mediocre results (old + low-similarity) from being injected.
+_BLENDED_MIN_SCORE = 0.35
+
 # L0 base identity prompt — externalised to config ([identity] base_prompt).
 _BASE_IDENTITY = IDENTITY_BASE_PROMPT
 
@@ -394,10 +398,11 @@ class MemoryLayers:
             l3_budget = max(budget - mandatory_tokens - l2_tokens, 0)
             if l3_budget > 0:
                 if any("blended_score" in r for r in l3_results):
-                    relevant = sorted(
+                    ordered = sorted(
                         l3_results, key=lambda r: r.get("blended_score", 0.0),
                         reverse=True,
                     )
+                    relevant = self._blended_gap_filter(ordered, L3_GAP_SIGNIFICANCE)
                 else:
                     relevant = self._gap_filter(l3_results, L3_GAP_SIGNIFICANCE)
                 l3_block, l3_used = self._fit_search_results(relevant, l3_budget)
@@ -504,6 +509,29 @@ class MemoryLayers:
             return []
         cut = gaps.index(max_gap) + 1
         return results[:cut]
+
+    @staticmethod
+    def _blended_gap_filter(results: list[dict], significance: float = 3.0) -> list[dict]:
+        """Gap filter for pre-scored (blended_score descending) results.
+
+        Applies the same structural-gap principle as ``_gap_filter`` but on
+        blended scores rather than raw Chroma distances. Falls back to a
+        minimum-score cutoff (``_BLENDED_MIN_SCORE``) when the score distribution
+        is uniform (no structural break) — otherwise all mediocre results would
+        be injected regardless of quality.
+        """
+        if not results:
+            return []
+        if len(results) < 3:
+            return [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
+        scores = [r.get("blended_score", 0.0) for r in results]
+        gaps = [scores[i] - scores[i + 1] for i in range(len(scores) - 1)]
+        max_gap = max(gaps)
+        mean_gap = sum(gaps) / len(gaps)
+        if mean_gap > 0 and max_gap >= significance * mean_gap:
+            cut = gaps.index(max_gap) + 1
+            return results[:cut]
+        return [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
 
     @staticmethod
     def _format_facts(facts: dict[str, str]) -> str:
