@@ -280,7 +280,7 @@ cd GOAT2-General-Orchestrated-Agent-Topology
 ./run.sh          # Windows: run.bat
 ```
 
-The first launch detects a missing `goat2.toml` and starts the wizard automatically.
+The first launch detects a missing `goat2.toml` or `.env` and starts the wizard automatically.
 
 ### Wizard (`setup/wizard.py`)
 

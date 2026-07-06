@@ -8,7 +8,7 @@ cd GOAT2-General-Orchestrated-Agent-Topology
 ./run.sh          # Windows: run.bat
 ```
 
-The first launch detects a missing `goat2.toml` and starts the interactive setup wizard automatically. The wizard guides you through provider selection, API keys, and optional services, then writes `goat2.toml` and `.env`. See [README.md § Setup](README.md#setup) for the full wizard reference.
+The first launch detects a missing `goat2.toml` or `.env` and starts the interactive setup wizard automatically. The wizard guides you through provider selection, API keys, and optional services, then writes `goat2.toml` and `.env`. See [README.md § Setup](README.md#setup) for the full wizard reference.
 
 ---
 
