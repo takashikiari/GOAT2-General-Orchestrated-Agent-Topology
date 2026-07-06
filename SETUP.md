@@ -1,12 +1,25 @@
 # GOAT 2.0 — Setup & Usage
 
+## Quick start
+
+```bash
+git clone https://github.com/takashikiari/GOAT2-General-Orchestrated-Agent-Topology.git
+cd GOAT2-General-Orchestrated-Agent-Topology
+./run.sh          # Windows: run.bat
+```
+
+The first launch detects a missing `goat2.toml` and starts the interactive setup wizard automatically. The wizard guides you through provider selection, API keys, and optional services, then writes `goat2.toml` and `.env`. See [README.md § Setup](README.md#setup) for the full wizard reference.
+
+---
+
 ## Prerequisites
 
 | Requirement | Minimum version | Notes |
 |-------------|----------------|-------|
-| Python | 3.12 | `tomllib` (stdlib from 3.11) is used by `memory/config.py` |
-| Redis | any recent | L2 working memory + L2.5 session cache |
-| Letta server | — | L0/L1 permanent memory; if unreachable, L1 facts degrade to `{}` but the bot still runs |
+| Python | 3.11 | `tomllib` is stdlib from 3.11 |
+| Redis | any recent | L2 — current conversation + L2.5 activation state |
+| ChromaDB | any recent | L3 — long-term episodic memory (all past conversations) |
+| Letta server | — | L1 — permanent facts, preferences, and knowledge; if unreachable, L1 degrades to `{}` but the bot still runs |
 
 > **Important — no env vars for service URLs.**
 > Redis and Letta connection details are read exclusively from `config/memory.toml`
@@ -38,7 +51,7 @@ All read by `config/settings.py` at import time. Nothing else reads `os.environ`
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | **Yes** | — | API key for the LLM provider |
+| `<PROVIDER>_API_KEY` | **Yes** | — | API key for the chosen provider — e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`. Ollama needs no key. |
 | `TELEGRAM_BOT_TOKEN` | **Yes** | — | Bot token from @BotFather |
 | `MODEL_NAME` | No | `deepseek-v4-flash` | Model identifier passed to the API |
 | `BASE_URL` | No | `https://api.deepseek.com` | OpenAI-compatible provider base URL |
@@ -47,7 +60,7 @@ All read by `config/settings.py` at import time. Nothing else reads `os.environ`
 | `TIMEOUT_SECONDS` | No | `30.0` | HTTP timeout for LLM calls |
 | `GOAT_LOG_DIR` | No | `/tmp/goat2/logs` | Directory for the rotating log file |
 
-Minimum `.env` to run the bot:
+The setup wizard writes these automatically to `.env`. Minimum `.env` for DeepSeek (the recommended default):
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -71,7 +84,7 @@ Start a local instance with:
 redis-server
 ```
 
-**Letta** — required for permanent memory (L0 identity, L1 facts). Edit `config/memory.toml` to point at your instance:
+**Letta** — required for L1 permanent memory (facts, preferences, knowledge promoted across sessions). L0 identity always loads from `[identity] base_prompt` in `memory.toml` regardless of Letta. Edit `config/memory.toml` to point at your instance:
 
 ```toml
 [permanent]
@@ -99,7 +112,9 @@ letta_url = "http://localhost:8283"        # your Letta server URL
 [aits]
 budget_base = 2000
 budget_hard_cap = 12000
-prefetch_timeout = 0.5
+
+[prefetch]
+timeout = 1.0                     # asyncio.wait_for bound; graceful degradation on exceed
 
 [retrieval_budget]
 l3_min_guarantee_tokens = 1200
@@ -114,13 +129,13 @@ ttl_seconds = 300
 ## Run the bot
 
 ```bash
-python3 -m telegram_interface
+./run.sh          # recommended — runs pre-flight checks then starts the bot
 ```
 
-Or equivalently:
+Or directly:
 
 ```bash
-python3 -m telegram_interface.__main__
+python3 -m telegram_interface
 ```
 
 ---
