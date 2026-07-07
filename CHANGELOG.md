@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased] — 2026-07-07 (session 5)
 
+### Refactored
+
+- **L3 retrieval extracted to `memory/retrieval.py`** (`orchestrator/prefetch.py` → `memory/retrieval.py`): The retrieval pipeline (search → merge → boost_by_entities → rerank) lived inside `orchestrator/prefetch.py`, which meant it was duplicated whenever a second caller (search_memory tool, on-demand retrieval) would need the same logic. Extracted into a first-class `retrieve()` function in the `memory` package — where retrieval belongs. `orchestrator/prefetch.py` is now a thin scheduling wrapper (~35 lines) that delegates to `memory.retrieval.retrieve`; orchestrator API unchanged.
+
 ### Fixed
 
 - **Cold-path prefetch systematic timeout** (`config/memory.toml`, `memory/config_defaults.py`): Even with JIT-primed models (session 4 fix), the cold-path pipeline (ChromaDB × 3 parallel + BM25 + GLiNER boost + CrossEncoder rerank) runs sequentially and totals ~1.08s on a warm CPU — 8ms over the 1.0s timeout. Every cold turn (thread_break=true, activation_state=cold) timed out even after models were warm. Increased `PREFETCH_TIMEOUT` from 1.0s to 1.5s; warm/drift paths still complete in <0.8s and are unaffected.
