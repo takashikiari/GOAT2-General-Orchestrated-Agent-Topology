@@ -518,6 +518,7 @@ class Orchestrator:
                 else:
                     groups.append(enforce_result_limit(part))
             merged = merge_results(groups)[:limit]
+            merged = await layers.boost_by_entities(user_message, merged)
             log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
             meta = {"warm_served": False, "thematic": len(merged), "specific_key": 0}
             return merged, False, None, meta
@@ -564,6 +565,7 @@ class Orchestrator:
                 cache_key = part["cache_key"]
 
         merged = merge_results(groups)[:limit]
+        merged = await layers.boost_by_entities(user_message, merged)
         log.info(
             "prefetch merge chat=%s state=cold mechanisms=%d merged=%d",
             chat_id, len(parts), len(merged),

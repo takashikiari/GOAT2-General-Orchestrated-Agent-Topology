@@ -15,7 +15,7 @@ def test_search_runs_unconditionally_and_reports_cache_key():
     layers = _FakeLayers(results=[{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
     reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run(intent, "chat"))
-    assert layers.search_calls == 1                # search ran despite low confidence
+    assert layers.search_calls == 2                # thematic + thematic_scoped both ran
     assert reply == "reply"
     obs = reg.memory_analytics.records[-1]
     assert obs.cache_key == "search:deadbeef"       # cache key now reported (was null)

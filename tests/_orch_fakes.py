@@ -50,12 +50,12 @@ class _FakeLayers:
         self.last_query = None
         self.archive_calls = 0
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, topic_id=None):
+    async def search_episodic_with_cache(self, chat_id, query, limit=5, topic_id=None, chat_id_filter=None):
         self.search_calls += 1
         self.last_query = query
         return list(self._results), False, "search:deadbeef"
 
-    async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None):
+    async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None, chat_id_filter=None):
         self.search_calls += 1
         return list(self._results)
 
@@ -104,6 +104,9 @@ class _FakeLayers:
 
     async def embed_query(self, query):
         return None
+
+    async def boost_by_entities(self, query, results):
+        return results
 
 
 class _FakeAnalytics:

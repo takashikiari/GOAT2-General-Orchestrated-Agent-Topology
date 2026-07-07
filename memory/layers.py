@@ -19,6 +19,7 @@ from datetime import datetime
 from memory.activation import Activation, ActivationStore
 from memory.auto_promote import schedule_auto_promote
 from memory.budget import enforce_result_limit, estimate_tokens
+from memory.date_format import prefix_with_date
 from memory.config import (
     ACTIVATION_TTL_SECONDS,
     IDENTITY_BASE_PROMPT,
@@ -199,7 +200,7 @@ class MemoryLayers:
         }
         if topic_id:
             metadata["topic_id"] = topic_id
-        return await self._episodic.store(chat_id, content, metadata, doc_id=doc_id)
+        return await self._episodic.store(chat_id, prefix_with_date(content, now), metadata, doc_id=doc_id)
 
     async def find_by_keys(
         self, chat_id: str, keys: list[str], limit: int = 15,
@@ -219,6 +220,13 @@ class MemoryLayers:
         access-count term of the merge score on future turns.
         """
         await self._episodic.bump_access(chat_id, ids)
+
+    async def boost_by_entities(self, query: str, results: list[dict]) -> list[dict]:
+        """Re-score results by GLiNER entity overlap; no-op when extractor unavailable."""
+        if not self._extractor or not results:
+            return results
+        from memory.entity_boost import entity_boost
+        return await entity_boost(query, results, self._extractor)
 
     async def promote_fact(self, key: str, value: str) -> str:
         """L1: promote a stable fact into the Letta core-memory ``facts`` block.
