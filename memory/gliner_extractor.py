@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from utils.logging.setup import get_logger
 
@@ -15,14 +16,21 @@ _ENTITY_LABELS = [
 _MODEL_NAME = "urchade/gliner_multi-v2.1"
 _MAX_WORDS = 200  # safe proxy for ~300 wordpiece tokens, well under GLiNER's 384 limit
 _gliner_model = None
+# Protects the module-level singleton from concurrent asyncio.to_thread loads.
+# Double-checked locking: outer check avoids lock contention on the hot path
+# (model already loaded); inner check prevents double-load when two threads
+# both see None before the first finishes from_pretrained() (~10 s).
+_model_lock = threading.Lock()
 
 
 def _get_shared_model():
     global _gliner_model
     if _gliner_model is None:
-        from gliner import GLiNER  # lazy import — not installed by default
-        _gliner_model = GLiNER.from_pretrained(_MODEL_NAME)
-        log.info("GLiNERExtractor: model loaded (%s)", _MODEL_NAME)
+        with _model_lock:
+            if _gliner_model is None:
+                from gliner import GLiNER  # lazy import — not installed by default
+                _gliner_model = GLiNER.from_pretrained(_MODEL_NAME)
+                log.info("GLiNERExtractor: model loaded (%s)", _MODEL_NAME)
     return _gliner_model
 
 
@@ -60,9 +68,20 @@ class GLiNERExtractor:
         memory_type = _infer_type(entities, entity_types, text)
         return {"entities": entities, "entity_types": entity_types, "memory_type": memory_type}
 
+    def _load_and_prime(self) -> None:
+        """Load model + run one dummy inference to compile the PyTorch JIT graph.
+
+        Without the inference pass, the first real predict_entities() call in the
+        prefetch pipeline takes ~1-3 s (JIT compilation) even after the model
+        weights are in memory — enough to blow the 1.0 s prefetch timeout.
+        """
+        model = _get_shared_model()
+        model.predict_entities("warmup", _ENTITY_LABELS, threshold=0.5)
+        log.info("GLiNERExtractor: JIT inference path primed")
+
     async def warmup(self) -> None:
-        """Pre-load the GLiNER model at startup to avoid first-turn load latency."""
-        await asyncio.to_thread(self._get_model)
+        """Pre-load the GLiNER model and prime JIT at startup."""
+        await asyncio.to_thread(self._load_and_prime)
 
     async def extract(self, text: str) -> dict:
         """Extract entities and infer memory_type. Returns fallback dict on any error."""

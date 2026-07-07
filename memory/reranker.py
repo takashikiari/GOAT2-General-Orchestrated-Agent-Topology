@@ -35,9 +35,21 @@ class CrossEncoderReranker:
             log.info("CrossEncoderReranker: loaded %s", RERANKER_MODEL)
         return self._model
 
+    def _load_and_prime(self) -> None:
+        """Load model + run one dummy prediction to compile the PyTorch JIT graph.
+
+        Without the prediction pass, the first real predict() call during prefetch
+        takes ~0.96 s (JIT compilation at 1.04 it/s vs 8.91 it/s on subsequent
+        calls) — enough to exceed the 1.0 s prefetch timeout and drop L3 from
+        the first response.
+        """
+        model = self._get_model()
+        model.predict([("warmup query", "warmup document")])
+        log.info("CrossEncoderReranker: JIT inference path primed")
+
     async def warmup(self) -> None:
-        """Pre-load the model at startup to avoid first-turn load latency."""
-        await asyncio.to_thread(self._get_model)
+        """Pre-load the model and prime JIT at startup."""
+        await asyncio.to_thread(self._load_and_prime)
 
     async def rerank(
         self, query: str, results: list[dict], top_k: int = RERANKER_TOP_K,

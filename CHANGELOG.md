@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-07-07 (session 4)
+
+### Fixed
+
+- **GLiNER double-load race condition** (`memory/gliner_extractor.py`): `_get_shared_model()` had no thread lock. Because `asyncio.to_thread` runs in a thread pool, two concurrent callers (e.g., warmup + an early prefetch) could both evaluate `_gliner_model is None` as `True` while `GLiNER.from_pretrained()` was still executing (~10 s), causing both to load the model independently — logging "GLiNERExtractor: model loaded" twice and wasting memory/CPU. Fixed with `threading.Lock()` + double-checked locking (outer check avoids lock contention on the hot path; inner check inside the lock prevents the race).
+
+- **PyTorch JIT first-inference overhead causing prefetch timeout** (`memory/gliner_extractor.py`, `memory/reranker.py`): `warmup()` on both models only loaded weights into memory via `from_pretrained()` / `CrossEncoder()`. PyTorch JIT compiles the computation graph on the *first inference call*, not on model load. This caused:
+  - CrossEncoder: ~0.96 s first prediction (1.04 it/s) vs ~0.11 s on subsequent calls (8.91 it/s) — enough to exceed the 1.0 s prefetch timeout even with the model fully in memory.
+  - GLiNER: same JIT overhead on `predict_entities()`, adding latency inside the prefetch task.
+  - Fixed by adding `_load_and_prime()` to both classes: loads the model then immediately runs a dummy inference (`predict_entities("warmup", ...)` / `model.predict([("warmup query", "warmup document")])`), compiling the JIT graph at startup so the first real prefetch call is as fast as subsequent ones.
+
+---
+
 ## [Unreleased] — 2026-07-07 (session 3)
 
 ### Fixed
