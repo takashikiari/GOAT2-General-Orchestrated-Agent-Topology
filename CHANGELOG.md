@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-07-07 (session 3)
+
+### Fixed
+
+- **GLiNER first-turn prefetch timeout** (`memory/gliner_extractor.py`, `telegram_interface/_plugin_scanner.py`): `boost_by_entities` is called inside every cold/drift prefetch task, which calls `GLiNERExtractor.extract()`. GLiNER had no startup warmup, so the first cold/drift query triggered model load (~1-3 s from disk) inside the 1.0 s prefetch timeout — timeout was almost certain on the first message after every restart. Fixed by:
+  - Adding `GLiNERExtractor.warmup()` (mirrors `CrossEncoderReranker.warmup()` — `asyncio.to_thread(_get_model)`).
+  - Adding `registry.gliner_extractor.warmup()` to the parallel warmup block in `post_init_hook`, alongside BM25 and CrossEncoder. GLiNER now loads before the first message arrives.
+
+- **Silent warmup failure swallowing** (`telegram_interface/_plugin_scanner.py`): `asyncio.gather(*warmup_tasks, return_exceptions=True)` caught all warmup exceptions without logging them, so a failed CrossEncoder or BM25 warmup was invisible in logs. Replaced with explicit per-component `log.error(...)` so operators know which component failed and that the first turn may be slow.
+
+- **Misleading docstring in `entity_boost.py`**: The module docstring claimed GLiNER is "already warm from enrichment" — factually wrong on the first query (before any auto_promote enrichment has ever run). Updated to "pre-warmed at startup".
+
+---
+
 ## [Unreleased] — 2026-07-07 (session 2)
 
 ### Added

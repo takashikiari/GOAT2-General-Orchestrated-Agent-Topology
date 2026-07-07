@@ -60,6 +60,10 @@ class GLiNERExtractor:
         memory_type = _infer_type(entities, entity_types, text)
         return {"entities": entities, "entity_types": entity_types, "memory_type": memory_type}
 
+    async def warmup(self) -> None:
+        """Pre-load the GLiNER model at startup to avoid first-turn load latency."""
+        await asyncio.to_thread(self._get_model)
+
     async def extract(self, text: str) -> dict:
         """Extract entities and infer memory_type. Returns fallback dict on any error."""
         try:

@@ -39,13 +39,23 @@ async def _loop(registry: "ServiceRegistry") -> None:
 def post_init_hook(registry: "ServiceRegistry"):
     """Return a PTB ``post_init`` coroutine that warms memory and starts the scanner."""
     async def _post_init(application: "Application") -> None:
-        # Pre-warm ChromaDB, then build BM25 index and load reranker model in
-        # parallel — all outside the per-turn prefetch timeout so the first real
-        # request after restart has a fully ready retrieval stack.
+        # Pre-warm ChromaDB first (serial: BM25 build reads from it).
         await registry.episodic_memory.warmup()
-        warmup_tasks = [registry.bm25_index.warmup()]
+        # Then warm BM25 + GLiNER + CrossEncoder in parallel — all outside the
+        # per-turn prefetch timeout so the first real request has a fully ready
+        # retrieval stack. GLiNER must be here: boost_by_entities calls it inside
+        # every cold/drift prefetch and its load (~1-3 s) would exceed the timeout.
+        warmup_tasks: list[tuple[str, object]] = [
+            ("BM25", registry.bm25_index.warmup()),
+            ("GLiNER", registry.gliner_extractor.warmup()),
+        ]
         if registry.reranker is not None:
-            warmup_tasks.append(registry.reranker.warmup())
-        await asyncio.gather(*warmup_tasks, return_exceptions=True)
+            warmup_tasks.append(("CrossEncoder", registry.reranker.warmup()))
+        results = await asyncio.gather(
+            *(coro for _, coro in warmup_tasks), return_exceptions=True
+        )
+        for (name, _), result in zip(warmup_tasks, results):
+            if isinstance(result, BaseException):
+                log.error("warmup failed for %s: %s — first turn may be slow", name, result)
         asyncio.create_task(_loop(registry))
     return _post_init

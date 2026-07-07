@@ -1,8 +1,8 @@
 """memory.entity_boost — GLiNER entity overlap re-scoring for prefetch results.
 
 After merge_results produces blended scores, this pass extracts entities from
-the user query via GLiNER (already warm from enrichment) and boosts results
-whose stored metadata.entities overlap with the query entities.
+the user query via GLiNER and boosts results whose stored metadata.entities
+overlap with the query entities.
 
 Overlap formula:
     boost = (|query_entities ∩ memory_entities| / |query_entities|) * weight
@@ -40,7 +40,7 @@ async def entity_boost(
     Args:
         query: The user message (passed to GLiNER for entity extraction).
         results: Pre-scored results from merge_results (blended_score set).
-        extractor: Shared GLiNERExtractor instance (model already warm).
+        extractor: Shared GLiNERExtractor instance (pre-warmed at startup).
         weight: Additive boost weight for full overlap (default 0.2).
     Returns:
         Results with updated blended_score, sorted best-first. Unscored results
