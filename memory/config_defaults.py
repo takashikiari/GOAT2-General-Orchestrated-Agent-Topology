@@ -44,7 +44,7 @@ _DEFAULTS: dict = {
         "budget_hard_cap": 12000,
     },
     "prefetch": {
-        "timeout": 1.0,
+        "timeout": 1.5,
         "max_results": 15,
         "recency_window_days": 30,
         "access_count_ref": 10,

@@ -62,12 +62,12 @@ budget_hard_cap = 12000
 # recency_window_days / access_count_ref normalise the merge-score terms;
 # score_*_weight are the blend weights (similarity + recency + access_count).
 [prefetch]
-# 1.0s (was 0.5s): the benchmark cache dataset showed the L2.5 hit rate capped at
-# ~72% ± 18.7% because ChromaDB semantic search frequently exceeds 0.5s,
-# cancelling the daemon before it can populate the L2.5 cache for the repeat
-# turn. 1.0s lets more searches complete (→ more cache hits) without unbounded
-# latency; the daemon is still awaited for at most this long per turn.
-timeout = 1.0
+# 1.5s (was 1.0s): the cold-path pipeline (ChromaDB × 3 parallel + BM25 + GLiNER
+# boost + CrossEncoder rerank) takes ~1.08s on a warm JIT-primed CPU even after
+# the session-4 JIT warmup fix — 8ms over the old 1.0s bound causes a systematic
+# timeout on every cold/thread-break turn. 1.5s gives 38% headroom; warm and drift
+# paths still complete in <0.8s so they are unaffected.
+timeout = 1.5
 max_results = 20
 recency_window_days = 30
 access_count_ref = 10
