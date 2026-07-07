@@ -41,7 +41,7 @@ _SEARCH_NAMESPACE = "search"
 
 # Minimum blended_score for pre-scored L3 results when no structural gap is found.
 # Prevents uniformly-mediocre results (old + low-similarity) from being injected.
-_BLENDED_MIN_SCORE = 0.35
+_BLENDED_MIN_SCORE = 0.25
 
 # L0 base identity prompt — externalised to config ([identity] base_prompt).
 _BASE_IDENTITY = IDENTITY_BASE_PROMPT

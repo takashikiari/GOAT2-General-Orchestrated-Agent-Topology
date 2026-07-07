@@ -513,18 +513,32 @@ class Orchestrator:
         if state == "drift":
             # Run topic-scoped and global in parallel: old memories live under
             # different topic_ids (or none), so global is always needed.
-            scoped_task = asyncio.create_task(
-                layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)
-            )
-            global_task = asyncio.create_task(
-                layers.search_episodic(user_message, limit=limit)
-            )
-            scoped_raw, global_raw = await asyncio.gather(scoped_task, global_task)
-            scoped = enforce_result_limit(scoped_raw)
-            global_r = enforce_result_limit(global_raw)
-            merged = merge_results([scoped, global_r])[:limit]
-            log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
-            meta = {"warm_served": False, "thematic": len(merged), "temporal": 0, "specific_key": 0}
+            # Also add temporal if the query contains a date reference.
+            after_before = extract_temporal_range(user_message)
+            drift_tasks: list = [
+                ("scoped", layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)),
+                ("global", layers.search_episodic(user_message, limit=limit)),
+            ]
+            if after_before is not None:
+                after, before = after_before
+                drift_tasks.append(("temporal", layers.search_episodic(
+                    user_message, limit=limit, after=after, before=before,
+                )))
+            drift_names = [n for n, _ in drift_tasks]
+            drift_parts = await asyncio.gather(*[c for _, c in drift_tasks], return_exceptions=True)
+            groups: list[list[dict]] = []
+            temporal_count = 0
+            for name, part in zip(drift_names, drift_parts):
+                if isinstance(part, BaseException):
+                    log.warning("prefetch drift mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
+                    continue
+                results = enforce_result_limit(part)
+                if name == "temporal":
+                    temporal_count = len(results)
+                groups.append(results)
+            merged = merge_results(groups)[:limit]
+            log.info("prefetch drift chat=%s merged=%d topic=%s temporal=%d", chat_id, len(merged), current_topic_id, temporal_count)
+            meta = {"warm_served": False, "thematic": len(merged) - temporal_count, "temporal": temporal_count, "specific_key": 0}
             return merged, False, None, meta
 
         # cold: full multi-mechanism search.

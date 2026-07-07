@@ -61,14 +61,14 @@ def test_uniform_applies_min_floor():
     """No structural gap → fallback to _BLENDED_MIN_SCORE cutoff."""
     results = [_r(s) for s in [0.55, 0.50, 0.45, 0.40, 0.35, 0.30, 0.25, 0.20]]
     filtered = MemoryLayers._blended_gap_filter(results)
-    # Only those >= 0.35 survive
+    # Only those >= _BLENDED_MIN_SCORE (0.25) survive
     assert all(r["blended_score"] >= _BLENDED_MIN_SCORE for r in filtered)
-    assert _scores(filtered) == [0.55, 0.50, 0.45, 0.40, 0.35]
+    assert _scores(filtered) == [0.55, 0.50, 0.45, 0.40, 0.35, 0.30, 0.25]
 
 
 def test_all_below_min_floor_returns_empty():
     """All results below minimum → nothing injected."""
-    results = [_r(s) for s in [0.34, 0.30, 0.25, 0.20]]
+    results = [_r(s) for s in [0.24, 0.20, 0.15, 0.10]]
     assert MemoryLayers._blended_gap_filter(results) == []
 
 
