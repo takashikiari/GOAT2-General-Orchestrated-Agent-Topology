@@ -9,6 +9,7 @@ import asyncio
 
 from memory.budget import estimate_tokens
 from memory.context_budget import allocate_context_budget
+from memory.context_assembler import trim_recent_messages
 from memory.layers import MemoryLayers
 
 # Representative config (config/memory.toml): L2_CONTEXT_CAP=8000,
@@ -69,23 +70,23 @@ def test_trim_pins_first_message_plus_recent():
     """First (topic-setter) survives alongside the recent tail."""
     msgs = [_msg("user", f"open{i}") for i in range(20)]
     cap = 8 * 4  # 8 tokens ≈ 32 chars → only a few short messages fit
-    kept = MemoryLayers._trim_recent_messages(msgs, cap)
+    kept = trim_recent_messages(msgs, cap)
     assert kept[0] is msgs[0]                    # opening message pinned
     assert kept[-1] is msgs[-1]                  # newest also kept
 
 
 def test_trim_single_message_kept():
-    kept = MemoryLayers._trim_recent_messages([_msg("user", "hello world")], 8000)
+    kept = trim_recent_messages([_msg("user", "hello world")], 8000)
     assert len(kept) == 1
 
 
 def test_trim_empty():
-    assert MemoryLayers._trim_recent_messages([], 8000) == []
+    assert trim_recent_messages([], 8000) == []
 
 
 def test_trim_returns_oldest_first():
     msgs = [_msg("user", "a"), _msg("assistant", "b"), _msg("user", "c")]
-    kept = MemoryLayers._trim_recent_messages(msgs, 8000)
+    kept = trim_recent_messages(msgs, 8000)
     assert [m["content"] for m in kept] == ["a", "b", "c"]
 
 

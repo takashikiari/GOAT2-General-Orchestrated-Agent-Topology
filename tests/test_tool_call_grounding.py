@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from memory.layers import MemoryLayers
+from memory.context_assembler import format_messages
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.tools import ToolDefinition
 from tests._orch_fakes import _FakeAnalytics, _FakeLayers, _FakePluginManager
@@ -153,7 +153,7 @@ def test_second_turn_context_contains_tool_evidence():
     asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[tool]).run("count lines in py files", "chat1"))
 
     # Simulate what the next turn assembles as [Conversation History]
-    history_block = MemoryLayers._format_messages(layers.saved)
+    history_block = format_messages(layers.saved)
 
     assert "[Tool calls]" in history_block, "evidence block missing from conversation history"
     assert "shell_run" in history_block, "tool name missing from conversation history"
