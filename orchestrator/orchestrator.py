@@ -53,8 +53,10 @@ _DSML_PARAM = re.compile(
 # configured, so GOAT knows to fetch L3 on demand rather than claim it doesn't
 # recall something. A constant (content, not a tunable), like _BASE_IDENTITY.
 _SEARCH_MEMORY_GUIDANCE = (
-    "If the user references something not visible in the conversation above, "
-    "use search_memory before saying you don't recall it."
+    "search_memory is a last resort — only call it when there is NO episodic memory "
+    "context at all in this prompt. If memory results are already present above "
+    "(marked [Context recuperat din istoric]), they are the complete prefetched result; "
+    "do not call search_memory again. Trust the prefetch."
 )
 
 # Guidance appended when the store_memory tool is configured, so GOAT knows it

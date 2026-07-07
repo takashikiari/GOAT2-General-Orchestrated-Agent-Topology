@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.5] — 2026-07-07
+
+### Fixed
+
+- **`orchestrator/orchestrator.py`** — `_SEARCH_MEMORY_GUIDANCE` rewritten to be a hard last-resort constraint. The previous wording ("use search_memory before saying you don't recall it") triggered tool calls whenever the L3 context didn't contain the exact answer, even when prefetch had already served 20 results. The new wording instructs the LLM not to call `search_memory` if `[Context recuperat din istoric]` is already present in the prompt — those results are the complete prefetch output; re-searching produces the same or worse results at extra latency.
+
+- **`memory/gliner_extractor.py`** — `_MAX_WORDS` reduced from 200 to 100. The 200-word assumption (~1.5 wordpiece tokens/word) held for English but not for Romanian text, where the ratio is closer to 3 tokens/word. A 200-word Romanian chunk generated 549 wordpiece tokens, triggering GLiNER's 384-token truncation silently. At 100 words the worst-case is ~300 tokens, safely under the limit.
+
+---
+
 ## [0.1.4] — 2026-07-07
 
 ### Fixed

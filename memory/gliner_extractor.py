@@ -15,7 +15,7 @@ _ENTITY_LABELS = [
 ]
 
 _MODEL_NAME = "urchade/gliner_multi-v2.1"
-_MAX_WORDS = 200  # safe proxy for ~300 wordpiece tokens, well under GLiNER's 384 limit
+_MAX_WORDS = 100  # Romanian text averages ~3 wordpiece tokens/word; 100 words ≈ 300 tokens, under the 384 limit
 _gliner_model = None
 # Protects the module-level singleton from concurrent asyncio.to_thread loads.
 # Double-checked locking: outer check avoids lock contention on the hot path
