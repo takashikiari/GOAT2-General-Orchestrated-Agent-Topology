@@ -8,7 +8,7 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 
 ## What makes it different
 
-- **Proactive, not reactive.** The prefetch daemon starts as the *first* step of every turn and runs in parallel with L0/L1/L2 fetch. Retrieval precedes generation; it is not triggered by the model noticing a gap.
+- **Zero-latency L3 context.** The prefetch daemon runs in the *inter-turn gap* — after the reply is delivered, before the user sends the next message. ChromaDB, BM25, GLiNER, and CrossEncoder all complete with no time pressure. The next turn reads pre-computed L3 from activation (L2.5) instantly; no search pipeline runs during a turn at all. `search_memory` remains available as an explicit on-demand tool, never as a timeout fallback.
 - **Brain activation, not a cache.** L2.5 holds per-chat *thread state* — the centroid of the current topic and the retrieval it produced. A follow-up on the same thread is served from the held activation (no search); the thread breaks only on a consensus shift (semantic drift AND lexical overlap both drop). The LLM builds on a stable reality instead of a flickering one.
 - **Topic-aware memory.** Every conversation belongs to a topic (UUID, stored in the activation blob). Each L3 archive entry is tagged with its `topic_id`. The prefetch daemon scopes L3 search to the current topic on drift turns and adds a parallel topic-return mechanism on cold breaks. Centroid updates are stability-weighted (`alpha = 1/min(turn_count, 20)`) — early turns move fast, stable topics resist drift. When a cold break matches an archived topic centroid (cosine ≥ 0.75), the session resumes that topic instead of minting a new one.
 - **Live identity updates.** GOAT can update its own L0 persona at runtime via the `set_identity` tool — stored in a Letta `identity` block and fetched concurrently each turn. The config `base_prompt` is always the fallback: if Letta is unreachable, identity loads from config exactly as before.
@@ -48,13 +48,24 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 
 ## The prefetch daemon
 
-On every turn, before the LLM call, the daemon classifies the turn against the per-chat activation:
+The daemon runs **post-turn** as a fire-and-forget `asyncio.Task`, in the inter-turn gap while the user reads the reply. It has no timeout — the full ChromaDB + BM25 + GLiNER + CrossEncoder pipeline runs to completion. Results are written into activation (L2.5) and read instantly by the *next* turn.
+
+**Turn-time flow (orchestrator.run):**
+
+1. Read activation + embed query (concurrent `asyncio.gather`) — instant.
+2. Classify turn state from activation.
+3. Serve L3 from `activation.merged` (0 ms) — or empty on cold turns.
+4. Fetch L0/L1/L2 concurrently.
+5. Assemble → LLM → save.
+6. Fire-and-forget `run_prefetch_and_save` for the next turn.
+
+**Daemon — turn-state logic:**
 
 | State | Trigger | What the daemon does |
 |-------|---------|----------------------|
 | **cold** | No prior activation, or consensus shift (drift < `drift_cold` AND lexical overlap < `lexical_low`) | Up to four concurrent mechanisms; detect topic return; mint or resume topic UUID; build fresh activation |
-| **warm** | `cosine(query, centroid) ≥ drift_warm` | Serve held activation re-scored by recency; skip all search |
-| **drift** | Middle band | Targeted search scoped to current `topic_id`; global fallback if no tagged entries; weighted centroid update |
+| **warm** | `cosine(query, centroid) ≥ drift_warm` | Runs a drift-style search (topic may still evolve); writes updated activation |
+| **drift** | Middle band | Targeted search scoped to current `topic_id`; global fallback; weighted centroid update |
 
 **Cold — up to four mechanisms, run concurrently via `asyncio.gather`:**
 
@@ -66,8 +77,6 @@ On every turn, before the LLM call, the daemon classifies the turn against the p
 | **Temporal** | Completed-past date range | Filtered semantic search |
 
 **Merge:** `blended = similarity × 0.6 + recency × 0.3 + access_count × 0.1`. Deduped by `message_id`, sorted best-first, trimmed to `max_results` (20).
-
-**Bounded wait:** daemon is awaited under `asyncio.wait_for(timeout=1.0 s)`. On timeout the turn continues without L3 — the on-demand `search_memory` tool is the fallback.
 
 **Injection:** into the system prompt as `[Context recuperat din istoric]`, never as fake conversation turns.
 
@@ -257,8 +266,7 @@ budget_base = 2000
 budget_hard_cap = 12000
 
 [prefetch]
-timeout = 1.0                     # asyncio.wait_for bound; graceful degradation on exceed
-max_results = 20
+max_results = 20                  # post-turn, no timeout — runs to completion in inter-turn gap
 score_similarity_weight = 0.6
 score_recency_weight = 0.3
 score_access_weight = 0.1
@@ -398,13 +406,16 @@ goat2/
 │   ├── session_cache.py           # L2.5 cold-path TTL cache (Redis)
 │   ├── promote.py                 # L3 → L1 promotion, cap-guarded
 │   ├── auto_promote.py            # L2 trim + fire-and-forget L3 enrichment at trim time
-│   ├── gliner_extractor.py        # GLiNER zero-shot NER (lazy model load, asyncio.to_thread)
+│   ├── retrieval.py               # Canonical L3 pipeline: search → merge → boost_by_entities → rerank
+│   ├── gliner_extractor.py        # GLiNER zero-shot NER (lazy model load, JIT-primed, asyncio.to_thread)
 │   ├── enrichment.py              # compute_importance + enrich_l3_entry + pair_and_enrich_dropped
 │   ├── working/working.py         # Redis-backed working memory + activation store
 │   ├── episodic/                  # ChromaDB lifecycle, search (chat_id_filter), update_metadata
 │   └── permanent/permanent.py     # Letta-backed permanent memory
 ├── orchestrator/
-│   ├── orchestrator.py            # Per-turn driver: classify → prefetch → AITS → assemble → LLM → tool loop → save
+│   ├── orchestrator.py            # Per-turn driver: classify → L3-from-activation → assemble → LLM → save → post-turn prefetch
+│   ├── prefetch.py                # Post-turn daemon: run_prefetch_and_save (fire-and-forget, no timeout)
+│   ├── activation_manager.py     # update_activation: centroid, topic_id, merged-results persistence
 │   └── tools.py                   # Orchestrator-facing ToolDefinition type
 ├── workflow/                      # Parallel async multi-agent DAG engine
 ├── agents/                        # 7 BaseAgent subclasses (planner/researcher/coder/critic/summarizer/tool_caller/memory)
@@ -445,6 +456,20 @@ goat2/
 ---
 
 ## Changelog
+
+### v0.1.2 — 2026-07-07
+
+**Post-turn prefetch + startup reliability**
+
+- **Architectural redesign: post-turn prefetch.** The prefetch daemon now runs *after* the reply is delivered (fire-and-forget `asyncio.Task`), not at the start of the turn under a timeout. ChromaDB + BM25 + GLiNER + CrossEncoder complete with no time pressure. The orchestrator reads pre-computed L3 from activation (L2.5) in 0 ms; every turn is 1 LLM call. The old `PREFETCH_TIMEOUT`, `asyncio.wait`, and `save_prefetch_background` timeout-escape-hatch are removed entirely.
+- **GLiNER singleton + JIT prime.** Module-level `threading.Lock` + double-checked locking prevents double-load on concurrent warmup + early prefetch. `_load_and_prime()` runs a dummy inference immediately after load to compile PyTorch JIT — first real prefetch call is as fast as subsequent ones.
+- **L3 retrieval extracted to `memory/retrieval.py`.** `retrieve()` + `_cold()` + `_topic_search()` now live in the `memory` package; prefetch and `search_memory` share the same pipeline without duplication.
+- **Config validation.** `memory/config_validator.py` fails fast at startup on invalid TOML values (drift invariants, budget bounds, fraction ranges, etc.) instead of producing silent wrong runtime behaviour.
+- **Context assembler extracted.** Pure assembly logic moved to `memory/context_assembler.py` — no I/O, fully testable in isolation.
+- **Cache invalidation after L3 enrichment.** `append_and_save_working_context` clears the L2.5 session cache after enrichment so the next search returns fresh post-enrichment results.
+- **Fire-and-forget task tracking.** `Orchestrator._pending_bg` + `drain_background()` track all background tasks (archive, auto_promote, prefetch). Bot's `post_shutdown` drains them cleanly.
+
+**New files:** `memory/retrieval.py`, `memory/config_validator.py`, `memory/config_defaults.py`, `memory/context_assembler.py`, `memory/gliner_extractor.py`, `memory/enrichment.py`, `orchestrator/prefetch.py`, `orchestrator/activation_manager.py`
 
 ### v0.1.1 — 2026-07-06
 
