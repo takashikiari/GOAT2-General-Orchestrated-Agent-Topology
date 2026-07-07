@@ -34,6 +34,7 @@ async def entity_boost(
     results: list[dict],
     extractor: "GLiNERExtractor",
     weight: float = _ENTITY_BOOST_WEIGHT,
+    pre_extracted: dict | None = None,
 ) -> list[dict]:
     """Re-score results by GLiNER entity overlap; re-sort blended_score descending.
 
@@ -42,11 +43,13 @@ async def entity_boost(
         results: Pre-scored results from merge_results (blended_score set).
         extractor: Shared GLiNERExtractor instance (pre-warmed at startup).
         weight: Additive boost weight for full overlap (default 0.2).
+        pre_extracted: Already-extracted entity dict — skips the GLiNER call when
+            retrieval.py ran extraction earlier (avoids a second ~0.5 s inference).
     Returns:
         Results with updated blended_score, sorted best-first. Unscored results
         (no blended_score field) are treated as score 0.0 for sorting only.
     """
-    extracted = await extractor.extract(query)
+    extracted = pre_extracted if pre_extracted is not None else await extractor.extract(query)
     query_entities = {e.lower() for e in extracted.get("entities", [])}
     if not query_entities:
         return results

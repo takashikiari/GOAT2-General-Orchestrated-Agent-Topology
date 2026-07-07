@@ -239,12 +239,20 @@ class MemoryLayers:
             return results
         return await self._reranker.rerank(query, results)
 
-    async def boost_by_entities(self, query: str, results: list[dict]) -> list[dict]:
+    async def extract_query_entities(self, query: str) -> dict:
+        """Extract GLiNER entities from query; no-op fallback when extractor unavailable."""
+        if not self._extractor:
+            return {"entities": [], "entity_types": [], "memory_type": "conversation"}
+        return await self._extractor.extract(query)
+
+    async def boost_by_entities(
+        self, query: str, results: list[dict], pre_extracted: dict | None = None,
+    ) -> list[dict]:
         """Re-score results by GLiNER entity overlap; no-op when extractor unavailable."""
         if not self._extractor or not results:
             return results
         from memory.entity_boost import entity_boost
-        return await entity_boost(query, results, self._extractor)
+        return await entity_boost(query, results, self._extractor, pre_extracted=pre_extracted)
 
     async def promote_fact(self, key: str, value: str) -> str:
         """L1: promote a stable fact into the Letta core-memory ``facts`` block.

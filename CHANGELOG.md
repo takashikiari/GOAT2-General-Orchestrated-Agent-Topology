@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.3] — 2026-07-07
+
+### Added
+
+- **`memory/temporal_route.py`** — `parse_interval(entities, entity_types) -> tuple[float, float] | None`. Converts GLiNER-extracted date/time entity text to a Unix timestamp window without any external parser. Regex matches `d+ month_ro [year] [HH:MM]`; Romanian month lookup covers full names and abbreviations. Window: ±1 h when time is present, ±12 h (full day) for date-only. Future-date guard: if the parsed date is > 1 day ahead of `time.time()`, retries with `year - 1`. Fallback: when GLiNER labels a date as `"event"` rather than `"date"`, the regex still fires by scanning all entity texts.
+
+- **`memory/temporal_route.py` — routing signal.** `parse_interval` checks `entity_types` for `"date"` / `"time"` first (O(n) pass); only scans all entity texts when no typed match exists. This avoids false positives from non-date entities.
+
+- **`tests/test_temporal_route.py`** — 13 tests covering: full and abbreviated Romanian month names, date-only vs date+time windowing, explicit year, invalid day (32), empty entity list, "event"-labelled date fallback, non-date entity list (no match), separate date+time entities, midnight, future-year rollback. All deterministic via monkeypatched `datetime.now()` and `time.time()`.
+
+### Changed
+
+- **`memory/gliner_extractor.py`** — `_ENTITY_LABELS` gains `"date"` and `"time"`. GLiNER is zero-shot so adding labels is the only change needed; the model recognises these in Romanian text.
+
+- **`memory/retrieval.py`** — GLiNER entity extraction now runs **inside the first `asyncio.gather`** alongside MiniLM and BM25 (`layers.extract_query_entities(query)` added to the gather in both `_drift` and `_cold`). After the gather, `_temporal_candidates()` checks `parse_interval` and fires `search_episodic(after=, before=)` when an interval is found. Temporal results join the candidate pool before CrossEncoder reranks.
+
+  **Before:** candidate pool = [MiniLM, BM25]. CrossEncoder never received date-keyed entries for temporal queries.  
+  **After:** candidate pool = [MiniLM, BM25, temporal (when applicable)]. CrossEncoder resolves "4 iulie 07:00" ↔ "2026-07-04 07:23" correctly.
+
+  Also: `pre_extracted` entities passed to `boost_by_entities` — second GLiNER call eliminated.
+
+- **`memory/entity_boost.py`** — `entity_boost` gains `pre_extracted: dict | None = None`. When provided by `retrieval.py`, the `await extractor.extract(query)` call is skipped (~0.5 s saved per turn on any query where GLiNER was already run for routing).
+
+- **`memory/layers.py`** — two additions:
+  - `extract_query_entities(query: str) -> dict`: thin wrapper over `self._extractor.extract`, returns `{"entities":[], "entity_types":[], "memory_type":"conversation"}` when extractor unavailable.
+  - `boost_by_entities` gains `pre_extracted: dict | None = None` and passes it through to `entity_boost`.
+
+---
+
 ## [0.1.2] — 2026-07-07
 
 ### Added

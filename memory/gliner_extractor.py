@@ -11,6 +11,7 @@ log = get_logger(__name__)
 _ENTITY_LABELS = [
     "person", "technology", "project", "credential",
     "location", "organization", "event", "preference",
+    "date", "time",
 ]
 
 _MODEL_NAME = "urchade/gliner_multi-v2.1"
