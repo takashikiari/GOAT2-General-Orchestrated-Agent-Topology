@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import unicodedata
 from typing import TYPE_CHECKING
 
 from utils.logging.setup import get_logger
@@ -36,8 +37,16 @@ class BM25Index:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        """Lowercase + strip punctuation so 'demisia.' matches query 'demisie'."""
-        return re.sub(r"[^\w\s]", " ", text.lower()).split()
+        """Lowercase + strip diacritics + strip punctuation.
+
+        NFD decomposition splits accented chars into base + combining mark;
+        ASCII encoding drops the combining marks — ă→a, â→a, î→i, ș→s, ț→t.
+        Handles both cedilla (U+015F) and comma-below (U+0219) variants of ș/ț.
+        Applied identically at index time and query time so "iulie" matches
+        "iulie" regardless of diacritic usage.
+        """
+        normalized = unicodedata.normalize("NFD", text.lower()).encode("ascii", "ignore").decode()
+        return re.sub(r"[^\w\s]", " ", normalized).split()
 
     async def warmup(self) -> None:
         """Pre-build the index at startup to avoid first-turn build latency."""

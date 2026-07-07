@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.7] — 2026-07-07
+
+### Fixed
+
+- **`memory/bm25_index.py`** — `_tokenize` now strips Romanian diacritics before BM25 indexing and search. NFD decomposition splits accented characters into base + combining mark; ASCII encoding drops the combining marks: ă→a, â→a, î→i, ș→s, ț→t. Handles both cedilla (U+015F) and comma-below (U+0219) variants of ș/ț. Applied identically at index time and query time — "iulie" (with diacritic) now matches "iulie" (without), regardless of how the user typed it.
+
+---
+
 ## [0.1.6] — 2026-07-07
 
 ### Changed
