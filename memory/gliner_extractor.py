@@ -13,6 +13,7 @@ _ENTITY_LABELS = [
 ]
 
 _MODEL_NAME = "urchade/gliner_multi-v2.1"
+_MAX_WORDS = 200  # safe proxy for ~300 wordpiece tokens, well under GLiNER's 384 limit
 _gliner_model = None
 
 
@@ -25,6 +26,13 @@ def _get_shared_model():
     return _gliner_model
 
 
+def _chunk_text(text: str) -> list[str]:
+    words = text.split()
+    if len(words) <= _MAX_WORDS:
+        return [text]
+    return [" ".join(words[i:i + _MAX_WORDS]) for i in range(0, len(words), _MAX_WORDS)]
+
+
 class GLiNERExtractor:
     """Zero-shot NER using GLiNER; shares one module-level model instance."""
 
@@ -35,9 +43,20 @@ class GLiNERExtractor:
 
     def _extract_sync(self, text: str) -> dict:
         model = self._get_model()
-        raw = model.predict_entities(text, _ENTITY_LABELS, threshold=0.5)
-        entities = [e["text"] for e in raw]
-        entity_types = [e["label"] for e in raw]
+        chunks = _chunk_text(text)
+        all_entities: list[str] = []
+        all_types: list[str] = []
+        for chunk in chunks:
+            raw = model.predict_entities(chunk, _ENTITY_LABELS, threshold=0.5)
+            all_entities.extend(e["text"] for e in raw)
+            all_types.extend(e["label"] for e in raw)
+        seen: set[str] = set()
+        entities, entity_types = [], []
+        for e, t in zip(all_entities, all_types):
+            if e not in seen:
+                seen.add(e)
+                entities.append(e)
+                entity_types.append(t)
         memory_type = _infer_type(entities, entity_types, text)
         return {"entities": entities, "entity_types": entity_types, "memory_type": memory_type}
 

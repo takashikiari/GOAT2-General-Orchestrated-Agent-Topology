@@ -23,10 +23,12 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-# Maximum messages to drop in a single chunk. For surpluses larger than this
-# (e.g. a first-run with a huge backlog) the while loop runs multiple
-# iterations, yielding between them so other coroutines are not starved.
+# Maximum messages to drop in a single chunk (backlog protection).
 PROMOTE_CHUNK_SIZE = 50
+# Minimum surplus before trimming fires. Prevents every-turn ping-pong when
+# a conversation is exactly at cap: 2 messages added → 2 dropped → repeat.
+# With this threshold, trim fires every PROMOTE_MIN_SURPLUS/2 turns instead.
+PROMOTE_MIN_SURPLUS = 4
 
 
 async def maybe_auto_promote(
@@ -45,9 +47,9 @@ async def maybe_auto_promote(
     async with working.chat_lock(chat_id):
         messages = await working.get_messages_raw(chat_id)
         total = len(messages)
-        if total <= WORKING_MAX_MESSAGES:
-            return
         surplus = total - WORKING_MAX_MESSAGES
+        if surplus < PROMOTE_MIN_SURPLUS:
+            return
         log.info(
             "auto_promote: chat=%s total=%d surplus=%d cap=%d",
             chat_id, total, surplus, WORKING_MAX_MESSAGES,

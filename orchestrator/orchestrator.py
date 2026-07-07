@@ -8,10 +8,7 @@ import time
 import uuid
 
 from config import settings
-from memory.activation import (
-    Activation, classify_turn, classify_write, rescore_recency, trim_recent,
-    update_centroid_weighted, find_topic_return, archive_current_topic,
-)
+from memory.activation import classify_turn, classify_write, find_topic_return
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
@@ -24,12 +21,13 @@ from memory.config import (
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
     PREFETCH_TIMEOUT,
-    TOPIC_ARCHIVE_MAX,
     TOPIC_RETURN_THRESHOLD,
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
+from orchestrator.activation_manager import update_activation
+from orchestrator.prefetch import run_prefetch, save_prefetch_background
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
@@ -279,8 +277,8 @@ class Orchestrator:
                     query_emb, activation.archived_topics, TOPIC_RETURN_THRESHOLD,
                 )
             prefetch_task = asyncio.create_task(
-                self._prefetch_daemon(chat_id, intent, turn_state, activation,
-                                      topic_return_id=topic_return_id))
+                run_prefetch(layers, chat_id, intent, turn_state, activation,
+                             topic_return_id=topic_return_id))
             # 3. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
             confidence = calculate_confidence_from_query(intent)
@@ -296,7 +294,8 @@ class Orchestrator:
                 budget, confidence, complexity, chat_id,
             )
             # 4. Await the daemon (search stage) — bounded; on timeout continue
-            #    without L3. The cancelled task's mechanisms are torn down.
+            #    without L3. The daemon is NOT cancelled on timeout — it finishes
+            #    in background so the next turn gets a warm activation.
             collector.start_stage("search")
             l3_results: list[dict] = []
             cache_hit = False
@@ -305,19 +304,21 @@ class Orchestrator:
             prefetch_succeeded = False
             prefetch_timeout = False
             _prefetch_meta: dict = {"warm_served": False, "thematic": 0, "specific_key": 0}
-            try:
-                l3_results, cache_hit, cache_key, _prefetch_meta = await asyncio.wait_for(
-                    prefetch_task, timeout=PREFETCH_TIMEOUT,
-                )
-                prefetch_succeeded = True
-                log.info("prefetch ok chat=%s state=%s hits=%d", chat_id, turn_state, len(l3_results))
-            except asyncio.TimeoutError:
+            done, _ = await asyncio.wait({prefetch_task}, timeout=PREFETCH_TIMEOUT)
+            if prefetch_task in done:
+                try:
+                    l3_results, cache_hit, cache_key, _prefetch_meta = prefetch_task.result()
+                    prefetch_succeeded = True
+                    log.info("prefetch ok chat=%s state=%s hits=%d", chat_id, turn_state, len(l3_results))
+                except Exception as exc:
+                    log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
+            else:
                 prefetch_timeout = True
-                prefetch_task.cancel()
-                log.warning("prefetch timed out chat=%s, continuing without L3", chat_id)
-            except Exception as exc:
-                prefetch_task.cancel()
-                log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
+                asyncio.create_task(save_prefetch_background(
+                    prefetch_task, layers, chat_id, intent, query_emb,
+                    turn_state, activation, topic_return_id,
+                ))
+                log.warning("prefetch timed out chat=%s, background-saving for next turn", chat_id)
             collector.end_stage("search")
             collector.set_cache(cache_hit, cache_key)
             collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
@@ -330,7 +331,7 @@ class Orchestrator:
             # timeout leaves it untouched so the next turn re-derives cold).
             current_activation = None
             if prefetch_succeeded:
-                current_activation = await self._update_activation(
+                current_activation = await update_activation(
                     layers, chat_id, intent, query_emb, turn_state, activation, l3_results,
                     topic_return_id=topic_return_id)
             # 5. Await the concurrent L0/L1/L2 fetch (normally done already) and
@@ -465,200 +466,6 @@ class Orchestrator:
             collector.finish(time.time() - start)
             analytics.record(collector.obs)
             raise
-
-    async def _prefetch_daemon(
-        self, chat_id: str, user_message: str,
-        state: str, activation,
-        topic_return_id: str | None = None,
-    ) -> tuple[list[dict], bool, str | None, dict]:
-        """Run the prefetch mechanisms, branched on the turn ``state``.
-
-        ``state`` (``cold`` / ``warm`` / ``drift``) comes from ``classify_turn``
-        over the per-chat activation (set in ``run()``):
-
-          * warm  — the thread is stable; serve the held activation's results
-            (re-scored by recency via ``rescore_recency``), skipping every L3
-            search. The brain trusts its recent activation.
-          * drift — the query moved but not enough to be a shift; a targeted
-            single-mechanism refresh re-runs the thematic search (uncached)
-            against the new query — the only mechanism that can surface new
-            associations on a moved-but-not-shifted thread.
-          * cold  — first turn, embedding degraded, or a consensus shift: the full
-            three-mechanism search (thematic cached + temporal + specific-key).
-
-        Cold-path cache_hit/cache_key come from the thematic (cached) mechanism.
-        Any single cold-path mechanism that raises is skipped
-        (``return_exceptions=True``). Returns ``(results, cache_hit, cache_key)``.
-        """
-        layers = self._layers
-        if state == "warm":
-            # Hold the activation steady; attenuate recency only (no search). This
-            # is the coherence payoff: the LLM builds on the same reality as the
-            # previous turn instead of re-grounding from a jittering L3 slice.
-            merged = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
-            log.info("prefetch warm chat=%s served=%d", chat_id, len(merged))
-            meta = {"warm_served": True, "thematic": len(merged), "specific_key": 0}
-            return merged, False, None, meta
-
-        limit = PREFETCH_MAX_RESULTS
-        current_topic_id: str | None = activation.topic_id if activation else None
-
-        if state == "drift":
-            # Semantic (scoped + global) and BM25 all run in parallel.
-            scoped_raw, global_raw, bm25_raw = await asyncio.gather(
-                layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id),
-                layers.search_episodic(user_message, limit=limit),
-                layers.bm25_search(user_message, limit=limit),
-                return_exceptions=True,
-            )
-            groups: list[list[dict]] = []
-            for part in (scoped_raw, global_raw):
-                if isinstance(part, BaseException):
-                    log.warning("prefetch drift mechanism raised chat=%s: %s", chat_id, part)
-                else:
-                    groups.append(enforce_result_limit(part))
-            bm25_results: list[dict] = [] if isinstance(bm25_raw, BaseException) else bm25_raw
-            merged = merge_results(groups + ([bm25_results] if bm25_results else []))[:limit * 2]
-            merged = await layers.boost_by_entities(user_message, merged)
-            merged = await layers.rerank(user_message, merged)
-            merged = merged[:limit]
-            log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
-            meta = {"warm_served": False, "thematic": len(merged), "specific_key": 0}
-            return merged, False, None, meta
-
-        # cold: full multi-mechanism search.
-        async def _thematic() -> dict:
-            results, hit, key = await layers.search_episodic_with_cache(
-                chat_id, user_message, limit=limit,
-            )
-            return {"results": results, "cache_hit": hit, "cache_key": key}
-
-        async def _thematic_scoped() -> dict:
-            results, hit, key = await layers.search_episodic_with_cache(
-                chat_id, user_message, limit=limit, chat_id_filter=chat_id,
-            )
-            return {"results": results, "cache_hit": hit, "cache_key": key}
-
-        async def _topic_filtered(tid: str) -> dict:
-            results = await layers.search_episodic(user_message, limit=limit, topic_id=tid)
-            return {"results": results, "cache_hit": False, "cache_key": None}
-
-        # Each semantic task is tagged with its mechanism name for self-identified
-        # exception logging. BM25 runs as a separate parallel coroutine.
-        tasks: list = [("thematic", _thematic()), ("thematic_scoped", _thematic_scoped())]
-        if topic_return_id:
-            tasks.append(("topic_return", _topic_filtered(topic_return_id)))
-        semantic_coros = [coro for _, coro in tasks]
-        names = [name for name, _ in tasks]
-
-        # Gather semantic mechanisms + BM25 all in parallel.
-        all_parts = await asyncio.gather(
-            *semantic_coros, layers.bm25_search(user_message, limit=limit),
-            return_exceptions=True,
-        )
-        semantic_parts = all_parts[:-1]
-        bm25_raw = all_parts[-1]
-
-        groups: list[list[dict]] = []
-        cache_hit = False
-        cache_key: str | None = None
-        for name, part in zip(names, semantic_parts):
-            if isinstance(part, BaseException):
-                log.warning("prefetch mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
-                continue
-            groups.append(part["results"])
-            if part.get("cache_key") is not None:
-                cache_hit = part["cache_hit"]
-                cache_key = part["cache_key"]
-
-        bm25_results: list[dict] = [] if isinstance(bm25_raw, BaseException) else bm25_raw
-        # Wider candidate pool for the reranker; truncated to limit after rerank.
-        all_groups = groups + ([bm25_results] if bm25_results else [])
-        merged = merge_results(all_groups)[:limit * 2]
-        merged = await layers.boost_by_entities(user_message, merged)
-        merged = await layers.rerank(user_message, merged)
-        merged = merged[:limit]
-        log.info(
-            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d bm25=%d",
-            chat_id, len(semantic_parts), len(merged), len(bm25_results),
-        )
-        ids = [
-            r.get("metadata", {}).get("message_id")
-            for r in merged
-            if r.get("metadata", {}).get("message_id")
-        ]
-        if ids:
-            asyncio.create_task(layers.bump_access(chat_id, ids))
-        meta = {
-            "warm_served": False,
-            "thematic": len(merged),
-            "specific_key": 0,
-        }
-        return merged, cache_hit, cache_key, meta
-
-    async def _update_activation(
-        self, layers, chat_id: str, intent: str, query_emb, turn_state: str,
-        activation, l3_results: list[dict],
-        topic_return_id: str | None = None,
-    ):
-        """Persist or refresh the per-chat activation after a successful prefetch.
-
-        * warm  — hold centroid steady; increment turn_count; extend recent_queries.
-        * drift — weighted centroid update toward the new query; same topic_id.
-        * cold  — archive old centroid, reuse returned topic_id or mint new UUID.
-        """
-        now = time.time()
-        if turn_state == "warm":
-            if activation is None:
-                return None
-            activation.recent_queries = trim_recent(activation.recent_queries, intent)
-            activation.turn_count += 1
-            activation.ts = now
-            await layers.set_activation(chat_id, activation)
-            return activation
-
-        if query_emb is None:
-            return None
-
-        recent = trim_recent(activation.recent_queries if activation else [], intent)
-
-        # Archive the departing topic on a cold break.
-        archived: list[dict] = []
-        if activation:
-            if turn_state == "cold" and activation.topic_id:
-                archived = archive_current_topic(activation, TOPIC_ARCHIVE_MAX)
-            else:
-                archived = list(activation.archived_topics)
-
-        # Centroid: weighted blend on drift (keeps thread memory); fresh on cold.
-        if turn_state == "drift" and activation and activation.centroid:
-            new_centroid = update_centroid_weighted(
-                activation.centroid, query_emb, activation.turn_count + 1,
-            )
-            new_turn_count = activation.turn_count + 1
-            topic_id = activation.topic_id or str(uuid.uuid4())
-        else:
-            # cold — reuse recovered topic or mint fresh UUID.
-            # topic_return_id may still be present in archived_topics; archive_current_topic
-            # will dedup it on the next cold break (self-healing, no action needed here).
-            new_centroid = query_emb
-            new_turn_count = 1
-            topic_id = topic_return_id or str(uuid.uuid4())
-            if topic_return_id:
-                log.info("topic return chat=%s topic=%s", chat_id, topic_return_id)
-
-        new_act = Activation(
-            centroid=new_centroid,
-            merged=l3_results,
-            last_query=intent,
-            recent_queries=recent,
-            ts=now,
-            topic_id=topic_id,
-            turn_count=new_turn_count,
-            archived_topics=archived,
-        )
-        await layers.set_activation(chat_id, new_act)
-        return new_act
 
     async def _enriching_refresh(
         self, layers, chat_id: str, stored_contents: list[str], activation,
