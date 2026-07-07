@@ -34,14 +34,15 @@ def test_extract_returns_fallback_on_exception():
 
 def test_extract_with_mock_model():
     import asyncio
+    import memory.gliner_extractor as mod
     extractor = GLiNERExtractor()
     mock_model = MagicMock()
     mock_model.predict_entities.return_value = [
         {"text": "GOAT", "label": "project"},
         {"text": "Gabriel", "label": "person"},
     ]
-    extractor._model = mock_model
-    result = asyncio.run(extractor.extract("Gabriel built GOAT"))
+    with patch.object(mod, "_gliner_model", mock_model):
+        result = asyncio.run(extractor.extract("Gabriel built GOAT"))
     assert "GOAT" in result["entities"]
     assert "project" in result["entity_types"]
     assert result["memory_type"] == "fact"
