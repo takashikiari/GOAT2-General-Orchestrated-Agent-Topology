@@ -22,8 +22,33 @@ from dateparser.search import search_dates
 # STRICT_PARSING rejects ambiguous month-only tokens (RO "mai" = adverb
 # "still/more" vs month "May") that would otherwise contaminate "azi" and
 # false-trigger temporal. Languages: RO primary, EN secondary.
-_SETTINGS = {"RETURN_AS_TIMEZONE_AWARE": False, "STRICT_PARSING": True}
+_SETTINGS_STRICT = {"RETURN_AS_TIMEZONE_AWARE": False, "STRICT_PARSING": True}
+# Loose pass for "5 iulie"-style dates (day+month, no year). PREFER_DATES_FROM
+# biases toward past when year is missing. Only used when strict finds nothing,
+# and only matched strings containing a digit are accepted — this blocks the
+# "mai" adverb false-positive ("mai vorbim" has no digit → rejected).
+_SETTINGS_LOOSE = {
+    "RETURN_AS_TIMEZONE_AWARE": False,
+    "STRICT_PARSING": False,
+    "PREFER_DATES_FROM": "past",
+}
 _LANGS = ["ro", "en"]
+
+
+def _search(query: str) -> list:
+    """Two-pass date search: strict first, loose-with-digit-guard second."""
+    try:
+        found = search_dates(query, languages=_LANGS, settings=_SETTINGS_STRICT)
+        if found:
+            return found
+        # Loose pass: accept only if the matched substring contains a digit
+        # (filters out month-name adverbs like RO "mai" that have no day number).
+        found_loose = search_dates(query, languages=_LANGS, settings=_SETTINGS_LOOSE)
+        if found_loose:
+            return [(text, dt) for text, dt in found_loose if any(c.isdigit() for c in text)]
+    except Exception:                            # noqa: BLE001
+        pass
+    return []
 
 
 def extract_temporal_range(
@@ -45,10 +70,7 @@ def extract_temporal_range(
         range was found.
     """
     now = now if now is not None else time.time()
-    try:
-        found = search_dates(query, languages=_LANGS, settings=_SETTINGS)
-    except Exception:                            # noqa: BLE001 — parse failure must not break a turn
-        return None
+    found = _search(query)
     if not found:
         return None
     dates = [dt for _, dt in found]
