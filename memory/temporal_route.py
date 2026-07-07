@@ -1,15 +1,12 @@
-"""memory.temporal_route — convert GLiNER date/time entities to a search interval.
+"""memory.temporal_route — parse GLiNER-extracted date/time entity text to an interval.
 
-GLiNER extracts DATE and TIME entities from the query text.  This module
-converts those entity strings (e.g. "4 iulie", "07:00") into a Unix timestamp
-interval (after, before) suitable for search_episodic's after/before filter.
-
-No external parser is used — a minimal regex + Romanian month lookup handles
-the common natural-language date patterns.  If parsing fails, returns None.
+GLiNER extracts entity text such as "4 iulie" (DATE) or "07:00" (TIME).
+This module converts those strings to a (after_ts, before_ts) Unix timestamp
+interval using a simple token walk + Romanian month dictionary — no regex,
+no external parser.  The entity boundary was already found by GLiNER.
 """
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime, timedelta
 
@@ -28,45 +25,63 @@ _MONTHS_RO: dict[str, int] = {
     "decembrie": 12, "dec": 12,
 }
 
-_DATE_PAT = re.compile(
-    r"(\d{1,2})\s+(" + "|".join(_MONTHS_RO) + r")\b(?:\s+(\d{4}))?",
-    re.IGNORECASE,
-)
-_TIME_PAT = re.compile(r"\b(\d{1,2}):(\d{2})\b")
-
 _TEMPORAL_TYPES = {"date", "time"}
+
+
+def _parse_tokens(
+    tokens: list[str],
+) -> tuple[int | None, int | None, int | None, int | None, int | None]:
+    """Walk tokens and classify each as day / month / year / time.
+
+    Token rules (mutually exclusive, in order):
+      - contains ':' → HH:MM time component
+      - lowercased form in _MONTHS_RO → month name
+      - pure digits, > 1000 → year
+      - pure digits, 1–31 → day
+    """
+    day = month = year = hour = minute = None
+    for token in tokens:
+        t = token.lower().strip(".,;")
+        if ":" in t:
+            parts = t.split(":")
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                hour, minute = int(parts[0]), int(parts[1])
+        elif t in _MONTHS_RO:
+            month = _MONTHS_RO[t]
+        elif t.isdigit():
+            n = int(t)
+            if n > 1000:
+                year = n
+            elif 1 <= n <= 31:
+                day = n
+    return day, month, year, hour, minute
 
 
 def parse_interval(
     entities: list[str],
     entity_types: list[str],
 ) -> tuple[float, float] | None:
-    """Return (after_ts, before_ts) or None if no parseable date found.
+    """Return (after_ts, before_ts) from GLiNER date/time entity texts, or None.
 
     Strategy:
-    1. Prefer entities whose label is "date" or "time".
-    2. Fallback: scan all entity texts for a date pattern (catches "event"-labelled dates).
-    3. If a time component is present, window is ±1 h; otherwise full day ±12 h.
-    4. If the parsed date is > 1 day in the future, retry with previous year.
+    1. Prefer entities whose label is "date" or "time"; fall back to all texts
+       (catches dates GLiNER labelled as "event").
+    2. Walk tokens to extract day, month, optional year/time.
+    3. Window: ±1 h when a time component is present, ±12 h (full day) otherwise.
+    4. If the resulting interval is > 1 day in the future, retry with year − 1.
     """
-    # Prefer date/time labelled entities; fall back to scanning all texts
     preferred = [e for e, t in zip(entities, entity_types) if t.lower() in _TEMPORAL_TYPES]
-    combined = " ".join(preferred or entities)
+    tokens = " ".join(preferred or entities).split()
 
-    dm = _DATE_PAT.search(combined)
-    if not dm:
+    day, month, year, hour, minute = _parse_tokens(tokens)
+    if day is None or month is None:
         return None
+    if year is None:
+        year = datetime.now().year
 
-    day = int(dm.group(1))
-    month = _MONTHS_RO.get(dm.group(2).lower(), 0)
-    if not month:
-        return None
-    year = int(dm.group(3)) if dm.group(3) else datetime.now().year
-
-    tm = _TIME_PAT.search(combined)
     try:
-        if tm:
-            center = datetime(year, month, day, int(tm.group(1)), int(tm.group(2)))
+        if hour is not None and minute is not None:
+            center = datetime(year, month, day, hour, minute)
             delta = timedelta(hours=1)
         else:
             center = datetime(year, month, day, 12, 0)
@@ -77,6 +92,7 @@ def parse_interval(
     now = time.time()
     after = (center - delta).timestamp()
     before = (center + delta).timestamp()
+
     if after > now + 86_400:  # date > tomorrow → probably meant last year
         try:
             center = center.replace(year=year - 1)

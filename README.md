@@ -16,7 +16,7 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 - **No static thresholds.** The L3 relevance filter is a ratio over the score distribution, scale-invariant by construction. The context budget adapts per turn from two real signals. L3's minimum token slice is guaranteed by construction.
 - **Complete fidelity.** Every turn is archived verbatim; the full text of any past exchange is retrievable from a single semantic query — no summary stands between the model and the original words.
 - **L3 enrichment.** At L2 trim time, dropped messages are enriched in the background via GLiNER (zero-shot NER): `entities`, `entity_types`, `memory_type`, and `importance` are written into the ChromaDB entry's metadata. This improves future retrieval quality without any LLM call and degrades gracefully when GLiNER is not installed.
-- **GLiNER-driven query routing.** GLiNER serves a dual role: entity boosting on retrieval results (existing) plus query-type routing. When GLiNER extracts a `date` or `time` entity from the query, a timestamp-filtered `search_episodic(after=, before=)` fires **in the same `asyncio.gather`** as MiniLM and BM25 — zero added latency. CrossEncoder then reranks the combined candidate pool and can resolve "4 iulie 07:00" ↔ "2026-07-04 07:23" correctly. No external date parser: a minimal regex + Romanian month lookup converts the entity text. A second GLiNER inference is eliminated by passing `pre_extracted` entities directly to the boost step.
+- **GLiNER-driven query routing + prediction pool.** GLiNER serves a dual role: query-type routing and entity boosting. When GLiNER extracts a `date` or `time` entity, a timestamp-filtered `search_episodic(after=, before=)` fires in the same `asyncio.gather` as MiniLM and BM25 — zero added latency. The previous turn's pre-fetched context (`activation.merged`) is also added as a candidate group in drift turns. CrossEncoder reranks the combined pool across all sources: temporal candidates, fresh semantic/lexical results, and the prediction. If the topic continued, the prediction scores high and stays; if the topic shifted, CrossEncoder ranks it out. No external parser: `temporal_route.py` converts entity text (e.g. `"4 iulie 07:00"`) with a token walk + Romanian month dict. A second GLiNER inference per turn is eliminated via `pre_extracted` passthrough.
 - **Background multi-agent DAG.** The orchestrator can spawn a parallel async DAG of specialist agents (planner → researcher → coder → critic → summarizer) for complex tasks, communicate with it mid-run, and retrieve results — while continuing to answer other messages.
 
 ---
@@ -403,7 +403,7 @@ goat2/
 │   ├── context_budget.py          # Priority-inverted L2/L3 budget split
 │   ├── result_merger.py           # Dedupe + blended score across prefetch mechanisms
 │   ├── query_classifier.py        # Structural key extraction
-│   ├── temporal_route.py          # GLiNER date/time entity → (after_ts, before_ts) interval
+│   ├── temporal_route.py          # GLiNER entity text → (after_ts, before_ts) via token walk + month dict
 │   ├── session_cache.py           # L2.5 cold-path TTL cache (Redis)
 │   ├── promote.py                 # L3 → L1 promotion, cap-guarded
 │   ├── auto_promote.py            # L2 trim + fire-and-forget L3 enrichment at trim time
@@ -460,12 +460,12 @@ goat2/
 
 ### v0.1.3 — 2026-07-07
 
-**GLiNER query routing + temporal retrieval**
+**GLiNER query routing + prediction pool + temporal retrieval**
 
-- **GLiNER dual role: query router + entity booster.** `_ENTITY_LABELS` gains `"date"` and `"time"`. GLiNER now runs in parallel with MiniLM and BM25 (`asyncio.gather`) and its output determines which additional retrieval mechanisms fire — zero latency cost.
-- **Temporal route (`memory/temporal_route.py`).** When GLiNER extracts a DATE or TIME entity, `parse_interval()` converts entity text (e.g. `"4 iulie 07:00"`) to a Unix timestamp window using a regex + Romanian month lookup (no external parser). With a time component: ±1 h; date only: ±12 h. Future-date guard rolls back to previous year when the parsed date is > 1 day ahead. Fallback: if GLiNER labels a date as `"event"` instead of `"date"`, the regex still catches it by scanning all entity texts.
-- **Temporal candidates join the pool.** `_temporal_candidates()` in `retrieval.py` fires `search_episodic(after=, before=)` when an interval is found. Results are merged alongside MiniLM and BM25 candidates before CrossEncoder reranks — CrossEncoder now receives the date-keyed entries it needs to resolve "4 iulie 07:00" ↔ "2026-07-04 07:23".
-- **No double GLiNER inference.** `entity_boost` gains `pre_extracted: dict | None` param; `layers.boost_by_entities` passes it through. The single extraction done for routing is reused for boosting — saves ~0.5 s per turn on temporal queries.
+- **GLiNER dual role: query router + entity booster.** `_ENTITY_LABELS` gains `"date"` and `"time"`. GLiNER entity extraction runs inside the initial `asyncio.gather` alongside MiniLM and BM25 — zero added latency.
+- **Temporal route (`memory/temporal_route.py`).** When GLiNER extracts a DATE or TIME entity, `parse_interval()` converts the entity text (e.g. `"4 iulie 07:00"`) to a Unix timestamp window using a token walk + Romanian month dictionary — no regex, no external parser. GLiNER already located the entity boundary; `_parse_tokens` classifies each token by rule: `":"` → HH:MM, lowercased form in `_MONTHS_RO` → month, digits `> 1000` → year, digits `1–31` → day. Window: ±1 h with time / ±12 h date-only. Future-date guard retries with `year − 1`. Fallback: GLiNER-labelled `"event"` dates are still parsed by scanning all entity texts.
+- **Prediction as candidate in drift turns.** `activation.merged` (previous turn's pre-fetched context) is added as a candidate group alongside fresh MiniLM / BM25 / temporal results. CrossEncoder reranks all sources — if the topic continued the prediction scores high and stays; if the topic shifted it gets ranked out. The prediction is no longer the exclusive context source on warm/drift turns.
+- **No double GLiNER inference.** `entity_boost` gains `pre_extracted: dict | None`; `layers.boost_by_entities` passes it through. The extraction done for routing is reused for boosting.
 - **192/192 tests** (13 new: `tests/test_temporal_route.py` — all parse paths, time windowing, fallback label handling, future-year rollback).
 
 **New files:** `memory/temporal_route.py`, `tests/test_temporal_route.py`  

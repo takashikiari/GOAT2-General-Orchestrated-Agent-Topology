@@ -47,11 +47,11 @@ async def retrieve(
 
     topic_id = activation.topic_id if activation else None
     if state == "drift":
-        return await _drift(layers, chat_id, query, topic_id)
+        return await _drift(layers, chat_id, query, topic_id, activation)
     return await _cold(layers, chat_id, query, topic_id, topic_return_id)
 
 
-async def _drift(layers, chat_id, query, topic_id):
+async def _drift(layers, chat_id, query, topic_id, activation=None):
     s, g, b, ents = await asyncio.gather(
         layers.search_episodic(query, limit=_LIMIT, topic_id=topic_id),
         layers.search_episodic(query, limit=_LIMIT),
@@ -63,11 +63,18 @@ async def _drift(layers, chat_id, query, topic_id):
     groups = [enforce_result_limit(p) for p in (s, g) if not isinstance(p, BaseException)]
     bm25 = [] if isinstance(b, BaseException) else b
     temporal = await _temporal_candidates(layers, query, entities_dict)
-    all_groups = groups + ([bm25] if bm25 else []) + ([temporal] if temporal else [])
+    # Prediction: previous turn's pre-fetched context added as a candidate group.
+    # CrossEncoder scores it against the new query — stays if still relevant,
+    # gets ranked out if the topic has shifted.
+    prediction = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
+    all_groups = ([prediction] if prediction else []) + groups + ([bm25] if bm25 else []) + ([temporal] if temporal else [])
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     merged = (await layers.rerank(query, merged))[:_LIMIT]
-    log.info("retrieve drift chat=%s merged=%d temporal=%d", chat_id, len(merged), len(temporal))
+    log.info(
+        "retrieve drift chat=%s merged=%d temporal=%d prediction=%d",
+        chat_id, len(merged), len(temporal), len(prediction),
+    )
     return merged, False, None, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
