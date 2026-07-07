@@ -13,6 +13,7 @@ cross-encoder reranker makes the final relevance call.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING
 
 from utils.logging.setup import get_logger
@@ -35,8 +36,8 @@ class BM25Index:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        """Lowercase whitespace tokenisation — fast, no external deps."""
-        return text.lower().split()
+        """Lowercase + strip punctuation so 'demisia.' matches query 'demisie'."""
+        return re.sub(r"[^\w\s]", " ", text.lower()).split()
 
     async def warmup(self) -> None:
         """Pre-build the index at startup to avoid first-turn build latency."""
