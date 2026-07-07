@@ -15,6 +15,7 @@ mechanism is skipped — exactly the behaviour required for live test #9.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 import dateparser  # noqa: F401 — registers languages; kept for clarity
 from dateparser.search import search_dates
@@ -31,6 +32,8 @@ _SETTINGS_LOOSE = {
     "RETURN_AS_TIMEZONE_AWARE": False,
     "STRICT_PARSING": False,
     "PREFER_DATES_FROM": "past",
+    "RELATIVE_BASE": None,  # set at call time to datetime.now() — prevents year drift
+                            # when a long message shifts dateparser's internal anchor
 }
 _LANGS = ["ro", "en"]
 
@@ -41,9 +44,11 @@ def _search(query: str) -> list:
         found = search_dates(query, languages=_LANGS, settings=_SETTINGS_STRICT)
         if found:
             return found
-        # Loose pass: accept only if the matched substring contains a digit
-        # (filters out month-name adverbs like RO "mai" that have no day number).
-        found_loose = search_dates(query, languages=_LANGS, settings=_SETTINGS_LOOSE)
+        # Loose pass: RELATIVE_BASE anchors to now so a long message prefix doesn't
+        # shift dateparser's year resolution (e.g. "4 iulie" → 2025 instead of 2026).
+        # Accept only matched substrings with a digit to block RO "mai" adverb false-positives.
+        loose_settings = {**_SETTINGS_LOOSE, "RELATIVE_BASE": datetime.now()}
+        found_loose = search_dates(query, languages=_LANGS, settings=loose_settings)
         if found_loose:
             return [(text, dt) for text, dt in found_loose if any(c.isdigit() for c in text)]
     except Exception:                            # noqa: BLE001
