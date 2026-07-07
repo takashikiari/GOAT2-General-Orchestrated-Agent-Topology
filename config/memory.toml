@@ -38,10 +38,6 @@ l2_floor_tokens = 500
 # realistic budgets, so L3 is never starved to 0. Anchored to observed L3
 # injection sizes (1159-1731 tokens); tune empirically (Verification V2).
 l3_min_guarantee_tokens = 1200
-# DEPRECATED — no longer used by the filter (superseded by l3_gap_significance).
-# Kept for reference: calibrated value from V3 (2026-06-29) on 18-doc corpus.
-l3_similarity_max_distance = 1.20
-
 # Gap-significance threshold for dynamic L3 injection filtering (replaces the
 # static l3_similarity_max_distance). The filter keeps results before the largest
 # consecutive-score gap when max_gap / mean_gap >= this value — scale-invariant

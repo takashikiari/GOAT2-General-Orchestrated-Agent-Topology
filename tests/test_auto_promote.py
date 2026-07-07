@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from memory.auto_promote import PROMOTE_CHUNK_SIZE, maybe_auto_promote
+from memory.auto_promote import PROMOTE_CHUNK_SIZE, PROMOTE_MIN_SURPLUS, maybe_auto_promote
 from memory.config import WORKING_MAX_MESSAGES
 
 
@@ -103,18 +103,27 @@ def test_oldest_messages_dropped_newest_kept():
     )
 
 
-def test_single_message_over_cap():
-    """Exactly one message over the cap: one message dropped, the rest kept."""
-    msgs = _msgs(WORKING_MAX_MESSAGES + 1)
+def test_below_min_surplus_is_noop():
+    """Surplus < PROMOTE_MIN_SURPLUS does not trim (prevents ping-pong at cap)."""
+    msgs = _msgs(WORKING_MAX_MESSAGES + PROMOTE_MIN_SURPLUS - 1)
+    w = _FakeWorking(msgs)
+    asyncio.run(maybe_auto_promote("c", w))
+    assert w.save_calls == [], "trim must not fire when surplus < PROMOTE_MIN_SURPLUS"
+    assert w._messages == msgs
+
+
+def test_at_min_surplus_triggers_trim():
+    """Surplus == PROMOTE_MIN_SURPLUS triggers trim; exactly PROMOTE_MIN_SURPLUS dropped."""
+    msgs = _msgs(WORKING_MAX_MESSAGES + PROMOTE_MIN_SURPLUS)
     w = _FakeWorking(msgs)
     asyncio.run(maybe_auto_promote("c", w))
     assert len(w._messages) == WORKING_MAX_MESSAGES
-    assert w._messages == msgs[1:]
+    assert w._messages == msgs[PROMOTE_MIN_SURPLUS:]
 
 
 def test_save_called_exactly_once_for_small_surplus():
     """Small surplus (fits in one chunk) → exactly one save call."""
-    msgs = _msgs(WORKING_MAX_MESSAGES + 3)
+    msgs = _msgs(WORKING_MAX_MESSAGES + PROMOTE_MIN_SURPLUS)
     w = _FakeWorking(msgs)
     asyncio.run(maybe_auto_promote("c", w))
     assert len(w.save_calls) == 1, (

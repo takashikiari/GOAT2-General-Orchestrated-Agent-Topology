@@ -5,7 +5,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — 2026-07-07
+## [Unreleased] — 2026-07-07 (session 2)
+
+### Added
+
+- **`memory/config_defaults.py`**: extracted `_DEFAULTS` dict from `memory/config.py` so config.py stays within the 260-line code limit. Single source of truth for all TOML fallback values.
+
+- **`memory/config_validator.py`**: fail-fast startup validation for `memory.toml`. Called by `config._load()` when a TOML file is present. Checks key invariants (`drift_warm > drift_cold`, `budget_base > 0`, `budget_hard_cap >= budget_base`, `l3_reserve_fraction ∈ (0,1)`, `timeout > 0`, `max_messages > 0`, etc.) and raises `ValueError` with a clear message pointing to the broken key — misconfiguration now fails at startup instead of silently producing wrong runtime behaviour.
+
+- **`memory/context_assembler.py`**: extracted pure assembly logic from `MemoryLayers` into a standalone module. Contains `assemble_blocks` (the full L0–L3 block builder) plus `trim_recent_messages`, `fit_search_results`, `gap_filter`, `blended_gap_filter`, `format_facts`, `format_messages`. No I/O, no state, fully testable in isolation. `MemoryLayers.assemble_context` is now a thin wrapper that fetches missing inputs and delegates.
+
+### Fixed
+
+- **Cache staleness after L3 enrichment** (`memory/auto_promote.py`, `memory/layers.py`): `pair_and_enrich_dropped` was updating ChromaDB metadata but not invalidating the L2.5 SessionCache, so the next search on the same query returned stale pre-enrichment results from Redis. Fixed by:
+  - Changing `create_task(pair_and_enrich_dropped(...))` → `await` inside `maybe_auto_promote` so enrichment completes inline (also makes it correctly testable via `asyncio.run()`).
+  - Adding optional `cache_clear_fn` parameter to `maybe_auto_promote` / `schedule_auto_promote`; called after enrichment completes.
+  - `MemoryLayers.append_and_save_working_context` passes `cache_clear_fn=lambda: self._cache.clear(chat_id)`.
+
+- **Test regressions** (`tests/test_auto_promote.py`, `tests/test_auto_promote_enrichment.py`): two tests assumed any surplus > 0 triggers trim, conflicting with the `PROMOTE_MIN_SURPLUS = 4` threshold added in session 1. Updated to use surplus ≥ `PROMOTE_MIN_SURPLUS`; added explicit `test_below_min_surplus_is_noop` to document the threshold invariant. Enrichment tests now also correctly verify both dropped l3_ids are enriched.
+
+- **Dead config** (`memory/config.py`, `config/memory.toml`): removed `L3_SIMILARITY_MAX_DISTANCE` constant (superseded by `l3_gap_significance`). Removed deprecated `l3_similarity_max_distance = 1.20` entry from TOML.
+
+### Refactored
+
+- **Fire-and-forget task tracking** (`orchestrator/orchestrator.py`, `memory/layers.py`, `telegram_interface/bot.py`):
+  - `Orchestrator._pending_archives` → `_pending_bg`; `drain_archives()` → `drain_background()`. The prefetch background-save task (`save_prefetch_background`) is now also tracked in `_pending_bg` alongside archive tasks.
+  - `MemoryLayers` gains `_pending_bg: set[asyncio.Task]` tracking auto_promote tasks + `drain_background(timeout)` method.
+  - `schedule_auto_promote` now returns `asyncio.Task` so callers can track it.
+  - Bot's `post_shutdown` hook calls both `orchestrator.drain_background()` and `layers.drain_background()`.
+
+---
+
+## [Unreleased] — 2026-07-07 (session 1)
 
 ### Fixed
 

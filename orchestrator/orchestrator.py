@@ -191,24 +191,21 @@ class Orchestrator:
         self._plugin_manager = plugin_manager
         self._analytics = analytics
         self._tools = tools or []
-        # In-flight L3 archive writes, tracked so drain_archives() can await
-        # them on shutdown — otherwise a restart in the ~100 ms ChromaDB write
-        # window silently drops the turn (violating the "every turn archived"
-        # guarantee). Each task removes itself here on completion.
-        self._pending_archives: set[asyncio.Task] = set()
+        # In-flight background tasks (L3 archive writes + prefetch background
+        # saves) tracked so drain_background() can await them on shutdown.
+        # Each task removes itself here on completion via done_callback.
+        self._pending_bg: set[asyncio.Task] = set()
 
-    async def drain_archives(self, timeout: float = 5.0) -> None:
-        """Await in-flight L3 archive writes so a clean shutdown loses no turns.
+    async def drain_background(self, timeout: float = 5.0) -> None:
+        """Await in-flight background tasks (L3 archive writes + prefetch saves).
 
         Called from the bot's ``post_shutdown`` hook before the loop exits.
-        Bounded by ``timeout`` so a stuck ChromaDB write can't hang shutdown;
-        ``_archive_turn`` already swallows+logs its own errors, so gather runs
-        with ``return_exceptions=True`` purely defensively.
+        Bounded by ``timeout``; tasks already swallow+log their own errors.
         """
-        pending = list(self._pending_archives)
+        pending = list(self._pending_bg)
         if not pending:
             return
-        log.info("draining %d in-flight L3 archive writes", len(pending))
+        log.info("draining %d in-flight background tasks", len(pending))
         try:
             await asyncio.wait_for(
                 asyncio.gather(*pending, return_exceptions=True),
@@ -216,8 +213,8 @@ class Orchestrator:
             )
         except asyncio.TimeoutError:
             log.warning(
-                "archive drain timed out (%.1fs); %d write(s) may be lost",
-                timeout, len(self._pending_archives),
+                "background drain timed out (%.1fs); %d task(s) may be lost",
+                timeout, len(self._pending_bg),
             )
 
     def _has_search_memory(self) -> bool:
@@ -314,10 +311,12 @@ class Orchestrator:
                     log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
             else:
                 prefetch_timeout = True
-                asyncio.create_task(save_prefetch_background(
+                bg = asyncio.create_task(save_prefetch_background(
                     prefetch_task, layers, chat_id, intent, query_emb,
                     turn_state, activation, topic_return_id,
                 ))
+                self._pending_bg.add(bg)
+                bg.add_done_callback(self._pending_bg.discard)
                 log.warning("prefetch timed out chat=%s, background-saving for next turn", chat_id)
             collector.end_stage("search")
             collector.set_cache(cache_hit, cache_key)
@@ -436,8 +435,8 @@ class Orchestrator:
                     topic_id=current_activation.topic_id if current_activation else "",
                     doc_id=l3_doc_id,
                 ))
-            self._pending_archives.add(archive_task)
-            archive_task.add_done_callback(self._pending_archives.discard)
+            self._pending_bg.add(archive_task)
+            archive_task.add_done_callback(self._pending_bg.discard)
             collector.end_stage("save")
             # 7. Enriching-write refresh (synchronous, end of turn): if GOAT stored
             #    on-thread facts this turn, fold them into the activation NOW so

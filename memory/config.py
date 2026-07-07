@@ -1,101 +1,24 @@
-"""memory.config — memory tier config (working/episodic/permanent/session_cache/retrieval_budget/aits/analytics). Reads config/memory.toml."""
+"""memory.config — memory tier constants read from config/memory.toml."""
 from __future__ import annotations
 
 import tomllib
 from pathlib import Path
 from typing import Final
 
-_CONFIG_PATH = Path(__file__).parent.parent / "config" / "memory.toml"
+from memory.config_defaults import _DEFAULTS
 
-_DEFAULTS: dict = {
-    "working": {
-        "storage_url": "redis://localhost:6379/0",
-        "ttl_seconds": 0,
-        "max_messages": 20,
-    },
-    "episodic": {
-        "storage_path": "./chroma_data",
-        "collection_name": "episodic_memory",
-    },
-    "permanent": {
-        "letta_url": "http://localhost:8283",
-        "agent_name": "goat-permanent",
-        "letta_model": "letta/letta-free",
-        "l1_facts_max_tokens": 500,
-    },
-    "session_cache": {
-        "ttl_seconds": 300,
-    },
-    "identity": {
-        "base_prompt": "You are a helpful assistant.",
-    },
-    "retrieval_budget": {
-        "max_results_per_search": 15,
-        "max_context_tokens": 4000,
-        "l2_context_cap": 8000,
-        "l3_reserve_fraction": 0.3,
-        "l2_floor_tokens": 500,
-        "l3_min_guarantee_tokens": 1200,
-        "l3_similarity_max_distance": 1.0,
-    },
-    "aits": {
-        "budget_base": 2000,
-        "budget_confidence_multiplier": 4000,
-        "budget_complexity_max_bonus": 2000,
-        "budget_hard_cap": 12000,
-    },
-    "prefetch": {
-        # 1.0s (was 0.5s): the benchmark cache dataset showed L2.5 cache hit rate
-        # capped at ~72% ± 18.7% because ChromaDB semantic search frequently
-        # exceeds 0.5s, cancelling the prefetch daemon before it can populate the
-        # L2.5 cache. 1.0s lets more searches complete → more cache entries on the
-        # repeat turn, without unbounded latency (still capped at 1.0s/turn).
-        "timeout": 1.0,
-        "max_results": 15,
-        "recency_window_days": 30,
-        "access_count_ref": 10,
-        "score_similarity_weight": 0.6,
-        "score_recency_weight": 0.3,
-        "score_access_weight": 0.1,
-    },
-    "analytics": {
-        "log_interval": 100,
-    },
-    # L2.5 brain-activation layer — per-chat thread state. See config/memory.toml
-    # [activation]; time is cleanup only (not a reset), a thread breaks only on
-    # a consensus shift (drift AND lexical overlap both drop), and an on-thread
-    # write refreshes the activation in place.
-    "activation": {
-        "ttl_seconds": 604800,
-        "drift_warm": 0.80,
-        "drift_cold": 0.55,
-        "lexical_low": 0.15,
-        "enriching_sim": 0.55,
-        "lexical_window": 5,
-        "topic_return_threshold": 0.75,
-        "topic_archive_max": 10,
-    },
-    # Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is
-    # a hard backstop (bounds cost/latency per turn, kills a runaway loop), never
-    # a grounding decider. Below the cap the model is called with tools so it can
-    # chain; at the cap tools are withheld and synthesis is forced.
-    "tool_loop": {
-        "max_iterations": 6,
-    },
-    "reranker": {
-        "enabled": True,
-        "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
-        "top_k": 20,
-    },
-}
+_CONFIG_PATH = Path(__file__).parent.parent / "config" / "memory.toml"
 
 
 def _load() -> dict:
     try:
         with open(_CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)
+            cfg = tomllib.load(f)
     except FileNotFoundError:
         return _DEFAULTS
+    from memory.config_validator import validate_config
+    validate_config(cfg)
+    return cfg
 
 
 _cfg = _load()
@@ -162,11 +85,8 @@ L2_FLOOR_TOKENS: Final[int] = int(
 L3_MIN_GUARANTEE_TOKENS: Final[int] = int(
     _retrieval_budget.get("l3_min_guarantee_tokens", _DEFAULTS["retrieval_budget"]["l3_min_guarantee_tokens"])
 )
-L3_SIMILARITY_MAX_DISTANCE: Final[float] = float(
-    _retrieval_budget.get("l3_similarity_max_distance", _DEFAULTS["retrieval_budget"]["l3_similarity_max_distance"])
-)
 L3_GAP_SIGNIFICANCE: Final[float] = float(
-    _retrieval_budget.get("l3_gap_significance", _DEFAULTS["retrieval_budget"].get("l3_gap_significance", 3.0))
+    _retrieval_budget.get("l3_gap_significance", _DEFAULTS["retrieval_budget"]["l3_gap_significance"])
 )
 
 _aits = _cfg.get("aits", _DEFAULTS["aits"])
@@ -179,8 +99,6 @@ BUDGET_COMPLEXITY_MAX_BONUS: Final[int] = int(
 )
 BUDGET_HARD_CAP: Final[int] = int(_aits.get("budget_hard_cap", _DEFAULTS["aits"]["budget_hard_cap"]))
 
-# Prefetch daemon config — see config/memory.toml [prefetch]. timeout is the
-# only blocker (no confidence gate); max_results caps the per-turn result count.
 _prefetch = _cfg.get("prefetch", _DEFAULTS["prefetch"])
 PREFETCH_TIMEOUT: Final[float] = float(
     _prefetch.get("timeout", _DEFAULTS["prefetch"]["timeout"])
@@ -209,9 +127,6 @@ ANALYTICS_LOG_INTERVAL: Final[int] = int(
     _analytics.get("log_interval", _DEFAULTS["analytics"]["log_interval"])
 )
 
-# Activation layer config — see config/memory.toml [activation]. TTL is a
-# cleanup horizon (NOT a reset); drift_*_warm/cold + lexical_low define the
-# consensus-shift rule; enriching_sim gates the on-thread write refresh.
 _activation_cfg = _cfg.get("activation", _DEFAULTS["activation"])
 ACTIVATION_TTL_SECONDS: Final[int] = int(
     _activation_cfg.get("ttl_seconds", _DEFAULTS["activation"]["ttl_seconds"])
@@ -238,22 +153,20 @@ TOPIC_ARCHIVE_MAX: Final[int] = int(
     _activation_cfg.get("topic_archive_max", _DEFAULTS["activation"]["topic_archive_max"])
 )
 
-# Agentic tool-calling loop — see config/memory.toml [tool_loop].
 _tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
 AGENTIC_MAX_ITERATIONS: Final[int] = int(
     _tool_loop.get("max_iterations", _DEFAULTS["tool_loop"]["max_iterations"])
 )
 
-# Cross-encoder reranker — see config/memory.toml [reranker].
-_reranker_cfg = _cfg.get("reranker", {})
+_reranker_cfg = _cfg.get("reranker", _DEFAULTS["reranker"])
 RERANKER_ENABLED: Final[bool] = bool(
-    _reranker_cfg.get("enabled", True)
+    _reranker_cfg.get("enabled", _DEFAULTS["reranker"]["enabled"])
 )
 RERANKER_MODEL: Final[str] = str(
-    _reranker_cfg.get("model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+    _reranker_cfg.get("model", _DEFAULTS["reranker"]["model"])
 )
 RERANKER_TOP_K: Final[int] = int(
-    _reranker_cfg.get("top_k", 20)
+    _reranker_cfg.get("top_k", _DEFAULTS["reranker"]["top_k"])
 )
 
 __all__ = [
@@ -273,7 +186,6 @@ __all__ = [
     "L3_RESERVE_FRACTION",
     "L2_FLOOR_TOKENS",
     "L3_MIN_GUARANTEE_TOKENS",
-    "L3_SIMILARITY_MAX_DISTANCE",
     "L3_GAP_SIGNIFICANCE",
     "BUDGET_BASE",
     "BUDGET_CONFIDENCE_MULTIPLIER",

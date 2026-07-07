@@ -11,11 +11,13 @@ blended scores for all future turns. The two paths must stay separate:
 
     _archive_turn      → L3 write (every turn, immediate, user+assistant pair)
     maybe_auto_promote → L2 trim only (when cap exceeded, oldest-first)
+                         + L3 enrichment of existing entries (enrich_l3_entry)
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 from memory.config import WORKING_MAX_MESSAGES
 from memory.working.working import WorkingMemory
@@ -23,11 +25,9 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-# Maximum messages to drop in a single chunk (backlog protection).
 PROMOTE_CHUNK_SIZE = 50
 # Minimum surplus before trimming fires. Prevents every-turn ping-pong when
 # a conversation is exactly at cap: 2 messages added → 2 dropped → repeat.
-# With this threshold, trim fires every PROMOTE_MIN_SURPLUS/2 turns instead.
 PROMOTE_MIN_SURPLUS = 4
 
 
@@ -36,14 +36,16 @@ async def maybe_auto_promote(
     working: WorkingMemory,
     episodic=None,
     extractor=None,
+    cache_clear_fn: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
-    """Trim L2 working memory to WORKING_MAX_MESSAGES and enrich dropped entries.
+    """Trim L2 to WORKING_MAX_MESSAGES; enrich dropped entries; clear search cache.
 
-    For each dropped user+assistant pair that has an ``l3_id`` field, fires
-    ``pair_and_enrich_dropped`` to update the corresponding L3 ChromaDB entry
-    with GLiNER-extracted entities, memory_type, and importance.
+    ``cache_clear_fn``: async callable (no args) to invalidate the L2.5
+    SessionCache for this chat after enrichment completes. Passed by
+    MemoryLayers so stale cached search results are not served after the
+    L3 metadata update. Optional — callers that do not own a cache omit it.
     """
-    from memory.enrichment import pair_and_enrich_dropped  # local import avoids circular
+    from memory.enrichment import pair_and_enrich_dropped
     async with working.chat_lock(chat_id):
         messages = await working.get_messages_raw(chat_id)
         total = len(messages)
@@ -75,7 +77,12 @@ async def maybe_auto_promote(
         chat_id, dropped_total, WORKING_MAX_MESSAGES,
     )
     if all_dropped and episodic is not None:
-        asyncio.create_task(pair_and_enrich_dropped(all_dropped, episodic, extractor))
+        await pair_and_enrich_dropped(all_dropped, episodic, extractor)
+        if cache_clear_fn is not None:
+            try:
+                await cache_clear_fn()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("auto_promote: cache_clear_fn failed chat=%s: %s", chat_id, exc)
 
 
 def schedule_auto_promote(
@@ -83,6 +90,15 @@ def schedule_auto_promote(
     working: WorkingMemory,
     episodic=None,
     extractor=None,
-) -> None:
-    """Fire-and-forget: schedule a background L2 trim + L3 enrichment for chat_id."""
-    asyncio.create_task(maybe_auto_promote(chat_id, working, episodic=episodic, extractor=extractor))
+    cache_clear_fn: Callable[[], Awaitable[None]] | None = None,
+) -> asyncio.Task:
+    """Fire-and-forget: schedule L2 trim + L3 enrichment + cache invalidation.
+
+    Returns the asyncio.Task so callers can track it for clean shutdown.
+    """
+    return asyncio.create_task(
+        maybe_auto_promote(
+            chat_id, working, episodic=episodic, extractor=extractor,
+            cache_clear_fn=cache_clear_fn,
+        )
+    )

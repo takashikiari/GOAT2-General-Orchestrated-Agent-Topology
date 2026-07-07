@@ -25,31 +25,37 @@ def test_no_enrichment_when_no_surplus():
 
 
 def test_enrichment_fires_for_dropped_pair_with_l3_id():
-    """Dropped user+assistant pair with l3_id triggers enrich_l3_entry."""
-    from memory.auto_promote import maybe_auto_promote
+    """Dropped pairs with l3_id trigger enrich_l3_entry once surplus >= PROMOTE_MIN_SURPLUS."""
+    from memory.auto_promote import PROMOTE_MIN_SURPLUS, maybe_auto_promote
     from memory.config import WORKING_MAX_MESSAGES
-    # Build messages: 2 dropped + WORKING_MAX_MESSAGES kept
+    # Need surplus >= PROMOTE_MIN_SURPLUS (4) to trigger trim.
+    # Use 2 user+assistant pairs = 4 messages dropped, all with l3_ids.
     dropped = [
-        {"role": "user", "content": "hello", "l3_id": "doc-001"},
-        {"role": "assistant", "content": "hi there", "l3_id": "doc-001"},
+        {"role": "user", "content": "hello1", "l3_id": "doc-001"},
+        {"role": "assistant", "content": "hi there1", "l3_id": "doc-001"},
+        {"role": "user", "content": "hello2", "l3_id": "doc-002"},
+        {"role": "assistant", "content": "hi there2", "l3_id": "doc-002"},
     ]
     kept = [{"role": "user", "content": f"msg{i}"} for i in range(WORKING_MAX_MESSAGES)]
+    assert len(dropped) >= PROMOTE_MIN_SURPLUS, "test setup must satisfy surplus threshold"
     working = _make_working(dropped + kept)
     episodic = MagicMock()
     episodic.update_metadata = AsyncMock()
     asyncio.run(maybe_auto_promote("chat1", working, episodic=episodic, extractor=None))
     episodic.update_metadata.assert_called()
-    call_args = episodic.update_metadata.call_args_list[0]
-    assert call_args[0][0] == "doc-001"
+    enriched_ids = {c[0][0] for c in episodic.update_metadata.call_args_list}
+    assert "doc-001" in enriched_ids
+    assert "doc-002" in enriched_ids
 
 
 def test_enrichment_skips_messages_without_l3_id():
     """Messages without l3_id (old format) are dropped but not enriched."""
-    from memory.auto_promote import maybe_auto_promote
+    from memory.auto_promote import PROMOTE_MIN_SURPLUS, maybe_auto_promote
     from memory.config import WORKING_MAX_MESSAGES
+    # 4 dropped messages without l3_id (surplus = PROMOTE_MIN_SURPLUS).
     dropped = [
-        {"role": "user", "content": "old message"},
-        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": f"old message {i}"}
+        for i in range(PROMOTE_MIN_SURPLUS)
     ]
     kept = [{"role": "user", "content": f"msg{i}"} for i in range(WORKING_MAX_MESSAGES)]
     working = _make_working(dropped + kept)

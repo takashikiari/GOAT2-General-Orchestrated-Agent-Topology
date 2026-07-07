@@ -389,14 +389,15 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         if reply:
             await update.message.reply_text(_truncate(reply))
 
-    async def drain_archives(application: Application) -> None:
-        """post_shutdown: await in-flight L3 archive writes before the loop exits."""
-        await orchestrator.drain_archives()
+    async def drain_background(application: Application) -> None:
+        """post_shutdown: drain orchestrator + layers background tasks before exit."""
+        await orchestrator.drain_background()
+        await registry.memory_layers.drain_background()
 
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
     if post_init:
         builder = builder.post_init(post_init)
-    builder = builder.post_shutdown(drain_archives)
+    builder = builder.post_shutdown(drain_background)
     app = builder.build()
     app.add_handler(CommandHandler("update",   handle_update))
     app.add_handler(CommandHandler("rollback", handle_rollback))
