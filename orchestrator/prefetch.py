@@ -1,9 +1,9 @@
-"""orchestrator.prefetch — scheduling wrapper around memory.retrieval.
+"""orchestrator.prefetch — post-turn L3 prefetch daemon.
 
-Responsibility: schedule retrieval tasks and persist their results into the
-activation layer.  All retrieval logic lives in memory.retrieval.retrieve;
-this module only handles the orchestrator-side lifecycle (background save,
-activation update on timeout).
+Runs AFTER the LLM response is delivered, in the inter-turn gap.
+No timeout — has as long as it needs before the user sends the next message.
+Writes the pre-computed L3 results into activation (L2.5) so the next turn
+reads them instantly without touching ChromaDB/BM25/GLiNER/CrossEncoder.
 """
 from __future__ import annotations
 
@@ -14,34 +14,30 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 
-async def run_prefetch(
-    layers,
-    chat_id: str,
-    user_message: str,
-    state: str,
-    activation,
-    topic_return_id: str | None = None,
-) -> tuple[list[dict], bool, str | None, dict]:
-    """Delegate L3 retrieval to memory.retrieval.retrieve."""
-    return await retrieve(layers, chat_id, user_message, state, activation, topic_return_id)
-
-
-async def save_prefetch_background(
-    prefetch_task,
+async def run_prefetch_and_save(
     layers,
     chat_id: str,
     intent: str,
     query_emb,
     turn_state: str,
     activation,
-    topic_return_id: str | None,
+    topic_return_id: str | None = None,
+    forced_topic_id: str | None = None,
 ) -> None:
+    """Pre-compute L3 for the next turn and persist into activation (L2.5)."""
     try:
-        l3_results, _, _, _ = await prefetch_task
+        search_state = "drift" if turn_state == "warm" else "cold"
+        l3_results, _, _, _ = await retrieve(
+            layers, chat_id, intent, search_state, activation, topic_return_id,
+        )
         await update_activation(
             layers, chat_id, intent, query_emb,
-            turn_state, activation, l3_results, topic_return_id=topic_return_id,
+            turn_state, activation, l3_results,
+            topic_return_id=topic_return_id, forced_topic_id=forced_topic_id,
         )
-        log.info("prefetch background save ok chat=%s hits=%d", chat_id, len(l3_results))
+        log.info(
+            "prefetch ok chat=%s state=%s hits=%d",
+            chat_id, search_state, len(l3_results),
+        )
     except Exception as exc:  # noqa: BLE001
-        log.warning("prefetch background save failed chat=%s: %s", chat_id, exc)
+        log.warning("prefetch failed chat=%s: %s", chat_id, exc)

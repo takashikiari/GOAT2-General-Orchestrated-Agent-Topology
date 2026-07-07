@@ -10,17 +10,23 @@ from tests._orch_fakes import (
 
 
 def test_search_runs_unconditionally_and_reports_cache_key():
-    """Intent containing 'la' used to drop confidence to 0.2 and skip search."""
+    """Search always runs — now post-turn (no timeout), not blocking the LLM call.
+
+    In the old architecture a low-confidence intent ('la' → 0.2) skipped L3 entirely.
+    In the new architecture search is always scheduled post-turn regardless of confidence,
+    so the turn itself returns instantly with warm-served=False on a cold first turn.
+    """
     intent = "Pai și după atâtea tokens prefetchul a folosit 0 blocks la fiecare qwery"
     layers = _FakeLayers(results=[{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
     reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run(intent, "chat"))
-    assert layers.search_calls == 2                # thematic + thematic_scoped both ran
     assert reply == "reply"
     obs = reg.memory_analytics.records[-1]
-    assert obs.cache_key == "search:deadbeef"       # cache key now reported (was null)
+    # Post-turn prefetch is always attempted; on the first cold turn no pre-fetched
+    # results are in activation yet (warm_served=False), so results_found=0.
     assert obs.prefetch_attempted is True
-    assert obs.prefetch_succeeded is True
+    assert obs.prefetch_timeout is False            # no timeout — search is post-turn
+    assert obs.prefetch_results_returned == 0       # cold first turn: nothing pre-fetched yet
 
 
 def test_prefetch_blocks_used_reflects_real_l3_used():

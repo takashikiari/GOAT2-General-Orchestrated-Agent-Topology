@@ -8,7 +8,7 @@ import time
 import uuid
 
 from config import settings
-from memory.activation import classify_turn, classify_write, find_topic_return
+from memory.activation import classify_turn, classify_write, find_topic_return, rescore_recency
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
@@ -20,14 +20,12 @@ from memory.config import (
     AGENTIC_MAX_ITERATIONS,
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
-    PREFETCH_TIMEOUT,
     TOPIC_RETURN_THRESHOLD,
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
-from orchestrator.activation_manager import update_activation
-from orchestrator.prefetch import run_prefetch, save_prefetch_background
+from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
@@ -254,29 +252,26 @@ class Orchestrator:
         start = time.time()
         try:
             # 1. Kick off the L0/L1/L2 tier fetch concurrently with the activation
-            #    lookup + query embed (all I/O-bound) so none blocks another. The
-            #    activation (per-chat thread state) + query embedding decide the
-            #    turn state: ``classify_turn`` returns cold / warm / drift, and the
-            #    daemon skips the L3 search on a warm turn — the brain holding its
-            #    current mental model steady instead of re-deriving it every turn.
-            facts_task = asyncio.create_task(layers.get_identity_and_facts())
-            identity_task = asyncio.create_task(layers.get_identity_prompt())
-            msgs_task = asyncio.create_task(layers.get_working_context(chat_id))
-            activation_task = asyncio.create_task(layers.get_activation(chat_id))
-            qemb_task = asyncio.create_task(layers.embed_query(intent))
-            activation = await activation_task
-            query_emb = await qemb_task
+            #    lookup + query embed. The activation (L2.5) holds the L3 results
+            #    pre-fetched by the PREVIOUS turn's post-turn daemon — instant, no
+            #    ChromaDB/BM25/GLiNER/CrossEncoder this turn.
+            activation, query_emb = await asyncio.gather(
+                layers.get_activation(chat_id),
+                layers.embed_query(intent),
+            )
             turn_state = classify_turn(intent, activation, query_emb)
-            # Compute topic return before the daemon starts (pure CPU, no I/O).
+            # Pre-compute topic_id and topic_return_id (pure CPU, no I/O) so that
+            # _archive_turn and the post-turn prefetch use the same consistent value.
             topic_return_id: str | None = None
             if turn_state == "cold" and activation and activation.archived_topics:
                 topic_return_id = find_topic_return(
                     query_emb, activation.archived_topics, TOPIC_RETURN_THRESHOLD,
                 )
-            prefetch_task = asyncio.create_task(
-                run_prefetch(layers, chat_id, intent, turn_state, activation,
-                             topic_return_id=topic_return_id))
-            # 3. AITS dynamic budget (classify stage) — CPU, instant.
+            if turn_state in ("warm", "drift") and activation and activation.topic_id:
+                current_topic_id = activation.topic_id
+            else:
+                current_topic_id = topic_return_id or str(uuid.uuid4())
+            # 2. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
             confidence = calculate_confidence_from_query(intent)
             complexity = calculate_complexity_from_query(intent)
@@ -290,55 +285,29 @@ class Orchestrator:
                 "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
                 budget, confidence, complexity, chat_id,
             )
-            # 4. Await the daemon (search stage) — bounded; on timeout continue
-            #    without L3. The daemon is NOT cancelled on timeout — it finishes
-            #    in background so the next turn gets a warm activation.
+            # 3. Get L3 from activation — pre-fetched by the previous turn's
+            #    post-turn daemon (instant read, no search pipeline).
+            #    On warm/drift turns the activation holds on-topic results.
+            #    On cold turns (topic break) we skip stale results and let the
+            #    post-turn daemon rebuild fresh ones for next turn.
             collector.start_stage("search")
             l3_results: list[dict] = []
-            cache_hit = False
-            cache_key: str | None = None
-            prefetch_attempted = True
-            prefetch_succeeded = False
-            prefetch_timeout = False
-            _prefetch_meta: dict = {"warm_served": False, "thematic": 0, "specific_key": 0}
-            done, _ = await asyncio.wait({prefetch_task}, timeout=PREFETCH_TIMEOUT)
-            if prefetch_task in done:
-                try:
-                    l3_results, cache_hit, cache_key, _prefetch_meta = prefetch_task.result()
-                    prefetch_succeeded = True
-                    log.info("prefetch ok chat=%s state=%s hits=%d", chat_id, turn_state, len(l3_results))
-                except Exception as exc:
-                    log.warning("prefetch failed chat=%s: %s, continuing without L3", chat_id, exc)
-            else:
-                prefetch_timeout = True
-                bg = asyncio.create_task(save_prefetch_background(
-                    prefetch_task, layers, chat_id, intent, query_emb,
-                    turn_state, activation, topic_return_id,
-                ))
-                self._pending_bg.add(bg)
-                bg.add_done_callback(self._pending_bg.discard)
-                log.warning("prefetch timed out chat=%s, background-saving for next turn", chat_id)
+            warm_served = False
+            if activation and activation.merged and turn_state in ("warm", "drift"):
+                l3_results = rescore_recency(activation.merged, time.time())
+                warm_served = bool(l3_results)
             collector.end_stage("search")
-            collector.set_cache(cache_hit, cache_key)
-            collector.set_prefetch(prefetch_attempted, prefetch_succeeded, prefetch_timeout, len(l3_results), 0)
-            collector.set_prefetch_mechanisms(
-                _prefetch_meta["warm_served"],
-                _prefetch_meta["thematic"],
-                _prefetch_meta["specific_key"],
-            )
-            # Persist / refresh the activation (only on a successful prefetch; a
-            # timeout leaves it untouched so the next turn re-derives cold).
-            current_activation = None
-            if prefetch_succeeded:
-                current_activation = await update_activation(
-                    layers, chat_id, intent, query_emb, turn_state, activation, l3_results,
-                    topic_return_id=topic_return_id)
-            # 5. Await the concurrent L0/L1/L2 fetch (normally done already) and
-            #    assemble L0-L3 with the pre-fetched tiers (assemble stage).
+            collector.set_cache(False, None)
+            collector.set_prefetch(True, warm_served, False, len(l3_results), 0)
+            collector.set_prefetch_mechanisms(warm_served, len(l3_results), 0)
+            # 4. Fetch L0/L1/L2 concurrently (all fast — no heavy search I/O)
+            #    and assemble L0-L3 context (assemble stage).
             collector.start_stage("assemble")
-            facts = await facts_task
-            identity_prompt = await identity_task
-            messages = await msgs_task
+            facts, identity_prompt, messages = await asyncio.gather(
+                layers.get_identity_and_facts(),
+                layers.get_identity_prompt(),
+                layers.get_working_context(chat_id),
+            )
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
@@ -432,7 +401,7 @@ class Orchestrator:
             archive_task = asyncio.create_task(
                 _archive_turn(
                     layers, chat_id, intent, saved_reply,
-                    topic_id=current_activation.topic_id if current_activation else "",
+                    topic_id=current_topic_id,
                     doc_id=l3_doc_id,
                 ))
             self._pending_bg.add(archive_task)
@@ -445,16 +414,26 @@ class Orchestrator:
             #    and no-write turns add no latency.
             write_kind = "none"
             enriching_refresh = False
-            if stored_contents and current_activation is not None and current_activation.centroid:
+            if stored_contents and activation is not None and activation.centroid:
                 write_kind, enriching_refresh = await self._enriching_refresh(
-                    layers, chat_id, stored_contents, current_activation)
+                    layers, chat_id, stored_contents, activation)
             collector.set_activation(
                 turn_state,
                 thread_break=(turn_state == "cold" and activation is not None),
                 write_kind=write_kind,
                 enriching_refresh=enriching_refresh,
             )
-            # 8. Record the observation; log a report at the configured interval.
+            # 8. Post-turn prefetch: pre-compute L3 for the next turn in the
+            #    inter-turn gap. No timeout — has as long as it needs before
+            #    the user sends their next message.
+            _prefetch_bg = asyncio.create_task(
+                run_prefetch_and_save(
+                    layers, chat_id, intent, query_emb, turn_state, activation,
+                    topic_return_id=topic_return_id, forced_topic_id=current_topic_id,
+                ))
+            self._pending_bg.add(_prefetch_bg)
+            _prefetch_bg.add_done_callback(self._pending_bg.discard)
+            # 9. Record the observation; log a report at the configured interval.
             collector.finish(time.time() - start)
             analytics.record(collector.obs)
             if analytics.total_requests % ANALYTICS_LOG_INTERVAL == 0:

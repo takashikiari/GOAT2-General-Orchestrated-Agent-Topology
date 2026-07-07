@@ -5,6 +5,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — 2026-07-07 (session 6)
+
+### Architectural redesign: post-turn prefetch
+
+**Problem**: Prefetch ran at START of turn competing with a 1.5s timeout → always timed out on cold turns (ChromaDB + GLiNER + CrossEncoder ≈ 1.5-2.5s) → orchestrator fell back to `search_memory` tool → 2 LLM calls per turn → 10s latency. The timeout was the wrong fix for the wrong problem.
+
+**Root cause (architectural inversion)**: Prefetch is called *prefetch* because it pre-fetches for the NEXT turn. Running it at the start of turn N and waiting for it with a timeout is the opposite of pre-fetching — it's synchronous retrieval with a bad timeout.
+
+**Fix**: Prefetch now runs POST-TURN as a fire-and-forget background task, in the inter-turn gap while the user reads the reply. No timeout needed — it completes before the user sends the next message. The orchestrator reads pre-computed L3 from activation (L2.5) instantly; no search pipeline runs during the turn at all.
+
+**Files changed**:
+- `orchestrator/prefetch.py` — complete rewrite: `run_prefetch_and_save()` replaces `run_prefetch` + `save_prefetch_background`. No timeout parameter. Runs post-turn.
+- `orchestrator/orchestrator.py` — `run()` restructured:
+  - Removed: start-of-turn prefetch task, `asyncio.wait` with PREFETCH_TIMEOUT, timeout handling, `current_activation`, `update_activation` inline call
+  - Added: instant L3 read from activation (warm/drift turns only; cold → empty), concurrent L0/L1/L2 fetch via `asyncio.gather`, post-turn `run_prefetch_and_save` fire-and-forget
+  - Added: `current_topic_id` pre-computed at classify-time so `_archive_turn` and post-turn prefetch use the same consistent value (fixes topic_id="" bug on first turn)
+  - Removed imports: `PREFETCH_TIMEOUT`, `update_activation`, `run_prefetch`, `save_prefetch_background`
+  - Added imports: `rescore_recency`, `run_prefetch_and_save`
+- `orchestrator/activation_manager.py` — `update_activation` gains `forced_topic_id` parameter so orchestrator can inject the pre-computed topic_id
+- `tests/test_orchestrator_memory_flow.py` — updated `test_search_runs_unconditionally_and_reports_cache_key` to match new architecture (no synchronous search, post-turn prefetch, no cache_key during turn)
+
+**Result**: Every turn is now 1 LLM call. No timeout. L3 context arrives via activation read (instant) on warm/drift turns. Cold turns serve empty L3 (the post-turn prefetch rebuilds activation for the next turn). `search_memory` remains available as an explicit on-demand tool, not as a timeout fallback.
+
+---
+
 ## [Unreleased] — 2026-07-07 (session 5)
 
 ### Refactored

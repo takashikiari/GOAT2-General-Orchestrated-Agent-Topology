@@ -15,6 +15,7 @@ async def update_activation(
     layers, chat_id: str, intent: str, query_emb,
     turn_state: str, activation, l3_results: list[dict],
     topic_return_id: str | None = None,
+    forced_topic_id: str | None = None,
 ):
     now = time.time()
     if turn_state == "warm":
@@ -42,12 +43,12 @@ async def update_activation(
             activation.centroid, query_emb, activation.turn_count + 1,
         )
         new_turn_count = activation.turn_count + 1
-        topic_id = activation.topic_id or str(uuid.uuid4())
+        topic_id = forced_topic_id or activation.topic_id or str(uuid.uuid4())
     else:
         new_centroid = query_emb
         new_turn_count = 1
-        topic_id = topic_return_id or str(uuid.uuid4())
-        if topic_return_id:
+        topic_id = forced_topic_id or topic_return_id or str(uuid.uuid4())
+        if topic_return_id and not forced_topic_id:
             log.info("topic return chat=%s topic=%s", chat_id, topic_return_id)
 
     new_act = Activation(
