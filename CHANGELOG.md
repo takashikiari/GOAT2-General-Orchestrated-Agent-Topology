@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.4] — 2026-07-07
+
+### Fixed
+
+- **`orchestrator/orchestrator.py`** — orchestrator now serves `activation.merged` (L3) on **all** turn states, including cold. Previously the condition `turn_state in ("warm", "drift")` caused cold turns to discard the prefetch results entirely, leaving the LLM with 0 L3 context and forcing it to fall back to `search_memory` tool calls (`llm_calls: 2`).
+
+  The orchestrator is a passive reader of L2.5: it serves whatever the prefetch daemon wrote, regardless of turn state. AITS budget allocation already handles relevance filtering — low-score results receive proportionally less budget and are excluded by the token cap. No memory logic belongs in the orchestrator; that is the prefetch's responsibility.
+
+  **Before:** `if activation and activation.merged and turn_state in ("warm", "drift")`  
+  **After:** `if activation and activation.merged`
+
+---
+
 ## [0.1.3] — 2026-07-07
 
 ### Added

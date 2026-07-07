@@ -287,13 +287,13 @@ class Orchestrator:
             )
             # 3. Get L3 from activation — pre-fetched by the previous turn's
             #    post-turn daemon (instant read, no search pipeline).
-            #    On warm/drift turns the activation holds on-topic results.
-            #    On cold turns (topic break) we skip stale results and let the
-            #    post-turn daemon rebuild fresh ones for next turn.
+            #    Orchestrator is a passive reader: it serves whatever prefetch
+            #    wrote into L2.5, regardless of turn state. AITS budgeting
+            #    handles relevance filtering; no memory logic here.
             collector.start_stage("search")
             l3_results: list[dict] = []
             warm_served = False
-            if activation and activation.merged and turn_state in ("warm", "drift"):
+            if activation and activation.merged:
                 l3_results = rescore_recency(activation.merged, time.time())
                 warm_served = bool(l3_results)
             collector.end_stage("search")
