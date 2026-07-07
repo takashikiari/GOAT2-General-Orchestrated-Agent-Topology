@@ -39,8 +39,13 @@ async def _loop(registry: "ServiceRegistry") -> None:
 def post_init_hook(registry: "ServiceRegistry"):
     """Return a PTB ``post_init`` coroutine that warms memory and starts the scanner."""
     async def _post_init(application: "Application") -> None:
-        # Pre-warm ChromaDB outside the per-turn prefetch timeout so the first
-        # real request after restart isn't blind to L3 (cold-collection query).
+        # Pre-warm ChromaDB, then build BM25 index and load reranker model in
+        # parallel — all outside the per-turn prefetch timeout so the first real
+        # request after restart has a fully ready retrieval stack.
         await registry.episodic_memory.warmup()
+        warmup_tasks = [registry.bm25_index.warmup()]
+        if registry.reranker is not None:
+            warmup_tasks.append(registry.reranker.warmup())
+        await asyncio.gather(*warmup_tasks, return_exceptions=True)
         asyncio.create_task(_loop(registry))
     return _post_init

@@ -145,6 +145,25 @@ class EpisodicQueries:
             await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
         log.debug("EpisodicMemory: deleted %d entries", len(entry_ids))
 
+    async def get_all_for_index(self) -> list[dict]:
+        """Return all documents as ``{id, content, metadata}`` for index building (read-only).
+
+        Used by ``BM25Index.build`` to snapshot the full collection at startup.
+        For collections > 100K docs this would be slow, but GOAT's episodic
+        store is conversational-scale (thousands of entries) so it is acceptable.
+        """
+        results = await asyncio.to_thread(
+            self._get_collection().get,
+            include=["documents", "metadatas"],
+        )
+        ids = results.get("ids") or []
+        docs = results.get("documents") or []
+        metas = results.get("metadatas") or []
+        return [
+            {"id": i, "content": d, "metadata": m}
+            for i, d, m in zip(ids, docs, metas)
+        ]
+
     async def update_metadata(self, doc_id: str, updates: dict) -> None:
         """Update metadata fields on an existing L3 entry (write-locked).
 

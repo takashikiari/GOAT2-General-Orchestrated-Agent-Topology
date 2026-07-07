@@ -108,6 +108,12 @@ class _FakeLayers:
     async def boost_by_entities(self, query, results):
         return results
 
+    async def bm25_search(self, query, limit=15):
+        return []
+
+    async def rerank(self, query, results):
+        return results
+
 
 class _FakeAnalytics:
     def __init__(self):

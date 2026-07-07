@@ -504,11 +504,11 @@ class Orchestrator:
         current_topic_id: str | None = activation.topic_id if activation else None
 
         if state == "drift":
-            # Run topic-scoped and global in parallel: old memories live under
-            # different topic_ids (or none), so global is always needed.
-            scoped_raw, global_raw = await asyncio.gather(
+            # Semantic (scoped + global) and BM25 all run in parallel.
+            scoped_raw, global_raw, bm25_raw = await asyncio.gather(
                 layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id),
                 layers.search_episodic(user_message, limit=limit),
+                layers.bm25_search(user_message, limit=limit),
                 return_exceptions=True,
             )
             groups: list[list[dict]] = []
@@ -517,8 +517,11 @@ class Orchestrator:
                     log.warning("prefetch drift mechanism raised chat=%s: %s", chat_id, part)
                 else:
                     groups.append(enforce_result_limit(part))
-            merged = merge_results(groups)[:limit]
+            bm25_results: list[dict] = [] if isinstance(bm25_raw, BaseException) else bm25_raw
+            merged = merge_results(groups + ([bm25_results] if bm25_results else []))[:limit * 2]
             merged = await layers.boost_by_entities(user_message, merged)
+            merged = await layers.rerank(user_message, merged)
+            merged = merged[:limit]
             log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
             meta = {"warm_served": False, "thematic": len(merged), "specific_key": 0}
             return merged, False, None, meta
@@ -540,22 +543,26 @@ class Orchestrator:
             results = await layers.search_episodic(user_message, limit=limit, topic_id=tid)
             return {"results": results, "cache_hit": False, "cache_key": None}
 
-        # Each task is tagged with its mechanism name so a per-mechanism
-        # exception (e.g. a ChromaDB HNSW/metadata desync — "Error finding
-        # id") self-identifies in the log instead of appearing as an anonymous
-        # "prefetch mechanism raised" with no source.
+        # Each semantic task is tagged with its mechanism name for self-identified
+        # exception logging. BM25 runs as a separate parallel coroutine.
         tasks: list = [("thematic", _thematic()), ("thematic_scoped", _thematic_scoped())]
         if topic_return_id:
             tasks.append(("topic_return", _topic_filtered(topic_return_id)))
+        semantic_coros = [coro for _, coro in tasks]
         names = [name for name, _ in tasks]
-        parts = await asyncio.gather(
-            *[coro for _, coro in tasks], return_exceptions=True,
+
+        # Gather semantic mechanisms + BM25 all in parallel.
+        all_parts = await asyncio.gather(
+            *semantic_coros, layers.bm25_search(user_message, limit=limit),
+            return_exceptions=True,
         )
+        semantic_parts = all_parts[:-1]
+        bm25_raw = all_parts[-1]
 
         groups: list[list[dict]] = []
         cache_hit = False
         cache_key: str | None = None
-        for name, part in zip(names, parts):
+        for name, part in zip(names, semantic_parts):
             if isinstance(part, BaseException):
                 log.warning("prefetch mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
                 continue
@@ -564,11 +571,16 @@ class Orchestrator:
                 cache_hit = part["cache_hit"]
                 cache_key = part["cache_key"]
 
-        merged = merge_results(groups)[:limit]
+        bm25_results: list[dict] = [] if isinstance(bm25_raw, BaseException) else bm25_raw
+        # Wider candidate pool for the reranker; truncated to limit after rerank.
+        all_groups = groups + ([bm25_results] if bm25_results else [])
+        merged = merge_results(all_groups)[:limit * 2]
         merged = await layers.boost_by_entities(user_message, merged)
+        merged = await layers.rerank(user_message, merged)
+        merged = merged[:limit]
         log.info(
-            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d",
-            chat_id, len(parts), len(merged),
+            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d bm25=%d",
+            chat_id, len(semantic_parts), len(merged), len(bm25_results),
         )
         ids = [
             r.get("metadata", {}).get("message_id")

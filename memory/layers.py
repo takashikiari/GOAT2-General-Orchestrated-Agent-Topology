@@ -63,9 +63,10 @@ class MemoryLayers:
         permanent: "PermanentMemory",
         cache_ttl: int = 300,
         extractor=None,
+        bm25=None,
+        reranker=None,
     ) -> None:
-        """
-        Store the three physical tier instances and build the L2.5 cache.
+        """Store the three physical tier instances and build the L2.5 cache.
 
         Args:
             working: WorkingMemory instance (backs L2, L2.5).
@@ -74,11 +75,15 @@ class MemoryLayers:
             cache_ttl: TTL in seconds for L2.5 cache entries; config supplies
                 the active value, this default is a fallback only.
             extractor: Optional GLiNERExtractor for L3 enrichment at trim time.
+            bm25: Optional BM25Index for hybrid lexical retrieval.
+            reranker: Optional CrossEncoderReranker for post-merge precision.
         """
         self._working = working
         self._episodic = episodic
         self._permanent = permanent
         self._extractor = extractor
+        self._bm25 = bm25
+        self._reranker = reranker
         self._cache = SessionCache(working, ttl_seconds=cache_ttl)
         # L2.5 activation layer — per-chat thread state. Distinct TTL from the
         # search cache: a long cleanup horizon (NOT a reset). See [activation].
@@ -200,7 +205,11 @@ class MemoryLayers:
         }
         if topic_id:
             metadata["topic_id"] = topic_id
-        return await self._episodic.store(chat_id, prefix_with_date(content, now), metadata, doc_id=doc_id)
+        prefixed = prefix_with_date(content, now)
+        doc_id = await self._episodic.store(chat_id, prefixed, metadata, doc_id=doc_id)
+        if self._bm25 is not None:
+            self._bm25.add_doc(doc_id, prefixed, {**metadata, "chat_id": chat_id})
+        return doc_id
 
     async def find_by_keys(
         self, chat_id: str, keys: list[str], limit: int = 15,
@@ -220,6 +229,28 @@ class MemoryLayers:
         access-count term of the merge score on future turns.
         """
         await self._episodic.bump_access(chat_id, ids)
+
+    async def bm25_search(self, query: str, limit: int = 15) -> list[dict]:
+        """BM25 lexical search; no-op (returns []) when index unavailable.
+
+        Results lack a ``score`` key so ``result_merger`` assigns 0 similarity —
+        recency + access terms still fire, and the cross-encoder reranker makes
+        the final relevance call.
+        """
+        if self._bm25 is None:
+            return []
+        return await self._bm25.search(query, limit=limit)
+
+    async def rerank(self, query: str, results: list[dict]) -> list[dict]:
+        """Cross-encoder rerank; no-op (returns results unchanged) when unavailable.
+
+        When the reranker is available, blended_score is overwritten with
+        sigmoid(cross_encoder_logit) ∈ (0, 1) so the gap filter in
+        ``assemble_context`` always sees a well-scaled distribution.
+        """
+        if self._reranker is None or not results:
+            return results
+        return await self._reranker.rerank(query, results)
 
     async def boost_by_entities(self, query: str, results: list[dict]) -> list[dict]:
         """Re-score results by GLiNER entity overlap; no-op when extractor unavailable."""

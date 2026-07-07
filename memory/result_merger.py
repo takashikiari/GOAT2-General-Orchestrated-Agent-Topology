@@ -50,9 +50,15 @@ def _access(access_count: float) -> float:
 
 
 def _blended(result: dict, now: float) -> float:
-    """Weighted score for one result; weights from ``[prefetch]``."""
+    """Weighted score for one result; weights from ``[prefetch]``.
+
+    BM25-only results (from ``BM25Index.search``) intentionally omit the
+    ``score`` key to signal "no semantic distance available". In that case
+    the similarity term is 0.0 — recency and access-count still fire, and
+    the cross-encoder makes the final relevance call.
+    """
     meta = result.get("metadata", {}) or {}
-    sim = _similarity(result.get("score", 0.0))
+    sim = _similarity(result["score"]) if "score" in result else 0.0
     rec = _recency(meta.get("timestamp", 0.0), now)
     acc = _access(meta.get("access_count", 0))
     return (

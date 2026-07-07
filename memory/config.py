@@ -82,6 +82,11 @@ _DEFAULTS: dict = {
     "tool_loop": {
         "max_iterations": 6,
     },
+    "reranker": {
+        "enabled": True,
+        "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        "top_k": 20,
+    },
 }
 
 
@@ -239,6 +244,18 @@ AGENTIC_MAX_ITERATIONS: Final[int] = int(
     _tool_loop.get("max_iterations", _DEFAULTS["tool_loop"]["max_iterations"])
 )
 
+# Cross-encoder reranker — see config/memory.toml [reranker].
+_reranker_cfg = _cfg.get("reranker", {})
+RERANKER_ENABLED: Final[bool] = bool(
+    _reranker_cfg.get("enabled", True)
+)
+RERANKER_MODEL: Final[str] = str(
+    _reranker_cfg.get("model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
+)
+RERANKER_TOP_K: Final[int] = int(
+    _reranker_cfg.get("top_k", 20)
+)
+
 __all__ = [
     "WORKING_STORAGE_URL",
     "WORKING_TTL_SECONDS",
@@ -279,4 +296,7 @@ __all__ = [
     "TOPIC_RETURN_THRESHOLD",
     "TOPIC_ARCHIVE_MAX",
     "AGENTIC_MAX_ITERATIONS",
+    "RERANKER_ENABLED",
+    "RERANKER_MODEL",
+    "RERANKER_TOP_K",
 ]

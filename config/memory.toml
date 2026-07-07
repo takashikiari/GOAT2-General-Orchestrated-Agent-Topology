@@ -126,5 +126,17 @@ topic_archive_max = 10          # past topic centroids kept per chat (newest-las
 [tool_loop]
 max_iterations = 6
 
+# Cross-encoder reranker — re-scores the merged candidate list after BM25 +
+# semantic hybrid retrieval. Runs on top_k candidates inside the prefetch
+# daemon (1.0s timeout). Disable (enabled = false) if the model is too slow
+# for your hardware or if sentence-transformers is not installed.
+[reranker]
+enabled = true
+# Multilingual MS MARCO cross-encoder (~117 MB); downloaded from HuggingFace
+# on first warmup and cached in ~/.cache/huggingface.
+model = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+# How many candidates to score per turn; balances precision vs. latency.
+top_k = 20
+
 [analytics]
 log_interval = 100

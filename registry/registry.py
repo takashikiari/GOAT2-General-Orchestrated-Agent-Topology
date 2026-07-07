@@ -14,11 +14,13 @@ from openai import AsyncOpenAI
 
 from config import settings
 from memory.analytics import MemoryAnalytics
-from memory.config import SESSION_CACHE_TTL
+from memory.bm25_index import BM25Index
+from memory.config import RERANKER_ENABLED, SESSION_CACHE_TTL
 from memory.episodic import EpisodicMemory
 from memory.gliner_extractor import GLiNERExtractor
 from memory.layers import MemoryLayers
 from memory.permanent import PermanentMemory
+from memory.reranker import CrossEncoderReranker
 from memory.working import WorkingMemory
 from plugins.plugin_manager import PluginManager
 
@@ -35,6 +37,8 @@ class ServiceRegistry:
         self._memory_analytics: MemoryAnalytics | None = None
         self._plugin_manager: PluginManager | None = None
         self._gliner_extractor: GLiNERExtractor | None = None
+        self._bm25_index: BM25Index | None = None
+        self._reranker: CrossEncoderReranker | None = None
 
     @property
     def llm_client(self) -> AsyncOpenAI:
@@ -78,6 +82,22 @@ class ServiceRegistry:
         return self._gliner_extractor
 
     @property
+    def bm25_index(self) -> BM25Index:
+        """Shared BM25Index; index built lazily on first search or explicit warmup."""
+        if self._bm25_index is None:
+            self._bm25_index = BM25Index(self.episodic_memory)
+        return self._bm25_index
+
+    @property
+    def reranker(self) -> CrossEncoderReranker | None:
+        """Shared CrossEncoderReranker; None when reranking is disabled in config."""
+        if not RERANKER_ENABLED:
+            return None
+        if self._reranker is None:
+            self._reranker = CrossEncoderReranker()
+        return self._reranker
+
+    @property
     def memory_layers(self) -> MemoryLayers:
         """Shared MemoryLayers (Backend Mapper), built from the three tiers."""
         if self._memory_layers is None:
@@ -85,6 +105,8 @@ class ServiceRegistry:
                 self.working_memory, self.episodic_memory, self.permanent_memory,
                 cache_ttl=SESSION_CACHE_TTL,
                 extractor=self.gliner_extractor,
+                bm25=self.bm25_index,
+                reranker=self.reranker,
             )
         return self._memory_layers
 

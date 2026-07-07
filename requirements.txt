@@ -23,6 +23,12 @@ mcp>=1.0.0             # mcp_server/server.py (FastMCP)
 # changes its own transitive-dep handling.
 posthog>=3.0.0
 
+# Hybrid retrieval — BM25 lexical index (phase-2 prefetch)
+rank_bm25>=0.2.2
+
+# Cross-encoder reranker — multilingual sentence-transformers model (phase-2 prefetch)
+sentence-transformers>=3.0.0
+
 # Entity enrichment (L3 metadata — entities, memory_type, importance at L2 trim time)
 gliner>=0.2.0          # memory/gliner_extractor.py — zero-shot multilingual NER
                        # Model (urchade/gliner_multi-v2.1, ~200 MB) downloaded from
