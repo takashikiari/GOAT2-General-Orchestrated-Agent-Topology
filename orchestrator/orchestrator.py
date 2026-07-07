@@ -511,15 +511,20 @@ class Orchestrator:
         current_topic_id: str | None = activation.topic_id if activation else None
 
         if state == "drift":
-            # Targeted refresh scoped to current topic; fallback to global if no tagged entries yet.
-            fresh = enforce_result_limit(
-                await layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)
+            # Run topic-scoped and global in parallel: old memories live under
+            # different topic_ids (or none), so global is always needed.
+            scoped_task = asyncio.create_task(
+                layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)
             )
-            if not fresh:
-                fresh = enforce_result_limit(await layers.search_episodic(user_message, limit=limit))
-            merged = merge_results([fresh])[:limit]
+            global_task = asyncio.create_task(
+                layers.search_episodic(user_message, limit=limit)
+            )
+            scoped_raw, global_raw = await asyncio.gather(scoped_task, global_task)
+            scoped = enforce_result_limit(scoped_raw)
+            global_r = enforce_result_limit(global_raw)
+            merged = merge_results([scoped, global_r])[:limit]
             log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
-            meta = {"warm_served": False, "thematic": len(fresh), "temporal": 0, "specific_key": 0}
+            meta = {"warm_served": False, "thematic": len(merged), "temporal": 0, "specific_key": 0}
             return merged, False, None, meta
 
         # cold: full multi-mechanism search.
