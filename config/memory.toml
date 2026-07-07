@@ -71,9 +71,6 @@ timeout = 1.5
 max_results = 20
 recency_window_days = 30
 access_count_ref = 10
-score_similarity_weight = 0.6
-score_recency_weight = 0.3
-score_access_weight = 0.1
 
 # L2.5 brain-activation layer — per-chat thread state that holds the recently
 # activated retrieval steady along a topic thread. Time does NOT reset it

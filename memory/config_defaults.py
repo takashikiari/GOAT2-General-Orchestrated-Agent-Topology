@@ -48,9 +48,6 @@ _DEFAULTS: dict = {
         "max_results": 15,
         "recency_window_days": 30,
         "access_count_ref": 10,
-        "score_similarity_weight": 0.6,
-        "score_recency_weight": 0.3,
-        "score_access_weight": 0.1,
     },
     "analytics": {
         "log_interval": 100,

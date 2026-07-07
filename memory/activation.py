@@ -31,6 +31,7 @@ from memory.config import (
     ACTIVATION_LEXICAL_LOW,
     ACTIVATION_LEXICAL_WINDOW,
     ACTIVATION_TTL_SECONDS,
+    PREFETCH_RECENCY_WINDOW_DAYS,
 )
 from utils.logging.setup import get_logger
 
@@ -246,21 +247,22 @@ def classify_write(content_emb: list[float] | None, centroid: list[float] | None
 
 
 def rescore_recency(merged: list[dict], now: float) -> list[dict]:
-    """Re-score the held results' blended score with the current time.
+    """Re-weight held results by recency relative to the current time.
 
-    The similarity and access terms are time-invariant within a thread; only the
-    recency term changes as ``now`` advances. Re-blending with the current ``now``
-    makes older held results drop in score across a long thread — the "time
-    attenuates, never resets" property — with no separate attenuation code and
-    no search. Reuses ``result_merger._blended`` (same package) so the blend
-    weights stay in one place. Returns a fresh, best-first list.
+    CrossEncoder sigmoid scores (0-1) stored in ``blended_score`` are the
+    primary relevance signal. Recency adjusts the final order: 70% base score
+    + 30% recency fraction over the configured window. A result with high
+    CrossEncoder score but growing age drops gradually — "attenuates, never
+    resets". Returns a fresh, best-first list.
     """
-    from memory.result_merger import _blended
-
+    window = PREFETCH_RECENCY_WINDOW_DAYS * 86400
     out: list[dict] = []
     for r in merged:
         r2 = dict(r)
-        r2["blended_score"] = _blended(r, now)
+        ts = float((r.get("metadata") or {}).get("timestamp", 0) or 0)
+        recency = max(0.0, 1.0 - (now - ts) / window)
+        base = r.get("blended_score", 0.5)
+        r2["blended_score"] = 0.7 * base + 0.3 * recency
         out.append(r2)
     out.sort(key=lambda r: r.get("blended_score", 0.0), reverse=True)
     return out

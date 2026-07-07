@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.6] — 2026-07-07
+
+### Changed
+
+- **`memory/result_merger.py`** — replaced weighted blended-score fusion with **Reciprocal Rank Fusion** (RRF, k=60, Cormack et al. 2009). Each retrieval mechanism (MiniLM-topic, MiniLM-global, BM25, temporal, prediction) contributes `1/(60+rank)` per document; documents appearing in multiple lists accumulate score — rank-based, not absolute-score-based. MiniLM L2 distances and BM25 scores have incompatible distributions; the old 0.6/0.3/0.1 weights were fragile. CrossEncoder remains the final relevance arbiter.
+
+- **`memory/activation.py`** — `rescore_recency` no longer imports `_blended` (removed). New formula: `0.7 * CrossEncoder_score + 0.3 * recency_fraction`. CrossEncoder sigmoid score stored in `blended_score` after prefetch is the dominant signal (70%); recency over the configured window adjusts the order gradually — high-relevance old results drop slowly, not abruptly.
+
+### Removed
+
+- **`memory/result_merger.py`** — `_blended`, `_similarity`, `_recency`, `_access` functions and all `PREFETCH_SCORE_*` imports eliminated.
+- **`memory/config.py`** — `PREFETCH_SCORE_SIMILARITY_WEIGHT`, `PREFETCH_SCORE_RECENCY_WEIGHT`, `PREFETCH_SCORE_ACCESS_WEIGHT` constants removed.
+- **`memory/config_defaults.py`**, **`config/memory.toml`** — `score_similarity_weight`, `score_recency_weight`, `score_access_weight` keys removed from `[prefetch]` section.
+
+---
+
 ## [0.1.5] — 2026-07-07
 
 ### Fixed
