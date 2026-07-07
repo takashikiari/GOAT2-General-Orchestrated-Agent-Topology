@@ -95,3 +95,57 @@ Only these two files were modified.
 None. Both Minors are addressed cleanly. The `turn_persistence.py` change is
 purely cosmetic (module-level vs. function-local import) with no behavioural
 difference; the CHANGELOG entry matches the existing style of the file.
+
+---
+
+# Code Review Fixes — Memory Enrichment Final-Review Minors
+
+## What was implemented
+
+### Fix 1 (Important): `update_metadata` silent-loss on missing doc_id
+File: `memory/episodic/queries.py`
+
+- Added guard in `update_metadata._sync()` (lines 158-160) to detect when 
+  ChromaDB returns empty `ids` list (doc_id does not exist).
+- When no doc found: log at debug level and return early instead of proceeding 
+  with the update. This prevents silent data loss when enrichment is applied to 
+  non-existent entries.
+- Change is minimal and focused: extracts `ids_found = r.get("ids") or []`, 
+  checks `if not ids_found:`, logs the issue, and returns.
+
+### Fix 2 (Minor): Stale docstring on `MemoryLayers.find_by_keys`
+File: `memory/layers.py`
+
+- Updated the docstring (line 210) to reflect that the specific-key mechanism 
+  was removed in Task 6.
+- Old text: "Used by the prefetch daemon's specific-key mechanism"
+- New text: "Not currently used by the prefetch daemon (specific-key mechanism removed in Task 6); retained for potential future use or on-demand key lookups."
+- Docstring now accurately reflects the current state of the code.
+
+## Test results
+
+All 179 tests pass:
+```
+============================= 179 passed in 2.36s ==============================
+```
+
+## Files changed
+
+| File | Lines | Change |
+|---|---|---|
+| `memory/episodic/queries.py` | 166 | +3 (guard for missing doc_id) |
+| `memory/layers.py` | 210 | +1 (docstring update) |
+
+## Commit
+
+- **SHA:** `a778d2a`
+- **Subject:** `Fix silent-loss in update_metadata and update stale docstring`
+- **Test status:** 179 passed in 2.36s
+
+## Verification
+
+- Both fixes applied cleanly without merge conflicts.
+- Full test suite executed: 179/179 tests passing.
+- No regressions introduced.
+- Fixes address the critical silent-data-loss issue in update_metadata and 
+  clarify the deprecated find_by_keys method.

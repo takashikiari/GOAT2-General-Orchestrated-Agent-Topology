@@ -1,56 +1,57 @@
-# Task 6 Report — Invalidate cache from `store_and_promote`
+## Task 6 Report — Registry wires GLiNERExtractor + chat_id-scoped thematic prefetch
 
-## What was implemented
+**Status:** COMPLETE
 
-Added the final production wiring that ties the episodic recall cache to the turn persistence flow:
+**Commit:** `8fa6509`
 
-1. **`supervisor/session/turn_persistence.py`**
-   - Updated `store_and_promote` docstring to add a `Side effects` section listing all five effects, including the new line: "Invalidates the process-local episodic recall cache so the next recall observes the freshest memory state."
-   - Added step 5 (cache invalidation) inside the existing `try` block, between `schedule_promotion(supervisor, turn_count)` and the `except Exception` block. The invalidation uses a nested `try/except Exception` with `log.debug` so cache failures never break turn persistence.
-   - Imports `get_episodic_cache` lazily inside the function (consistent with the surrounding code's import style — `refresh_style` is also imported inline).
+**Test summary:** 179 passed, 0 failed (3 new tests in `tests/test_chat_id_scoped_search.py`)
 
-2. **`tests/test_episodic_cache.py`**
-   - Appended `test_store_and_promote_invalidates_episodic_cache` integration test that pre-populates the cache with a stale value, runs `store_and_promote` against a minimal supervisor stub, and asserts `cache.size == 0`. Uses `monkeypatch.setattr` to stub `schedule_promotion` so the test doesn't need a full `ServiceRegistry`.
+---
 
-## Test results
+### Changes made
 
-```
-$ python3 -m pytest tests/test_episodic_cache.py tests/test_three_layer_memory.py tests/test_action_log.py tests/test_system_prompt_self_report.py -v 2>&1 | tail -25
-============================== 46 passed in 1.12s ==============================
-```
+**`memory/episodic/episodic.py`**
+- Added `chat_id_filter: str | None = None` to `search()` signature
+- Appends `{"chat_id": {"$eq": chat_id_filter}}` to `clauses` when not None
 
-Cache file alone:
+**`memory/layers.py`**
+- `search_episodic()`: added `chat_id_filter=None`, passed through to `self._episodic.search()`
+- `search_episodic_with_cache()`: added `chat_id_filter=None`, passed to `_search_cache_key()` and `self._episodic.search()`
+- `_search_cache_key()`: added `chat_id_filter=None` to signature; included in `key_str = query + (topic_id or "") + (chat_id_filter or "")` so scoped/global searches have distinct cache entries
 
-```
-$ python3 -m pytest tests/test_episodic_cache.py -v 2>&1 | tail -25
-collected 17 items
-...
-tests/test_episodic_cache.py::test_store_and_promote_invalidates_episodic_cache PASSED [100%]
-============================== 17 passed in 1.08s ==============================
-```
+**`orchestrator/orchestrator.py`**
+- Removed `extract_structural_keys` from import (only `extract_temporal_range` kept)
+- Removed `keys = extract_structural_keys(user_message)` line
+- Removed `_specific_key()` coroutine definition
+- Added `_thematic_scoped()` coroutine (always runs on cold path, passes `chat_id_filter=chat_id`)
+- Updated `tasks` list: `[("thematic", _thematic()), ("thematic_scoped", _thematic_scoped())]`
+- Updated mechanism counting: `if name in ("thematic", "topic_return", "thematic_scoped"):` counts as thematic
+- Updated log message: removed `specific_key=%d` from format string
+- Updated `meta` dict: `"specific_key": 0` hardcoded (observability backward-compat)
+- Cleaned up debug log: removed `specific_key=%s keys=%s` fields
 
-All 17 cache tests pass (16 prior + 1 new invalidation test). The new test is the last one listed and passed.
+**`registry/registry.py`**
+- Added `from memory.gliner_extractor import GLiNERExtractor` import (module-level)
+- Added `self._gliner_extractor: GLiNERExtractor | None = None` in `__init__`
+- Added `gliner_extractor` lazy property (returns `GLiNERExtractor()` on first call, stores in `self._gliner_extractor`)
+- Updated `memory_layers` property to pass `extractor=self.gliner_extractor`
 
-## Files changed
+**`requirements.txt`**
+- Added `#   gliner>=0.2.0      # memory/gliner_extractor.py (L3 entity enrichment; ~200MB model download on first use)` as commented optional dependency
 
-- `/home/lenovo/workspace/goat2/supervisor/session/turn_persistence.py` (modified)
-- `/home/lenovo/workspace/goat2/tests/test_episodic_cache.py` (appended)
+**`tests/test_chat_id_scoped_search.py`** (new)
+- `test_search_episodic_passes_chat_id_filter`: verifies `chat_id_filter` propagates to `episodic.search`
+- `test_search_cache_key_differs_with_chat_id_filter`: verifies different `chat_id_filter` values produce distinct cache keys
+- `test_episodic_search_chat_id_filter_adds_clause`: verifies `chat_id_filter` value appears in ChromaDB `where` clause
 
-## Self-review findings
+---
 
-- The cache invalidation is positioned AFTER `_store_turn`, `store_action_log`, `_learn_and_persist`, `refresh_style`, AND `schedule_promotion` — matching the brief which said the new step 5 goes between step 4 and the `except` block.
-- Wrapped in `try/except Exception` with `log.debug` (best-effort) per the brief.
-- New test passes.
-- All 4 test files still pass (no regression). 46 tests total, all green.
-- Did NOT touch any other file besides the two specified in the brief.
-- Commit message is exactly as specified: `feat(turn_persistence): invalidate episodic cache after turn persist`.
+### Concerns
 
-## Concerns
-
-None. The brief's note about the `_mm_with_recall` helper being unused for now is accurate — it remains unused in the test file but harmless (still available for future tests).
-
-## Commit
-
-```
-e66243b feat(turn_persistence): invalidate episodic cache after turn persist
-```
+None. All constraints met:
+- `_thematic_scoped` always runs on cold path (no conditional gate)
+- `_specific_key` and `extract_structural_keys` fully removed (verified with grep)
+- `specific_key: 0` kept in meta for observability compat
+- `chat_id_filter` in `_search_cache_key` digest ensures scoped/global cache isolation
+- `GLiNERExtractor` import at module level in registry.py
+- Full suite: 179/179 passed

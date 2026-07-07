@@ -1,7 +1,7 @@
 """memory.result_merger — merge, dedupe, and score prefetch results.
 
-Collects the results from the three prefetch mechanisms (thematic, temporal,
-specific-key), dedupes by ``message_id``, scores each with a fixed blend, and
+Collects the results from the prefetch mechanisms (thematic, thematic_scoped,
+topic_return), dedupes by ``message_id``, scores each with a fixed blend, and
 sorts best-first. The score is::
 
     similarity * W_sim + recency * W_rec + access_count * W_acc
@@ -72,8 +72,8 @@ def merge_results(groups: list[list[dict]], now: float | None = None) -> list[di
     """Dedupe across ``groups`` by id, score each, sort best-first.
 
     Args:
-        groups: result lists from each mechanism (thematic / temporal /
-            specific-key). Empty lists and missing fields degrade gracefully.
+        groups: result lists from each mechanism. Empty lists and missing
+            fields degrade gracefully.
         now: reference "now" unix ts (defaults to ``time.time()``); injectable
             for deterministic tests.
     Returns:

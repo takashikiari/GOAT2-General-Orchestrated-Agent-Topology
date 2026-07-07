@@ -1,33 +1,33 @@
-# Task 2 Report
+### Task 2 Report: L3 Enrichment Helper + update_metadata
 
-## What I Implemented
-Created `supervisor/session/episodic_cache.py` — a pure-Python, sync `EpisodicRecallCache`
-class with bounded LRU (OrderedDict) + TTL (`time.monotonic()`) eviction, the
-`build_episodic_cache_key` / `normalize_intent` key builder, and the
-`get_episodic_cache` / `set_episodic_cache` singleton accessors. Imports the three
-constants from `config.limits` (Task 1) and re-exports the public API via `__all__`.
+**Status:** DONE
 
-The file is a verbatim transcription of the brief.
+**Commits:** `bb5cec9`
 
-## Verification Command Output
+**Files changed:**
+- `memory/enrichment.py` (54 lines, NEW) — `compute_importance(user_msg, assistant_msg) -> float` heuristic and `async enrich_l3_entry(...)` best-effort enrichment with entities, memory_type, importance.
+- `memory/episodic/queries.py` (+19 lines) — added `async update_metadata(doc_id, updates)` method with write-lock safety.
+- `tests/test_enrichment.py` (61 lines, NEW) — 6 unit tests covering importance scoring, enrichment with/without extractor, exception handling.
+
+**Tests:**
+
 ```
-$ python3 -c "from supervisor.session.episodic_cache import EpisodicRecallCache, build_episodic_cache_key, get_episodic_cache, set_episodic_cache; c = EpisodicRecallCache(max_size=4, ttl_s=1.0); c.put(('a','b',5,0), ['hit']); print(c.get(('a','b',5,0)))"
-['hit']
+6 passed in 0.06s
 ```
-(Note: system only has `python3`, not `python` — used `python3` to run the same
-one-liner verbatim. Output matches expected.)
 
-## Files Changed
-- `supervisor/session/episodic_cache.py` (new, 205 lines)
+All tests green:
+- `test_compute_importance_short` — word count < 20 yields score < 0.1 ✓
+- `test_compute_importance_long` — 120 words yields 1.0 (capped) ✓
+- `test_compute_importance_medium` — mid-range yields 0.0 < score < 1.0 ✓
+- `test_enrich_l3_entry_calls_update_metadata` — enrichment updates include importance, entities, memory_type ✓
+- `test_enrich_l3_entry_no_extractor` — fallback to "conversation" type when extractor=None ✓
+- `test_enrich_l3_entry_handles_exception` — exceptions swallowed (no raise) ✓
 
-## Self-Review Findings
-- [x] Copied verbatim from the brief (full docstring, normalize_intent, build_episodic_cache_key, EpisodicRecallCache, singleton accessors).
-- [x] File-level docstring present (lines 1–42).
-- [x] `__all__` exports `EpisodicRecallCache`, `build_episodic_cache_key`, `get_episodic_cache`, `set_episodic_cache`.
-- [x] Verification command prints `['hit']`.
-- [x] Commit message exact: `feat(episodic_cache): Faza 2 Commit 2 — LRU+TTL cache + singleton`.
-- [x] Touched only `supervisor/session/episodic_cache.py`; no other files modified (the modified `__pycache__/supervisor.cpython-312.pyc` was already dirty before this task and is unrelated).
-- [x] 205 lines, well under the 260 line cap.
-
-## Concerns
-None.
+**Constraints met:**
+- ✓ enrichment.py ≤90 lines (54 lines)
+- ✓ Single responsibility per file
+- ✓ update_metadata holds _write_lock for all ChromaDB writes
+- ✓ enrich_l3_entry swallows all exceptions (best-effort)
+- ✓ TYPE_CHECKING guards for GLiNERExtractor and EpisodicMemory imports
+- ✓ Code style: from __future__ annotations, get_logger(__name__), noqa BLE001
+- ✓ queries.py at 165 lines accepted as mixin (grew organically per brief guidance)

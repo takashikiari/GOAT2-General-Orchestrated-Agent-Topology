@@ -1,80 +1,38 @@
-# Task 5 Report: Thread `turn_number` through `mem_turn` and `run_turn`
+### Task 5 Report: auto_promote enrichment at L2 trim time
 
-## What was implemented
+**Status:** DONE
+**Commit:** f1dcbbe
 
-Wired the `turn_number` parameter from the production call path
-(`supervisor.turn_runner.run_turn`) into `mem_turn`, and from there into
-`fetch_episodic_hits`, so the episodic recall cache bucket is no longer
-forced to 0 in production.
+---
 
-### 1. `supervisor/session/mem_inject.py`
+**What was done:**
 
-- Added kwarg-only `turn_number: int = 0` to `mem_turn`.
-  - `*, turn_number: int = 0` — kwarg-only so existing positional
-    `mem_turn(mm, intent)` callers (the 14 in `test_three_layer_memory.py`)
-    continue to work unchanged.
-  - Default of `0` preserves backward compatibility for any caller that
-    doesn't track history length.
-- Updated the `fetch_episodic_hits` call site to forward the value:
-  `fetch_episodic_hits(mm, intent, _episodic_top_k, turn_number=turn_number)`.
-- Updated the docstring to document the new parameter, the bucket-key
-  semantics, and the backward-compat default.
+1. **Tests written first** (`tests/test_auto_promote_enrichment.py`) — 3 tests covering:
+   - No enrichment when no surplus (under-cap)
+   - Enrichment fires for dropped user+assistant pair with `l3_id`
+   - Old-format messages without `l3_id` are dropped but not enriched
 
-### 2. `supervisor/turn_runner.py`
+2. **`memory/enrichment.py`**: Added `pair_and_enrich_dropped(dropped, episodic, extractor)` — groups dropped messages by `l3_id`, skips messages without it, calls `enrich_l3_entry` per pair. File went from 54 to 82 lines (within 90-line limit).
 
-- Computed `turn_number` BEFORE `add_user(intent, pending=True)`, so
-  the value reflects completed turns (user + assistant pairs already in
-  `_messages`) and not the new pending one. Confirmed via
-  `supervisor/session/history.py::add_user` — `pending=True` only
-  buffers into `_pending` and does NOT touch `_messages`, so reading
-  `len(supervisor._history.messages)` before that call is the right
-  point to capture the completed-turn count.
-- Guarded the read with `if supervisor._history is not None else 0` for
-  defensive parity with the existing `assert supervisor._history is not None`
-  pattern a few lines above (assertion is a no-op under `python -O`).
-- Passed `turn_number=turn_number` to `mem_turn(...)`.
+3. **`memory/auto_promote.py`**: Updated `maybe_auto_promote` and `schedule_auto_promote` to accept optional `episodic=None, extractor=None`. Inside `maybe_auto_promote`, accumulates `all_dropped` during the while loop (under the lock), then after the lock releases fires `asyncio.create_task(pair_and_enrich_dropped(...))` as fire-and-forget. Used local import for `pair_and_enrich_dropped` to avoid circular dependency. File went from 85 to 86 lines (within 90-line limit).
 
-## Test results
+4. **`memory/layers.py`**: `MemoryLayers.__init__` gained `extractor=None` param, stored as `self._extractor`. The `schedule_auto_promote` call in `append_and_save_working_context` now passes `episodic=self._episodic, extractor=self._extractor`.
 
-```
-============================== test session starts ==============================
-platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
-configfile: pytest.ini
-plugins: typeguard-4.5.2, ddtrace-4.10.1, Faker-40.21.0, anyio-4.12.1, asyncio-1.4.0
-asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 45 items
+---
 
-tests/test_episodic_cache.py ........... 16 passed
-tests/test_three_layer_memory.py ......... 16 passed
-tests/test_action_log.py ......... 10 passed
-tests/test_system_prompt_self_report.py ... 3 passed
+**Test results:**
+- `tests/test_auto_promote_enrichment.py` + `tests/test_enrichment.py`: 9/9 passed
+- Full suite: 176/176 passed
 
-============================== 45 passed in 1.09s ==============================
-```
+---
 
-All 45 tests pass, including the 16 cache tests that exercise the
-`turn_number` parameter end-to-end.
+**Line counts:**
+- `memory/auto_promote.py`: 86 lines (90-line limit OK)
+- `memory/enrichment.py`: 82 lines (90-line limit OK)
 
-## Files changed
+---
 
-- `/home/lenovo/workspace/goat2/supervisor/session/mem_inject.py`
-- `/home/lenovo/workspace/goat2/supervisor/turn_runner.py`
+**Concerns / caveats:**
 
-## Self-review findings
-
-- [x] `mem_turn` signature: `async def mem_turn(mm, intent, *, turn_number=0)` — kwarg-only, default 0. Confirmed.
-- [x] `fetch_episodic_hits` call passes `turn_number=turn_number`. Confirmed.
-- [x] `run_turn` computes `turn_number` BEFORE `add_user(pending=True)`, so the value reflects completed turns. Confirmed via `add_user` in `history.py` — pending messages are buffered to `_pending`, not `_messages`, so `len(history.messages)` is stable and equal to the count of completed turns at that point.
-- [x] All 4 test files pass (45/45).
-- [x] Backward compatibility: 14 existing `mem_turn(mm, "intent")` call sites in `tests/test_three_layer_memory.py` still work because `turn_number` is kwarg-only with a default of `0`.
-- [x] Touched only `mem_inject.py` and `turn_runner.py`. Confirmed via `git show --stat HEAD` — 2 files, 23 insertions, 3 deletions.
-
-## Concerns
-
-None. The change is minimal, backward-compatible, and the production
-call path now lands in the correct cache bucket based on the actual
-turn count.
-
-## Commit
-
-`437f086` — feat(mem_inject,turn_runner): thread turn_number for episodic cache key
+- Existing `tests/test_auto_promote.py` calls `maybe_auto_promote("c", w)` positionally without `episodic`/`extractor` kwargs; backward compatibility is maintained, those tests continue to pass.
+- `asyncio.create_task` requires a running event loop at call time. This is always satisfied inside an async context (after `async with working.chat_lock`). In tests, `asyncio.run(maybe_auto_promote(...))` provides the loop, so `create_task` fires and completes within that event loop before `run` exits.

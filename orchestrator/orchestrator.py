@@ -29,7 +29,6 @@ from memory.config import (
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
-from memory.query_classifier import extract_temporal_range
 from memory.result_merger import merge_results
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
@@ -305,7 +304,7 @@ class Orchestrator:
             prefetch_attempted = True
             prefetch_succeeded = False
             prefetch_timeout = False
-            _prefetch_meta: dict = {"warm_served": False, "thematic": 0, "temporal": 0, "specific_key": 0}
+            _prefetch_meta: dict = {"warm_served": False, "thematic": 0, "specific_key": 0}
             try:
                 l3_results, cache_hit, cache_key, _prefetch_meta = await asyncio.wait_for(
                     prefetch_task, timeout=PREFETCH_TIMEOUT,
@@ -325,7 +324,6 @@ class Orchestrator:
             collector.set_prefetch_mechanisms(
                 _prefetch_meta["warm_served"],
                 _prefetch_meta["thematic"],
-                _prefetch_meta["temporal"],
                 _prefetch_meta["specific_key"],
             )
             # Persist / refresh the activation (only on a successful prefetch; a
@@ -499,46 +497,29 @@ class Orchestrator:
             # previous turn instead of re-grounding from a jittering L3 slice.
             merged = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
             log.info("prefetch warm chat=%s served=%d", chat_id, len(merged))
-            meta = {"warm_served": True, "thematic": len(merged), "temporal": 0, "specific_key": 0}
+            meta = {"warm_served": True, "thematic": len(merged), "specific_key": 0}
             return merged, False, None, meta
 
-        after_before = extract_temporal_range(user_message)
-        log.debug(
-            "prefetch classify chat=%s state=%s temporal=%s",
-            chat_id, state, after_before is not None,
-        )
         limit = PREFETCH_MAX_RESULTS
         current_topic_id: str | None = activation.topic_id if activation else None
 
         if state == "drift":
             # Run topic-scoped and global in parallel: old memories live under
             # different topic_ids (or none), so global is always needed.
-            # Also add temporal if the query contains a date reference.
-            after_before = extract_temporal_range(user_message)
-            drift_tasks: list = [
-                ("scoped", layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id)),
-                ("global", layers.search_episodic(user_message, limit=limit)),
-            ]
-            if after_before is not None:
-                after, before = after_before
-                drift_tasks.append(("temporal", layers.search_episodic(
-                    user_message, limit=limit, after=after, before=before,
-                )))
-            drift_names = [n for n, _ in drift_tasks]
-            drift_parts = await asyncio.gather(*[c for _, c in drift_tasks], return_exceptions=True)
+            scoped_raw, global_raw = await asyncio.gather(
+                layers.search_episodic(user_message, limit=limit, topic_id=current_topic_id),
+                layers.search_episodic(user_message, limit=limit),
+                return_exceptions=True,
+            )
             groups: list[list[dict]] = []
-            temporal_count = 0
-            for name, part in zip(drift_names, drift_parts):
+            for part in (scoped_raw, global_raw):
                 if isinstance(part, BaseException):
-                    log.warning("prefetch drift mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
-                    continue
-                results = enforce_result_limit(part)
-                if name == "temporal":
-                    temporal_count = len(results)
-                groups.append(results)
+                    log.warning("prefetch drift mechanism raised chat=%s: %s", chat_id, part)
+                else:
+                    groups.append(enforce_result_limit(part))
             merged = merge_results(groups)[:limit]
-            log.info("prefetch drift chat=%s merged=%d topic=%s temporal=%d", chat_id, len(merged), current_topic_id, temporal_count)
-            meta = {"warm_served": False, "thematic": len(merged) - temporal_count, "temporal": temporal_count, "specific_key": 0}
+            log.info("prefetch drift chat=%s merged=%d topic=%s", chat_id, len(merged), current_topic_id)
+            meta = {"warm_served": False, "thematic": len(merged), "specific_key": 0}
             return merged, False, None, meta
 
         # cold: full multi-mechanism search.
@@ -554,13 +535,6 @@ class Orchestrator:
             )
             return {"results": results, "cache_hit": hit, "cache_key": key}
 
-        async def _temporal(rng: tuple[float, float]) -> dict:
-            after, before = rng
-            results = await layers.search_episodic(
-                user_message, limit=limit, after=after, before=before,
-            )
-            return {"results": results, "cache_hit": False, "cache_key": None}
-
         async def _topic_filtered(tid: str) -> dict:
             results = await layers.search_episodic(user_message, limit=limit, topic_id=tid)
             return {"results": results, "cache_hit": False, "cache_key": None}
@@ -572,8 +546,6 @@ class Orchestrator:
         tasks: list = [("thematic", _thematic()), ("thematic_scoped", _thematic_scoped())]
         if topic_return_id:
             tasks.append(("topic_return", _topic_filtered(topic_return_id)))
-        if after_before is not None:
-            tasks.append(("temporal", _temporal(after_before)))
         names = [name for name, _ in tasks]
         parts = await asyncio.gather(
             *[coro for _, coro in tasks], return_exceptions=True,
@@ -582,28 +554,19 @@ class Orchestrator:
         groups: list[list[dict]] = []
         cache_hit = False
         cache_key: str | None = None
-        thematic_count = temporal_count = 0
         for name, part in zip(names, parts):
             if isinstance(part, BaseException):
                 log.warning("prefetch mechanism raised chat=%s mechanism=%s: %s", chat_id, name, part)
                 continue
-            count = len(part["results"])
-            if name in ("thematic", "topic_return", "thematic_scoped"):
-                thematic_count += count
-            elif name == "temporal":
-                temporal_count = count
             groups.append(part["results"])
             if part.get("cache_key") is not None:
                 cache_hit = part["cache_hit"]
                 cache_key = part["cache_key"]
 
         merged = merge_results(groups)[:limit]
-        # Recount thematic from post-merge slice: global + scoped overlap heavily,
-        # so pre-merge sum double-counts. All non-temporal results are thematic.
-        thematic_count = len(merged) - temporal_count
         log.info(
-            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d thematic=%d temporal=%d",
-            chat_id, len(parts), len(merged), thematic_count, temporal_count,
+            "prefetch merge chat=%s state=cold mechanisms=%d merged=%d",
+            chat_id, len(parts), len(merged),
         )
         ids = [
             r.get("metadata", {}).get("message_id")
@@ -614,9 +577,8 @@ class Orchestrator:
             asyncio.create_task(layers.bump_access(chat_id, ids))
         meta = {
             "warm_served": False,
-            "thematic": thematic_count,
-            "temporal": temporal_count,
-            "specific_key": 0,  # removed mechanism; kept key for observability compat
+            "thematic": len(merged),
+            "specific_key": 0,
         }
         return merged, cache_hit, cache_key, meta
 

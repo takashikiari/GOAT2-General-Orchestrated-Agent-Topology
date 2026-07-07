@@ -1,8 +1,22 @@
-Task 1: complete (commits fc88ce0..bc3f95e, review clean, approved)
-Task 2: complete (commits bc3f95e..4c7cf58, review clean, approved)
-Task 3: complete (commits 4c7cf58..2c67967, review clean, approved). Minor: side_effect helper param unused (used in Task 6).
-Task 4: complete (commits 2c67967..c76272a, review clean, approved). Fixture added to test_three_layer_memory.py for singleton isolation (controller-approved scope expansion).
-Task 5: complete (commits c76272a..437f086, review clean, approved)
-Task 6: complete (commits 437f086..e66243b, review clean, approved). Minor for final review: turn_persistence.py is 397 lines, violates 260-line cap (pre-existing).
+# Memory Enrichment + Chat-Scoped Prefetch — SDD Progress
 
-Final state: 8 commits on main (fc88ce0..57959fd), 9 files, 637 insertions. 54/54 tests pass across affected files. Branch ready.
+Plan: docs/superpowers/plans/2026-07-06-memory-enrichment.md
+Base commit: ead4f5c
+
+## Tasks
+
+- [x] Task 1: GLiNER extractor module (commits ead4f5c..a4c6067, review clean)
+- [x] Task 2: L3 enrichment helper + update_metadata (commits a4c6067..bb5cec9, review clean)
+- [x] Task 3: doc_id chain — store() returns doc_id (commits bb5cec9..1a5276e, review clean; minor: unused `patch` import in test, unconventional `__import__("uuid")` in fakes)
+- [x] Task 4: Orchestrator pre-generates doc_id, stores l3_id in L2 (commits 1a5276e..1e1c003, review clean)
+- [x] Task 5: auto_promote enrichment at L2 trim time (commits 1e1c003..f1dcbbe, review clean; minor: unused `patch` import in test)
+- [x] Task 6: Registry + chat_id-scoped thematic prefetch (commits f1dcbbe..8fa6509, review clean; minor: thematic_count double-counts pre-dedup, pre-existing cache-key concat ambiguity, test fixture no cache_ttl)
+
+## Final Review (whole-branch)
+
+- Base: ead4f5c, Head: 8fa6509
+- 1 Important issue: update_metadata silent-loss on missing doc_id → fixed in a778d2a
+- 2 Minor (docstring stale + orphaned find_by_keys note) → fixed in a778d2a
+- 2 Minor known from per-task (unused patch imports, __import__ idiom) → carried forward, no functional impact
+- Re-review: Approved
+- Final HEAD: a778d2a

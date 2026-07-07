@@ -86,7 +86,6 @@ class MemoryObservation:
     prefetch_blocks_used: int = 0       # how many actually fit the budget
     warm_served: bool = False           # True when results came from activation (no search ran)
     prefetch_thematic_count: int = 0    # results from thematic (cached) mechanism
-    prefetch_temporal_count: int = 0    # results from temporal mechanism (0 if not run)
     prefetch_specific_key_count: int = 0  # results from specific_key mechanism (0 if not run)
 
     # L2.5 activation (brain thread state) — how the turn related to the

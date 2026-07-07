@@ -1,86 +1,62 @@
-### Task 4: Wire `fetch_episodic_hits` to consult the cache
+### Task 4: Orchestrator pre-generates doc_id, stores l3_id in L2 messages
 
 **Files:**
-- Modify: `supervisor/session/memory_helpers.py:160-186`
+- Modify: `orchestrator/orchestrator.py` — `run()` method, around lines 420-433 (archive_task creation) and lines 422-426 (L2 message save)
 
-- [ ] **Step 1: Update the signature to take `turn_number` and consult the cache**
+**Interfaces:**
+- Consumes: `_archive_turn(layers, chat_id, intent, reply, topic_id, doc_id)` from Task 3
+- Consumes: `layers.append_and_save_working_context(chat_id, user_msg, assistant_msg)` — existing
 
-In `supervisor/session/memory_helpers.py`, replace the `fetch_episodic_hits` function (lines 160-186) with:
+- [ ] **Step 1: Locate exact run() lines**
+
+Read `orchestrator/orchestrator.py` lines 237-260 to find where `run()` starts, then 419-433 for the save section.
+
+- [ ] **Step 2: Modify orchestrator.py — pre-generate doc_id before L2 save**
+
+In the `run()` method, replace lines 419-433 (the save section) with:
 
 ```python
-async def fetch_episodic_hits(
-    mm: "MemoryManager",
-    query: str,
-    top_k: int = _EPISODIC_DEFAULT_TOP_K,
-    *,
-    timeout_s: float = _EPISODIC_TIMEOUT_S,
-    turn_number: int = 0,
-) -> list:
-    """Fetch episodic recall hits with a hard timeout and LRU+TTL cache.
-
-    Cache key = ``build_episodic_cache_key(query, SESSION_ROLE, top_k,
-    turn_number)``. On a hit, returns the cached value without
-    issuing a recall call. On miss (or cache error), issues the
-    recall and stores the result.
-
-    The cache is a process-local singleton; tests inject a fresh
-    cache via ``set_episodic_cache``.
-
-    On any failure (timeout, exception, missing method), returns
-    ``[]`` — the [Present-Past] layer renders without episodic
-    hits but the rest of the structure is preserved.
-    """
-    # 1. Cache lookup (best-effort).
-    from config.roles import SESSION_ROLE  # local: avoid circular at import
-    from supervisor.session.episodic_cache import (
-        build_episodic_cache_key,
-        get_episodic_cache,
-    )
-    cache = get_episodic_cache()
-    key = build_episodic_cache_key(query, SESSION_ROLE, top_k, turn_number)
-    cached = cache.get(key)
-    if cached is not None:
-        return list(cached)
-
-    # 2. Cache miss → real recall with timeout.
-    try:
-        hits = await asyncio.wait_for(
-            mm.recall(SESSION_ROLE, query, limit=top_k),
-            timeout=timeout_s,
-        )
-        result = list(hits or [])
-    except asyncio.TimeoutError:
-        log.warning(
-            "fetch_episodic_hits: timed out after %.1fs", timeout_s,
-        )
-        return []
-    except Exception as exc:  # noqa: BLE001
-        log.debug("fetch_episodic_hits failed: %s", exc)
-        return []
-
-    # 3. Store in cache (best-effort). Note: an empty list IS a
-    #    valid cache value (the query genuinely returned nothing)
-    #    — caching it avoids hammering ChromaDB on the same empty
-    #    query inside the TTL window.
-    cache.put(key, result)
-    return result
+            collector.start_stage("save")
+            saved_reply = f"[Tool calls]\n{tool_summary}\n\n{reply}" if tool_summary else reply
+            now = time.time()
+            l3_doc_id = str(uuid.uuid4())
+            await layers.append_and_save_working_context(
+                chat_id,
+                {"role": "user", "content": intent, "timestamp": now, "l3_id": l3_doc_id},
+                {"role": "assistant", "content": saved_reply, "timestamp": now, "l3_id": l3_doc_id},
+            )
+            archive_task = asyncio.create_task(
+                _archive_turn(
+                    layers, chat_id, intent, saved_reply,
+                    topic_id=current_activation.topic_id if current_activation else "",
+                    doc_id=l3_doc_id,
+                ))
+            self._pending_archives.add(archive_task)
+            archive_task.add_done_callback(self._pending_archives.discard)
+            collector.end_stage("save")
 ```
 
-- [ ] **Step 2: Run the cache tests**
+(`uuid` is already imported at the top of orchestrator.py.)
 
-Run: `pytest tests/test_episodic_cache.py -v 2>&1 | tail -25`
-Expected: ALL 16 tests pass.
-
-- [ ] **Step 3: Run the three-layer memory tests to confirm no regression**
-
-Run: `pytest tests/test_three_layer_memory.py -v 2>&1 | tail -30`
-Expected: ALL pass. The existing `mem_turn` tests still work because `turn_number` is optional (`int = 0`).
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Verify import of uuid exists**
 
 ```bash
-git add supervisor/session/memory_helpers.py
-git commit -m "feat(memory_helpers): wire episodic recall cache into fetch_episodic_hits"
+grep -n "^import uuid" /home/lenovo/workspace/goat2/orchestrator/orchestrator.py
+```
+Expected: line 7 or similar — `import uuid`. If absent, add it to the imports block.
+
+- [ ] **Step 4: Run existing tests to verify no regressions**
+
+```bash
+cd /home/lenovo/workspace/goat2 && python -m pytest tests/ -v -x 2>&1 | tail -20
+```
+Expected: All previously passing tests still PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add orchestrator/orchestrator.py
+git commit -m "feat: pre-generate l3_doc_id per turn, store as l3_id in L2 messages"
 ```
 
 ---

@@ -68,7 +68,6 @@ class MemoryAnalytics:
         # L2.5 prefetch mechanism breakdown
         self.warm_served_turns = 0
         self.total_prefetch_thematic = 0
-        self.total_prefetch_temporal = 0
         self.total_prefetch_specific_key = 0
 
     def record(self, obs: MemoryObservation) -> None:
@@ -125,7 +124,6 @@ class MemoryAnalytics:
         if obs.warm_served:
             self.warm_served_turns += 1
         self.total_prefetch_thematic += obs.prefetch_thematic_count
-        self.total_prefetch_temporal += obs.prefetch_temporal_count
         self.total_prefetch_specific_key += obs.prefetch_specific_key_count
 
     def get_report(self) -> dict:
@@ -169,7 +167,6 @@ class MemoryAnalytics:
             "enriching_refreshes": self.enriching_refreshes,
             "warm_served_rate": self.warm_served_turns / n,
             "avg_prefetch_thematic": self.total_prefetch_thematic / n,
-            "avg_prefetch_temporal": self.total_prefetch_temporal / n,
             "avg_prefetch_specific_key": self.total_prefetch_specific_key / n,
         }
 

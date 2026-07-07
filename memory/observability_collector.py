@@ -105,12 +105,11 @@ class ObservationCollector:
 
     def set_prefetch_mechanisms(
         self, warm_served: bool,
-        thematic: int, temporal: int, specific_key: int,
+        thematic: int, specific_key: int,
     ) -> None:
         """Set warm-served flag and per-mechanism result counts."""
         self.obs.warm_served = warm_served
         self.obs.prefetch_thematic_count = thematic
-        self.obs.prefetch_temporal_count = temporal
         self.obs.prefetch_specific_key_count = specific_key
 
     def set_llm_usage(self, prompt: int, completion: int, total: int, calls: int) -> None:

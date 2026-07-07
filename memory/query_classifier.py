@@ -1,28 +1,21 @@
-"""memory.query_classifier — 3-mechanism query classification for the prefetch daemon.
+"""memory.query_classifier — query classification for the prefetch daemon.
 
-Three independent mechanisms evaluate every query; none gates whether prefetch
+Two independent mechanisms evaluate every query; neither gates whether prefetch
 runs at all (the daemon always runs, timeout is the only blocker):
 
-  1. Temporal  — grammatical date-range extraction (``memory.temporal_parser``),
-                 not a word list. Score 1.0 only when a completed-past range is
-                 found, else 0.
-  2. Thematic  — always 1.0; pure semantic ChromaDB search, no gate.
-  3. Specific-key — structural-form regex only (UUID, agent-{uuid}, word+number,
+  1. Thematic  — always 1.0; pure semantic ChromaDB search, no gate.
+  2. Specific-key — structural-form regex only (UUID, agent-{uuid}, word+number,
                  turn_/goat: keys). No regex on natural language. Score 1.0 when
                  at least one structural key is present, else 0.
 
-``classify_query`` returns the three scores; ``extract_structural_keys`` returns
-the matched keys the specific-key mechanism retrieves by. ``extract_temporal_range``
-is re-exported from ``temporal_parser`` so the daemon fetches the range in one
-place.
+``classify_query`` returns the two scores; ``extract_structural_keys`` returns
+the matched keys the specific-key mechanism retrieves by.
 """
 from __future__ import annotations
 
 import re
 
-from memory.temporal_parser import extract_temporal_range
-
-__all__ = ["classify_query", "extract_structural_keys", "extract_temporal_range"]
+__all__ = ["classify_query", "extract_structural_keys"]
 
 # --- Structural-form regexes (NOT natural language) -------------------------
 # Full UUID: 8-4-4-4-12 hex.
@@ -53,13 +46,11 @@ def extract_structural_keys(query: str) -> list[str]:
 
 
 def classify_query(query: str) -> dict[str, float]:
-    """Score the three prefetch mechanisms for ``query``; each in [0, 1].
+    """Score the two prefetch mechanisms for ``query``; each in [0, 1].
 
-    Returns ``{"temporal", "thematic", "specific_key"}``. Temporal is 1.0 only
-    when a completed-past range is parsed; thematic is always 1.0; specific_key
-    is 1.0 when at least one structural key is present. No confidence gate —
-    the daemon runs all mechanisms whose score is > 0 regardless of the others.
+    Returns ``{"thematic", "specific_key"}``. Thematic is always 1.0;
+    specific_key is 1.0 when at least one structural key is present.
+    No confidence gate — the daemon runs all mechanisms whose score is > 0.
     """
-    temporal = 1.0 if extract_temporal_range(query) is not None else 0.0
     specific_key = 1.0 if extract_structural_keys(query) else 0.0
-    return {"temporal": temporal, "thematic": 1.0, "specific_key": specific_key}
+    return {"thematic": 1.0, "specific_key": specific_key}

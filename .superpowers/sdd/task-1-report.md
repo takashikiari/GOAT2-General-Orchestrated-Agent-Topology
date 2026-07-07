@@ -1,69 +1,52 @@
-# Task 1 Report: Episodic recall cache tunables
+### Task 1 Report: GLiNER Extractor Module
 
-## What I implemented
+**Status:** DONE
 
-Added three `Final`-typed constants to `/home/lenovo/workspace/goat2/config/limits.py` and extended the `__all__` list.
+---
 
-**1. `__all__` extension** (inside the existing Faza 2 comment block, right after `"DEFAULT_EPISODIC_TOP_K"`):
+**Commits:**
+- `a4c6067` feat: add GLiNERExtractor for L3 entity enrichment (lazy model load)
 
-```python
-# Faza 2 Commit 2: episodic recall cache tunables.
-"EPISODIC_CACHE_MAX_SIZE",
-"EPISODIC_CACHE_TTL_S",
-"EPISODIC_CACHE_TURN_BUCKET",
-```
+---
 
-**2. Constant definitions** (placed immediately after `DEFAULT_EPISODIC_TOP_K`, keeping the Faza 2 family together):
+**Files Created:**
 
-```python
-# Faza 2 Commit 2: episodic recall cache tunables.
-EPISODIC_CACHE_MAX_SIZE: Final[int] = 256
-"""LRU cap for the episodic recall cache (entries)."""
+1. `memory/gliner_extractor.py` (54 lines)
+   - `GLiNERExtractor` class with lazy model loading in `_get_model()`
+   - `async def extract(text: str) -> dict` returns `{"entities", "entity_types", "memory_type"}`
+   - Graceful fallback to `"conversation"` on any exception
+   - `_infer_type()` heuristic: greeting (no entities + <6 words), fact (credentials or entities), conversation (default)
 
-EPISODIC_CACHE_TTL_S: Final[float] = 60.0
-"""Per-entry TTL for cached episodic recall results (seconds)."""
+2. `tests/test_gliner_extractor.py` (47 lines)
+   - 6 unit tests covering heuristic logic, exception handling, and mock model extraction
 
-EPISODIC_CACHE_TURN_BUCKET: Final[int] = 5
-"""Refresh the cache bucket every N turns — bounds staleness without a per-query clock."""
-```
+---
 
-Each constant uses `Final` typing as required and includes a docstring explaining its purpose — consistent with the style of neighbouring constants in the Faza 2 block and the project's magic-numbers policy.
+**Tests:**
 
-## Verification command output
+Command: `python3 -m pytest tests/test_gliner_extractor.py -v`
 
 ```
-$ python3 -c "from config.limits import EPISODIC_CACHE_MAX_SIZE, EPISODIC_CACHE_TTL_S, EPISODIC_CACHE_TURN_BUCKET; print(EPISODIC_CACHE_MAX_SIZE, EPISODIC_CACHE_TTL_S, EPISODIC_CACHE_TURN_BUCKET)"
-256 60.0 5
+============================= test session starts ==============================
+collected 6 items
+
+tests/test_gliner_extractor.py::test_infer_type_greeting_no_entities_short PASSED [ 16%]
+tests/test_gliner_extractor.py::test_infer_type_fact_with_credential PASSED [ 33%]
+tests/test_gliner_extractor.py::test_infer_type_fact_with_entities PASSED [ 50%]
+tests/test_gliner_extractor.py::test_infer_type_conversation_no_entities_long PASSED [ 66%]
+tests/test_gliner_extractor.py::test_extract_returns_fallback_on_exception PASSED [ 83%]
+tests/test_gliner_extractor.py::test_extract_with_mock_model PASSED      [100%]
+
+============================== 6 passed in 0.07s ===============================
 ```
 
-Expected `256 60.0 5` — matches.
+---
 
-(Note: the brief used `python`, but the host shell only exposes `python3`. Used the available interpreter; semantics are identical.)
+**Compliance:**
+- Max 90 lines per file: 54 + 47 ✓
+- Single responsibility ✓
+- GLiNER lazily imported inside `_get_model()`, never at module level ✓
+- Code style: `from __future__ import annotations`, `get_logger(__name__)` ✓
+- No global gliner imports ✓
 
-## Files changed
-
-- `/home/lenovo/workspace/goat2/config/limits.py` — 14 insertions, 0 deletions.
-
-```bash
-$ git show --stat HEAD
-commit bc3f95ec5c95011aca4008456c0726ec6da8401b
-    feat(config): Faza 2 Commit 2 — episodic recall cache tunables
- config/limits.py | 14 ++++++++++++++
- 1 file changed, 14 insertions(+)
-```
-
-No other files touched.
-
-## Self-review findings
-
-- [x] Added the three constants exactly with `Final` typing (`Final[int]`, `Final[float]`, `Final[int]`).
-- [x] Extended `__all__` inside the existing Faza 2 group, immediately after `"DEFAULT_EPISODIC_TOP_K"`.
-- [x] Verification command printed `256 60.0 5` (the brief's expected output).
-- [x] Commit message is `feat(config): Faza 2 Commit 2 — episodic recall cache tunables` — exact match.
-- [x] Only `config/limits.py` changed; no other file or section was touched.
-
-All self-review checks pass. No issues found.
-
-## Concerns
-
-None. The implementation is a clean transcription of the brief with the values exactly as specified.
+**Concerns:** None. All tests pass.

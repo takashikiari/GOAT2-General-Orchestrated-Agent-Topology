@@ -1,242 +1,178 @@
-### Task 3: Write the failing test suite
+### Task 3: doc_id chain — store() returns doc_id, store_episodic() returns doc_id, _archive_turn() accepts doc_id
 
 **Files:**
-- Create: `tests/test_episodic_cache.py`
+- Modify: `memory/episodic/episodic.py:55-75` — `store()` signature + return value
+- Modify: `memory/layers.py:168-195` — `store_episodic()` signature + return value
+- Modify: `orchestrator/orchestrator.py:148-159` — `_archive_turn()` signature
+- Test: `tests/test_doc_id_chain.py`
 
-This task writes all 12 tests BEFORE any cache wiring happens. The cache class already exists (Task 2), so these tests will run against the class directly. They will all pass — but the file also contains a single integration test that asserts `fetch_episodic_hits` consults the cache. That integration test will FAIL until Task 4 wires it up.
+**Interfaces:**
+- Consumes: `EpisodicMemory.store()` (modified)
+- Produces: `EpisodicMemory.store(chat_id, content, metadata, doc_id=None) -> str`
+- Produces: `MemoryLayers.store_episodic(chat_id, content, tags=None, topic_id="", doc_id=None) -> str`
+- Produces: `_archive_turn(layers, chat_id, intent, reply, topic_id="", doc_id=None) -> None`
 
-- [ ] **Step 1: Create the test file**
-
-Create `tests/test_episodic_cache.py`:
+- [ ] **Step 1: Write the failing tests**
 
 ```python
-"""Tests for Faza 2 Commit 2 — episodic recall cache.
-
-Two test layers:
-
-  1. Unit tests for ``EpisodicRecallCache`` (LRU + TTL + invalidation).
-  2. Integration tests asserting that ``fetch_episodic_hits`` consults
-     the cache before issuing ``mm.recall`` and that
-     ``store_and_promote`` invalidates the cache after persisting.
-
-All tests use the ``set_episodic_cache`` injector so they don't
-share state across test functions.
-"""
+"""tests.test_doc_id_chain — store() returns doc_id, accepts pre-generated doc_id."""
 from __future__ import annotations
-
 import asyncio
-import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
-from supervisor.session.episodic_cache import (
-    EpisodicRecallCache,
-    build_episodic_cache_key,
-    get_episodic_cache,
-    set_episodic_cache,
-)
+import uuid
+from unittest.mock import MagicMock, patch, AsyncMock
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+def test_store_returns_string():
+    """EpisodicMemory.store() must return a str doc_id."""
+    from memory.episodic.episodic import EpisodicMemory
+    ep = EpisodicMemory()
+    mock_col = MagicMock()
+    mock_col.count.return_value = 0
+    ep._collection = mock_col
+    result = asyncio.run(ep.store("chat1", "content", {"timestamp": 0.0}))
+    assert isinstance(result, str)
+    assert len(result) == 36  # UUID format
 
 
-def asyncio_run(coro):
-    """Run a coroutine in a fresh loop (pytest-asyncio mode is 'auto')."""
-    return asyncio.run(coro)
+def test_store_uses_provided_doc_id():
+    """EpisodicMemory.store() uses pre-generated doc_id when provided."""
+    from memory.episodic.episodic import EpisodicMemory
+    ep = EpisodicMemory()
+    mock_col = MagicMock()
+    mock_col.count.return_value = 0
+    ep._collection = mock_col
+    pre_id = str(uuid.uuid4())
+    result = asyncio.run(ep.store("chat1", "content", {"timestamp": 0.0}, doc_id=pre_id))
+    assert result == pre_id
+    # Verify col.add was called with our pre_id
+    call_kwargs = mock_col.add.call_args
+    assert call_kwargs[1]["ids"] == [pre_id] or call_kwargs[0][0] == [pre_id] or pre_id in str(mock_col.add.call_args)
 
 
-def _episodic_hit(content: str) -> SimpleNamespace:
-    return SimpleNamespace(content=content)
-
-
-def _mm_with_recall(hits: list | None = None, *, side_effect=None) -> MagicMock:
-    """Mock MemoryManager that responds to ``recall(role, q, limit=...)``."""
-    mm = MagicMock()
-    if side_effect is not None:
-        mm.recall = AsyncMock(side_effect=side_effect)
-    else:
-        mm.recall = AsyncMock(return_value=list(hits or []))
-    return mm
-
-
-@pytest.fixture(autouse=True)
-def _fresh_cache():
-    """Inject a brand-new cache for every test."""
-    set_episodic_cache(EpisodicRecallCache(max_size=4, ttl_s=0.5))
-    yield
-    set_episodic_cache(None)
-
-
-# ── Unit: key builder ─────────────────────────────────────────────────────
-
-
-def test_build_key_normalizes_intent_case_and_whitespace():
-    """intent is .strip().lower()-ed before becoming part of the key."""
-    a = build_episodic_cache_key("  Hello WORLD  ", "goat", 5, 10)
-    b = build_episodic_cache_key("hello world", "goat", 5, 10)
-    assert a == b
-
-
-def test_build_key_includes_role_limit_and_turn_bucket():
-    """Different (role, limit, turn_bucket) produce different keys."""
-    base = build_episodic_cache_key("intent", "goat", 5, 10)
-    assert base != build_episodic_cache_key("intent", "user", 5, 10)
-    assert base != build_episodic_cache_key("intent", "goat", 7, 10)
-    # turn_bucket = turn // 5; turn=10 → bucket 2, turn=12 → bucket 2 (same).
-    assert base == build_episodic_cache_key("intent", "goat", 5, 12)
-    # turn=15 → bucket 3 (different).
-    assert base != build_episodic_cache_key("intent", "goat", 5, 15)
-
-
-def test_build_key_clamps_negative_turn_number_to_bucket_zero():
-    """Negative turn numbers map to bucket 0 (no crash)."""
-    k = build_episodic_cache_key("i", "goat", 5, -7)
-    assert k == ("i", "goat", 5, 0)
-
-
-def test_build_key_empty_intent_yields_empty_string():
-    """An empty intent (after strip+lower) becomes the literal ''."""
-    k = build_episodic_cache_key("", "goat", 5, 10)
-    assert k == ("", "goat", 5, 2)
-
-
-# ── Unit: cache behaviour ─────────────────────────────────────────────────
-
-
-def test_cache_miss_returns_none_and_increments_counter():
-    cache = EpisodicRecallCache(max_size=4, ttl_s=1.0)
-    assert cache.get(("a",)) is None
-    assert cache.misses == 1
-    assert cache.hits == 0
-
-
-def test_cache_put_then_get_returns_value_and_bumps_hit():
-    cache = EpisodicRecallCache(max_size=4, ttl_s=1.0)
-    cache.put(("a",), ["x"])
-    assert cache.get(("a",)) == ["x"]
-    assert cache.hits == 1
-    assert cache.misses == 0
-
-
-def test_cache_ttl_expiry_evicts_entry():
-    cache = EpisodicRecallCache(max_size=4, ttl_s=0.05)
-    cache.put(("a",), ["x"])
-    time.sleep(0.06)
-    assert cache.get(("a",)) is None
-    assert cache.evictions_ttl == 1
-
-
-def test_cache_lru_evicts_oldest_when_full():
-    """Insertion past max_size evicts the LRU entry (FIFO of OrderedDict)."""
-    cache = EpisodicRecallCache(max_size=2, ttl_s=10.0)
-    cache.put(("a",), 1)
-    cache.put(("b",), 2)
-    cache.put(("c",), 3)  # overflows → "a" evicted
-    assert cache.get(("a",)) is None
-    assert cache.evictions_lru == 1
-    assert cache.get(("b",)) == 2
-    assert cache.get(("c",)) == 3
-
-
-def test_cache_lru_bump_on_hit_protects_entry_from_eviction():
-    """A hit moves the entry to MRU so it's not the next eviction victim."""
-    cache = EpisodicRecallCache(max_size=2, ttl_s=10.0)
-    cache.put(("a",), 1)
-    cache.put(("b",), 2)
-    assert cache.get(("a",)) == 1  # bumps "a" to MRU
-    cache.put(("c",), 3)           # overflows → "b" is now LRU → evicted
-    assert cache.get(("a",)) == 1
-    assert cache.get(("b",)) is None
-
-
-def test_cache_invalidate_drops_everything():
-    cache = EpisodicRecallCache(max_size=4, ttl_s=10.0)
-    cache.put(("a",), 1)
-    cache.put(("b",), 2)
-    cache.invalidate()
-    assert cache.size == 0
-    assert cache.get(("a",)) is None
-
-
-def test_cache_constructor_rejects_zero_or_negative_size():
-    with pytest.raises(ValueError):
-        EpisodicRecallCache(max_size=0, ttl_s=1.0)
-    with pytest.raises(ValueError):
-        EpisodicRecallCache(max_size=4, ttl_s=0.0)
-
-
-def test_singleton_setter_swaps_instance():
-    set_episodic_cache(EpisodicRecallCache(max_size=8, ttl_s=2.0))
-    a = get_episodic_cache()
-    set_episodic_cache(EpisodicRecallCache(max_size=8, ttl_s=2.0))
-    b = get_episodic_cache()
-    assert a is not b  # replaced
-
-
-# ── Integration: fetch_episodic_hits uses the cache ───────────────────────
-
-
-def test_fetch_episodic_hits_uses_cache_on_second_call():
-    """A second call with the same (intent, limit) must NOT re-invoke
-    ``mm.recall`` — the cache must serve the first result."""
-    from supervisor.session.memory_helpers import fetch_episodic_hits
-
-    mm = _mm_with_recall([_episodic_hit("cached")])
-
-    h1 = asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))
-    h2 = asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))
-
-    # Both calls return the same content.
-    assert [h.content for h in h1] == ["cached"]
-    assert [h.content for h in h2] == ["cached"]
-    # But mm.recall was only invoked once.
-    assert mm.recall.await_count == 1
-
-
-def test_fetch_episodic_hits_bypasses_cache_on_different_intent():
-    """A different intent must produce a fresh recall call (no false hit)."""
-    from supervisor.session.memory_helpers import fetch_episodic_hits
-
-    mm = _mm_with_recall([_episodic_hit("x")])
-    asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))
-    asyncio_run(fetch_episodic_hits(mm, "world", 5, turn_number=10))
-    assert mm.recall.await_count == 2
-
-
-def test_fetch_episodic_hits_bypasses_cache_on_different_limit():
-    """Different `limit` → different key → fresh recall."""
-    from supervisor.session.memory_helpers import fetch_episodic_hits
-
-    mm = _mm_with_recall([_episodic_hit("x")])
-    asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))
-    asyncio_run(fetch_episodic_hits(mm, "hello", 7, turn_number=10))
-    assert mm.recall.await_count == 2
-
-
-def test_fetch_episodic_hits_bypasses_cache_on_different_turn_bucket():
-    """turn_number // 5 shifts the bucket — different bucket → fresh recall."""
-    from supervisor.session.memory_helpers import fetch_episodic_hits
-
-    mm = _mm_with_recall([_episodic_hit("x")])
-    asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=10))  # bucket 2
-    asyncio_run(fetch_episodic_hits(mm, "hello", 5, turn_number=15))  # bucket 3
-    assert mm.recall.await_count == 2
+def test_store_episodic_returns_string():
+    """MemoryLayers.store_episodic() must return a str doc_id."""
+    import time
+    from memory.layers import MemoryLayers
+    mock_working = MagicMock()
+    mock_episodic = MagicMock()
+    mock_episodic.store = AsyncMock(return_value="returned-id")
+    mock_permanent = MagicMock()
+    layers = MemoryLayers(mock_working, mock_episodic, mock_permanent)
+    result = asyncio.run(layers.store_episodic("chat1", "content"))
+    assert result == "returned-id"
 ```
 
-- [ ] **Step 2: Run the tests; the 14 unit tests should pass and the 4 integration tests should fail**
-
-Run: `pytest tests/test_episodic_cache.py -v 2>&1 | tail -40`
-Expected:
-- `test_build_*`, `test_cache_*`, `test_singleton_*` — PASS (12 tests).
-- `test_fetch_episodic_hits_*` (4 integration tests) — FAIL with `TypeError: fetch_episodic_hits() got an unexpected keyword argument 'turn_number'` or similar signature mismatch.
-
-- [ ] **Step 3: Commit the failing tests**
+- [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-git add tests/test_episodic_cache.py
-git commit -m "test(episodic_cache): Faza 2 Commit 2 — cache + integration tests (4 fail)"
+cd /home/lenovo/workspace/goat2 && python -m pytest tests/test_doc_id_chain.py -v 2>&1 | head -20
+```
+Expected: FAIL (store() returns None currently).
+
+- [ ] **Step 3: Modify `memory/episodic/episodic.py` — store() returns str**
+
+Replace the `store` method signature and body (lines 55-75):
+
+Old:
+```python
+    async def store(self, chat_id: str, content: str, metadata: dict) -> None:
+        ...
+        doc_id = str(uuid.uuid4())
+        ...
+        async with self._write_lock:
+            await asyncio.to_thread(_sync)
+        log.debug("L3 write ok: chat=%s doc_id=%s tags=%r", chat_id, doc_id, metadata.get("tags", ""))
+```
+
+New (change signature, add `doc_id` param, return doc_id):
+```python
+    async def store(self, chat_id: str, content: str, metadata: dict, doc_id: str | None = None) -> str:
+        """Store content + metadata under the write lock; returns the doc_id used.
+
+        ``doc_id`` may be pre-generated by the caller (pass through); if omitted
+        a new UUID is generated. Allows orchestrator to link L2 messages to their
+        L3 entry before the async archive write completes.
+        """
+        doc_id = doc_id or str(uuid.uuid4())
+        merged = {"chat_id": chat_id, **metadata}
+        merged.setdefault("access_count", 0)
+        merged.setdefault("last_accessed_ts", merged.get("timestamp", 0.0))
+
+        def _sync() -> None:
+            col = self._get_collection()
+            merged["message_id"] = doc_id
+            merged["sequence_number"] = col.count() + 1
+            col.add(ids=[doc_id], documents=[content], metadatas=[merged])
+
+        async with self._write_lock:
+            await asyncio.to_thread(_sync)
+        log.debug("L3 write ok: chat=%s doc_id=%s tags=%r", chat_id, doc_id, metadata.get("tags", ""))
+        return doc_id
+```
+
+- [ ] **Step 4: Modify `memory/layers.py` — store_episodic() returns str, accepts doc_id**
+
+Change `store_episodic` (lines 168-195) to accept and pass `doc_id`, return its result:
+
+```python
+    async def store_episodic(
+        self, chat_id: str, content: str, tags: list[str] | None = None,
+        topic_id: str = "", doc_id: str | None = None,
+    ) -> str:
+        """L3: write content to episodic memory — the only L3 write path.
+
+        Returns the doc_id used (UUID). ``doc_id`` may be pre-generated by the
+        orchestrator to create an L2↔L3 link before the async write completes.
+        """
+        now = time.time()
+        metadata: dict = {
+            "tags": ",".join(tags or []),
+            "timestamp": now,
+            "access_count": 0,
+            "last_accessed_ts": now,
+        }
+        if topic_id:
+            metadata["topic_id"] = topic_id
+        return await self._episodic.store(chat_id, content, metadata, doc_id=doc_id)
+```
+
+- [ ] **Step 5: Modify `orchestrator/orchestrator.py` — _archive_turn accepts doc_id**
+
+Change `_archive_turn` (lines 148-159):
+
+```python
+async def _archive_turn(
+    layers, chat_id: str, intent: str, reply: str,
+    topic_id: str = "", doc_id: str | None = None,
+) -> None:
+    """Fire-and-forget: archive the full message pair into L3 episodic memory.
+
+    Tagged 'l2_full_archive'. ``topic_id`` links the entry to its topic thread.
+    ``doc_id`` is pre-generated by the orchestrator so L2 messages carry an
+    ``l3_id`` field before this async write completes.
+    """
+    try:
+        content = f"user: {intent}\nassistant: {reply}"
+        await layers.store_episodic(
+            chat_id, content, tags=["l2_full_archive"], topic_id=topic_id, doc_id=doc_id,
+        )
+        log.debug("L3 archive write ok: chat=%s topic=%s doc_id=%s", chat_id, topic_id, doc_id)
+    except Exception as exc:
+        log.warning("L3 archive dump failed chat=%s: %s", chat_id, exc)
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+```bash
+cd /home/lenovo/workspace/goat2 && python -m pytest tests/test_doc_id_chain.py -v
+```
+Expected: All 3 tests PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add memory/episodic/episodic.py memory/layers.py orchestrator/orchestrator.py tests/test_doc_id_chain.py
+git commit -m "feat: store() returns doc_id, store_episodic/archive_turn accept pre-generated doc_id"
 ```
 
 ---
