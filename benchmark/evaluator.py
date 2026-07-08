@@ -218,9 +218,11 @@ class Evaluator:
                 temperature=0.0, max_tokens=300,
             )
             parsed = extract_json(r.choices[0].message.content or "")
+            raw_claims = parsed.get("hallucinated_claims") or []
+            hallucinated_claims = raw_claims if isinstance(raw_claims, list) else [str(raw_claims)]
             return {
                 "grounded": bool(parsed.get("grounded", False)),
-                "hallucinated_claims": list(parsed.get("hallucinated_claims") or []),
+                "hallucinated_claims": hallucinated_claims,
                 "answered_without_evidence": bool(parsed.get("answered_without_evidence", False)),
             }
         except Exception as exc:  # noqa: BLE001 — judge failure must not crash a run
