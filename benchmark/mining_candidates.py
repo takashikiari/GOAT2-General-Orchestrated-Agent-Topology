@@ -5,6 +5,16 @@ generating a recall question for. Excludes short generic chit-chat; prefers
 entries the enrichment pipeline (memory.enrichment.compute_importance) already
 scored as important, when that metadata is present (older entries predate
 enrichment and are judged on word count alone).
+
+Also requires a non-empty ``message_id`` in metadata. Confirmed on real data
+(first end-to-end benchmark run, 2026-07-08): entries written before the
+message_id field existed have no such key at all. real_data_mining.generate_case
+used to fall back to the ChromaDB row id as ground-truth message_id for these,
+but EpisodicMemory.search() returns metadata verbatim (no retroactive
+fallback) — so that ground truth could never match a retrieved result,
+producing an unfalsifiable hit@K=0% in prefetch_bench regardless of retrieval
+quality. Excluding these candidates here means every mined case's message_id
+is actually matchable.
 """
 from __future__ import annotations
 
@@ -23,8 +33,11 @@ def select_candidates(
         content = (entry.get("content") or "").strip()
         if len(content.split()) < min_words:
             continue
-        importance = (entry.get("metadata") or {}).get("importance")
+        metadata = entry.get("metadata") or {}
+        importance = metadata.get("importance")
         if importance is not None and float(importance) < min_importance:
+            continue
+        if not metadata.get("message_id"):
             continue
         candidates.append(entry)
     return candidates
