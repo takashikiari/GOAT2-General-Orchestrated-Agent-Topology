@@ -37,6 +37,12 @@ gliner>=0.2.0          # memory/gliner_extractor.py — zero-shot multilingual N
                        # Without gliner installed, enrichment degrades gracefully to
                        # memory_type="conversation" with no entities — no errors raised.
 
+# Temporal expression parsing — replaces the hand-rolled day/month token
+# walker in memory/temporal_route.py. dateparser.search.search_dates handles
+# relative expressions ("ieri", "acum 2 ore") that the old parser and GLiNER's
+# NER both missed entirely, plus absolute dates, natively in Romanian.
+dateparser>=1.2.0      # memory/temporal_route.py
+
 # Optional plugin dependencies — not required for core bot operation.
 # Install these only if you enable the corresponding tools/goat_skills plugins:
 #

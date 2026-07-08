@@ -43,11 +43,8 @@ async def _labeled_semantic(layers, chat_id: str, query: str, limit: int, chat_i
     return results, cache_hit, cache_key
 
 
-async def _labeled_temporal(layers, query: str, entities_dict: dict, limit: int):
-    interval = parse_interval(
-        entities_dict.get("entities", []),
-        entities_dict.get("entity_types", []),
-    )
+async def _labeled_temporal(layers, query: str, limit: int):
+    interval = parse_interval(query)
     if not interval:
         return [], None
     after, before = interval
@@ -89,7 +86,7 @@ async def run(query: str, chat_id: str, limit: int) -> None:
         _labeled_semantic(layers, chat_id, query, limit, None),
         _labeled_semantic(layers, chat_id, query, limit, chat_id),
         layers.bm25_search(query, limit=limit),
-        _labeled_temporal(layers, query, entities_dict, limit),
+        _labeled_temporal(layers, query, limit),
     )
     sem_global_results, sem_global_hit, sem_global_key = sem_global
     sem_scoped_results, sem_scoped_hit, sem_scoped_key = sem_scoped

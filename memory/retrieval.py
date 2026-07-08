@@ -5,12 +5,16 @@ mechanisms, merge results, apply entity boosting and cross-encoder reranking,
 and return the ranked list.  Both the prefetch daemon and any on-demand caller
 (search_memory tool) use this function so the pipeline is never duplicated.
 
-Query routing via GLiNER:
-  GLiNER extracts DATE/TIME entities from the query in parallel with MiniLM and
-  BM25.  If a date entity is found, temporal_route converts it to a Unix
-  timestamp interval and a third search_episodic(after=, before=) call fires.
-  CrossEncoder then reranks the combined candidate pool — it sees the right
-  candidates and can resolve "4 iulie 07:00" ↔ "2026-07-04 07:23" correctly.
+Query routing:
+  GLiNER extracts general entities from the query in parallel with MiniLM and
+  BM25, used for entity-overlap boosting (boost_by_entities). Temporal routing
+  is independent: temporal_route.parse_interval scans the raw query text
+  directly (dateparser, not GLiNER — GLiNER never tags relative expressions
+  like "ieri"/"acum 2 ore" as DATE/TIME). If a date/time expression is found,
+  it converts to a Unix timestamp interval and a third
+  search_episodic(after=, before=) call fires. CrossEncoder then reranks the
+  combined candidate pool — it sees the right candidates and can resolve
+  "4 iulie 07:00" ↔ "2026-07-04 07:23" correctly.
 """
 from __future__ import annotations
 
@@ -63,7 +67,7 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
     labeled = [("semantic_topic_scoped", s), ("semantic_global", g)]
     groups = [(name, enforce_result_limit(p)) for name, p in labeled if not isinstance(p, BaseException)]
     bm25 = [] if isinstance(b, BaseException) else b
-    temporal = await _temporal_candidates(layers, query, entities_dict)
+    temporal = await _temporal_candidates(layers, query)
     # Prediction: previous turn's pre-fetched context added as a candidate group.
     # CrossEncoder scores it against the new query — stays if still relevant,
     # gets ranked out if the topic has shifted.
@@ -115,7 +119,7 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
         groups.append((label, r))
         if k is not None:
             cache_hit, cache_key = h, k
-    temporal = await _temporal_candidates(layers, query, entities_dict)
+    temporal = await _temporal_candidates(layers, query)
     all_groups = groups + ([("bm25", bm25)] if bm25 else []) + ([("temporal", temporal)] if temporal else [])
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
@@ -133,12 +137,15 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     return merged, cache_hit, cache_key, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
-async def _temporal_candidates(layers, query, entities_dict) -> list[dict]:
-    """Timestamp-filtered search when GLiNER detected date/time entities."""
-    interval = parse_interval(
-        entities_dict.get("entities", []),
-        entities_dict.get("entity_types", []),
-    )
+async def _temporal_candidates(layers, query) -> list[dict]:
+    """Timestamp-filtered search when ``query`` contains a date/time expression.
+
+    Parses the raw query text directly (dateparser), independent of GLiNER's
+    entity extraction — GLiNER never tags relative expressions ("ieri", "acum
+    2 ore") as DATE/TIME, so gating this on GLiNER entities silently skipped
+    every relative-time query (confirmed on real data, 2026-07-08).
+    """
+    interval = parse_interval(query)
     if not interval:
         return []
     after, before = interval
