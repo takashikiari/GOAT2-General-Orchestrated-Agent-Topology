@@ -57,3 +57,39 @@ def test_run_conversation_defaults_lead_in_to_expected_fact_when_absent():
     case = {"id": "c2", "query": "q", "expected_fact": "the fact"}  # no lead_in_turns key
     result = asyncio.run(run_conversation(orch, registry, case))
     assert result["warm"]["response"] == "ok"
+
+
+def test_run_conversation_uses_longer_default_drain_timeout_than_5s():
+    """Real retrieve() calls (cross-encoder rerank on CPU) took 5-13s in the first
+    end-to-end run (2026-07-08); Orchestrator.drain_background's own 5.0s default
+    timed out every time. run_conversation must pass a longer timeout."""
+    layers = _FakeLayers()
+    orch, registry = _make_orchestrator(layers)
+    calls: list[float] = []
+    original = orch.drain_background
+
+    async def _spy(timeout=5.0):
+        calls.append(timeout)
+        return await original(timeout=timeout)
+
+    orch.drain_background = _spy
+    case = {"id": "c1", "query": "q", "expected_fact": "f", "lead_in_turns": ["lead"]}
+    asyncio.run(run_conversation(orch, registry, case))
+    assert len(calls) == 1
+    assert calls[0] > 5.0
+
+
+def test_run_conversation_accepts_custom_drain_timeout():
+    layers = _FakeLayers()
+    orch, registry = _make_orchestrator(layers)
+    calls: list[float] = []
+    original = orch.drain_background
+
+    async def _spy(timeout=5.0):
+        calls.append(timeout)
+        return await original(timeout=timeout)
+
+    orch.drain_background = _spy
+    case = {"id": "c1", "query": "q", "expected_fact": "f", "lead_in_turns": ["lead"]}
+    asyncio.run(run_conversation(orch, registry, case, drain_timeout=60.0))
+    assert calls == [60.0]

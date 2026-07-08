@@ -17,10 +17,18 @@ from benchmark.runner import diff_analytics, snapshot_analytics
 
 __all__ = ["run_conversation"]
 
+# Orchestrator.drain_background's own 5.0s default timed out on every real
+# retrieve() call in the first end-to-end benchmark run (2026-07-08) — cross-
+# encoder reranking on CPU took 5-13s per call. 30s gives the post-turn
+# prefetch daemon realistic room to finish before the warm turn asks for it.
+_DEFAULT_DRAIN_TIMEOUT = 30.0
 
-async def run_conversation(orchestrator, registry, case: dict) -> dict:
+
+async def run_conversation(
+    orchestrator, registry, case: dict, drain_timeout: float = _DEFAULT_DRAIN_TIMEOUT,
+) -> dict:
     """Run a mined case's warm and cold paths; return both turns' captured data."""
-    warm = await _run_turn_warm(orchestrator, registry, case)
+    warm = await _run_turn_warm(orchestrator, registry, case, drain_timeout)
     cold = await _run_turn_cold(orchestrator, registry, case)
     return {"warm": warm, "cold": cold}
 
@@ -40,7 +48,9 @@ async def _run_one_turn(orchestrator, registry, chat_id: str, query: str) -> dic
     return {"response": response, "chat_id": chat_id, "groundedness": verdict, **diff}
 
 
-async def _run_turn_warm(orchestrator, registry, case: dict) -> dict:
+async def _run_turn_warm(
+    orchestrator, registry, case: dict, drain_timeout: float = _DEFAULT_DRAIN_TIMEOUT,
+) -> dict:
     """Preload lead-in content, run turn 1, drain the prefetch daemon, run turn 2 (warm)."""
     layers = registry.memory_layers
     chat_id = f"bench-warm-{uuid.uuid4().hex[:12]}"
@@ -48,7 +58,7 @@ async def _run_turn_warm(orchestrator, registry, case: dict) -> dict:
     for content in lead_in:
         await layers.store_episodic(chat_id, content)
     await orchestrator.run(lead_in[-1], chat_id)
-    await orchestrator.drain_background()
+    await orchestrator.drain_background(timeout=drain_timeout)
     return await _run_one_turn(orchestrator, registry, chat_id, case["query"])
 
 

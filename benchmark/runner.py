@@ -122,10 +122,10 @@ class BenchmarkRunner:
         self._runs.append(run)
         return run
 
-    async def run_conversation(self, case: dict) -> dict:
+    async def run_conversation(self, case: dict, drain_timeout: float = 30.0) -> dict:
         """Full-cycle warm vs. cold benchmark for one mined case (spec §4.4)."""
         from benchmark.conversation_runner import run_conversation as _run_conversation
-        return await _run_conversation(self._orchestrator, self._registry, case)
+        return await _run_conversation(self._orchestrator, self._registry, case, drain_timeout)
 
     async def run_all(self, *, judge_llm: bool = False, verbose: bool = False) -> dict:
         """Run every built-in dataset; returns ``{"runs": [run, ...]}``."""
