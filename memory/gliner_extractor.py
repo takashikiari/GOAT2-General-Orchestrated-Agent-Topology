@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import threading
 
+from memory.person_entity_filter import is_plausible_person
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
@@ -62,10 +63,13 @@ class GLiNERExtractor:
         seen: set[str] = set()
         entities, entity_types = [], []
         for e, t in zip(all_entities, all_types):
-            if e not in seen:
-                seen.add(e)
-                entities.append(e)
-                entity_types.append(t)
+            if e in seen:
+                continue
+            if t.lower() == "person" and not is_plausible_person(e):
+                continue
+            seen.add(e)
+            entities.append(e)
+            entity_types.append(t)
         memory_type = _infer_type(entities, entity_types, text)
         return {"entities": entities, "entity_types": entity_types, "memory_type": memory_type}
 

@@ -46,3 +46,24 @@ def test_extract_with_mock_model():
     assert "GOAT" in result["entities"]
     assert "project" in result["entity_types"]
     assert result["memory_type"] == "fact"
+
+
+def test_extract_filters_false_positive_person_entities():
+    """Real-data run (2026-07-08): GLiNER tagged pronouns and GOAT's own
+    self-references ("mine", "asistentul", "user") as PERSON. extract() must
+    drop those while keeping genuine names, without dropping non-PERSON
+    entities regardless of casing."""
+    import asyncio
+    import memory.gliner_extractor as mod
+    extractor = GLiNERExtractor()
+    mock_model = MagicMock()
+    mock_model.predict_entities.return_value = [
+        {"text": "Takashi", "label": "person"},
+        {"text": "mine", "label": "person"},
+        {"text": "asistentul", "label": "person"},
+        {"text": "GOAT", "label": "project"},
+    ]
+    with patch.object(mod, "_gliner_model", mock_model):
+        result = asyncio.run(extractor.extract("some query"))
+    assert result["entities"] == ["Takashi", "GOAT"]
+    assert result["entity_types"] == ["person", "project"]

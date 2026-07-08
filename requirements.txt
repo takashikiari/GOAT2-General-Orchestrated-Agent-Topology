@@ -29,13 +29,20 @@ rank_bm25>=0.2.2
 # Cross-encoder reranker — multilingual sentence-transformers model (phase-2 prefetch)
 sentence-transformers>=3.0.0
 
-# Entity enrichment (L3 metadata — entities, memory_type, importance at L2 trim time)
+# Entity enrichment (L3 metadata — entities, memory_type, importance; runs at
+# write time via store_episodic, and again at L2 trim time via auto_promote)
 gliner>=0.2.0          # memory/gliner_extractor.py — zero-shot multilingual NER
                        # Model (urchade/gliner_multi-v2.1, ~200 MB) downloaded from
                        # HuggingFace on first use; cached in ~/.cache/huggingface.
                        # Requires: torch, transformers, onnxruntime (transitively pulled).
                        # Without gliner installed, enrichment degrades gracefully to
                        # memory_type="conversation" with no entities — no errors raised.
+
+# Multi-language stopword lists — used to reject false-positive PERSON
+# entities (pronouns) from GLiNER's output. Not hand-written per-language
+# lists: stopwordsiso covers ~57 languages (we use ro+en) from one
+# actively-maintained source.
+stopwordsiso>=0.6.1     # memory/person_entity_filter.py
 
 # Temporal expression parsing — replaces the hand-rolled day/month token
 # walker in memory/temporal_route.py. dateparser.search.search_dates handles
