@@ -45,6 +45,9 @@ log = get_logger(__name__)
 
 _MAX_TG_LEN = 4096
 _ERROR_REPLY = "Something went wrong, please try again."
+# Redelivery-guard TTL: comfortably longer than any realistic gap between a
+# bot restart/crash and Telegram's next redelivery of an unacknowledged update.
+_UPDATE_DEDUPE_TTL_SECONDS = 86400
 
 
 def _truncate(text: str) -> str:
@@ -233,9 +236,26 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
             return True  # no admin configured → allow everyone (open instance)
         return str(update.effective_chat.id) == admin_chat_id
 
+    async def _is_duplicate_update(update: Update) -> bool:
+        """Redelivery guard: True if this Telegram ``update_id`` was already handled.
+
+        Telegram redelivers an update if the bot crashes/restarts before the
+        long-poll cycle that received it completes — the handler then reruns
+        end-to-end (duplicate L3 archive write, duplicate reply, duplicate
+        admin action). ``SET NX EX`` is atomic, so concurrent handling of the
+        same update_id (should it ever happen) still only "wins" once.
+        """
+        client = registry.working_memory._get_client()
+        key = f"tg:seen_update:{update.update_id}"
+        first_time = await client.set(key, "1", nx=True, ex=_UPDATE_DEDUPE_TTL_SECONDS)
+        return not first_time
+
     # ── /update ───────────────────────────────────────────────────────────────
 
     async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await _is_duplicate_update(update):
+            log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
+            return
         if not _is_admin(update):
             await update.message.reply_text("⛔ This command is restricted to the bot admin.")
             return
@@ -270,6 +290,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     # ── /rollback ─────────────────────────────────────────────────────────────
 
     async def handle_rollback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await _is_duplicate_update(update):
+            log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
+            return
         if not _is_admin(update):
             await update.message.reply_text("⛔ This command is restricted to the bot admin.")
             return
@@ -299,6 +322,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
     # ── inline keyboard callbacks ─────────────────────────────────────────────
 
     async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if await _is_duplicate_update(update):
+            log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
+            return
         query = update.callback_query
         await query.answer()
         data = query.data or ""
@@ -377,6 +403,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""
+        if await _is_duplicate_update(update):
+            log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
+            return
         text = update.message.text or ""
         chat_id = str(update.effective_chat.id)
         log.info("chat=%s text=%r", chat_id, text[:80])
