@@ -74,7 +74,7 @@ class BenchmarkRunner:
         per_run: list[dict] = []
         response, error = "", None
         for _ in range(repeat):
-            before = _snapshot(analytics)
+            before = snapshot_analytics(analytics)
             t0 = time.time()
             captured_blocks: list[list[str]] = []
             try:
@@ -88,7 +88,7 @@ class BenchmarkRunner:
                 log.warning("orchestrator.run failed case=%s: %s", test_case.get("id"), exc)
             latency = time.time() - t0
             context_blocks = captured_blocks[-1] if captured_blocks else []
-            per_run.append(_diff(before, _snapshot(analytics), latency, response, error, context_blocks))
+            per_run.append(diff_analytics(before, snapshot_analytics(analytics), latency, response, error, context_blocks))
         result = self._score(test_case, response, per_run, judge_llm)
         if test_case.get("episodic_only"):
             # L3-only path: verify the fact was actually retrievable from L3
@@ -121,6 +121,11 @@ class BenchmarkRunner:
         run = {"dataset": dataset_name, "metrics": metrics, "results": results}
         self._runs.append(run)
         return run
+
+    async def run_conversation(self, case: dict) -> dict:
+        """Full-cycle warm vs. cold benchmark for one mined case (spec §4.4)."""
+        from benchmark.conversation_runner import run_conversation as _run_conversation
+        return await _run_conversation(self._orchestrator, self._registry, case)
 
     async def run_all(self, *, judge_llm: bool = False, verbose: bool = False) -> dict:
         """Run every built-in dataset; returns ``{"runs": [run, ...]}``."""
@@ -227,7 +232,7 @@ class BenchmarkRunner:
         result["match_method"] = "llm_judge"
 
 
-def _snapshot(analytics) -> dict:
+def snapshot_analytics(analytics) -> dict:
     """Read the analytics aggregator's raw counters as a flat dict."""
     return {
         "cache_hits": analytics.cache_hits,
@@ -246,7 +251,7 @@ def _snapshot(analytics) -> dict:
     }
 
 
-def _diff(
+def diff_analytics(
     before: dict, after: dict, latency: float, response: str, error: str | None,
     context_blocks: list[str] | None = None,
 ) -> dict:
