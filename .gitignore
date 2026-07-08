@@ -1,3 +1,6 @@
+# Superpowers scratch state (SDD progress ledgers, etc.)
+.superpowers/
+
 # Python artifacts
 __pycache__/
 *.py[cod]
