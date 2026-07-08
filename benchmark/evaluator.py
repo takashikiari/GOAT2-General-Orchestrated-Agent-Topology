@@ -182,3 +182,47 @@ class Evaluator:
             log.warning("llm_judge failed: %s", exc)
             ok = Evaluator.contains(response, [expected])
             return {"correct": ok, "reason": f"error: {exc}"}
+
+    @staticmethod
+    async def groundedness_judge(
+        response: str, retrieved_context: str, llm_client: "AsyncOpenAI | None" = None,
+    ) -> dict:
+        """Judge whether ``response`` is grounded in ``retrieved_context`` (spec §4.6).
+
+        Returns ``{"grounded": bool | None, "hallucinated_claims": list[str],
+        "answered_without_evidence": bool}``. ``grounded`` is ``None`` when no
+        judge could run (no ``llm_client``, or the call/parse failed) — unknown,
+        not false (spec §6: judge failures degrade rather than raising).
+        Independent of ``expected_fact`` correctness: a response can be
+        lexically correct yet contain an unsupported extra claim, or vice versa.
+        """
+        if llm_client is None:
+            return {"grounded": None, "hallucinated_claims": [], "answered_without_evidence": False}
+        from config import settings
+        from utils.llm_utils import extract_json
+        system = (
+            "You are a strict fact-checking grader. Compare the RESPONSE against "
+            "the RETRIEVED_CONTEXT (the only memory the assistant had access to). "
+            "Reply with ONLY a JSON object: "
+            '{"grounded": true/false, "hallucinated_claims": ["..."], '
+            '"answered_without_evidence": true/false}. hallucinated_claims lists '
+            "any specific claims in RESPONSE not supported by RETRIEVED_CONTEXT. "
+            "answered_without_evidence is true when RESPONSE answers confidently "
+            "despite RETRIEVED_CONTEXT being empty or irrelevant."
+        )
+        user = f"RETRIEVED_CONTEXT:\n{retrieved_context or '(empty)'}\n\nRESPONSE:\n{response}"
+        try:
+            r = await llm_client.chat.completions.create(
+                model=settings.MODEL_NAME,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                temperature=0.0, max_tokens=300,
+            )
+            parsed = extract_json(r.choices[0].message.content or "")
+            return {
+                "grounded": bool(parsed.get("grounded", False)),
+                "hallucinated_claims": list(parsed.get("hallucinated_claims") or []),
+                "answered_without_evidence": bool(parsed.get("answered_without_evidence", False)),
+            }
+        except Exception as exc:  # noqa: BLE001 — judge failure must not crash a run
+            log.warning("groundedness_judge failed: %s", exc)
+            return {"grounded": None, "hallucinated_claims": [], "answered_without_evidence": False}
