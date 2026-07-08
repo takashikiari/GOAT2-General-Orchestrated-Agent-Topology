@@ -198,7 +198,23 @@ class MemoryLayers:
         doc_id = await self._episodic.store(chat_id, prefixed, metadata, doc_id=doc_id)
         if self._bm25 is not None:
             self._bm25.add_doc(doc_id, prefixed, {**metadata, "chat_id": chat_id})
+        task = asyncio.create_task(self._enrich_at_write(doc_id, content))
+        self._pending_bg.add(task)
+        task.add_done_callback(self._pending_bg.discard)
         return doc_id
+
+    async def _enrich_at_write(self, doc_id: str, content: str) -> None:
+        """Fire-and-forget: enrich a freshly-written L3 entry immediately.
+
+        Real corpus measurement (2026-07-08): enrichment previously only ran
+        at L2-trim time (auto_promote), which reached ~10% of stored entries
+        — entity_boost reads meta.get("entities"), so it was silently inert
+        for the other ~90%. Reuses enrich_l3_entry's existing (user_msg,
+        assistant_msg) signature with content as the sole message — same
+        importance/entity-extraction math, just not split across two turns.
+        """
+        from memory.enrichment import enrich_l3_entry
+        await enrich_l3_entry(doc_id, content, "", self._episodic, self._extractor)
 
     async def find_by_keys(
         self, chat_id: str, keys: list[str], limit: int = 15,
