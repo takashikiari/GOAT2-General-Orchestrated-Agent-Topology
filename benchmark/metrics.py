@@ -1,8 +1,8 @@
 """benchmark.metrics — aggregated metrics over a benchmark run.
 
 ``BenchmarkMetrics`` is a pure dataclass aggregating the per-test result dicts
-produced by ``BenchmarkRunner``. It computes accuracy, latency spread, the L2.5
-cache hit rate, L3 prefetch attempt/success/timeout counts plus a usefulness
+produced by ``BenchmarkRunner``. It computes accuracy, latency spread, the
+session cache hit rate, L3 prefetch attempt/success/timeout counts plus a usefulness
 ratio, and average tokens injected per tier. It operates on plain dicts with no
 imports from ``orchestrator`` or ``memory`` — importable and unit-testable with
 no services running.

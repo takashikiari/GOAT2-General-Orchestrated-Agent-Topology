@@ -17,7 +17,7 @@ Base test-case schema (every field optional except ``id``, ``query``):
 
 Runner extension fields (optional, consumed by ``BenchmarkRunner``):
     episodic_only     bool       preload into L3 only (forces prefetch path)
-    repeat            int        ask the query N times (exercises L2.5 cache)
+    repeat            int        ask the query N times (exercises the session cache)
 """
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ def _multi_turn() -> list[dict]:
 
 
 def _cache() -> list[dict]:
-    """Cases asked twice (``repeat=2``) so the second turn hits the L2.5 search cache."""
+    """Cases asked twice (``repeat=2``) so the second turn hits the session cache."""
     return [
         _case("ca-01", "phone model",
               [_um("My phone is a Pixel 8."), _am("Pixel 8 — noted.")],

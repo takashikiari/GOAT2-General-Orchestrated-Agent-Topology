@@ -2,7 +2,7 @@
 memory.observability — structured per-request observation of memory behaviour.
 
 A ``MemoryObservation`` is one JSON-serialisable record of a single orchestrator
-turn: the AITS confidence/complexity/budget, the L2.5 cache outcome, latency per
+turn: the AITS confidence/complexity/budget, the session cache outcome, latency per
 stage, tokens injected per tier, the source tier that contributed, and the L3
 prefetch outcome. One is emitted at INFO per request and fed to
 ``memory.analytics`` for aggregation. Stage names match the real pipeline —
@@ -42,7 +42,7 @@ class MemoryObservation:
     budget_allocated: int
     budget_used: int
 
-    # L2.5 cache
+    # Session cache
     cache_hit: bool
     cache_miss: bool
     cache_key: Optional[str] = None

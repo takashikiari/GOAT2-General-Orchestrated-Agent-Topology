@@ -40,8 +40,8 @@ async def maybe_auto_promote(
 ) -> None:
     """Trim L2 to WORKING_MAX_MESSAGES; enrich dropped entries; clear search cache.
 
-    ``cache_clear_fn``: async callable (no args) to invalidate the L2.5
-    SessionCache for this chat after enrichment completes. Passed by
+    ``cache_clear_fn``: async callable (no args) to invalidate the
+    session cache for this chat after enrichment completes. Passed by
     MemoryLayers so stale cached search results are not served after the
     L3 metadata update. Optional — callers that do not own a cache omit it.
     """

@@ -1,5 +1,7 @@
 """
-memory.session_cache — L2.5 Session Cache layer.
+memory.session_cache — Session Cache layer (distinct from the L2.5 activation
+layer in memory.activation — this one memoizes search/tool results, the other
+holds per-chat thread state).
 
 Caches search results and tool outputs within a session. Eliminates
 duplicate searches, reduces cost, reduces latency. TTL is configurable
@@ -33,7 +35,7 @@ _CACHE_PREFIX = "cache"
 
 
 class SessionCache:
-    """L2.5 — Session Cache layer.
+    """Session Cache layer.
 
     Caches search results and tool outputs within a session. Eliminates
     duplicate searches, reduces cost, reduces latency. TTL is configurable

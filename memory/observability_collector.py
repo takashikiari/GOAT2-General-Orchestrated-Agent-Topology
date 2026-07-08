@@ -79,7 +79,7 @@ class ObservationCollector:
         self.obs.budget_used = used
 
     def set_cache(self, hit: bool, key: str | None = None) -> None:
-        """Set the L2.5 cache outcome (hit/miss) and report the cache key.
+        """Set the session cache outcome (hit/miss) and report the cache key.
 
         The key was previously treated as internal and never stored; it is now
         propagated so the observability record shows what was actually looked up.

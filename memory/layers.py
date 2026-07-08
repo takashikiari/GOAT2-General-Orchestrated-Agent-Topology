@@ -3,10 +3,10 @@ memory.layers — Backend Mapper: L0-L3 logical layers → physical tiers
 (Permanent / Working / Episodic). GOAT/Orchestrator talk ONLY to this class.
 
     L0 Identity / L1 Facts → PermanentMemory
-    L2 Working / L2.5 Cache → WorkingMemory / SessionCache
-    L3 Episodic           → EpisodicMemory
+    L2 Working / Session Cache → WorkingMemory / SessionCache
+    L3 Episodic / L2.5 Activation → EpisodicMemory / ActivationStore
 
-Steps 1-6: mapping, L2.5 cache, retrieval budget, L3 write, AITS dynamic
+Steps 1-6: mapping, session cache, retrieval budget, L3 write, AITS dynamic
 budget + async prefetch (``assemble_context``).
 """
 from __future__ import annotations
@@ -36,7 +36,8 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 # Cache-key namespace for episodic searches. Prefixed onto the query digest
-# so search caches are distinguishable from tool-output caches inside L2.5.
+# so search caches are distinguishable from tool-output caches inside the
+# session cache.
 _SEARCH_NAMESPACE = "search"
 
 _BASE_IDENTITY = IDENTITY_BASE_PROMPT
@@ -47,7 +48,8 @@ class MemoryLayers:
 
     GOAT/Orchestrator talk only to this class. Step 6 = AITS dynamic budget +
     async prefetch (``assemble_context``; L2 protected to ``L2_CONTEXT_CAP``,
-    L3 AITS-gated), Step 5 = L3 write (``store_episodic``), Step 2 = L2.5 cache.
+    L3 AITS-gated), Step 5 = L3 write (``store_episodic``), Step 2 = session
+    cache.
     """
 
     def __init__(
@@ -293,7 +295,7 @@ class MemoryLayers:
         topic_id: str | None = None,
         chat_id_filter: str | None = None,
     ) -> tuple[list[dict], bool, str]:
-        """L3 + L2.5: semantic search, served from the session cache on repeat.
+        """L3 + session cache: semantic search, served from the cache on repeat.
 
         Returns ``(results, cache_hit, cache_key)``: the results, whether they
         came from the cache, and the deterministic key (so the orchestrator can
@@ -320,33 +322,33 @@ class MemoryLayers:
     def _search_cache_key(
         query: str, topic_id: str | None = None, chat_id_filter: str | None = None,
     ) -> str:
-        """Deterministic L2.5 key for an episodic query: ``search:{digest}``.
+        """Deterministic session-cache key for an episodic query: ``search:{digest}``.
 
         ``topic_id`` and ``chat_id_filter`` are included in the digest so searches
-        with different scopes never collide in the L2.5 cache.
+        with different scopes never collide in the session cache.
         """
         key_str = query + (topic_id or "") + (chat_id_filter or "")
         digest = hashlib.sha256(key_str.encode("utf-8")).hexdigest()[:16]
         return f"{_SEARCH_NAMESPACE}:{digest}"
 
     async def get_cache(self, chat_id: str, key: str) -> dict | None:
-        """L2.5: retrieve a cached value, or ``None`` on miss/expiry."""
+        """Session cache: retrieve a cached value, or ``None`` on miss/expiry."""
         return await self._cache.get(chat_id, key)
 
     async def set_cache(self, chat_id: str, key: str, value: dict) -> None:
-        """L2.5: store ``value`` under ``key`` with the configured TTL."""
+        """Session cache: store ``value`` under ``key`` with the configured TTL."""
         await self._cache.set(chat_id, key, value)
 
     async def invalidate_cache(self, chat_id: str, key: str) -> None:
-        """L2.5: drop a single cache entry (no-op if absent)."""
+        """Session cache: drop a single cache entry (no-op if absent)."""
         await self._cache.invalidate(chat_id, key)
 
     async def clear_cache(self, chat_id: str) -> None:
-        """L2.5: drop every cache entry for ``chat_id`` (SCAN-based)."""
+        """Session cache: drop every cache entry for ``chat_id`` (SCAN-based)."""
         await self._cache.clear(chat_id)
 
     async def cache_exists(self, chat_id: str, key: str) -> bool:
-        """L2.5: report whether a cache entry exists without reading it."""
+        """Session cache: report whether a cache entry exists without reading it."""
         return await self._cache.exists(chat_id, key)
 
     # --- L2.5 activation layer (per-chat thread state) -----------------------

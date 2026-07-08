@@ -63,7 +63,7 @@ class BenchmarkRunner:
         A fresh ``chat_id`` is generated when none is given, so cases in a
         dataset do not see each other's L2 history. ``episodic_only`` cases are
         written to L3 and given an empty L2, forcing the prefetch/search path.
-        ``repeat`` re-asks the query N times (the L2.5 search cache serves
+        ``repeat`` re-asks the query N times (the session cache serves
         repeats after the first); correctness is scored on the final response.
         """
         chat_id = chat_id or f"bench-{uuid.uuid4().hex[:12]}"
