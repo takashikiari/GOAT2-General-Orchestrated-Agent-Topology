@@ -28,7 +28,9 @@ from plugins.plugin_manager import PluginManager
 class ServiceRegistry:
     """Minimal DI container. All services built lazily on first access."""
 
-    def __init__(self) -> None:
+    def __init__(self, episodic_storage_path: str | None = None) -> None:
+        """``episodic_storage_path`` overrides the live ChromaDB path (e.g. benchmark isolation)."""
+        self._episodic_storage_path = episodic_storage_path
         self._llm_client: AsyncOpenAI | None = None
         self._working_memory: WorkingMemory | None = None
         self._episodic_memory: EpisodicMemory | None = None
@@ -64,7 +66,7 @@ class ServiceRegistry:
     def episodic_memory(self) -> EpisodicMemory:
         """Shared EpisodicMemory, ChromaDB lazily initialised on first use."""
         if self._episodic_memory is None:
-            self._episodic_memory = EpisodicMemory()
+            self._episodic_memory = EpisodicMemory(self._episodic_storage_path)
         return self._episodic_memory
 
     @property

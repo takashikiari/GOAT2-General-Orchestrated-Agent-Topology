@@ -76,14 +76,19 @@ class BenchmarkRunner:
         for _ in range(repeat):
             before = _snapshot(analytics)
             t0 = time.time()
+            captured_blocks: list[list[str]] = []
             try:
-                response = await self._orchestrator.run(test_case["query"], chat_id)
+                response = await self._orchestrator.run(
+                    test_case["query"], chat_id,
+                    on_context_assembled=captured_blocks.append,
+                )
             except Exception as exc:  # noqa: BLE001 — one failed case must not abort the run
                 error = str(exc)
                 response = ""
                 log.warning("orchestrator.run failed case=%s: %s", test_case.get("id"), exc)
             latency = time.time() - t0
-            per_run.append(_diff(before, _snapshot(analytics), latency, response, error))
+            context_blocks = captured_blocks[-1] if captured_blocks else []
+            per_run.append(_diff(before, _snapshot(analytics), latency, response, error, context_blocks))
         result = self._score(test_case, response, per_run, judge_llm)
         if test_case.get("episodic_only"):
             # L3-only path: verify the fact was actually retrievable from L3
@@ -207,6 +212,7 @@ class BenchmarkRunner:
             "tokens_l2": int(sum(r["tokens_l2"] for r in per_run) / n),
             "tokens_l3": int(sum(r["tokens_l3"] for r in per_run) / n),
             "source_tier": last["source_tier"], "runs": len(per_run), "error": last["error"],
+            "warm_served": last["warm_served"], "context_blocks": last["context_blocks"],
         }
 
     async def _maybe_llm_judge(self, test_case: dict, result: dict, judge_llm: bool) -> None:
@@ -236,11 +242,20 @@ def _snapshot(analytics) -> dict:
         "res_found": analytics.total_results_found,
         "res_used": analytics.total_results_used,
         "tier_hits": dict(analytics.tier_hits),
+        "warm_served_turns": analytics.warm_served_turns,
     }
 
 
-def _diff(before: dict, after: dict, latency: float, response: str, error: str | None) -> dict:
-    """Compute one run's contribution by differencing two analytics snapshots."""
+def _diff(
+    before: dict, after: dict, latency: float, response: str, error: str | None,
+    context_blocks: list[str] | None = None,
+) -> dict:
+    """Compute one run's contribution by differencing two analytics snapshots.
+
+    ``context_blocks`` is the raw L3 text captured via Orchestrator.run's
+    on_context_assembled callback — a side channel, not derived from the
+    analytics counter diff (MemoryAnalytics has no raw-text field to diff).
+    """
     tiers = set(after["tier_hits"]) | set(before["tier_hits"])
     new_tier = next(
         (k for k in tiers if after["tier_hits"].get(k, 0) - before["tier_hits"].get(k, 0) > 0),
@@ -260,4 +275,6 @@ def _diff(before: dict, after: dict, latency: float, response: str, error: str |
         "tokens_l2": after["tok_l2"] - before["tok_l2"],
         "tokens_l3": after["tok_l3"] - before["tok_l3"],
         "source_tier": new_tier,
+        "warm_served": bool(after["warm_served_turns"] - before["warm_served_turns"]),
+        "context_blocks": context_blocks or [],
     }

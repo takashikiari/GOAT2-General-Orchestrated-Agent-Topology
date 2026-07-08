@@ -6,6 +6,7 @@ import json
 import re
 import time
 import uuid
+from typing import Callable
 
 from config import settings
 from memory.activation import classify_turn, classify_write, find_topic_return, rescore_recency
@@ -233,7 +234,10 @@ class Orchestrator:
         """True when a tool named ``name`` (core or plugin) is configured."""
         return any(t.name == name for t in self._all_tools())
 
-    async def run(self, intent: str, chat_id: str) -> str:
+    async def run(
+        self, intent: str, chat_id: str, *,
+        on_context_assembled: Callable[[list[str]], None] | None = None,
+    ) -> str:
         """Single turn: AITS budget → bounded-time L3 prefetch → assemble → LLM → save.
 
         Each stage is timed (classify / search / assemble / inject) by an
@@ -247,6 +251,12 @@ class Orchestrator:
         only at the ``AGENTIC_MAX_ITERATIONS`` cap so a stuck model must
         synthesize. Runaway loops are bounded by the cap, not structurally
         impossible.
+
+        ``on_context_assembled``, if given, is called once with the exact
+        ``context_blocks`` assembled this turn — a side channel for callers
+        (the benchmark's groundedness judge) that need the raw retrieved text,
+        kept separate from ``MemoryObservation`` which stays privacy-truncated
+        and unconditionally logged.
         """
         layers = self._layers
         analytics = self._analytics
@@ -318,6 +328,8 @@ class Orchestrator:
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
+            if on_context_assembled is not None:
+                on_context_assembled(list(context_blocks))
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
@@ -465,7 +477,7 @@ class Orchestrator:
             if classify_write(cemb, activation.centroid) == "enriching":
                 fresh = enforce_result_limit(await layers.search_episodic(
                     activation.last_query, limit=PREFETCH_MAX_RESULTS))
-                activation.merged = merge_results([fresh])[:PREFETCH_MAX_RESULTS]
+                activation.merged = merge_results([("refresh", fresh)])[:PREFETCH_MAX_RESULTS]
                 await layers.set_activation(chat_id, activation)
                 log.info("enriching refresh chat=%s folded %d chars", chat_id, len(content))
                 return "enriching", True

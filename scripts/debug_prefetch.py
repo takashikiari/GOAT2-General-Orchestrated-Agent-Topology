@@ -6,10 +6,9 @@ search (global + chat-scoped), BM25, GLiNER-routed temporal search, RRF
 fusion, entity boost, cross-encoder rerank — against the REAL ChromaDB/Redis
 backing store via the real ``ServiceRegistry``. No LLM call is made.
 
-``merge_results`` (RRF) dedupes across mechanisms and keeps only the first
-group's copy of each result, discarding provenance — so this script tags
-every raw candidate with its source mechanism *before* fusion and carries
-that tag through to the final printed table.
+``merge_results`` (RRF) takes labeled ``(mechanism, results)`` groups and
+tags each deduped result with every mechanism that returned it — this script
+just passes the labels through and prints them in the final table.
 
 Note: the "specific_key" prefetch mechanism referenced in older observability
 counters was removed from the pipeline (see memory/layers.py:209) — it is
@@ -32,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from memory.config import PREFETCH_MAX_RESULTS, PREFETCH_RECENCY_WINDOW_DAYS
-from memory.result_merger import _result_id, merge_results
+from memory.result_merger import merge_results
 from memory.temporal_route import parse_interval
 from registry.registry import ServiceRegistry
 
@@ -106,7 +105,6 @@ async def run(query: str, chat_id: str, limit: int) -> None:
         print("  temporal:              skipped (no DATE/TIME entity detected)")
     print()
 
-    # Tag provenance BEFORE merge_results collapses it.
     labeled_groups: list[tuple[str, list[dict]]] = [
         ("semantic_global", sem_global_results),
         ("semantic_chat_scoped", sem_scoped_results),
@@ -116,18 +114,9 @@ async def run(query: str, chat_id: str, limit: int) -> None:
     if temporal:
         labeled_groups.append(("temporal", temporal))
 
-    mechanism_map: dict[object, set[str]] = {}
-    for label, group in labeled_groups:
-        for r in group:
-            rid = _result_id(r)
-            if rid is None:
-                continue
-            mechanism_map.setdefault(rid, set()).add(label)
-
-    all_groups = [g for _, g in labeled_groups]
-    merged = merge_results(all_groups)[: limit * 2]
+    merged = merge_results(labeled_groups)[: limit * 2]
     print(f"RRF fusion: {len(merged)} deduped candidates "
-          f"(from {sum(len(g) for g in all_groups)} raw hits across "
+          f"(from {sum(len(g) for _, g in labeled_groups)} raw hits across "
           f"{len(labeled_groups)} mechanisms)")
 
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
@@ -139,8 +128,7 @@ async def run(query: str, chat_id: str, limit: int) -> None:
     print("=" * 100)
     for rank, r in enumerate(final, start=1):
         meta = r.get("metadata", {}) or {}
-        rid = _result_id(r)
-        mechanisms = sorted(mechanism_map.get(rid, {"unknown"}))
+        mechanisms = r.get("mechanisms") or ["unknown"]
         content = (r.get("content") or "").replace("\n", " ")[:200]
         blended = r.get("blended_score")
         similarity = r.get("score")

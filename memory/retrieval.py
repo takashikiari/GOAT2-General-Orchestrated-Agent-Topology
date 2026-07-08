@@ -60,14 +60,20 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
         return_exceptions=True,
     )
     entities_dict = ents if not isinstance(ents, BaseException) else {}
-    groups = [enforce_result_limit(p) for p in (s, g) if not isinstance(p, BaseException)]
+    labeled = [("semantic_topic_scoped", s), ("semantic_global", g)]
+    groups = [(name, enforce_result_limit(p)) for name, p in labeled if not isinstance(p, BaseException)]
     bm25 = [] if isinstance(b, BaseException) else b
     temporal = await _temporal_candidates(layers, query, entities_dict)
     # Prediction: previous turn's pre-fetched context added as a candidate group.
     # CrossEncoder scores it against the new query — stays if still relevant,
     # gets ranked out if the topic has shifted.
     prediction = rescore_recency(activation.merged, time.time()) if activation and activation.merged else []
-    all_groups = ([prediction] if prediction else []) + groups + ([bm25] if bm25 else []) + ([temporal] if temporal else [])
+    all_groups = (
+        ([("prediction", prediction)] if prediction else [])
+        + groups
+        + ([("bm25", bm25)] if bm25 else [])
+        + ([("temporal", temporal)] if temporal else [])
+    )
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     merged = (await layers.rerank(query, merged))[:_LIMIT]
@@ -85,8 +91,10 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
         )
         return r, h, k
 
+    labels = ["semantic_global", "semantic_chat_scoped"]
     coros = [_cached(), _cached(filt=chat_id)]
     if topic_return_id:
+        labels.append("semantic_topic_return")
         coros.append(_topic_search(layers, query, topic_return_id))
     all_res = await asyncio.gather(
         *coros,
@@ -97,18 +105,18 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     # last two: bm25 result, entity dict
     entities_dict = all_res[-1] if not isinstance(all_res[-1], BaseException) else {}
     bm25 = [] if isinstance(all_res[-2], BaseException) else all_res[-2]
-    groups: list[list[dict]] = []
+    groups: list[tuple[str, list[dict]]] = []
     cache_hit, cache_key = False, None
-    for part in all_res[:-2]:
+    for label, part in zip(labels, all_res[:-2]):
         if isinstance(part, BaseException):
             log.warning("retrieve cold mechanism raised chat=%s: %s", chat_id, part)
             continue
         r, h, k = part
-        groups.append(r)
+        groups.append((label, r))
         if k is not None:
             cache_hit, cache_key = h, k
     temporal = await _temporal_candidates(layers, query, entities_dict)
-    all_groups = groups + ([bm25] if bm25 else []) + ([temporal] if temporal else [])
+    all_groups = groups + ([("bm25", bm25)] if bm25 else []) + ([("temporal", temporal)] if temporal else [])
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     merged = (await layers.rerank(query, merged))[:_LIMIT]

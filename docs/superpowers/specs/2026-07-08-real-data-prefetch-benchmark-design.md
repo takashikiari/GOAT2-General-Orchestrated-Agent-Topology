@@ -121,3 +121,61 @@ Given `(response, retrieved_l3_block)`, one `registry.llm_client` call asking: d
 - Automatic snapshot refresh scheduling (manual re-run of the snapshot script is sufficient for now).
 - Cross-run trend tracking / dashboards beyond the existing `--output`/`--csv` JSON export already in `benchmark/__main__.py`.
 - Rewriting the 16 existing synthetic datasets to the multi-turn schema — they stay as-is; this is additive.
+
+## 10. Gaps found in spec review (resolve before/during implementation)
+
+Verified against the current codebase (2026-07-08). Two gaps have no implementation path in §4 as written; a third is a wording imprecision worth fixing before anyone codes against it.
+
+### 10.1 No path-injection mechanism for `EpisodicMemory` → `chroma_data_benchmark/` — RESOLVED (2026-07-08)
+
+Fixed via the smallest option identified below: `EpisodicMemory.__init__` (`memory/episodic/episodic.py:32`) now takes an optional `storage_path: str | None = None`, stored as `self._storage_path` and defaulting to `EPISODIC_STORAGE_PATH` when omitted; `_get_collection()` builds the `PersistentClient` from `self._storage_path` instead of the module constant directly. `ServiceRegistry.__init__` (`registry/registry.py:31`) gained a matching `episodic_storage_path: str | None = None`, threaded to `EpisodicMemory(self._episodic_storage_path)` in the `episodic_memory` property (`registry/registry.py:64-68`). `BM25Index` needed no change — it wraps whatever `EpisodicMemory` instance `ServiceRegistry` hands it, so it inherits the path automatically.
+
+A benchmark run can now do `ServiceRegistry(episodic_storage_path="chroma_data_benchmark/")` and get full isolation without monkeypatching or touching `config/memory.toml`. Covered by `tests/test_episodic_core.py` (default path preserved; override takes effect, both verified via a monkeypatched `chromadb.PersistentClient` capturing the constructor arg — no real ChromaDB I/O) and `tests/test_registry_episodic_path.py` (registry threads the override through to `episodic_memory._storage_path`). Full suite (`pytest tests/`, 196 cases) green after the change.
+
+<details><summary>Original analysis (superseded)</summary>
+
+§3 assumed "a dedicated `ServiceRegistry` is built pointing its `EpisodicMemory`/`BM25Index`" at the benchmark path, as if this were a constructor argument. It was not: `EpisodicMemory.__init__` took no arguments — the ChromaDB path came from the module-level constant `EPISODIC_STORAGE_PATH`, read once from `config/memory.toml` at import time (no env var indirection).
+
+This was load-bearing for §2's "no contamination of live data" constraint. Options considered, cheapest first:
+- Add an optional `storage_path: str | None = None` constructor param to `EpisodicMemory`, defaulting to `EPISODIC_STORAGE_PATH` — smallest change, no global state. **(chosen)**
+- Monkeypatch `memory.episodic.episodic.EPISODIC_STORAGE_PATH` before constructing the benchmark's `ServiceRegistry()` — no source change, but fragile.
+
+</details>
+
+### 10.2 `retrieve()` / `merge_results` don't preserve per-mechanism attribution — RESOLVED (2026-07-08)
+
+Fixed via option (b) below: `merge_results` (`memory/result_merger.py`) now takes labeled groups, `list[tuple[str, list[dict]]]`, instead of bare `list[list[dict]]`. It tracks, per dedup id, the **union** of every mechanism whose group contained that id (not just the first-seen one — a doc found by two mechanisms now correctly outranks one found by only one, and both facts are visible), and attaches the result as `mechanisms: list[str]` (sorted) on each returned dict. RRF scoring itself is unchanged — this is pure additive provenance, not a change to the fusion math, consistent with §1's "out of scope: changing the RRF pipeline itself."
+
+All 4 call sites updated to pass labels:
+- `memory/retrieval.py::_cold` — `semantic_global`, `semantic_chat_scoped`, `semantic_topic_return` (when a topic-return search runs), `bm25`, `temporal`.
+- `memory/retrieval.py::_drift` — `semantic_topic_scoped`, `semantic_global`, `prediction` (the carried-over activation group), `bm25`, `temporal`.
+- `orchestrator/orchestrator.py::_enriching_refresh` — single `refresh` group (trivial case, still needs the new tuple shape).
+- `scripts/debug_prefetch.py` — this script had already hand-built an identical `mechanism_map` (importing the private `_result_id` helper) to work around the exact gap described here; it now just passes its existing labeled groups straight to `merge_results` and reads `r["mechanisms"]` off the output, deleting ~15 lines of duplicated provenance-tracking logic.
+
+Because the tagging happens inside `merge_results` itself, `prefetch_bench.py` gets full mechanism attribution for free by calling the public `retrieve()` — no need to reach into `_cold`/`_drift` internals as option (a) would have required.
+
+Covered by `tests/test_result_merger.py` (single-mechanism tagging, union-of-mechanisms on overlap, RRF ranking unaffected by tagging, empty-groups edge case) and `tests/test_retrieval_mechanisms.py` (end-to-end: `retrieve(state="cold")` surfaces `mechanisms` on its output via a dedicated fake `layers`, since the shared `tests/_orch_fakes.py::_FakeLayers` predates GLiNER routing and lacks `extract_query_entities`). Full suite green (201 cases) after the change.
+
+<details><summary>Original analysis (superseded)</summary>
+
+§4.3 required, per case per state, "found by which mechanism(s)". `merge_results` fused groups via RRF and deduped by id, keeping only the first-seen result dict — it discarded which input group (mechanism) each id came from. `retrieve()` returned only the final merged list, with no per-result mechanism tag anywhere in the pipeline.
+
+Options considered:
+- (a) Call the private `_cold`/`_drift` functions directly and check raw-group membership before fusion — couples the benchmark to retrieval internals across module boundaries.
+- (b) Add a lightweight mechanism tag to each result dict at the point each group is built, threaded through `merge_results`. **(chosen)**
+
+</details>
+
+### 10.3 §4.5 conflates `MemoryAnalytics` (counters) with raw retrieved text — RESOLVED (2026-07-08)
+
+Fixed with the new plumbing this section called for, not an extension of the counter-diff: `Orchestrator.run` (`orchestrator/orchestrator.py:236`) gained an optional keyword-only `on_context_assembled: Callable[[list[str]], None] | None = None`, invoked once per turn immediately after `context_blocks` is assembled (right after `collector.set_context_from_blocks(...)`, `orchestrator/orchestrator.py:319-322`) with the exact list fed into the system prompt. It's a pure side channel — `MemoryObservation`/its privacy-truncated `user_message` and always-on `log()` call are untouched; existing callers (telegram_interface, all prior tests) are unaffected since the parameter defaults to `None`.
+
+`benchmark/runner.py::run_single` now passes `on_context_assembled=captured_blocks.append`, takes the last-captured list, and threads it through `_diff` (new `context_blocks` param) into the per-run dict, then `_score` copies it (and the also-added `warm_served`, a trivial diff of the existing `warm_served_turns` counter) from `last` into the final result dict — the same pattern already used there for `source_tier`. `_snapshot` gained one line (`"warm_served_turns": analytics.warm_served_turns`) to make that diff possible.
+
+Covered by `tests/test_orchestrator_context_capture.py` (callback receives the exact `context_blocks`; omitting it is a no-op, existing behavior preserved) and `tests/test_benchmark_context_capture.py` (`BenchmarkRunner.run_single`'s result dict carries `context_blocks` and `warm_served`, using a real `MemoryAnalytics()` — the `tests/_orch_fakes.py::_FakeAnalytics` used elsewhere lacks the counter fields `_snapshot` reads, a pre-existing gap in that fake unrelated to this fix, worked around by instantiating the real no-I/O aggregator directly). Full suite green (204 cases) after the change.
+
+<details><summary>Original analysis (superseded)</summary>
+
+§4.5 said to extend `_snapshot`/`_diff` to "surface `warm_served` and the raw `context_blocks` (or at minimum the L3 block text)". `_snapshot`/`_diff` read exclusively from `MemoryAnalytics`, a cumulative numeric-counter aggregator — there was no raw-text field anywhere in it, nor in `MemoryObservation`, which also carried only counts/booleans/latencies (and truncates `user_message` for privacy). `warm_served` itself was fine to add as a trivial counter diff, but the actual L3 text needed new plumbing — a side-channel callback carrying the assembled context blocks out of the orchestrator turn — not an extension of the existing counter-diff.
+
+</details>

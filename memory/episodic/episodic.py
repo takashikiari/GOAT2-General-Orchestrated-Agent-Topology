@@ -29,7 +29,9 @@ class EpisodicMemory(EpisodicQueries):
     collection lifecycle, warmup, store, and semantic search.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: str | None = None) -> None:
+        """``storage_path`` overrides the configured live path (e.g. benchmark isolation)."""
+        self._storage_path = storage_path or EPISODIC_STORAGE_PATH
         self._collection = None
         self._write_lock = asyncio.Lock()
 
@@ -41,7 +43,7 @@ class EpisodicMemory(EpisodicQueries):
             _posthog.disabled = True
             _posthog.capture = lambda *args, **kwargs: None  # type: ignore[assignment]
             client = chromadb.PersistentClient(
-                path=EPISODIC_STORAGE_PATH,
+                path=self._storage_path,
                 settings=Settings(anonymized_telemetry=False),
             )
             self._collection = client.get_or_create_collection(EPISODIC_COLLECTION_NAME)
