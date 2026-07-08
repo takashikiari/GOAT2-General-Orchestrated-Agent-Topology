@@ -53,7 +53,7 @@ _DEFAULTS: dict = {
         "log_interval": 100,
     },
     "activation": {
-        "ttl_seconds": 604800,
+        "ttl_seconds": 3600,
         "drift_warm": 0.80,
         "drift_cold": 0.55,
         "lexical_low": 0.15,
