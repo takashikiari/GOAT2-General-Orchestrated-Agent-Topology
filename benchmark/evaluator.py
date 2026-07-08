@@ -207,6 +207,10 @@ class Evaluator:
             '{"grounded": true/false, "hallucinated_claims": ["..."], '
             '"answered_without_evidence": true/false}. hallucinated_claims lists '
             "any specific claims in RESPONSE not supported by RETRIEVED_CONTEXT. "
+            "Do NOT list a self-referential statement about the assistant's own "
+            "uncertainty or lack of memory (e.g. \"I don't remember that\", "
+            "\"I don't have this information\") as a hallucinated claim — those "
+            "are honest non-answers, not fabricated facts. "
             "answered_without_evidence is true when RESPONSE answers confidently "
             "despite RETRIEVED_CONTEXT being empty or irrelevant."
         )

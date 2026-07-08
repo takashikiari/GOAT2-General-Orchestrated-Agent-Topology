@@ -22,16 +22,26 @@ _SYSTEM_PROMPT = (
     "You are generating a benchmark case from a real stored memory. Given the "
     "CONTENT below, produce a natural follow-up question a user might ask "
     "later to recall this information, and the short exact fact string an "
-    "answer must contain to be correct. Reply with ONLY a JSON object: "
-    '{"query": "...", "expected_fact": "..."}.'
+    "answer must contain to be correct. Also judge whether that fact is "
+    "STABLE (still true and meaningful regardless of when it's recalled — "
+    "e.g. an architectural decision, a personal preference, a design choice) "
+    "or EPHEMERAL/time-relative (a snapshot only true at the moment it was "
+    "said — e.g. a log-line count \"in the last N hours\", a live system "
+    "status, a \"right now\" observation). Reply with ONLY a JSON object: "
+    '{"query": "...", "expected_fact": "...", "is_stable_fact": true/false}.'
 )
 
 
 async def generate_case(entry: dict, llm_client) -> dict | None:
     """One LLM call generating (query, expected_fact) for a mined candidate.
 
-    Returns ``None`` (logged) on any call/parse/empty-field failure — the
-    caller skips this candidate rather than aborting the batch (spec §6).
+    Returns ``None`` (logged) on any call/parse/empty-field failure, or when
+    the LLM judges the fact ephemeral/time-relative rather than stable (a
+    snapshot fact — e.g. a log-line count "in the last 2 hours" — can never
+    be correctly answered out of its original temporal context, regardless
+    of retrieval quality; confirmed as a real-data mining-quality issue,
+    2026-07-08) — the caller skips this candidate rather than aborting the
+    batch (spec §6).
     """
     from config import settings
     content = entry.get("content", "")
@@ -49,6 +59,8 @@ async def generate_case(entry: dict, llm_client) -> dict | None:
         expected_fact = str(parsed["expected_fact"]).strip()
         if not query or not expected_fact:
             raise ValueError("empty query or expected_fact")
+        if not bool(parsed.get("is_stable_fact", True)):
+            raise ValueError("ephemeral/time-relative fact, skipping")
     except Exception as exc:  # noqa: BLE001 — one bad candidate must not abort mining
         log.warning("generate_case failed id=%s: %s", entry.get("id"), exc)
         return None

@@ -137,3 +137,38 @@ def test_load_or_mine_slices_cached_results_to_limit(tmp_path):
     cases = asyncio.run(load_or_mine([], None, cache_path, limit=2))
 
     assert len(cases) == 2
+
+
+def test_generate_case_skips_ephemeral_time_relative_facts():
+    """Real-data run (2026-07-08): a mined fact like "L3 write ok appears 6
+    times in the last 2 hours" is a snapshot true only at the moment it was
+    said — no retrieval system can correctly answer it out of its original
+    temporal context. generate_case must skip candidates the LLM itself
+    judges as ephemeral rather than stable."""
+    reply = json.dumps({
+        "query": "When does 'L3 write ok' appear in the logs?",
+        "expected_fact": "6 times in the last 2 hours",
+        "is_stable_fact": False,
+    })
+    llm = _LLMClient(_Completions(reply))
+    case = asyncio.run(generate_case(_entry("x" * 100), llm))
+    assert case is None
+
+
+def test_generate_case_keeps_stable_facts():
+    reply = json.dumps({
+        "query": "What time is the appointment?", "expected_fact": "9am", "is_stable_fact": True,
+    })
+    llm = _LLMClient(_Completions(reply))
+    case = asyncio.run(generate_case(_entry("x" * 100), llm))
+    assert case is not None
+    assert case["expected_fact"] == "9am"
+
+
+def test_generate_case_defaults_to_stable_when_field_omitted():
+    """Backward-compat: existing callers/prompts without is_stable_fact must
+    still work (default True), so this isn't a breaking behavior change."""
+    reply = json.dumps({"query": "q", "expected_fact": "f"})  # no is_stable_fact key
+    llm = _LLMClient(_Completions(reply))
+    case = asyncio.run(generate_case(_entry("x" * 100), llm))
+    assert case is not None
