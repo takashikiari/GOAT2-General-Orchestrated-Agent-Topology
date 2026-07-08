@@ -15,7 +15,9 @@ import asyncio
 import chromadb
 
 from benchmark.prefetch_metrics import PrefetchMetrics
-from scripts.run_real_data_benchmark import _load_snapshot_entries, _summary_lines, run_real_data_benchmark
+from scripts.run_real_data_benchmark import (
+    _load_snapshot_entries, _reseed_conversation_collection, _summary_lines, run_real_data_benchmark,
+)
 
 
 def _hit(message_id: str) -> dict:
@@ -130,6 +132,9 @@ class _FakeChromaCollection:
             "metadatas": [r["metadata"] for r in self._rows],
         }
 
+    def count(self) -> int:
+        return len(self._rows)
+
 
 class _FakeChromaClient:
     def __init__(self, col: _FakeChromaCollection) -> None:
@@ -146,6 +151,57 @@ def test_load_snapshot_entries_reads_verbatim_rows(monkeypatch):
 
     entries = _load_snapshot_entries("chroma_data_benchmark", "episodic_memory")
     assert entries == rows
+
+
+class _FakeDestCollection:
+    def __init__(self) -> None:
+        self.added = {"ids": [], "documents": [], "metadatas": []}
+
+    def add(self, ids, documents, metadatas):
+        self.added["ids"].extend(ids)
+        self.added["documents"].extend(documents)
+        self.added["metadatas"].extend(metadatas)
+
+    def count(self) -> int:
+        return len(self.added["ids"])
+
+
+class _FakeDestClient:
+    def __init__(self) -> None:
+        self.collections: dict[str, _FakeDestCollection] = {}
+
+    def delete_collection(self, name):
+        self.collections.pop(name, None)
+
+    def get_or_create_collection(self, name):
+        if name not in self.collections:
+            self.collections[name] = _FakeDestCollection()
+        return self.collections[name]
+
+
+def test_reseed_conversation_collection_copies_reference_rows_into_a_separate_path(monkeypatch):
+    """conversation_runner's writes must never land in the same path prefetch_bench
+    measures against — confirmed as the root cause of a lost hit@K case on real
+    data (2026-07-08): a prior run's own conversation turns wrote near-duplicate
+    copies of their query text into chroma_data_benchmark, which then outranked
+    the real target on a later prefetch_bench measurement."""
+    rows = [{"id": "a", "content": "hello", "metadata": {"chat_id": "c1"}}]
+    source_client = _FakeChromaClient(_FakeChromaCollection(rows))
+    dest_client = _FakeDestClient()
+
+    def _fake_persistent_client(path, settings=None):
+        return source_client if path == "reference_path" else dest_client
+
+    monkeypatch.setattr(chromadb, "PersistentClient", _fake_persistent_client)
+
+    count = asyncio.run(
+        _reseed_conversation_collection("reference_path", "conversation_path", "episodic_memory")
+    )
+
+    assert count == 1
+    dest_col = dest_client.collections["episodic_memory"]
+    assert dest_col.added["ids"] == ["a"]
+    assert dest_col.added["documents"] == ["hello"]
 
 
 def test_summary_lines_handles_empty_conversations():
