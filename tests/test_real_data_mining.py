@@ -8,11 +8,23 @@ from benchmark.real_data_mining import generate_case, load_or_mine, mine_cases
 from tests._orch_fakes import _Completions, _LLMClient
 
 
-def _entry(content: str, message_id="msg1", chat_id="chat1") -> dict:
+def _entry(content: str, message_id="msg1", chat_id="chat1", id="row1") -> dict:
     return {
-        "id": "row1", "content": content,
+        "id": id, "content": content,
         "metadata": {"message_id": message_id, "chat_id": chat_id, "importance": 0.9},
     }
+
+
+class _CountingCompletions(_Completions):
+    """Wraps _Completions to count how many LLM calls were actually made."""
+
+    def __init__(self, content="ok"):
+        super().__init__(content=content)
+        self.call_count = 0
+
+    async def create(self, **kw):
+        self.call_count += 1
+        return await super().create(**kw)
 
 
 def test_generate_case_parses_llm_json_response():
@@ -73,3 +85,55 @@ def test_load_or_mine_caches_to_disk(tmp_path):
 
     cached = asyncio.run(load_or_mine([_entry(long_content)], _ExplodingClient(), cache_path))
     assert cached == cases
+
+
+def test_mine_cases_stops_early_once_limit_valid_cases_found():
+    """First end-to-end run (2026-07-08): mining ran over ~all 1777 rows for a
+    --limit 3 test, taking ~50 minutes. mine_cases must stop as soon as it has
+    `limit` valid cases instead of exhausting every candidate."""
+    long_content = " ".join(["word"] * 20)
+    good_reply = json.dumps({"query": "q", "expected_fact": "f"})
+    entries = [_entry(long_content, message_id=f"msg{i}", id=f"row{i}") for i in range(5)]
+    completions = _CountingCompletions(good_reply)
+    llm = _LLMClient(completions)
+
+    cases = asyncio.run(mine_cases(entries, llm, limit=2))
+
+    assert len(cases) == 2
+    assert completions.call_count == 2  # stopped early — didn't mine all 5
+
+
+def test_mine_cases_without_limit_mines_every_candidate():
+    long_content = " ".join(["word"] * 20)
+    good_reply = json.dumps({"query": "q", "expected_fact": "f"})
+    entries = [_entry(long_content, message_id=f"msg{i}", id=f"row{i}") for i in range(3)]
+    completions = _CountingCompletions(good_reply)
+    llm = _LLMClient(completions)
+
+    cases = asyncio.run(mine_cases(entries, llm))
+
+    assert len(cases) == 3
+    assert completions.call_count == 3
+
+
+def test_load_or_mine_passes_limit_through_when_mining(tmp_path):
+    long_content = " ".join(["word"] * 20)
+    good_reply = json.dumps({"query": "q", "expected_fact": "f"})
+    entries = [_entry(long_content, message_id=f"msg{i}", id=f"row{i}") for i in range(5)]
+    completions = _CountingCompletions(good_reply)
+    llm = _LLMClient(completions)
+    cache_path = tmp_path / "cases.json"
+
+    cases = asyncio.run(load_or_mine(entries, llm, cache_path, limit=2))
+
+    assert len(cases) == 2
+    assert completions.call_count == 2
+
+
+def test_load_or_mine_slices_cached_results_to_limit(tmp_path):
+    cache_path = tmp_path / "cases.json"
+    cache_path.write_text(json.dumps([{"id": str(i)} for i in range(5)]))
+
+    cases = asyncio.run(load_or_mine([], None, cache_path, limit=2))
+
+    assert len(cases) == 2

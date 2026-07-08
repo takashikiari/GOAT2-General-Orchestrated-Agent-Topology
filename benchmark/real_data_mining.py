@@ -63,10 +63,17 @@ async def generate_case(entry: dict, llm_client) -> dict | None:
     }
 
 
-async def mine_cases(entries: list[dict], llm_client) -> list[dict]:
-    """Select candidates from ``entries`` and generate a case for each that succeeds."""
+async def mine_cases(entries: list[dict], llm_client, limit: int | None = None) -> list[dict]:
+    """Select candidates from ``entries`` and generate a case for each that succeeds.
+
+    Stops as soon as ``limit`` valid cases have been generated, rather than
+    attempting every candidate — mining the first end-to-end benchmark run's
+    ~1777-row corpus for a 3-case test took ~50 minutes before this existed.
+    """
     cases = []
     for entry in select_candidates(entries):
+        if limit is not None and len(cases) >= limit:
+            break
         case = await generate_case(entry, llm_client)
         if case is not None:
             cases.append(case)
@@ -75,11 +82,17 @@ async def mine_cases(entries: list[dict], llm_client) -> list[dict]:
 
 async def load_or_mine(
     entries: list[dict], llm_client, cache_path: Path, force: bool = False,
+    limit: int | None = None,
 ) -> list[dict]:
-    """Return cached mined cases from ``cache_path``, mining fresh only when needed."""
+    """Return cached mined cases from ``cache_path``, mining fresh only when needed.
+
+    ``limit`` bounds both paths: cached results are sliced to it, and a fresh
+    mining run stops as soon as it has ``limit`` valid cases.
+    """
     if cache_path.exists() and not force:
-        return json.loads(cache_path.read_text())
-    cases = await mine_cases(entries, llm_client)
+        cases = json.loads(cache_path.read_text())
+        return cases[:limit] if limit is not None else cases
+    cases = await mine_cases(entries, llm_client, limit=limit)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(cases, indent=2))
     return cases

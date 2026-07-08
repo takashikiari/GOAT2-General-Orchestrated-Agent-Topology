@@ -109,9 +109,10 @@ async def main() -> int:
     entries = _load_snapshot_entries(args.benchmark_path, EPISODIC_COLLECTION_NAME)
     print(f"loaded {len(entries)} entries from {args.benchmark_path!r}")
 
-    cases = await load_or_mine(entries, registry.llm_client, Path(args.cache_path), force=args.force_mine)
-    if args.limit:
-        cases = cases[:args.limit]
+    cases = await load_or_mine(
+        entries, registry.llm_client, Path(args.cache_path),
+        force=args.force_mine, limit=args.limit,
+    )
     print(f"evaluating {len(cases)} mined case(s)")
 
     runner = BenchmarkRunner(registry=registry)
