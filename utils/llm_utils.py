@@ -93,7 +93,7 @@ def _format_dep_context(context: dict[str, "AgentResult"]) -> str:
     return "\n\n".join(parts)
 
 
-def _extract_json(text: str) -> dict:
+def extract_json(text: str) -> dict:
     """Extract a JSON object from raw LLM output.
 
     Handles: bare JSON, markdown fences (```json ... ```), and JSON embedded
