@@ -80,9 +80,13 @@ access_count_ref = 10
 # See memory/activation.py.
 [activation]
 # Redis TTL — cleanup only, NOT a reset. Expiry just means "re-derive cold next
-# time"; topic continuity is semantic, not time-based. 7 days = a thread may
-# survive across sessions.
-ttl_seconds = 604800
+# time"; topic continuity is semantic, not time-based. Lowered from 604800
+# (7 days) to 3600 (1 hour) on 2026-07-09: a week-old topic centroid held
+# "warm" across a real multi-day gap risks serving stale L3 results instead
+# of a fresh search; the trade-off is that topic continuity (including
+# archived_topics / "topic return") no longer survives a >1h gap either,
+# so a same-day return after e.g. lunch or a meeting now starts cold.
+ttl_seconds = 3600
 # cosine(query_emb, thread_centroid) >= drift_warm → warm (same thread, serve
 # the held activation, skip all three prefetch mechanisms). Tuned to MiniLM L6
 # v2's measured geometry: paraphrases + intent follow-ups land 0.80–0.95, so
@@ -118,6 +122,22 @@ topic_archive_max = 10          # past topic centroids kept per chat (newest-las
 # chain; at the cap tools are withheld and synthesis is forced.
 [tool_loop]
 max_iterations = 6
+# Cumulative chars of tool output (across every call, every iteration) allowed
+# before the round is force-synthesized, same backstop as max_iterations but
+# sized to content instead of round count -- a model issuing several large
+# read_file/shell_run calls can otherwise blow the resent conversation past
+# the model's context window well before max_iterations is reached (2026-07-09
+# incident: 6 iterations reached 2.08M tokens in one turn and the API call
+# was rejected outright).
+max_output_chars = 60000
+# Per-tool-call evidence preview formatting (orchestrator._compact_tool_summary).
+# Results shorter than result_short_threshold chars are stored verbatim; longer
+# ones are head/tail-truncated (head_tail-classified tools) or head-only.
+result_short_threshold = 400
+result_head_chars = 200
+result_tail_chars = 150
+# Max chars of a tool call's JSON arguments shown in the evidence preview.
+args_preview_chars = 200
 
 # Cross-encoder reranker — re-scores the merged candidate list after BM25 +
 # semantic hybrid retrieval. Runs on top_k candidates inside the prefetch
@@ -133,3 +153,25 @@ top_k = 20
 
 [analytics]
 log_interval = 100
+
+# Auto-promote: moves working-memory surplus (beyond [working] max_messages)
+# into episodic (L3) in chunks, keeping working memory bounded.
+[auto_promote]
+chunk_size = 50
+min_surplus = 4
+
+# Gap-filter fallback cutoff (memory/context_assembler.py) when the
+# blended_score distribution is uniform (no clear gap to filter on).
+[context_assembler]
+blended_min_score = 0.25
+
+# Privacy-truncation cap for the logged user_message field. (greeting/recall
+# confidence thresholds stay hardcoded in memory/observability_collector.py —
+# analytics-only labels that never gate behaviour; see that module's comment.)
+[observability]
+max_message_chars = 200
+
+# Score boost applied to L3 results whose content mentions an entity from the
+# query (memory/entity_boost.py).
+[entity_boost]
+weight = 0.2

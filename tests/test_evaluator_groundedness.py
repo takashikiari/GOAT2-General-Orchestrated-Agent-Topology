@@ -9,14 +9,16 @@ from tests._orch_fakes import _Completions, _LLMClient
 
 
 class _CapturingCompletions(_Completions):
-    """Wraps _Completions to capture the messages actually sent to the LLM."""
+    """Wraps _Completions to capture the messages/kwargs actually sent to the LLM."""
 
     def __init__(self, content="ok"):
         super().__init__(content=content)
         self.last_messages = None
+        self.last_kwargs = None
 
     async def create(self, **kw):
         self.last_messages = kw.get("messages")
+        self.last_kwargs = kw
         return await super().create(**kw)
 
 
@@ -83,3 +85,62 @@ def test_groundedness_judge_prompt_instructs_not_to_flag_honest_uncertainty():
 
     system_msg = completions.last_messages[0]["content"]
     assert "don't remember" in system_msg.lower() or "own uncertainty" in system_msg.lower()
+
+
+def test_groundedness_judge_includes_tool_evidence_in_user_prompt():
+    """Real-data run (2026-07-09): manual review of 20 judge-flagged
+    "hallucinations" found ~60% were verified-accurate answers sourced from a
+    real read_file/shell_run/get_recent_logs call -- the judge only ever saw
+    memory context, never tool evidence, so it flagged them as unsupported.
+    tool_evidence must reach the judge's prompt as grounding material."""
+    reply = json.dumps({"grounded": True, "hallucinated_claims": [], "answered_without_evidence": False})
+    completions = _CapturingCompletions(reply)
+    llm = _LLMClient(completions)
+
+    asyncio.run(Evaluator.groundedness_judge(
+        "layers.py has 4 log lines: 87, 328, 399, 406.", "memory context here", llm,
+        tool_evidence="called shell_run(grep -n log memory/layers.py) -> "
+                       "87: log.warning(...)\n328: log.debug(...)\n399: log.info(...)\n406: log.warning(...)",
+    ))
+
+    user_msg = completions.last_messages[1]["content"]
+    assert "TOOL_EVIDENCE" in user_msg
+    assert "87: log.warning" in user_msg
+
+
+def test_groundedness_judge_prompt_instructs_tool_evidence_counts_as_grounding():
+    reply = json.dumps({"grounded": True, "hallucinated_claims": [], "answered_without_evidence": False})
+    completions = _CapturingCompletions(reply)
+    llm = _LLMClient(completions)
+
+    asyncio.run(Evaluator.groundedness_judge("x", "y", llm, tool_evidence="z"))
+
+    system_msg = completions.last_messages[0]["content"]
+    assert "TOOL_EVIDENCE" in system_msg
+
+
+def test_groundedness_judge_omits_tool_evidence_marker_when_absent():
+    reply = json.dumps({"grounded": True, "hallucinated_claims": [], "answered_without_evidence": False})
+    completions = _CapturingCompletions(reply)
+    llm = _LLMClient(completions)
+
+    asyncio.run(Evaluator.groundedness_judge("x", "y", llm))
+
+    user_msg = completions.last_messages[1]["content"]
+    assert "TOOL_EVIDENCE" in user_msg
+    assert "(none)" in user_msg
+
+
+def test_groundedness_judge_uses_max_tokens_above_300():
+    """Real-data run (2026-07-09): max_tokens=300 truncated the judge's own
+    JSON mid-array for longer tool-enriched responses -- 13/80 turns in one
+    run degraded to grounded=None purely from truncation, not an actual
+    verdict. The cap must be raised well past what a long hallucinated_claims
+    list needs to complete."""
+    reply = json.dumps({"grounded": True, "hallucinated_claims": [], "answered_without_evidence": False})
+    completions = _CapturingCompletions(reply)
+    llm = _LLMClient(completions)
+
+    asyncio.run(Evaluator.groundedness_judge("x", "y", llm))
+
+    assert completions.last_kwargs["max_tokens"] > 300

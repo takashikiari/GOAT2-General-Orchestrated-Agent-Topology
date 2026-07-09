@@ -10,6 +10,13 @@ import time
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
+from tools.shell_config import (
+    SHELL_CMD_LOG_CHARS as _CMD_LIMIT,
+    SHELL_DEFAULT_TIMEOUT as _DEF_T,
+    SHELL_MAX_OUTPUT_CHARS as _MAX_OUTPUT,
+    SHELL_MAX_TIMEOUT as _MAX_T,
+    SHELL_MIN_TIMEOUT as _MIN_T,
+)
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -18,15 +25,11 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 __all__ = ["build"]
 
-_MAX_OUTPUT = 4000
-_MAX_T, _MIN_T, _DEF_T = 300, 1, 30
-_CMD_LIMIT = 120
-
 _DESCRIPTION = (
     "Run a shell command with NO restrictions. Full host access — pipes, "
-    "redirects, &&, sudo, rm, etc. all work. Timeout clamped to [1, 300]s. "
-    "Output truncated to 4000 chars. Returns stdout+stderr plus '[exit N]' "
-    "on non-zero exit. GOAT-only — NOT available to DAG agents."
+    f"redirects, &&, sudo, rm, etc. all work. Timeout clamped to [{_MIN_T}, "
+    f"{_MAX_T}]s. Output truncated to {_MAX_OUTPUT} chars. Returns stdout+stderr "
+    "plus '[exit N]' on non-zero exit. GOAT-only — NOT available to DAG agents."
 )
 
 
@@ -77,7 +80,7 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": f"Timeout seconds, clamped to [1, 300]. Default: {_DEF_T}.",
+                    "description": f"Timeout seconds, clamped to [{_MIN_T}, {_MAX_T}]. Default: {_DEF_T}.",
                     "default": _DEF_T,
                 },
             },

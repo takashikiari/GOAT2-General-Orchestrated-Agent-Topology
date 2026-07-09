@@ -186,8 +186,10 @@ class Evaluator:
     @staticmethod
     async def groundedness_judge(
         response: str, retrieved_context: str, llm_client: "AsyncOpenAI | None" = None,
+        tool_evidence: str = "",
     ) -> dict:
-        """Judge whether ``response`` is grounded in ``retrieved_context`` (spec §4.6).
+        """Judge whether ``response`` is grounded in ``retrieved_context`` OR
+        ``tool_evidence`` (spec §4.6).
 
         Returns ``{"grounded": bool | None, "hallucinated_claims": list[str],
         "answered_without_evidence": bool}``. ``grounded`` is ``None`` when no
@@ -195,6 +197,17 @@ class Evaluator:
         not false (spec §6: judge failures degrade rather than raising).
         Independent of ``expected_fact`` correctness: a response can be
         lexically correct yet contain an unsupported extra claim, or vice versa.
+
+        ``tool_evidence`` (the turn's ``[Tool calls]`` summary, e.g. from
+        ``Orchestrator.run``'s ``on_tool_summary`` callback) is a second, equally
+        valid grounding source. Real-data manual review (2026-07-09): of 20
+        judge-flagged "hallucinations" from a run where GOAT had read_file/
+        shell_run/get_recent_logs available, ~60% were verified byte-for-byte
+        accurate against the real log/source — the judge only ever saw memory
+        context, never tool output, so a correct tool-sourced claim was
+        indistinguishable from an invented one. Without this parameter,
+        enabling tools makes the benchmark's hallucination rate look WORSE
+        even when real hallucination drops.
         """
         if llm_client is None:
             return {"grounded": None, "hallucinated_claims": [], "answered_without_evidence": False}
@@ -202,24 +215,32 @@ class Evaluator:
         from utils.llm_utils import extract_json
         system = (
             "You are a strict fact-checking grader. Compare the RESPONSE against "
-            "the RETRIEVED_CONTEXT (the only memory the assistant had access to). "
-            "Reply with ONLY a JSON object: "
+            "the RETRIEVED_CONTEXT (the assistant's memory) and the TOOL_EVIDENCE "
+            "(results of tools like read_file/shell_run/get_recent_logs the "
+            "assistant called this turn) — BOTH are valid grounding sources, not "
+            "just RETRIEVED_CONTEXT. Reply with ONLY a JSON object: "
             '{"grounded": true/false, "hallucinated_claims": ["..."], '
             '"answered_without_evidence": true/false}. hallucinated_claims lists '
-            "any specific claims in RESPONSE not supported by RETRIEVED_CONTEXT. "
+            "any specific claims in RESPONSE not supported by RETRIEVED_CONTEXT or "
+            "TOOL_EVIDENCE. "
             "Do NOT list a self-referential statement about the assistant's own "
             "uncertainty or lack of memory (e.g. \"I don't remember that\", "
             "\"I don't have this information\") as a hallucinated claim — those "
             "are honest non-answers, not fabricated facts. "
             "answered_without_evidence is true when RESPONSE answers confidently "
-            "despite RETRIEVED_CONTEXT being empty or irrelevant."
+            "despite RETRIEVED_CONTEXT and TOOL_EVIDENCE both being empty or "
+            "irrelevant."
         )
-        user = f"RETRIEVED_CONTEXT:\n{retrieved_context or '(empty)'}\n\nRESPONSE:\n{response}"
+        user = (
+            f"RETRIEVED_CONTEXT:\n{retrieved_context or '(empty)'}\n\n"
+            f"TOOL_EVIDENCE:\n{tool_evidence or '(none)'}\n\n"
+            f"RESPONSE:\n{response}"
+        )
         try:
             r = await llm_client.chat.completions.create(
                 model=settings.MODEL_NAME,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                temperature=0.0, max_tokens=300,
+                temperature=0.0, max_tokens=1024,
             )
             parsed = extract_json(r.choices[0].message.content or "")
             raw_claims = parsed.get("hallucinated_claims") or []

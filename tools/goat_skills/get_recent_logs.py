@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
+from tools.get_recent_logs_config import GET_RECENT_LOGS_MAX_LINES as _MAX_LINES
 from utils.logging.setup import LOG_FILE
 
 if TYPE_CHECKING:
@@ -18,7 +19,6 @@ if TYPE_CHECKING:
 
 __all__ = ["build"]
 
-_MAX_LINES = 500
 _LEVELS = frozenset({"ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _DESCRIPTION = (
     "Recent lines from GOAT's own log file, optionally filtered by level. "
@@ -80,7 +80,7 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
             "properties": {
                 "minutes": {"type": "integer", "description": "Look-back window in minutes (default 30)"},
                 "level": {"type": "string", "description": "Filter: ALL/DEBUG/INFO/WARNING/ERROR/CRITICAL (default ALL)"},
-                "limit": {"type": "integer", "description": "Max lines to return (default 100, max 500)"},
+                "limit": {"type": "integer", "description": f"Max lines to return (default 100, max {_MAX_LINES})"},
             },
         },
         handler=handler,

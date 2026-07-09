@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from plugins.plugins_config import PLUGIN_SCAN_INTERVAL_SECONDS as _SCAN_INTERVAL
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -18,8 +19,6 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 __all__ = ["post_init_hook"]
-
-_SCAN_INTERVAL = 30
 
 
 async def _loop(registry: "ServiceRegistry") -> None:

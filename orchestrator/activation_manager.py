@@ -25,6 +25,10 @@ async def update_activation(
         activation.turn_count += 1
         activation.ts = now
         await layers.set_activation(chat_id, activation)
+        log.info(
+            "activation updated chat=%s state=warm topic=%s turn=%d",
+            chat_id, activation.topic_id, activation.turn_count,
+        )
         return activation
 
     if query_emb is None:
@@ -62,4 +66,8 @@ async def update_activation(
         archived_topics=archived,
     )
     await layers.set_activation(chat_id, new_act)
+    log.info(
+        "activation updated chat=%s state=%s topic=%s turn=%d",
+        chat_id, turn_state, topic_id, new_turn_count,
+    )
     return new_act

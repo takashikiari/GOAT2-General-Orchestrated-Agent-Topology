@@ -20,15 +20,16 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from memory.config import WORKING_MAX_MESSAGES
+from memory.config_extra import AUTO_PROMOTE_CHUNK_SIZE, AUTO_PROMOTE_MIN_SURPLUS
 from memory.working.working import WorkingMemory
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-PROMOTE_CHUNK_SIZE = 50
+PROMOTE_CHUNK_SIZE = AUTO_PROMOTE_CHUNK_SIZE
 # Minimum surplus before trimming fires. Prevents every-turn ping-pong when
 # a conversation is exactly at cap: 2 messages added → 2 dropped → repeat.
-PROMOTE_MIN_SURPLUS = 4
+PROMOTE_MIN_SURPLUS = AUTO_PROMOTE_MIN_SURPLUS
 
 
 async def maybe_auto_promote(

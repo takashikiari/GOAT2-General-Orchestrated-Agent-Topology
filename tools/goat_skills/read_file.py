@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
+from tools.read_file_config import (
+    READ_FILE_DEFAULT_MAX_CHARS as _DEF_MAX_CHARS,
+    READ_FILE_HARD_BYTE_CAP as _HARD_BYTE_CAP,
+    READ_FILE_MAX_MAX_CHARS as _MAX_MAX_CHARS,
+    READ_FILE_MIN_MAX_CHARS as _MIN_MAX_CHARS,
+    READ_FILE_PATH_PREVIEW_CHARS as _PATH_PREVIEW,
+)
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -23,22 +30,13 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 __all__ = ["build"]
 
-# Char return cap (model-facing, clamped). Default chosen to fit comfortably in
-# context without crowding out memory tiers; raised on demand up to the hard cap.
-_DEF_MAX_CHARS = 8000
-_MIN_MAX_CHARS, _MAX_MAX_CHARS = 100, 100_000
-# Hard byte cap: refuse files larger than this outright so a multi-GB file can't
-# be loaded into memory or the loop. 2 MB is well past any useful single read.
-_HARD_BYTE_CAP = 2_000_000
-_PATH_PREVIEW = 120
-
 _DESCRIPTION = (
     "Read a file from the host filesystem and return its text contents. Use "
     "this for config, logs, source, notes — anything GOAT needs to inspect "
-    "locally. Output is truncated to max_chars (default 8000, max 100000); "
-    "files larger than 2 MB are refused. Binary files are detected and refused. "
-    "Relative paths resolve against the bot's working directory. GOAT-only — "
-    "NOT available to DAG agents."
+    f"locally. Output is truncated to max_chars (default {_DEF_MAX_CHARS}, "
+    f"max {_MAX_MAX_CHARS}); files larger than {_HARD_BYTE_CAP // 1_000_000} MB "
+    "are refused. Binary files are detected and refused. Relative paths resolve "
+    "against the bot's working directory. GOAT-only — NOT available to DAG agents."
 )
 
 
@@ -94,7 +92,7 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": f"Max chars to return, clamped to [100, 100000]. Default: {_DEF_MAX_CHARS}.",
+                    "description": f"Max chars to return, clamped to [{_MIN_MAX_CHARS}, {_MAX_MAX_CHARS}]. Default: {_DEF_MAX_CHARS}.",
                     "default": _DEF_MAX_CHARS,
                 },
             },

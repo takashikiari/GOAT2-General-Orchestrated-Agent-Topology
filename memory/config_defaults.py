@@ -64,10 +64,28 @@ _DEFAULTS: dict = {
     },
     "tool_loop": {
         "max_iterations": 6,
+        "max_output_chars": 60000,
+        "result_short_threshold": 400,
+        "result_head_chars": 200,
+        "result_tail_chars": 150,
+        "args_preview_chars": 200,
     },
     "reranker": {
         "enabled": True,
         "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
         "top_k": 20,
+    },
+    "auto_promote": {
+        "chunk_size": 50,
+        "min_surplus": 4,
+    },
+    "context_assembler": {
+        "blended_min_score": 0.25,
+    },
+    "observability": {
+        "max_message_chars": 200,
+    },
+    "entity_boost": {
+        "weight": 0.2,
     },
 }

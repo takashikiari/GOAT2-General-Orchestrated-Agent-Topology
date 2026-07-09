@@ -15,12 +15,10 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Optional
 
+from memory.config_extra import OBS_MAX_MESSAGE_CHARS as _MAX_MESSAGE_CHARS
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
-
-# Privacy: the user message is truncated before being recorded.
-_MAX_MESSAGE_CHARS = 200
 
 
 @dataclass

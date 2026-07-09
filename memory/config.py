@@ -147,6 +147,9 @@ _tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
 AGENTIC_MAX_ITERATIONS: Final[int] = int(
     _tool_loop.get("max_iterations", _DEFAULTS["tool_loop"]["max_iterations"])
 )
+TOOL_ROUND_MAX_OUTPUT_CHARS: Final[int] = int(
+    _tool_loop.get("max_output_chars", _DEFAULTS["tool_loop"]["max_output_chars"])
+)
 
 _reranker_cfg = _cfg.get("reranker", _DEFAULTS["reranker"])
 RERANKER_ENABLED: Final[bool] = bool(
@@ -195,6 +198,7 @@ __all__ = [
     "TOPIC_RETURN_THRESHOLD",
     "TOPIC_ARCHIVE_MAX",
     "AGENTIC_MAX_ITERATIONS",
+    "TOOL_ROUND_MAX_OUTPUT_CHARS",
     "RERANKER_ENABLED",
     "RERANKER_MODEL",
     "RERANKER_TOP_K",

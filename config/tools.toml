@@ -2,3 +2,27 @@
 max_chars_default = 8000
 timeout_seconds   = 30
 screenshot_dir    = "/tmp/goat_screenshots"
+
+[read_file]
+default_max_chars  = 8000
+min_max_chars       = 100
+max_max_chars       = 100000
+hard_byte_cap       = 2000000
+path_preview_chars  = 120
+
+[write_file]
+max_content_chars   = 200000
+path_preview_chars  = 120
+
+[shell]
+max_output_chars = 4000
+min_timeout      = 1
+max_timeout      = 300
+default_timeout  = 30
+cmd_log_chars    = 120
+
+[get_recent_logs]
+max_lines = 500
+
+[plugins]
+scan_interval_seconds = 30

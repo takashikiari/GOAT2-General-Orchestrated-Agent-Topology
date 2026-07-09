@@ -35,16 +35,29 @@ async def run_conversation(
 
 async def _run_one_turn(orchestrator, registry, chat_id: str, query: str) -> dict:
     """Run a single orchestrator turn; capture response, latency, context_blocks,
-    warm_served (via diff_analytics), and the groundedness verdict."""
+    warm_served (via diff_analytics), and the groundedness verdict.
+
+    ``tool_summary`` (captured via ``on_tool_summary``) is passed to the judge
+    alongside ``context_blocks`` — without it, a correct answer sourced from a
+    tool call (read_file, shell_run, get_recent_logs, ...) is indistinguishable
+    from an invented one, since it never appears in memory context.
+    """
     analytics = registry.memory_analytics
     before = snapshot_analytics(analytics)
     captured: list[list[str]] = []
+    tool_summaries: list[str] = []
     t0 = time.time()
-    response = await orchestrator.run(query, chat_id, on_context_assembled=captured.append)
+    response = await orchestrator.run(
+        query, chat_id,
+        on_context_assembled=captured.append, on_tool_summary=tool_summaries.append,
+    )
     latency = time.time() - t0
     blocks = captured[-1] if captured else []
+    tool_summary = tool_summaries[-1] if tool_summaries else ""
     diff = diff_analytics(before, snapshot_analytics(analytics), latency, response, None, blocks)
-    verdict = await Evaluator.groundedness_judge(response, "\n\n".join(blocks), registry.llm_client)
+    verdict = await Evaluator.groundedness_judge(
+        response, "\n\n".join(blocks), registry.llm_client, tool_evidence=tool_summary,
+    )
     return {"response": response, "chat_id": chat_id, "groundedness": verdict, **diff}
 
 

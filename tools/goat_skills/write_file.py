@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
+from tools.write_file_config import (
+    WRITE_FILE_MAX_CONTENT_CHARS as _MAX_CONTENT_CHARS,
+    WRITE_FILE_PATH_PREVIEW_CHARS as _PATH_PREVIEW,
+)
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -26,11 +30,6 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 __all__ = ["build"]
 
-# Hard cap on content so a runaway write can't dump a huge file or pin the loop.
-# 200k chars covers any reasonable single tool write; larger writes should stream
-# via shell_run or be split across calls.
-_MAX_CONTENT_CHARS = 200_000
-_PATH_PREVIEW = 120
 _MODES = ("overwrite", "append")
 
 _DESCRIPTION = (
@@ -38,9 +37,9 @@ _DESCRIPTION = (
     "config drafts, generated output — anything GOAT should persist locally. "
     "``mode`` is 'overwrite' (default, replaces the file) or 'append' (adds to "
     "the end, creating the file if absent). Parent directories are created by "
-    "default (set create_dirs=false to disable). Content is capped at 200000 "
-    "chars; writing to an existing directory path is refused. GOAT-only — NOT "
-    "available to DAG agents."
+    f"default (set create_dirs=false to disable). Content is capped at "
+    f"{_MAX_CONTENT_CHARS} chars; writing to an existing directory path is "
+    "refused. GOAT-only — NOT available to DAG agents."
 )
 
 

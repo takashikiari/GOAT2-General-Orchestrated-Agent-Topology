@@ -34,6 +34,7 @@ from tools.memory_promote import build_promote_memory_tool
 from tools.memory_tools import build_search_memory_tool
 from tools.memory_writer import build_store_memory_tool
 from tools.workflow_tools import build_workflow_tools
+from telegram_interface.telegram_config import UPDATE_DEDUPE_TTL_SECONDS as _UPDATE_DEDUPE_TTL_SECONDS
 from utils.logging.setup import get_logger
 from workflow.config import WorkflowConfig
 from workflow.dag_channel import DagChannel
@@ -43,11 +44,8 @@ from workflow.runner import WorkflowRunner
 
 log = get_logger(__name__)
 
-_MAX_TG_LEN = 4096
+_MAX_TG_LEN = 4096  # Telegram's hard message-length limit — protocol constant, not tunable.
 _ERROR_REPLY = "Something went wrong, please try again."
-# Redelivery-guard TTL: comfortably longer than any realistic gap between a
-# bot restart/crash and Telegram's next redelivery of an unacknowledged update.
-_UPDATE_DEDUPE_TTL_SECONDS = 86400
 
 
 def _truncate(text: str) -> str:

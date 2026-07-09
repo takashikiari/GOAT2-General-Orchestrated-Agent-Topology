@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from memory.config_extra import ENTITY_BOOST_WEIGHT as _ENTITY_BOOST_WEIGHT
+
 if TYPE_CHECKING:
     from memory.gliner_extractor import GLiNERExtractor
 
@@ -21,7 +23,6 @@ if TYPE_CHECKING:
 # At weight=0.2: a result with 100% entity overlap gets +0.2 on top of its
 # blended score (~0.3–0.7 typical), pushing it clearly ahead of non-matching
 # results without dominating the ranking when the match is partial.
-_ENTITY_BOOST_WEIGHT = 0.2
 
 
 def _parse_stored_entities(meta_val: str) -> set[str]:

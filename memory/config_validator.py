@@ -15,6 +15,7 @@ def validate_config(cfg: dict) -> None:
     _check_retrieval_budget(cfg.get("retrieval_budget", {}))
     _check_prefetch(cfg.get("prefetch", {}))
     _check_working(cfg.get("working", {}))
+    _check_tool_loop(cfg.get("tool_loop", {}))
 
 
 def _check_activation(act: dict) -> None:
@@ -79,3 +80,12 @@ def _check_working(wk: dict) -> None:
     mm = wk.get("max_messages")
     if mm is not None and int(mm) <= 0:
         raise ValueError(f"[working] max_messages ({mm}) must be > 0.")
+
+
+def _check_tool_loop(tl: dict) -> None:
+    mi = tl.get("max_iterations")
+    if mi is not None and int(mi) <= 0:
+        raise ValueError(f"[tool_loop] max_iterations ({mi}) must be > 0.")
+    mo = tl.get("max_output_chars")
+    if mo is not None and int(mo) <= 0:
+        raise ValueError(f"[tool_loop] max_output_chars ({mo}) must be > 0.")

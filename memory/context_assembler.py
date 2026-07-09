@@ -8,9 +8,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from memory.budget import estimate_tokens
+from memory.config_extra import BLENDED_MIN_SCORE as _BLENDED_MIN_SCORE
 from memory.context_budget import allocate_context_budget
-
-_BLENDED_MIN_SCORE = 0.25
 
 
 def assemble_blocks(

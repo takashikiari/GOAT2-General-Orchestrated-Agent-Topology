@@ -1,0 +1,4 @@
+[dedupe]
+# Redelivery-guard TTL: comfortably longer than any realistic gap between a
+# bot restart/crash and Telegram's next redelivery of an unacknowledged update.
+ttl_seconds = 86400
