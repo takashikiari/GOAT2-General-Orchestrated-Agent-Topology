@@ -40,6 +40,11 @@ class BenchmarkRunner:
         from tools.memory_writer import build_store_memory_tool  # lazy
 
         self._registry = registry or ServiceRegistry()
+        # Production loads plugin tools (read_file, shell, ...) via
+        # telegram_interface._plugin_scanner's post_init_hook, which never runs
+        # here — scan once so the orchestrator sees the same tool set instead
+        # of silently missing every plugin tool.
+        self._registry.plugin_manager.scan()
         layers = self._registry.memory_layers
         self._orchestrator = Orchestrator(
             layers=layers,

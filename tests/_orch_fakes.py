@@ -88,6 +88,7 @@ class _FakeLayers:
 
     async def store_episodic(self, chat_id: str, content: str, tags=None, topic_id: str = "", doc_id: str | None = None) -> str:
         self.archive_calls += 1
+        self.archived_contents = getattr(self, "archived_contents", []) + [content]
         return doc_id or str(__import__("uuid").uuid4())
 
     # L2.5 activation layer — fakes return empty/None so every single-turn test
@@ -129,7 +130,14 @@ class _FakeAnalytics:
 
 
 class _FakePluginManager:
-    tools = []
+    def __init__(self, tools_after_scan=None):
+        self._tools_after_scan = tools_after_scan or []
+        self.tools = []
+        self.scan_calls = 0
+
+    def scan(self):
+        self.scan_calls += 1
+        self.tools = list(self._tools_after_scan)
 
 
 class _FakeRegistry:
