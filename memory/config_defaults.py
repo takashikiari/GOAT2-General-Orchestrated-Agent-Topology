@@ -34,6 +34,7 @@ _DEFAULTS: dict = {
         "l3_reserve_fraction": 0.3,
         "l2_floor_tokens": 500,
         "l3_min_guarantee_tokens": 1200,
+        "temporal_l3_guarantee_tokens": 4000,
         # l3_gap_significance default — no l3_similarity_max_distance (removed).
         "l3_gap_significance": 3.0,
     },

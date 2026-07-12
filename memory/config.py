@@ -85,6 +85,11 @@ L2_FLOOR_TOKENS: Final[int] = int(
 L3_MIN_GUARANTEE_TOKENS: Final[int] = int(
     _retrieval_budget.get("l3_min_guarantee_tokens", _DEFAULTS["retrieval_budget"]["l3_min_guarantee_tokens"])
 )
+TEMPORAL_L3_GUARANTEE_TOKENS: Final[int] = int(
+    _retrieval_budget.get(
+        "temporal_l3_guarantee_tokens", _DEFAULTS["retrieval_budget"]["temporal_l3_guarantee_tokens"]
+    )
+)
 L3_GAP_SIGNIFICANCE: Final[float] = float(
     _retrieval_budget.get("l3_gap_significance", _DEFAULTS["retrieval_budget"]["l3_gap_significance"])
 )
@@ -185,6 +190,7 @@ __all__ = [
     "L3_RESERVE_FRACTION",
     "L2_FLOOR_TOKENS",
     "L3_MIN_GUARANTEE_TOKENS",
+    "TEMPORAL_L3_GUARANTEE_TOKENS",
     "L3_GAP_SIGNIFICANCE",
     "BUDGET_BASE",
     "BUDGET_CONFIDENCE_MULTIPLIER",

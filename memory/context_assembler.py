@@ -42,7 +42,7 @@ def assemble_blocks(
     mandatory_tokens = estimate_tokens(identity)
     blocks: list[str] = [identity]
 
-    l2_cap, _ = allocate_context_budget(mandatory_tokens, budget)
+    l2_cap, _ = allocate_context_budget(mandatory_tokens, budget, temporal=temporal_center is not None)
     trimmed = trim_recent_messages(messages, l2_cap)
     l2_tokens = 0
     if trimmed:

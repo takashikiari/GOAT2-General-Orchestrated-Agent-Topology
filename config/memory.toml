@@ -38,6 +38,19 @@ l2_floor_tokens = 500
 # realistic budgets, so L3 is never starved to 0. Anchored to observed L3
 # injection sizes (1159-1731 tokens); tune empirically (Verification V2).
 l3_min_guarantee_tokens = 1200
+# Wider L3 guarantee used instead of l3_min_guarantee_tokens when the current
+# turn's query named an explicit date/time (orchestrator.py's synchronous
+# temporal fast-path fired) — the user's own "on date X" question is already
+# the strongest possible relevance filter, so more of that window should
+# reach the LLM directly rather than being trimmed down by ranking heuristics
+# that can't distinguish real content from same-day meta-conversation about
+# the memory system itself. Confirmed live 2026-07-12: a 20-candidate, ~2h
+# temporal window (chat 1912576407, "azi pe la 12:00") didn't fit in the
+# default 1200-token guarantee even after the gap-collapse and proximity-
+# ordering fixes; 4000 is large enough to typically fit a dense ±1-2h window
+# of real conversation. Still bounded by l2_floor_tokens (the current turn's
+# own immediate conversation never fully vanishes).
+temporal_l3_guarantee_tokens = 4000
 # Gap-significance threshold for dynamic L3 injection filtering (replaces the
 # static l3_similarity_max_distance). The filter keeps results before the largest
 # consecutive-score gap when max_gap / mean_gap >= this value — scale-invariant

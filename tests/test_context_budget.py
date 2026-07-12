@@ -60,6 +60,35 @@ def test_zero_budget_yields_zero():
     assert l2_cap == 0 and l3_guarantee == 0
 
 
+# --- temporal=True: a wider dedicated L3 guarantee for explicit date/time queries -
+
+def test_temporal_guarantee_larger_than_default_on_realistic_budget():
+    """When the user named an explicit date/time (orchestrator's synchronous
+    fast-path fired), L3 gets a much bigger dedicated slice than the default
+    1200 — confirmed live 2026-07-12: a 20-candidate, ~2h-wide temporal
+    window needed more than the default guarantee could fit, so the real
+    exchange the user asked about lost out to closer, less-relevant content
+    even after the gap-collapse and proximity-ordering fixes."""
+    l2_cap, l3_guarantee = allocate_context_budget(mandatory_tokens=10, budget=4035, temporal=True)
+    default_l2_cap, default_l3_guarantee = allocate_context_budget(mandatory_tokens=10, budget=4035)
+    assert l3_guarantee > default_l3_guarantee
+    assert l2_cap < default_l2_cap                 # L2 gives up room, not a bigger overall budget
+
+
+def test_temporal_false_default_matches_existing_behavior():
+    """temporal=False (the default, unnamed-parameter call site) is byte-for-byte
+    the pre-existing behaviour — regression guard for every non-temporal turn."""
+    assert allocate_context_budget(mandatory_tokens=10, budget=4035) == \
+        allocate_context_budget(mandatory_tokens=10, budget=4035, temporal=False)
+
+
+def test_temporal_guarantee_still_respects_l2_floor():
+    """Even with the wider temporal guarantee, L2 never drops below its floor —
+    the current turn's own immediate conversation never fully vanishes."""
+    l2_cap, l3_guarantee = allocate_context_budget(mandatory_tokens=10, budget=4035, temporal=True)
+    assert l2_cap >= 500
+
+
 # --- _trim_recent_messages: pin the topic-setter, keep newest ----------------
 
 def _msg(role: str, content: str) -> dict:
@@ -197,3 +226,41 @@ def test_assemble_identity_omits_last_message_line_for_falsy_timestamp():
     layers = _layers([_msg("user", "salut")])
     blocks, _ = asyncio.run(layers.assemble_context("c", budget=4000, l3_results=[]))
     assert "Last message" not in blocks[0]
+
+
+# --- assemble_context: temporal_center widens L3's room -------------------------
+
+def test_assemble_widens_l3_budget_for_temporal_queries():
+    """temporal_center threads through assemble_context -> the wider
+    TEMPORAL_L3_GUARANTEE_TOKENS guarantee lets more of a real date-window's
+    results survive packing than the default guarantee, even with plenty of
+    L2 content competing for the same overall budget (confirmed live
+    2026-07-12: the default guarantee was too tight for a real 20-candidate
+    temporal window)."""
+    # 100 messages (~5400 tok) comfortably exceeds L2's cap under EITHER
+    # guarantee, so L2 fills to its cap both times and the L3 budget
+    # difference cleanly reflects the guarantee gap (1200 vs 4000), not an
+    # incidental L2-content shortfall.
+    big_l2 = [_msg("user", "x" * 400) for _ in range(100)]
+    layers = _layers(big_l2)
+
+    def _temporal_res(i):
+        return {
+            "content": f"target entry number {i} " + ("word " * 300),  # ~310 tok each
+            "metadata": {"timestamp": float(i)},
+            "blended_score": 0.5,
+            "mechanisms": ["temporal"],
+        }
+
+    results = [_temporal_res(i) for i in range(6)]  # ~1860 tok total: fits under the
+    # temporal guarantee (4000) but not the default one (1200).
+
+    _, l3_used_default = asyncio.run(
+        layers.assemble_context("c", budget=6000, l3_results=results)
+    )
+    _, l3_used_temporal = asyncio.run(
+        layers.assemble_context("c", budget=6000, l3_results=results, temporal_center=3.0)
+    )
+    assert l3_used_temporal > l3_used_default
+    assert l3_used_temporal == 6      # all fit under the wider temporal guarantee
+    assert l3_used_default < 6        # not all fit under the default one
