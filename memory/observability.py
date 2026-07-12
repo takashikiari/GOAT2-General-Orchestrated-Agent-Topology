@@ -65,6 +65,15 @@ class MemoryObservation:
     tokens_l0_l1: int = 0
     tokens_l2: int = 0
     tokens_l3: int = 0
+    # Non-block prompt weight, folded into tokens_injected but broken out here
+    # so it's visible which part is which. Both are appended to system_content
+    # or the API call AFTER set_context_from_blocks used to measure — the three
+    # assemble_blocks blocks are only part of what actually reaches the model.
+    # Measured against real logs (2026-07-12): single-call turns ran 2.1x-3.1x
+    # the tracked tokens_injected in real tokens_prompt_api; tool-round turns
+    # ran 5x-10x — this closes that gap so the metric is honest.
+    tokens_guidance: int = 0  # _SEARCH_MEMORY_GUIDANCE/_STORE_MEMORY_GUIDANCE/etc.
+    tokens_tools: int = 0     # serialized OpenAI tool schemas sent to the API
 
     # Real API token usage (from response.usage — billed counts, not estimated)
     tokens_prompt_api: int = 0
