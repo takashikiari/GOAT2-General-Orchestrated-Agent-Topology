@@ -55,6 +55,9 @@ _context_assembler_cfg = _cfg.get("context_assembler", _DEFAULTS["context_assemb
 BLENDED_MIN_SCORE: Final[float] = float(
     _context_assembler_cfg.get("blended_min_score", _DEFAULTS["context_assembler"]["blended_min_score"])
 )
+SESSION_GAP_SECONDS: Final[int] = int(
+    _context_assembler_cfg.get("session_gap_seconds", _DEFAULTS["context_assembler"]["session_gap_seconds"])
+)
 
 _observability_cfg = _cfg.get("observability", _DEFAULTS["observability"])
 # greeting_confidence/recall_confidence deliberately stay hardcoded in
@@ -83,6 +86,7 @@ __all__ = [
     "AUTO_PROMOTE_CHUNK_SIZE",
     "AUTO_PROMOTE_MIN_SURPLUS",
     "BLENDED_MIN_SCORE",
+    "SESSION_GAP_SECONDS",
     "OBS_MAX_MESSAGE_CHARS",
     "ENTITY_BOOST_WEIGHT",
 ]

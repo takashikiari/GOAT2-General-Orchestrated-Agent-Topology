@@ -81,6 +81,7 @@ _DEFAULTS: dict = {
     },
     "context_assembler": {
         "blended_min_score": 0.25,
+        "session_gap_seconds": 1800,
     },
     "observability": {
         "max_message_chars": 200,

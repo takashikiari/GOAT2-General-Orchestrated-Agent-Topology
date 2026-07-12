@@ -12,6 +12,7 @@ from memory.config_extra import (
     BLENDED_MIN_SCORE,
     ENTITY_BOOST_WEIGHT,
     OBS_MAX_MESSAGE_CHARS,
+    SESSION_GAP_SECONDS,
     TOOL_ARGS_PREVIEW_CHARS,
     TOOL_RESULT_HEAD_CHARS,
     TOOL_RESULT_SHORT_THRESHOLD,
@@ -33,6 +34,10 @@ def test_auto_promote_defaults():
 
 def test_blended_min_score_default():
     assert BLENDED_MIN_SCORE == 0.25
+
+
+def test_session_gap_seconds_default():
+    assert SESSION_GAP_SECONDS == 1800
 
 
 def test_obs_max_message_chars_default():

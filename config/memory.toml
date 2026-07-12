@@ -165,6 +165,11 @@ min_surplus = 4
 [context_assembler]
 blended_min_score = 0.25
 
+# Minimum gap (seconds) between two consecutive L2 messages before a
+# "--- pauză de X ---" separator is inserted into [Conversation History],
+# marking a session boundary in the transcript itself. 1800 = 30 min.
+session_gap_seconds = 1800
+
 # Privacy-truncation cap for the logged user_message field. (greeting/recall
 # confidence thresholds stay hardcoded in memory/observability_collector.py —
 # analytics-only labels that never gate behaviour; see that module's comment.)
