@@ -98,11 +98,28 @@ def trim_recent_messages(messages: list[dict], max_tokens: int) -> list[dict]:
 def fit_search_results(results: list[dict], max_tokens: int) -> tuple[str, int]:
     """Format results closest-first, keeping as many as fit max_tokens.
 
+    Temporal-tagged results (``mechanisms`` includes ``"temporal"`` — matched
+    an explicit date/time window the user named, per blended_gap_filter's
+    rescue) get a protected first pass of the budget: they are packed before
+    any non-temporal result, in their own relative (best-first) order, then
+    any remaining budget is filled by the rest in their relative order. This
+    mirrors context_budget.allocate_context_budget's guaranteed-minimum-first
+    pattern one level down, inside L3's own packing — without it, a rescued
+    temporal result that blended_gap_filter necessarily re-sorts toward the
+    end of the list (its score is what needed rescuing) would fall off a
+    tight budget exactly like the drop it was rescued from. Protection is not
+    unlimited: with more temporal results than fit, only as many as fit are
+    kept, still best-first among themselves.
+
     Returns (block_text, count). Each line prefixed with [YYYY-MM-DD HH:MM].
     """
+    temporal = [r for r in results if "temporal" in r.get("mechanisms", [])]
+    temporal_ids = {id(r) for r in temporal}
+    rest = [r for r in results if id(r) not in temporal_ids]
+
     lines: list[str] = []
     total = 0
-    for r in results:
+    for r in temporal + rest:
         ts = r["metadata"].get("timestamp", 0)
         dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
         line = f"- [{dt}] {r['content']}" if dt else f"- {r['content']}"
