@@ -197,7 +197,14 @@ class MemoryLayers:
         prefixed = prefix_with_date(content, now)
         doc_id = await self._episodic.store(chat_id, prefixed, metadata, doc_id=doc_id)
         if self._bm25 is not None:
-            self._bm25.add_doc(doc_id, prefixed, {**metadata, "chat_id": chat_id})
+            # EpisodicMemory.store stamps message_id on its OWN internal metadata
+            # copy right before writing to Chroma — that stamp never propagates
+            # back to `metadata` above, so it must be added here explicitly or
+            # every BM25-indexed copy of this memory permanently lacks
+            # message_id, breaking result_merger._result_id dedup identity.
+            self._bm25.add_doc(
+                doc_id, prefixed, {**metadata, "chat_id": chat_id, "message_id": doc_id},
+            )
         task = asyncio.create_task(self._enrich_at_write(doc_id, content))
         self._pending_bg.add(task)
         task.add_done_callback(self._pending_bg.discard)
@@ -214,7 +221,9 @@ class MemoryLayers:
         importance/entity-extraction math, just not split across two turns.
         """
         from memory.enrichment import enrich_l3_entry
-        await enrich_l3_entry(doc_id, content, "", self._episodic, self._extractor)
+        await enrich_l3_entry(
+            doc_id, content, "", self._episodic, self._extractor, bm25=self._bm25,
+        )
 
     async def find_by_keys(
         self, chat_id: str, keys: list[str], limit: int = 15,
