@@ -39,6 +39,7 @@ class _TemporalLayers(_FakeLayers):
         self._before = before
         self._target = target
         self.captured_l3_results: list[dict] = []
+        self.captured_temporal_center: float | None = None
         self.temporal_search_calls = 0
 
     async def get_activation(self, chat_id):
@@ -58,8 +59,10 @@ class _TemporalLayers(_FakeLayers):
         return []
 
     async def assemble_context(self, chat_id, budget=None, l3_results=None,
-                                facts=None, messages=None, identity_prompt=None):
+                                facts=None, messages=None, identity_prompt=None,
+                                temporal_center=None):
         self.captured_l3_results = list(l3_results or [])
+        self.captured_temporal_center = temporal_center
         ids = ",".join(
             str(r.get("metadata", {}).get("message_id")) for r in (l3_results or [])
         )
@@ -113,6 +116,12 @@ def test_first_time_date_query_gets_synchronous_temporal_context():
     )
     # Additive, not a replacement: the existing warm-served result must survive.
     assert "prev-1" in result_ids
+    # The window's midpoint must reach assemble_context (-> fit_search_results'
+    # proximity-to-requested-moment ordering) so packing under a tight budget
+    # prioritizes content near the moment actually asked about, not just the
+    # earliest thing in a wide window (see context_assembler.fit_search_results).
+    assert layers.captured_temporal_center is not None
+    assert abs(layers.captured_temporal_center - (after + before) / 2) < 1
 
 
 def test_temporal_fresh_result_carries_temporal_mechanism_tag():
@@ -158,3 +167,4 @@ def test_no_temporal_expression_leaves_existing_behaviour_unchanged():
     assert layers.temporal_search_calls == 0
     result_ids = {r.get("metadata", {}).get("message_id") for r in layers.captured_l3_results}
     assert result_ids == {"prev-1"}
+    assert layers.captured_temporal_center is None

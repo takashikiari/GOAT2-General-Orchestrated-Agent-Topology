@@ -183,6 +183,41 @@ class TestImplausibleYearGuard:
         assert abs(before - (center + 12 * 3600)) < 1
 
 
+class TestMultipleMatches:
+    """When search_dates returns multiple date/time fragments for the same
+    query (e.g. a vague day anchor plus a precise time), prefer the match
+    that carries time-of-day precision over an earlier, vaguer one — a bare
+    day reference must not shadow a more specific time in the same query.
+    """
+
+    def test_vague_day_plus_precise_time_prefers_the_time_match(self):
+        """Confirmed live 2026-07-12, real incident time (17:22, after noon —
+        so 'la 12:00' unambiguously means earlier today, not a future time
+        rolled back a day by PREFER_DATES_FROM='past'): 'Dar azi pe la 12:00
+        ce am discutat?' made dateparser return two matches — ('azi', now)
+        and ('la 12:00', today at noon) — and parse_interval used matches[0]
+        ('azi', with no time marker), producing a full-day window instead of
+        the intended ±1h-around-noon one, which let same-day unrelated
+        content crowd out the actually-requested moment downstream."""
+        incident_now = datetime(2026, 7, 12, 17, 22, 0)
+        result = parse_interval("Dar azi pe la 12:00 ce am discutat?", now=incident_now)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 12, 12, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_single_match_unaffected(self):
+        """Regression guard: queries with exactly one match (the common case,
+        every other test in this file) are untouched by the preference loop."""
+        result = parse_interval("Ce mi-ai spus pe 4 iulie 07:00?", now=_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 4, 7, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+
 class TestKnownUnparseableGaps:
     """Documented gaps, not fixed here (see temporal_route.py module
     docstring): both require a hand-rolled relative-expression lexicon,

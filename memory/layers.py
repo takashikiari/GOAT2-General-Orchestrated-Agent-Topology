@@ -424,11 +424,14 @@ class MemoryLayers:
         facts: dict[str, str] | None = None,
         messages: list[dict] | None = None,
         identity_prompt: str | None = None,
+        temporal_center: float | None = None,
     ) -> tuple[list[str], int]:
         """Assemble L0-L3 prompt blocks; returns (blocks, l3_used).
 
         Fetches any None inputs then delegates to context_assembler.assemble_blocks.
-        See memory.context_assembler for the full assembly logic.
+        See memory.context_assembler for the full assembly logic. ``temporal_center``
+        (midpoint of a parsed date/time window, when the caller has one — see
+        orchestrator.py) is forwarded through to fit_search_results.
         """
         if budget is None:
             budget = MAX_CONTEXT_TOKENS
@@ -438,4 +441,7 @@ class MemoryLayers:
             messages = await self.get_working_context(chat_id)
         if identity_prompt is None:
             identity_prompt = _BASE_IDENTITY
-        return assemble_blocks(budget, l3_results, facts, identity_prompt, messages, L3_GAP_SIGNIFICANCE)
+        return assemble_blocks(
+            budget, l3_results, facts, identity_prompt, messages,
+            L3_GAP_SIGNIFICANCE, temporal_center,
+        )

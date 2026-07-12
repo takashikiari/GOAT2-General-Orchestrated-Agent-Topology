@@ -20,6 +20,7 @@ def assemble_blocks(
     identity_prompt: str,
     messages: list[dict],
     significance: float = 3.0,
+    temporal_center: float | None = None,
 ) -> tuple[list[str], int]:
     """Build L0-L3 context blocks under ``budget`` tokens; returns (blocks, l3_used).
 
@@ -27,6 +28,8 @@ def assemble_blocks(
     capped share, L3 gets the guaranteed minimum first (priority-inverted) so
     L2 cannot starve L3. Pre-scored results (blended_score present) are sorted
     and filtered directly; raw Chroma results go through the gap filter.
+    ``temporal_center`` (midpoint of a parsed date/time window, when the
+    caller has one) is forwarded to fit_search_results — see its docstring.
     """
     now_dt = datetime.now().astimezone()
     now = now_dt.strftime("%Y-%m-%d %H:%M %Z")
@@ -58,7 +61,7 @@ def assemble_blocks(
                 relevant = blended_gap_filter(ordered, significance)
             else:
                 relevant = gap_filter(l3_results, significance)
-            l3_block, l3_used = fit_search_results(relevant, l3_budget)
+            l3_block, l3_used = fit_search_results(relevant, l3_budget, temporal_center)
             if l3_block:
                 blocks.append(f"[Context recuperat din istoric]\n{l3_block}")
     return blocks, l3_used
@@ -95,25 +98,56 @@ def trim_recent_messages(messages: list[dict], max_tokens: int) -> list[dict]:
     return [messages[i] for i in kept_idx]
 
 
-def fit_search_results(results: list[dict], max_tokens: int) -> tuple[str, int]:
+def fit_search_results(
+    results: list[dict], max_tokens: int, temporal_center: float | None = None,
+) -> tuple[str, int]:
     """Format results closest-first, keeping as many as fit max_tokens.
 
     Temporal-tagged results (``mechanisms`` includes ``"temporal"`` — matched
     an explicit date/time window the user named, per blended_gap_filter's
     rescue) get a protected first pass of the budget: they are packed before
-    any non-temporal result, in their own relative (best-first) order, then
-    any remaining budget is filled by the rest in their relative order. This
-    mirrors context_budget.allocate_context_budget's guaranteed-minimum-first
-    pattern one level down, inside L3's own packing — without it, a rescued
-    temporal result that blended_gap_filter necessarily re-sorts toward the
-    end of the list (its score is what needed rescuing) would fall off a
-    tight budget exactly like the drop it was rescued from. Protection is not
-    unlimited: with more temporal results than fit, only as many as fit are
-    kept, still best-first among themselves.
+    any non-temporal result, then any remaining budget is filled by the rest
+    in their relative order. This mirrors context_budget.allocate_context_
+    budget's guaranteed-minimum-first pattern one level down, inside L3's own
+    packing — without it, a rescued temporal result that blended_gap_filter
+    necessarily re-sorts toward the end of the list (its score is what needed
+    rescuing) would fall off a tight budget exactly like the drop it was
+    rescued from. Protection is not unlimited: with more temporal results
+    than fit, only as many as fit are kept.
+
+    Within the temporal group, results are ordered by NOT blended_score:
+    date-window membership is itself the relevance signal for these results
+    (the user named the window explicitly), so ranking them by textual
+    similarity to the query is actively counterproductive whenever same-day
+    self-referential conversation (e.g. debugging "why can't you remember
+    X") is itself maximally similar to a "what did we discuss on X" query
+    and would otherwise dominate the ranking. Confirmed live (2026-07-12): a
+    real exchange from within the correct window was crowded out by
+    same-day meta-conversation that scored higher on pure cross-encoder
+    relevance. Only the LLM has enough context to judge relevance among
+    genuinely-in-window content — this function's job is to get as much of
+    that window to it as fits, not to pre-filter it by a score that can't
+    tell the difference between the content and conversation about the
+    content.
+
+    ``temporal_center`` (the midpoint of the parsed date/time window, when
+    the caller has it — orchestrator.py derives it from parse_interval's
+    (after, before) tuple) orders the temporal group by closeness to that
+    exact moment. Without it, falls back to oldest-first. Proximity beats
+    plain chronology: confirmed live (2026-07-12) that with a narrowed
+    ±1h window but a budget fitting only ~6 of 20 candidates, oldest-first
+    packed the window's earliest entries and never reached content actually
+    near the requested moment — "closest to what was asked", not "earliest
+    in the window", is the right tiebreak once the window itself is already
+    the coarse relevance filter.
 
     Returns (block_text, count). Each line prefixed with [YYYY-MM-DD HH:MM].
     """
     temporal = [r for r in results if "temporal" in r.get("mechanisms", [])]
+    if temporal_center is not None:
+        temporal.sort(key=lambda r: abs(r["metadata"].get("timestamp", 0) - temporal_center))
+    else:
+        temporal.sort(key=lambda r: r["metadata"].get("timestamp", 0))
     temporal_ids = {id(r) for r in temporal}
     rest = [r for r in results if id(r) not in temporal_ids]
 

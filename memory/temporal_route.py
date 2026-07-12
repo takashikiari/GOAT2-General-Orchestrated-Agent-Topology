@@ -89,6 +89,18 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
         return None
 
     matched_text, center = matches[0]
+    # search_dates can return several fragments for one query (e.g. a vague
+    # day anchor like "azi" alongside a precise "la 12:00"). A bare day
+    # reference must not shadow a more specific time-of-day fragment found
+    # elsewhere in the same query — prefer the first match that carries
+    # time-of-day precision over matches[0] when they differ. Confirmed live
+    # 2026-07-12: "Dar azi pe la 12:00 ce am discutat?" matched ["azi", "la
+    # 12:00"]; using matches[0] ("azi", no time marker) produced a full-day
+    # window instead of the intended ±1h-around-noon one.
+    for text, dt in matches:
+        if any(marker in text.lower() for marker in _TIME_MARKERS):
+            matched_text, center = text, dt
+            break
 
     if not _is_plausible_year(center.year, now):
         # Defense-in-depth: _normalize_spoken_hours fixes the specific

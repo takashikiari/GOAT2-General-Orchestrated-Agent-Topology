@@ -345,7 +345,9 @@ class Orchestrator:
             # which is a single indexed ChromaDB metadata-range query, not the
             # full BM25 + dual-semantic + entity-extraction cold pipeline.
             temporal_interval = parse_interval(intent)
+            temporal_center: float | None = None
             if temporal_interval is not None:
+                temporal_center = (temporal_interval[0] + temporal_interval[1]) / 2
                 fresh_temporal = await temporal_candidates(layers, intent, interval=temporal_interval)
                 if fresh_temporal:
                     # Rerank on this small candidate pool is cheap and worth it
@@ -376,6 +378,7 @@ class Orchestrator:
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
                 identity_prompt=identity_prompt,
+                temporal_center=temporal_center,
             )
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)

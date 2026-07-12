@@ -11,10 +11,10 @@ from __future__ import annotations
 from memory.context_assembler import fit_search_results
 
 
-def _r(content: str, mechanisms: tuple = ()) -> dict:
+def _r(content: str, mechanisms: tuple = (), ts: float = 0.0) -> dict:
     return {
         "content": content,
-        "metadata": {"timestamp": 0.0},
+        "metadata": {"timestamp": ts},
         "mechanisms": list(mechanisms),
     }
 
@@ -64,18 +64,40 @@ def test_temporal_result_survives_tight_budget_even_when_sorted_last():
     assert "the target the user asked for" in block
 
 
-def test_temporal_results_packed_in_their_own_best_first_order_first():
-    """Multiple temporal results: packed before any non-temporal result,
-    in their own relative (best-first) order; remaining budget then goes
-    to the rest in their relative order."""
+def test_temporal_results_packed_before_non_temporal_in_chronological_order():
+    """Multiple temporal results: packed before any non-temporal result, in
+    chronological (oldest-first) order among themselves — not blended_score
+    order. Date-window membership is the relevance signal for these results;
+    ranking them by score against the query text is what let same-day
+    self-referential noise crowd out a genuinely-in-window result in
+    production (confirmed live 2026-07-12: 'azi pe la 12:00' packed the
+    CURRENT turn's own echoed question and other same-day meta-conversation
+    ahead of a real exchange that happened at the actually-requested time,
+    purely because they scored higher on textual similarity to the query)."""
     results = [
         _r("non-temporal high"),
-        _r("temporal best", mechanisms=["temporal"]),
+        _r("temporal newer", mechanisms=["temporal"], ts=200.0),
+        _r("temporal older", mechanisms=["temporal"], ts=100.0),
+    ]
+    block, count = fit_search_results(results, 1000)
+    lines = block.split("\n")
+    assert lines[0].endswith("temporal older")
+    assert lines[1].endswith("temporal newer")
+    assert lines[2].endswith("non-temporal high")
+
+
+def test_temporal_results_with_tied_timestamps_keep_relative_order():
+    """Equal timestamps (e.g. synthetic fixtures, or same-second writes) fall
+    back to stable-sort behaviour — original relative order preserved, not
+    reshuffled arbitrarily."""
+    results = [
+        _r("non-temporal high"),
+        _r("temporal first", mechanisms=["temporal"]),
         _r("temporal second", mechanisms=["temporal"]),
     ]
     block, count = fit_search_results(results, 1000)
     lines = block.split("\n")
-    assert lines[0].endswith("temporal best")
+    assert lines[0].endswith("temporal first")
     assert lines[1].endswith("temporal second")
     assert lines[2].endswith("non-temporal high")
 
@@ -93,6 +115,46 @@ def test_temporal_results_still_truncate_when_too_many_to_fit():
     block, count = fit_search_results(results, one_line_budget)
     assert count == 1
     assert "temporal one" in block
+
+
+# --- temporal_center: proximity-to-requested-moment ordering -------------------
+
+def test_temporal_center_orders_by_proximity_not_chronology():
+    """When the caller knows the exact moment the user asked about (parsed
+    from the query, e.g. 'azi pe la 12:00' -> center=noon), order the
+    temporal group by closeness to THAT moment, not simple oldest-first.
+
+    Confirmed live 2026-07-12: with a narrowed ±1h window (11:00-13:00) but
+    a budget that only fits ~6 of 20 candidates, plain chronological
+    (oldest-first) ordering packed the window's EARLIEST entries (11:07)
+    and never reached the entries actually near noon (12:30) — the
+    requested moment, not "earliest in window", is what proximity should be
+    measured against.
+    """
+    center = 300.0  # e.g. "noon" in this toy timeline
+    results = [
+        _r("far before", mechanisms=["temporal"], ts=100.0),   # |100-300|=200
+        _r("closest", mechanisms=["temporal"], ts=290.0),      # |290-300|=10
+        _r("far after", mechanisms=["temporal"], ts=500.0),    # |500-300|=200
+        _r("second closest", mechanisms=["temporal"], ts=320.0),  # |320-300|=20
+    ]
+    block, count = fit_search_results(results, 1000, temporal_center=center)
+    lines = block.split("\n")
+    assert lines[0].endswith("closest")
+    assert lines[1].endswith("second closest")
+
+
+def test_temporal_center_none_falls_back_to_chronological():
+    """Without a known center (e.g. a day-only window with no specific time
+    requested), fall back to the existing oldest-first behaviour."""
+    results = [
+        _r("temporal newer", mechanisms=["temporal"], ts=200.0),
+        _r("temporal older", mechanisms=["temporal"], ts=100.0),
+    ]
+    block, count = fit_search_results(results, 1000, temporal_center=None)
+    lines = block.split("\n")
+    assert lines[0].endswith("temporal older")
+    assert lines[1].endswith("temporal newer")
 
 
 def test_no_temporal_tags_behavior_unchanged():

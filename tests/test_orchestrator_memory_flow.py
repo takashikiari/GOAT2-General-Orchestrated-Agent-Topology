@@ -139,7 +139,8 @@ def test_identity_prompt_is_fetched_and_used():
             return "Custom identity for this test."
 
         async def assemble_context(self, chat_id, budget=None, l3_results=None,
-                                   facts=None, messages=None, identity_prompt=None):
+                                   facts=None, messages=None, identity_prompt=None,
+                                   temporal_center=None):
             identity_used.append(identity_prompt)
             return list(self._blocks), self._l3_used
 
