@@ -28,8 +28,12 @@ def assemble_blocks(
     L2 cannot starve L3. Pre-scored results (blended_score present) are sorted
     and filtered directly; raw Chroma results go through the gap filter.
     """
-    now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    now_dt = datetime.now().astimezone()
+    now = now_dt.strftime("%Y-%m-%d %H:%M %Z")
     identity = f"[Identity]\n{identity_prompt}\nCurrent time: {now}"
+    last_ts = messages[-1].get("timestamp") if messages else None
+    if last_ts:
+        identity += f"\nUltimul mesaj: {format_relative_ro(last_ts, now_dt.timestamp())}"
     if facts:
         identity += f"\n\nKnown facts:\n{format_facts(facts)}"
     mandatory_tokens = estimate_tokens(identity)
@@ -39,7 +43,7 @@ def assemble_blocks(
     trimmed = trim_recent_messages(messages, l2_cap)
     l2_tokens = 0
     if trimmed:
-        l2_block = f"[Conversation History]\n{format_messages(trimmed)}"
+        l2_block = f"[Conversation History]\n{format_messages(trimmed, now_dt.timestamp())}"
         l2_tokens = estimate_tokens(l2_block)
         blocks.append(l2_block)
 

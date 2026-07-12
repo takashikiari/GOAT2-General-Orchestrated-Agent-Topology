@@ -172,3 +172,28 @@ def test_assemble_l3_guaranteed_when_l2_small():
     )
     assert l3_used == 1
     assert any(b.startswith("[Context recuperat din istoric]") for b in blocks)
+
+
+# --- assemble_context: "Ultimul mesaj" identity line ---------------------------
+
+def test_assemble_identity_includes_last_message_relative_time():
+    """Identity block surfaces 'Ultimul mesaj: acum X' from the last L2 message's timestamp."""
+    import time
+    last_ts = time.time() - 1200  # 20 min ago
+    msgs = [{"role": "user", "content": "salut", "timestamp": last_ts}]
+    layers = _layers(msgs)
+    blocks, _ = asyncio.run(layers.assemble_context("c", budget=4000, l3_results=[]))
+    assert "Ultimul mesaj: acum 20 min" in blocks[0]
+
+
+def test_assemble_identity_omits_last_message_line_when_no_history():
+    layers = _layers([])
+    blocks, _ = asyncio.run(layers.assemble_context("c", budget=4000, l3_results=[]))
+    assert "Ultimul mesaj" not in blocks[0]
+
+
+def test_assemble_identity_omits_last_message_line_for_falsy_timestamp():
+    """The _msg() helper's timestamp: 0.0 (used throughout this file) must not produce a line."""
+    layers = _layers([_msg("user", "salut")])
+    blocks, _ = asyncio.run(layers.assemble_context("c", budget=4000, l3_results=[]))
+    assert "Ultimul mesaj" not in blocks[0]
