@@ -71,6 +71,14 @@ timeout = 1.5
 max_results = 20
 recency_window_days = 30
 access_count_ref = 10
+# rescore_recency's held-results blend (memory/activation.py): final
+# blended_score = recency_base_weight * CrossEncoder base score +
+# recency_recency_weight * recency fraction over recency_window_days. Must
+# sum to 1.0 (validated). Unchanged 70/30 split moved out of the hardcoded
+# function body on 2026-07-12 so it is tunable like every other prefetch
+# weight in this section.
+recency_base_weight = 0.7
+recency_recency_weight = 0.3
 
 # L2.5 brain-activation layer — per-chat thread state that holds the recently
 # activated retrieval steady along a topic thread. Time does NOT reset it
@@ -96,16 +104,37 @@ drift_warm = 0.80
 # cosine < drift_cold AND lexical_overlap < lexical_low → CONSENSUS shift
 # (cold turn, full three-mechanism search, new activation). Both must drop — a
 # single jittery signal (e.g. a short "tell me more" follow-up drifts in
-# embedding space but keeps lexical overlap) must NOT reset the thread. Tuned
-# to the measured band: different-target queries land <0.57, so 0.55 makes a
-# true topic change COLD while a related glide (0.58–0.75) stays DRIFT.
-drift_cold = 0.55
-lexical_low = 0.15
+# embedding space but keeps lexical overlap) must NOT reset the thread.
+# Recalibrated (2026-07-12, real chat 1912576407 production log, 4 consecutive
+# turn pairs a human would call same-thread, embedded with the live MiniLM
+# model): cos=0.609/0.344/0.471/0.504, lex=0.0 for all four once lexical_low's
+# tokenizer strips Romanian stopwords (see _tokens/_STOPWORDS_RO in
+# memory/activation.py) — short follow-ups just don't repeat content words even
+# on-thread. At the old drift_cold=0.55 three of these four hard-reset to cold
+# every time (warm fired 0/30 turns in the same window — the module's whole
+# point was dead). Follow-up live measurement found NO cosine cutoff cleanly
+# separates same-thread from genuinely-unrelated switches at this
+# short-Romanian-utterance scale: synthetic unrelated pairs measured
+# 0.19–0.52, directly overlapping the same-thread 0.34–0.61 range. Given that
+# overlap, drift_cold is set conservative (below the measured same-thread
+# floor) to stop false hard resets, accepting that some true switches will
+# only get "drift" (still a targeted re-search) instead of a full cold reset —
+# the safer failure mode per the "mechanisms are support, not decisional"
+# principle: a stale-ish drift refresh is recoverable, a lost thread is not.
+drift_cold = 0.30
+# Same recalibration: stopword-filtered Jaccard tokens are fewer per query, so
+# a single shared/missing content word swings the ratio further — lowered
+# from 0.15 so the AND-gate needs an even more overwhelming lexical mismatch
+# before compounding with drift_cold to force cold.
+lexical_low = 0.10
 # cosine(write_content_emb, thread_centroid) >= enriching_sim → enriching write
 # (on-thread write refreshes the activation in place without drift check).
 # Below this threshold the write is off-thread and triggers a consensus-shift
-# evaluation. Tuned to 0.55 (same as drift_cold): a write that lands in the
-# DRIFT band (0.55–0.80) is still enriching enough to refresh the thread.
+# evaluation. Independent of drift_cold (decoupled 2026-07-12 — drift_cold
+# moved to 0.30 but a WRITE landing at 0.30–0.55 cosine to the centroid is
+# still weak enough that folding it into the held activation risks polluting
+# the thread with a barely-related fact); kept at 0.55 pending its own
+# measured calibration.
 enriching_sim = 0.55
 # How many recent messages to track for lexical overlap (bag-of-words Jaccard
 # with the current query). 5 = enough to catch a topic-anchored follow-up

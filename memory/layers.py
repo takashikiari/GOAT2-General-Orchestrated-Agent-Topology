@@ -373,9 +373,13 @@ class MemoryLayers:
         """L2.5: retrieve the chat's thread activation, or ``None`` if absent."""
         return await self._activation.get(chat_id)
 
-    async def set_activation(self, chat_id: str, activation: Activation) -> None:
-        """L2.5: persist the chat's thread activation under the cleanup TTL."""
-        await self._activation.set(chat_id, activation)
+    async def set_activation(self, chat_id: str, activation: Activation) -> bool:
+        """L2.5: compare-and-set the chat's thread activation under the cleanup TTL.
+
+        Returns ``False`` (write rejected as stale) if a currently-stored
+        activation is newer — see ``ActivationStore.set``.
+        """
+        return await self._activation.set(chat_id, activation)
 
     async def clear_activation(self, chat_id: str) -> None:
         """L2.5: drop the chat's thread activation (no-op if absent)."""

@@ -48,6 +48,9 @@ _DEFAULTS: dict = {
         "max_results": 15,
         "recency_window_days": 30,
         "access_count_ref": 10,
+        # rescore_recency blend weights — see config/memory.toml [prefetch] comment.
+        "recency_base_weight": 0.7,
+        "recency_recency_weight": 0.3,
     },
     "analytics": {
         "log_interval": 100,
@@ -55,8 +58,10 @@ _DEFAULTS: dict = {
     "activation": {
         "ttl_seconds": 3600,
         "drift_warm": 0.80,
-        "drift_cold": 0.55,
-        "lexical_low": 0.15,
+        # drift_cold/lexical_low recalibrated 2026-07-12 — see
+        # config/memory.toml [activation] comment for the measured rationale.
+        "drift_cold": 0.30,
+        "lexical_low": 0.10,
         "enriching_sim": 0.55,
         "lexical_window": 5,
         "topic_return_threshold": 0.75,

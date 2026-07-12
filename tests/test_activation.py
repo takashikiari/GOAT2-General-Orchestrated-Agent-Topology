@@ -12,6 +12,7 @@ import time
 
 from memory.activation import (
     Activation,
+    _tokens,
     classify_turn,
     classify_write,
     cosine,
@@ -64,6 +65,97 @@ def test_lexical_overlap_disjoint_is_zero():
 def test_lexical_overlap_punctuation_and_case_insensitive():
     # "Wifi!" and "wifi" are the same token after strip + lower.
     assert lexical_overlap("Wifi!", ["wifi"]) == 1.0
+
+
+# --- _tokens / Romanian stopwords (bug 1a, 2026-07-12) -----------------------
+
+def test_tokens_strips_common_function_words():
+    toks = _tokens("Pai și când am vorbit noi de site?")
+    assert "și" not in toks
+    assert "am" not in toks
+    assert "de" not in toks
+    assert "noi" not in toks
+    # content words survive
+    assert "vorbit" in toks
+    assert "site" in toks
+
+
+def test_tokens_keeps_question_words_that_anchor_topic():
+    # "ce" ("what") is deliberately NOT a stopword — it can anchor a topic.
+    toks = _tokens("Verifică ce data e azi")
+    assert "ce" in toks
+    assert "data" in toks
+    assert "azi" in toks
+    # "e" (a stopword form of "is") is stripped.
+    assert "e" not in toks
+
+
+def test_lexical_overlap_stopwords_do_not_count_as_shared_content():
+    # Old behaviour: "de"/"pe" shared inflated overlap even with no shared
+    # content words. New behaviour: only "parola"/"wifi" can count.
+    overlap = lexical_overlap("care e parola de wifi", ["nu mai am parola de acasa"])
+    # shared content: {parola} ; union content: {parola, wifi, acasa} (stopwords removed)
+    assert abs(overlap - (1 / 3)) < 1e-9
+
+
+# --- classify_turn: real production pairs (2026-07-12 recalibration) ---------
+#
+# Measured against the live production MiniLM model on real chat 1912576407
+# consecutive turn pairs (2026-07-12 window) — hardcoded here as fixtures
+# (not re-embedded at test time) so the test stays fast/deterministic. Every
+# pair below is a turn a human would call "same thread"; under the OLD
+# thresholds (drift_cold=0.55, lexical_low=0.15, no stopword filtering) three
+# of the four hard-reset to "cold" (warm fired 0/30 times in the real window).
+# lex values are recomputed WITH the 2026-07-12 stopword filter applied (see
+# _STOPWORDS_RO / _tokens) — all land at 0.0 for these short exchanges since
+# their few shared tokens ("de", "pe", "nu", "ce") are themselves stopwords;
+# see config/memory.toml [activation] for the full calibration rationale
+# (drift_cold 0.55->0.30, lexical_low 0.15->0.10).
+_REAL_PAIRS_2026_07_12 = [
+    ("Verifică ce data e azi", "Pai și când am vorbit noi de site?", 0.609),
+    ("Pai și când am vorbit noi de site? Pe ce data?", "Nu azi, înainte de sesiunea de azi", 0.344),
+    ("Nu azi, înainte de sesiunea de azi, pe 9 iulie, nu?", "Din ce cauza ai încurcat cronologia?", 0.471),
+    ("Din ce cauza ai încurcat cronologia?", "Cum rezolvam problema asta?", 0.504),
+]
+
+
+def test_real_pairs_lexical_overlap_is_zero_with_stopwords_removed():
+    """Ground the fixture cosines above: these short follow-ups share no
+    CONTENT tokens once stopwords are removed (the reason recalibration had
+    to lean on the cosine threshold, not lexical_low, for these specific
+    pairs)."""
+    for prev, query, _cos in _REAL_PAIRS_2026_07_12:
+        assert lexical_overlap(query, [prev]) == 0.0
+
+
+def test_real_pairs_no_longer_hard_reset_to_cold():
+    """The core bug-1 regression test: at the OLD thresholds 3/4 of these
+    genuinely-continuous pairs were force-reset to "cold" (losing the thread
+    entirely). At the recalibrated thresholds none of them do — they land on
+    "drift" (a targeted refresh, not a full reset) since none reach the warm
+    bar either."""
+    for prev, query, cos in _REAL_PAIRS_2026_07_12:
+        act = Activation(centroid=[1.0, 0.0], recent_queries=[prev])
+        # Project a 2D embedding at the measured cosine to the centroid [1,0]:
+        # cosine([1,0], [cos, sqrt(1-cos^2)]) == cos.
+        query_emb = [cos, (1 - cos * cos) ** 0.5]
+        state = classify_turn(query, act, query_emb)
+        assert state != "cold", f"pair cos={cos} wrongly hard-reset to cold: {prev!r} -> {query!r}"
+
+
+def test_recalibrated_drift_cold_below_all_real_pair_cosines():
+    from memory.config import ACTIVATION_DRIFT_COLD, ACTIVATION_LEXICAL_LOW
+    assert ACTIVATION_DRIFT_COLD < min(cos for _, _, cos in _REAL_PAIRS_2026_07_12)
+    assert ACTIVATION_DRIFT_COLD == 0.30
+    assert ACTIVATION_LEXICAL_LOW == 0.10
+
+
+def test_classify_turn_still_colds_a_clean_orthogonal_switch():
+    # Sanity check that recalibration didn't disable "cold" outright: a
+    # genuinely orthogonal embedding (cosine 0.0) with zero lexical overlap
+    # must still hard-reset.
+    act = Activation(centroid=[1.0, 0.0], recent_queries=["parola de wifi"])
+    assert classify_turn("reteta de ciorba", act, [0.0, 1.0]) == "cold"
 
 
 # --- classify_turn -----------------------------------------------------------
@@ -144,6 +236,28 @@ def test_rescore_recency_newer_scores_higher_and_sorts_first():
     # the newer result sorts first (its recency term is larger)
     assert out[0]["content"] == "new"
     assert out[0]["blended_score"] > out[1]["blended_score"]
+
+
+def test_rescore_recency_uses_configured_blend_weights(monkeypatch):
+    """Bug 3 (2026-07-12): the 0.7/0.3 blend was hardcoded in the function
+    body; it now reads PREFETCH_RECENCY_BASE_WEIGHT/RECENCY_WEIGHT from
+    memory.activation's module namespace (config-driven, like every other
+    [prefetch] tunable). Monkeypatching those constants must change the
+    computed blended_score."""
+    import memory.activation as activation_mod
+
+    r = _result("x", ts=0.0)  # ts=0 -> recency fraction fully attenuated to 0.0
+    r["blended_score"] = 0.8
+
+    monkeypatch.setattr(activation_mod, "PREFETCH_RECENCY_BASE_WEIGHT", 1.0)
+    monkeypatch.setattr(activation_mod, "PREFETCH_RECENCY_RECENCY_WEIGHT", 0.0)
+    out_all_base = activation_mod.rescore_recency([dict(r)], now=10_000_000.0)
+    assert abs(out_all_base[0]["blended_score"] - 0.8) < 1e-9  # pure base score, no recency term
+
+    monkeypatch.setattr(activation_mod, "PREFETCH_RECENCY_BASE_WEIGHT", 0.0)
+    monkeypatch.setattr(activation_mod, "PREFETCH_RECENCY_RECENCY_WEIGHT", 1.0)
+    out_all_recency = activation_mod.rescore_recency([dict(r)], now=10_000_000.0)
+    assert abs(out_all_recency[0]["blended_score"] - 0.0) < 1e-9  # pure recency term, fully attenuated
 
 
 def test_rescore_recency_attenuates_with_time():

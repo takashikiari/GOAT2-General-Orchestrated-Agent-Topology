@@ -16,6 +16,7 @@ def validate_config(cfg: dict) -> None:
     _check_prefetch(cfg.get("prefetch", {}))
     _check_working(cfg.get("working", {}))
     _check_tool_loop(cfg.get("tool_loop", {}))
+    _check_reranker(cfg.get("reranker", {}))
 
 
 def _check_activation(act: dict) -> None:
@@ -74,6 +75,13 @@ def _check_prefetch(pf: dict) -> None:
     mr = pf.get("max_results")
     if mr is not None and int(mr) <= 0:
         raise ValueError(f"[prefetch] max_results ({mr}) must be > 0.")
+    rwd = pf.get("recency_window_days")
+    if rwd is not None and int(rwd) <= 0:
+        raise ValueError(
+            f"[prefetch] recency_window_days ({rwd}) must be > 0; "
+            "rescore_recency divides by this window (in seconds), so 0 raises "
+            "ZeroDivisionError on every warm-served turn."
+        )
 
 
 def _check_working(wk: dict) -> None:
@@ -89,3 +97,13 @@ def _check_tool_loop(tl: dict) -> None:
     mo = tl.get("max_output_chars")
     if mo is not None and int(mo) <= 0:
         raise ValueError(f"[tool_loop] max_output_chars ({mo}) must be > 0.")
+
+
+def _check_reranker(rr: dict) -> None:
+    top_k = rr.get("top_k")
+    if top_k is not None and int(top_k) <= 0:
+        raise ValueError(
+            f"[reranker] top_k ({top_k}) must be > 0; a zero-or-negative "
+            "top_k silently empties the entire L3 result set every turn "
+            "with no error signal."
+        )
