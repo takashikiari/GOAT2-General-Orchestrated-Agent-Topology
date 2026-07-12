@@ -12,6 +12,7 @@ from memory.config_extra import (
     BLENDED_MIN_SCORE,
     ENTITY_BOOST_WEIGHT,
     OBS_MAX_MESSAGE_CHARS,
+    RELATIVE_HORIZON_SECONDS,
     SESSION_GAP_SECONDS,
     TOOL_ARGS_PREVIEW_CHARS,
     TOOL_RESULT_HEAD_CHARS,
@@ -38,6 +39,10 @@ def test_blended_min_score_default():
 
 def test_session_gap_seconds_default():
     assert SESSION_GAP_SECONDS == 1800
+
+
+def test_relative_horizon_seconds_default():
+    assert RELATIVE_HORIZON_SECONDS == 30 * 86400
 
 
 def test_obs_max_message_chars_default():

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from memory.config_extra import RELATIVE_HORIZON_SECONDS
+
 _RO_MONTHS = [
     "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie",
     "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie",
@@ -24,11 +26,6 @@ def format_ro_date(ts: float) -> str:
 def prefix_with_date(content: str, ts: float) -> str:
     """Prepend a Romanian date header to memory content."""
     return f"[{format_ro_date(ts)}] {content}"
-
-
-# Beyond this horizon a relative phrase ("acum 40 zile") stops being useful;
-# fall back to the absolute date instead.
-_RELATIVE_HORIZON_SECONDS = 30 * 86400
 
 
 def format_duration_ro(seconds: float) -> str:
@@ -49,12 +46,12 @@ def format_duration_ro(seconds: float) -> str:
 def format_relative_ro(ts: float, now: float) -> str:
     """Unix timestamp -> Romanian relative-time string anchored at now, e.g. 'acum 20 min'.
 
-    Falls back to format_ro_date beyond _RELATIVE_HORIZON_SECONDS, where a
+    Falls back to format_ro_date beyond RELATIVE_HORIZON_SECONDS, where a
     relative phrase stops being useful.
     """
     delta = now - ts
     if delta < 60:
         return "chiar acum"
-    if delta >= _RELATIVE_HORIZON_SECONDS:
+    if delta >= RELATIVE_HORIZON_SECONDS:
         return format_ro_date(ts)
     return f"acum {format_duration_ro(delta)}"

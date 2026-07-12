@@ -170,6 +170,11 @@ blended_min_score = 0.25
 # marking a session boundary in the transcript itself. 1800 = 30 min.
 session_gap_seconds = 1800
 
+# Beyond this horizon (seconds) format_relative_ro (memory/date_format.py)
+# gives up on a relative phrase ("acum 40 zile") and falls back to the
+# absolute Romanian date. 2592000 = 30 days.
+relative_horizon_seconds = 2592000
+
 # Privacy-truncation cap for the logged user_message field. (greeting/recall
 # confidence thresholds stay hardcoded in memory/observability_collector.py —
 # analytics-only labels that never gate behaviour; see that module's comment.)
