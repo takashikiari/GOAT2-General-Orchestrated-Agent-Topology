@@ -1,9 +1,15 @@
-"""memory.date_format — Romanian-locale date prefix for L3 content.
+"""memory.date_format — language-neutral timestamp/duration formatting.
 
-Prepending a human-readable Romanian date to stored content lets BM25 and
-MiniLM both surface memories by date without any query-time parsing:
-"[5 iulie 2026, 15:23] ..." is lexically matchable by BM25 ("iulie") and
-semantically closer to "pe 5 iulie" queries than raw conversation text.
+Absolute timestamps render as ISO-8601 (zero natural-language content).
+Relative durations render as short English phrases used as protocol
+scaffolding — the same role as "Current time" / "Known facts" elsewhere in
+the assembled prompt — not as a user-facing language choice. The LLM
+translates these into whatever language the conversation is actually in,
+the same trivial way it translates any other English scaffold label; Python
+only owns the arithmetic (which the LLM is unreliable at), never the
+target-language phrasing. A prior version hardcoded Romanian phrasing here,
+which broke down the moment the conversation was in a different language —
+this module now hardcodes zero locale-specific vocabulary.
 """
 from __future__ import annotations
 
@@ -11,47 +17,41 @@ from datetime import datetime
 
 from memory.config_extra import RELATIVE_HORIZON_SECONDS
 
-_RO_MONTHS = [
-    "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie",
-    "iulie", "august", "septembrie", "octombrie", "noiembrie", "decembrie",
-]
 
-
-def format_ro_date(ts: float) -> str:
-    """Unix timestamp → Romanian date string, e.g. '5 iulie 2026, 15:23'."""
-    dt = datetime.fromtimestamp(ts)
-    return f"{dt.day} {_RO_MONTHS[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
+def format_iso(ts: float) -> str:
+    """Unix timestamp -> timezone-aware ISO-8601 string, e.g. '2026-07-05T15:23:00+03:00'."""
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
 
 
 def prefix_with_date(content: str, ts: float) -> str:
-    """Prepend a Romanian date header to memory content."""
-    return f"[{format_ro_date(ts)}] {content}"
+    """Prepend an ISO-8601 timestamp header to memory content."""
+    return f"[{format_iso(ts)}] {content}"
 
 
-def format_duration_ro(seconds: float) -> str:
-    """Elapsed seconds -> Romanian duration string, e.g. '20 min', '1 oră', '3 zile'."""
+def format_duration(seconds: float) -> str:
+    """Elapsed seconds -> a short English duration string, e.g. '20 min', '1 hour', '3 days'."""
     seconds = max(seconds, 0)
     if seconds < 60:
-        return "sub un minut"
+        return "under a minute"
     minutes = int(seconds // 60)
     if minutes < 60:
         return f"{minutes} min"
     hours = int(seconds // 3600)
     if hours < 24:
-        return "1 oră" if hours == 1 else f"{hours} ore"
+        return "1 hour" if hours == 1 else f"{hours} hours"
     days = int(seconds // 86400)
-    return "1 zi" if days == 1 else f"{days} zile"
+    return "1 day" if days == 1 else f"{days} days"
 
 
-def format_relative_ro(ts: float, now: float) -> str:
-    """Unix timestamp -> Romanian relative-time string anchored at now, e.g. 'acum 20 min'.
+def format_relative(ts: float, now: float) -> str:
+    """Unix timestamp -> a short relative-time phrase anchored at now, e.g. '20 min ago'.
 
-    Falls back to format_ro_date beyond RELATIVE_HORIZON_SECONDS, where a
+    Falls back to format_iso beyond RELATIVE_HORIZON_SECONDS, where a
     relative phrase stops being useful.
     """
     delta = now - ts
     if delta < 60:
-        return "chiar acum"
+        return "just now"
     if delta >= RELATIVE_HORIZON_SECONDS:
-        return format_ro_date(ts)
-    return f"acum {format_duration_ro(delta)}"
+        return format_iso(ts)
+    return f"{format_duration(delta)} ago"

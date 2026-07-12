@@ -10,7 +10,7 @@ from datetime import datetime
 from memory.budget import estimate_tokens
 from memory.config_extra import BLENDED_MIN_SCORE as _BLENDED_MIN_SCORE, SESSION_GAP_SECONDS
 from memory.context_budget import allocate_context_budget
-from memory.date_format import format_duration_ro, format_relative_ro
+from memory.date_format import format_duration, format_relative
 
 
 def assemble_blocks(
@@ -33,7 +33,7 @@ def assemble_blocks(
     identity = f"[Identity]\n{identity_prompt}\nCurrent time: {now}"
     last_ts = messages[-1].get("timestamp") if messages else None
     if last_ts:
-        identity += f"\nUltimul mesaj: {format_relative_ro(last_ts, now_dt.timestamp())}"
+        identity += f"\nLast message: {format_relative(last_ts, now_dt.timestamp())}"
     if facts:
         identity += f"\n\nKnown facts:\n{format_facts(facts)}"
     mandatory_tokens = estimate_tokens(identity)
@@ -159,11 +159,11 @@ def format_facts(facts: dict[str, str]) -> str:
 def format_messages(messages: list[dict], now: float | None = None) -> str:
     """Render L2 messages oldest-first, each prefixed with a relative timestamp.
 
-    Inserts a "--- pauză de X ---" separator when the gap between two
-    consecutive messages meets SESSION_GAP_SECONDS, so a session boundary is
-    visible in the transcript itself, not just as the single Identity-block
-    line assemble_blocks adds separately. Messages missing a (truthy)
-    timestamp render exactly as before — "role: content", no prefix.
+    Inserts a "--- gap: X ---" separator when the gap between two consecutive
+    messages meets SESSION_GAP_SECONDS, so a session boundary is visible in
+    the transcript itself, not just as the single Identity-block line
+    assemble_blocks adds separately. Messages missing a (truthy) timestamp
+    render exactly as before — "role: content", no prefix.
     """
     now = now if now is not None else datetime.now().timestamp()
     lines: list[str] = []
@@ -171,8 +171,8 @@ def format_messages(messages: list[dict], now: float | None = None) -> str:
     for m in messages:
         ts = m.get("timestamp")
         if ts and prev_ts is not None and ts - prev_ts >= SESSION_GAP_SECONDS:
-            lines.append(f"--- pauză de {format_duration_ro(ts - prev_ts)} ---")
-        prefix = f"[{format_relative_ro(ts, now)}] " if ts else ""
+            lines.append(f"--- gap: {format_duration(ts - prev_ts)} ---")
+        prefix = f"[{format_relative(ts, now)}] " if ts else ""
         lines.append(f"{prefix}{m['role']}: {m['content']}")
         if ts:
             prev_ts = ts

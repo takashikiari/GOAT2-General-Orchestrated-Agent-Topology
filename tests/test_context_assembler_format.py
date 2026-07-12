@@ -12,7 +12,7 @@ def _msg(role: str, content: str, ts: float) -> dict:
 
 def test_prefixes_each_message_with_relative_time():
     msgs = [_msg("user", "salut", _NOW - 1200)]
-    assert format_messages(msgs, now=_NOW) == "[acum 20 min] user: salut"
+    assert format_messages(msgs, now=_NOW) == "[20 min ago] user: salut"
 
 
 def test_no_prefix_when_timestamp_missing():
@@ -30,7 +30,7 @@ def test_no_prefix_when_timestamp_falsy_zero():
 def test_no_gap_marker_within_session():
     msgs = [_msg("user", "a", _NOW - 120), _msg("assistant", "b", _NOW - 60)]
     out = format_messages(msgs, now=_NOW)
-    assert "pauză" not in out
+    assert "gap:" not in out
 
 
 def test_gap_marker_inserted_across_session_boundary():
@@ -43,11 +43,11 @@ def test_gap_marker_inserted_across_session_boundary():
     lines = format_messages(msgs, now=_NOW).split("\n")
     assert lines[0].endswith("user: a")
     assert lines[1].endswith("assistant: b")
-    assert lines[2].startswith("--- pauză de")
+    assert lines[2].startswith("--- gap:")
     assert lines[3].endswith("user: c")
 
 
 def test_default_now_uses_wall_clock_when_omitted():
     import time
     msgs = [_msg("user", "salut", time.time())]
-    assert format_messages(msgs) == "[chiar acum] user: salut"
+    assert format_messages(msgs) == "[just now] user: salut"
