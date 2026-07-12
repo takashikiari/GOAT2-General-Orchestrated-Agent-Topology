@@ -70,6 +70,13 @@ ENTITY_BOOST_WEIGHT: Final[float] = float(
     _entity_boost_cfg.get("weight", _DEFAULTS["entity_boost"]["weight"])
 )
 
+_temporal_route_cfg = _cfg.get("temporal_route", _DEFAULTS["temporal_route"])
+TEMPORAL_MAX_YEARS_IN_PAST: Final[int] = int(
+    _temporal_route_cfg.get(
+        "max_years_in_past", _DEFAULTS["temporal_route"]["max_years_in_past"]
+    )
+)
+
 # aits.complexity_ref_length deliberately NOT read here: memory/aits.py's own
 # docstring documents it as linguistic content (like _BASE_IDENTITY and the
 # connector word list), not a tunable knob, and leaves it a hardcoded module
@@ -85,4 +92,5 @@ __all__ = [
     "BLENDED_MIN_SCORE",
     "OBS_MAX_MESSAGE_CHARS",
     "ENTITY_BOOST_WEIGHT",
+    "TEMPORAL_MAX_YEARS_IN_PAST",
 ]

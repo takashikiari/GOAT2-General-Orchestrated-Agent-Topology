@@ -175,3 +175,16 @@ max_message_chars = 200
 # query (memory/entity_boost.py).
 [entity_boost]
 weight = 0.2
+
+# Defense-in-depth guard for memory/temporal_route.py's parse_interval:
+# dateparser (PREFER_DATES_FROM = "past") can legitimately roll an
+# already-passed-this-year date back one calendar year (see
+# test_future_date_resolves_to_past_year) — that's the only genuine reason a
+# match should land before the current year. A match older than
+# max_years_in_past almost certainly means dateparser misread a bare number
+# elsewhere in the phrase as a 2-digit year (confirmed live 2026-07-12: "la
+# ora 19" parsed as year 2019) rather than a real reference; parse_interval
+# retries once with the trailing hour phrase stripped, or gives up, instead
+# of silently returning a wrong-decade window.
+[temporal_route]
+max_years_in_past = 1

@@ -88,4 +88,7 @@ _DEFAULTS: dict = {
     "entity_boost": {
         "weight": 0.2,
     },
+    "temporal_route": {
+        "max_years_in_past": 1,
+    },
 }

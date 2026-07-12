@@ -76,3 +76,126 @@ class TestNoMatch:
 
     def test_empty_query_returns_none(self):
         assert parse_interval("", now=_NOW) is None
+
+
+# Reference point matching the real conversation where this bug was caught
+# live: "9 iulie" (July 9) is in the PAST relative to this "now", so
+# PREFER_DATES_FROM="past" should resolve it to the current year, 2026 — not
+# roll it back further. The bug (dateparser misreading a colon-less spoken
+# hour, e.g. "ora 19", as the 2-digit YEAR 2019) is orthogonal to that
+# year-rollback behavior, so it must reproduce here too.
+_BUG_NOW = datetime(2026, 7, 12, 10, 0, 0)
+
+
+class TestSpokenHourWithoutColon:
+    """Regression coverage for the live-confirmed bug: 'la ora N' / 'ora N'
+    without a colon was misread by dateparser as a 2-digit YEAR, not an hour.
+    """
+
+    def test_la_ora_19_resolves_to_2026_not_2019(self):
+        result = parse_interval("9 iulie la ora 19", now=_BUG_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 9, 19, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_la_ora_20_resolves_to_2026_not_2020(self):
+        result = parse_interval("9 iulie la ora 20", now=_BUG_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 9, 20, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_la_ora_single_digit_now_resolves(self):
+        """Before the fix this combination returned None outright (dateparser
+        found no match at all, rather than merely a wrong year) — confirm the
+        colon-normalization fix also resolves this case, not just the
+        wrong-year one."""
+        result = parse_interval("9 iulie la ora 9", now=_BUG_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 9, 9, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_bare_ora_single_digit(self):
+        """'ora 9' with no date at all anchors to today (RELATIVE_BASE)."""
+        result = parse_interval("ora 9", now=_BUG_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 12, 9, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_already_colon_form_still_works(self):
+        """Regression guard: the already-correct 'ora 19:00' form (which
+        never had this bug) must not be touched/broken by the colon-less
+        normalization regex."""
+        result = parse_interval("9 iulie ora 19:00", now=_BUG_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 9, 19, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+
+class TestImplausibleYearGuard:
+    """Defense-in-depth: even if a future phrasing this preprocessing step
+    doesn't cover triggers the same class of dateparser misparse (a bare
+    number read as a 2-digit year), parse_interval must not silently return
+    a wrong-decade window. Simulated via monkeypatch since no known live
+    phrasing besides the one already fixed above reproduces it.
+    """
+
+    def test_implausible_year_without_retry_option_returns_none(self, monkeypatch):
+        import memory.temporal_route as mod
+
+        def fake_search_dates(text, languages=None, settings=None):
+            return [("15 mai", datetime(2003, 5, 15, 0, 0))]
+
+        monkeypatch.setattr(mod, "search_dates", fake_search_dates)
+        result = mod.parse_interval("15 mai", now=_BUG_NOW)
+        assert result is None
+
+    def test_implausible_year_retries_without_hour_phrase(self, monkeypatch):
+        import memory.temporal_route as mod
+
+        calls = []
+
+        def fake_search_dates(text, languages=None, settings=None):
+            calls.append(text)
+            if "ora" in text:
+                # Simulate the misparse: hour phrase drags in a bogus year.
+                return [(text, datetime(2003, 5, 15, 0, 0))]
+            # Retry (hour phrase stripped) lands on a plausible year.
+            return [(text, datetime(2026, 5, 15, 0, 0))]
+
+        monkeypatch.setattr(mod, "search_dates", fake_search_dates)
+        result = mod.parse_interval("15 mai la ora 8", now=_BUG_NOW)
+        assert result is not None
+        assert len(calls) == 2  # primary call + implausible-year retry
+        after, before = result
+        # Retry match has no hour marker in its matched_text -> day-level window.
+        center = datetime(2026, 5, 15, 12, 0, 0).timestamp()
+        assert abs(after - (center - 12 * 3600)) < 1
+        assert abs(before - (center + 12 * 3600)) < 1
+
+
+class TestKnownUnparseableGaps:
+    """Documented gaps, not fixed here (see temporal_route.py module
+    docstring): both require a hand-rolled relative-expression lexicon,
+    disproportionate effort for this bugfix's scope."""
+
+    def test_luni_monday_unparseable(self):
+        """'luni' ("Monday") collides with dateparser's month-token matching
+        in this language configuration and returns no match."""
+        assert parse_interval("luni", now=_NOW) is None
+
+    def test_alaltaieri_day_before_yesterday_unparseable(self):
+        """'alaltaieri'/'alaltăieri' ("day before yesterday") is not in
+        dateparser's RO relative-date lexicon (checked with diacritics
+        restored too) and returns no match."""
+        assert parse_interval("alaltaieri", now=_NOW) is None
+        assert parse_interval("alaltăieri", now=_NOW) is None
