@@ -73,6 +73,21 @@ class BM25Index:
         if self._bm25 is not None:
             self._bm25 = BM25Okapi([self._tokenize(d["content"]) for d in self._docs])
 
+    def update_doc_metadata(self, doc_id: str, updates: dict) -> None:
+        """Merge ``updates`` into the cached metadata for ``doc_id``; no-op if not found.
+
+        Mirrors ``EpisodicMemory.update_metadata``'s merge-not-replace contract
+        so a document recovered only via BM25 keyword match still carries
+        enrichment fields (entities/importance/memory_type) written after the
+        initial index — without this, ``entity_boost`` could never fire on a
+        BM25-only hit for the lifetime of the running process. Content is
+        unchanged, so no BM25Okapi rebuild is needed.
+        """
+        for doc in self._docs:
+            if doc["id"] == doc_id:
+                doc["metadata"].update(updates)
+                return
+
     async def search(self, query: str, limit: int = 15) -> list[dict]:
         """BM25 search; returns dicts with bm25_score, positive-score hits only.
 

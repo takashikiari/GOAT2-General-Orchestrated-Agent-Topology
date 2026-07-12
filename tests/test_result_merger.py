@@ -7,7 +7,7 @@ without re-deriving provenance by hand.
 """
 from __future__ import annotations
 
-from memory.result_merger import merge_results
+from memory.result_merger import _result_id, merge_results
 
 
 def _r(message_id: str, content: str = "") -> dict:
@@ -49,3 +49,39 @@ def test_rrf_ranking_unaffected_by_mechanism_tagging():
 def test_empty_groups_returns_empty_list():
     assert merge_results([]) == []
     assert merge_results([("bm25", [])]) == []
+
+
+def test_bm25_dedup_requires_message_id_in_metadata():
+    """Documents the dedup identity bug and its fix contract (memory/result_merger.py
+    ``_result_id``). ``EpisodicMemory.store`` stamps ``message_id`` on its own
+    internal metadata copy right before writing to Chroma; that stamp never
+    propagated back to the dict ``store_episodic`` spread into
+    ``BM25Index.add_doc``, so a BM25-recovered hit for the SAME document had no
+    ``message_id`` and resolved to a different dedup key (raw content string)
+    than the semantic-sourced hit (which always has ``message_id``). RRF then
+    fused the same document as two separate candidates, wasting a merge-pool
+    slot. After the fix, BM25's cached metadata also carries ``message_id`` so
+    both mechanisms' dicts resolve to the same identity and get fused into one.
+    """
+    doc_id = "doc-abc"
+    content = "GOAT is a memory system"
+    semantic_result = {"metadata": {"message_id": doc_id}, "content": content}
+
+    # Pre-fix shape: BM25's cached metadata lacked message_id.
+    buggy_bm25_result = {"metadata": {"chat_id": "c1"}, "content": content}
+    assert _result_id(semantic_result) != _result_id(buggy_bm25_result)
+    buggy_merged = merge_results([
+        ("semantic_global", [semantic_result]),
+        ("bm25", [buggy_bm25_result]),
+    ])
+    assert len(buggy_merged) == 2  # false duplicate: same doc counted twice
+
+    # Post-fix shape: BM25's cached metadata carries message_id.
+    fixed_bm25_result = {"metadata": {"chat_id": "c1", "message_id": doc_id}, "content": content}
+    assert _result_id(semantic_result) == _result_id(fixed_bm25_result) == doc_id
+    fixed_merged = merge_results([
+        ("semantic_global", [semantic_result]),
+        ("bm25", [fixed_bm25_result]),
+    ])
+    assert len(fixed_merged) == 1
+    assert fixed_merged[0]["mechanisms"] == ["bm25", "semantic_global"]

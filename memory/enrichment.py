@@ -25,6 +25,7 @@ async def enrich_l3_entry(
     assistant_msg: str,
     episodic: "EpisodicMemory",
     extractor: "GLiNERExtractor | None",
+    bm25=None,
 ) -> None:
     """Enrich an existing L3 entry with entities, memory_type, and importance.
 
@@ -32,6 +33,12 @@ async def enrich_l3_entry(
     a doc_id linking them to an L3 ChromaDB entry written by _archive_turn.
     GLiNER extracts entities from the full user+assistant text; importance is a
     word-count heuristic. All failures are logged and swallowed (best-effort).
+
+    ``bm25``: optional BM25Index. When given, its cached metadata for
+    ``doc_id`` is updated with the same fields written to ChromaDB, so a
+    document recovered only via BM25 keyword match still gets entity-overlap
+    boosting (``entity_boost`` reads ``meta.get("entities")``, previously
+    always empty for BM25-only hits). Omitted call sites keep prior behavior.
     """
     try:
         importance = compute_importance(user_msg, assistant_msg)
@@ -46,6 +53,8 @@ async def enrich_l3_entry(
             "memory_type": extracted["memory_type"],
         }
         await episodic.update_metadata(doc_id, updates)
+        if bm25 is not None:
+            bm25.update_doc_metadata(doc_id, updates)
         log.debug(
             "L3 enriched doc_id=%s type=%s entities=%d",
             doc_id, extracted["memory_type"], len(extracted["entities"]),
