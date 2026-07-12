@@ -14,6 +14,7 @@ from memory.config_extra import (
     OBS_MAX_MESSAGE_CHARS,
     RELATIVE_HORIZON_SECONDS,
     SESSION_GAP_SECONDS,
+    TEMPORAL_MAX_YEARS_IN_PAST,
     TOOL_ARGS_PREVIEW_CHARS,
     TOOL_RESULT_HEAD_CHARS,
     TOOL_RESULT_SHORT_THRESHOLD,
@@ -51,6 +52,10 @@ def test_obs_max_message_chars_default():
 
 def test_entity_boost_weight_default():
     assert ENTITY_BOOST_WEIGHT == 0.2
+
+
+def test_temporal_max_years_in_past_default():
+    assert TEMPORAL_MAX_YEARS_IN_PAST == 1
 
 
 def test_load_reads_toml_override(tmp_path, monkeypatch):
