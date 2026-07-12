@@ -138,18 +138,34 @@ def blended_gap_filter(results: list[dict], significance: float = 3.0) -> list[d
     """Gap filter for pre-scored (blended_score descending) results.
 
     Falls back to _BLENDED_MIN_SCORE cutoff when the distribution is uniform.
+
+    Results tagged with the ``temporal`` mechanism (merge_results provenance —
+    they matched an explicit date/time window the user named in the query)
+    are never dropped by the cut, merged back in score order. The requested
+    window is itself the relevance signal for those results; blended_score
+    alone can't see it, and a same-day/self-referential result dominating the
+    distribution otherwise erases them (confirmed on real production data,
+    2026-07-12: a query naming a past date got its target memory ranked below
+    same-session noise and gap-filtered down to one unrelated result).
     """
     if not results:
         return []
     if len(results) < 3:
-        return [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
-    scores = [r.get("blended_score", 0.0) for r in results]
-    gaps = [scores[i] - scores[i + 1] for i in range(len(scores) - 1)]
-    max_gap = max(gaps)
-    mean_gap = sum(gaps) / len(gaps)
-    if mean_gap > 0 and max_gap >= significance * mean_gap:
-        return results[: gaps.index(max_gap) + 1]
-    return [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
+        kept = [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
+    else:
+        scores = [r.get("blended_score", 0.0) for r in results]
+        gaps = [scores[i] - scores[i + 1] for i in range(len(scores) - 1)]
+        max_gap = max(gaps)
+        mean_gap = sum(gaps) / len(gaps)
+        if mean_gap > 0 and max_gap >= significance * mean_gap:
+            kept = results[: gaps.index(max_gap) + 1]
+        else:
+            kept = [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
+    kept_ids = {id(r) for r in kept}
+    rescued = [r for r in results if "temporal" in r.get("mechanisms", []) and id(r) not in kept_ids]
+    if rescued:
+        kept = sorted(kept + rescued, key=lambda r: r.get("blended_score", 0.0), reverse=True)
+    return kept
 
 
 def format_facts(facts: dict[str, str]) -> str:

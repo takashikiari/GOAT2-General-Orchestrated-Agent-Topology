@@ -77,3 +77,57 @@ def test_all_above_min_no_gap_all_kept():
     results = [_r(s) for s in [0.80, 0.78, 0.76, 0.74, 0.72]]
     filtered = blended_gap_filter(results)
     assert len(filtered) == 5
+
+
+# --- temporal-matched results are protected from the gap cut -------------------
+
+def _rm(blended: float, mechanisms: tuple = ()) -> dict:
+    return {
+        "blended_score": blended, "content": "x",
+        "metadata": {"timestamp": 0.0}, "mechanisms": list(mechanisms),
+    }
+
+
+def test_temporal_result_survives_dramatic_top_gap():
+    """A result matched by the user's explicit date/time reference (mechanisms
+    includes 'temporal') must never be dropped by the generic gap-cut, even
+    when a same-day/self-referential result dominates the score distribution.
+
+    Confirmed against real production data (2026-07-12): a query naming an
+    explicit past date got its target memory reranked below same-session
+    noise, then gap-filtered down to a single unrelated result — the window
+    the user explicitly asked for is a relevance signal gap_filter has no
+    way to see from blended_score alone.
+    """
+    results = [
+        _rm(0.90),                        # dominant, non-temporal — wins alone normally
+        _rm(0.30, mechanisms=["temporal"]),  # what the user actually asked for
+        _rm(0.28),
+        _rm(0.27),
+        _rm(0.25),
+    ]
+    filtered = blended_gap_filter(results)
+    assert results[1] in filtered
+    assert filtered[0] is results[0]  # non-temporal behavior unchanged: dominant result still wins first
+
+
+def test_temporal_results_merged_in_score_order():
+    """Rescued temporal results are merged back in blended_score-descending
+    order — fit_search_results (downstream) assumes best-first — not just
+    appended at the end regardless of score."""
+    results = [
+        _rm(0.90),
+        _rm(0.30, mechanisms=["temporal"]),
+        _rm(0.10),
+        _rm(0.05, mechanisms=["temporal"]),
+    ]
+    filtered = blended_gap_filter(results)
+    scores = [r["blended_score"] for r in filtered]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_no_temporal_mechanism_behavior_unchanged():
+    """Without any 'temporal' tag, the dramatic-top-gap collapse-to-1 behavior
+    (test_gap_at_first_position) is untouched by this change."""
+    results = [_r(s) for s in [0.90, 0.30, 0.28, 0.27, 0.25]]
+    assert blended_gap_filter(results) == [results[0]]
