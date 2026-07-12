@@ -8,8 +8,22 @@ from __future__ import annotations
 
 import asyncio
 
+from memory.budget import estimate_tokens
 from memory.config import L1_FACTS_MAX_TOKENS
 from memory.promote import promote_fact
+
+
+def _value_filling_l1_cap() -> str:
+    """Build a value whose formatted L1 block (``- blob: <value>``) sits at
+    (just under) ``L1_FACTS_MAX_TOKENS``, using real ``estimate_tokens``
+    accounting rather than a chars-per-token heuristic — a real BPE tokenizer's
+    ratio isn't constant (e.g. repeated identical characters compress far
+    below the old 4-chars/token assumption this test used to rely on)."""
+    parts: list[str] = []
+    while estimate_tokens(f"- blob: {' '.join(parts)}") <= L1_FACTS_MAX_TOKENS:
+        parts.append(str(len(parts)))
+    parts.pop()
+    return " ".join(parts)
 
 
 class _FakePermanent:
@@ -50,7 +64,7 @@ def test_empty_key_refused():
 def test_cap_guard_rejects_when_full():
     # Fill the block to the cap with one giant value, then a new key is refused.
     p = _FakePermanent()
-    big = "x" * (L1_FACTS_MAX_TOKENS * 4 - 8)          # one "- blob: <val>" = cap tokens
+    big = _value_filling_l1_cap()
     assert asyncio.run(promote_fact(p, "blob", big)).startswith("✅")
     out = asyncio.run(promote_fact(p, "second", "y"))
     assert out.startswith("❌") and "full" in out and "second" in out
@@ -60,7 +74,7 @@ def test_cap_guard_rejects_when_full():
 def test_cap_guard_allows_update_within_cap():
     # Updating an existing key must not be falsely refused even when near full.
     p = _FakePermanent()
-    big = "x" * (L1_FACTS_MAX_TOKENS * 4 - 8)
+    big = _value_filling_l1_cap()
     asyncio.run(promote_fact(p, "blob", big))
     out = asyncio.run(promote_fact(p, "blob", "small"))  # shrink same key
     assert out.startswith("✅") and p._facts["blob"] == "small"

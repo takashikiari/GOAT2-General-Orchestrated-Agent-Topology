@@ -50,6 +50,12 @@ stopwordsiso>=0.6.1     # memory/person_entity_filter.py
 # NER both missed entirely, plus absolute dates, natively in Romanian.
 dateparser>=1.2.0      # memory/temporal_route.py
 
+# Real BPE token counting — memory/budget.py estimate_tokens(). cl100k_base is
+# a universal approximation (no public DeepSeek tokenizer package exists) but
+# a strict accuracy improvement over the old len(text)//4 flat heuristic, which
+# undercounted real (especially diacritic) text by ~30-40%.
+tiktoken>=0.7.0         # memory/budget.py
+
 # Optional plugin dependencies — not required for core bot operation.
 # Install these only if you enable the corresponding tools/goat_skills plugins:
 #
