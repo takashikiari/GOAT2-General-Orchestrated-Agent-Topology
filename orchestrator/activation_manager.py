@@ -16,8 +16,22 @@ async def update_activation(
     turn_state: str, activation, l3_results: list[dict],
     topic_return_id: str | None = None,
     forced_topic_id: str | None = None,
+    turn_start: float | None = None,
 ):
-    now = time.time()
+    """Persist this turn's activation update, guarded against write races.
+
+    ``turn_start`` is the ORIGIN wall-clock of the turn that produced this
+    update (``orchestrator.run()``'s ``start``, captured before any I/O) —
+    not the time this background prefetch happens to finish. It becomes the
+    written ``Activation.ts``, which ``ActivationStore.set`` uses as an
+    atomic monotonic ordering key: if turn N's prefetch is slow and finishes
+    AFTER turn N+1's already-faster prefetch wrote, turn N's write carries
+    the OLDER ``ts`` and is rejected instead of silently clobbering turn
+    N+1's fresher activation. Defaults to ``time.time()`` (the old,
+    completion-time behaviour) when not supplied, for callers/tests that
+    don't need the ordering guarantee.
+    """
+    now = turn_start if turn_start is not None else time.time()
     if turn_state == "warm":
         if activation is None:
             return None

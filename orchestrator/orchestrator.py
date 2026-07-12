@@ -467,11 +467,16 @@ class Orchestrator:
             )
             # 8. Post-turn prefetch: pre-compute L3 for the next turn in the
             #    inter-turn gap. No timeout — has as long as it needs before
-            #    the user sends their next message.
+            #    the user sends their next message. turn_start=start (this
+            #    turn's ORIGIN time, captured before any I/O) travels all the
+            #    way to ActivationStore.set as the write-race ordering key —
+            #    if this turn's prefetch is slow and a later turn's faster
+            #    prefetch already wrote, this write must lose, not clobber it.
             _prefetch_bg = asyncio.create_task(
                 run_prefetch_and_save(
                     layers, chat_id, intent, query_emb, turn_state, activation,
                     topic_return_id=topic_return_id, forced_topic_id=current_topic_id,
+                    turn_start=start,
                 ))
             self._pending_bg.add(_prefetch_bg)
             _prefetch_bg.add_done_callback(self._pending_bg.discard)

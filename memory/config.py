@@ -112,6 +112,12 @@ PREFETCH_RECENCY_WINDOW_DAYS: Final[int] = int(
 PREFETCH_ACCESS_COUNT_REF: Final[int] = int(
     _prefetch.get("access_count_ref", _DEFAULTS["prefetch"]["access_count_ref"])
 )
+PREFETCH_RECENCY_BASE_WEIGHT: Final[float] = float(
+    _prefetch.get("recency_base_weight", _DEFAULTS["prefetch"]["recency_base_weight"])
+)
+PREFETCH_RECENCY_RECENCY_WEIGHT: Final[float] = float(
+    _prefetch.get("recency_recency_weight", _DEFAULTS["prefetch"]["recency_recency_weight"])
+)
 _analytics = _cfg.get("analytics", _DEFAULTS["analytics"])
 ANALYTICS_LOG_INTERVAL: Final[int] = int(
     _analytics.get("log_interval", _DEFAULTS["analytics"]["log_interval"])
@@ -188,6 +194,8 @@ __all__ = [
     "PREFETCH_MAX_RESULTS",
     "PREFETCH_RECENCY_WINDOW_DAYS",
     "PREFETCH_ACCESS_COUNT_REF",
+    "PREFETCH_RECENCY_BASE_WEIGHT",
+    "PREFETCH_RECENCY_RECENCY_WEIGHT",
     "ANALYTICS_LOG_INTERVAL",
     "ACTIVATION_TTL_SECONDS",
     "ACTIVATION_DRIFT_WARM",
