@@ -31,6 +31,8 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 _LIMIT = PREFETCH_MAX_RESULTS
 
+__all__ = ["retrieve", "temporal_candidates"]
+
 
 async def retrieve(
     layers,
@@ -67,7 +69,7 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
     labeled = [("semantic_topic_scoped", s), ("semantic_global", g)]
     groups = [(name, enforce_result_limit(p)) for name, p in labeled if not isinstance(p, BaseException)]
     bm25 = [] if isinstance(b, BaseException) else b
-    temporal = await _temporal_candidates(layers, query)
+    temporal = await temporal_candidates(layers, query)
     # Prediction: previous turn's pre-fetched context added as a candidate group.
     # CrossEncoder scores it against the new query — stays if still relevant,
     # gets ranked out if the topic has shifted.
@@ -119,7 +121,7 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
         groups.append((label, r))
         if k is not None:
             cache_hit, cache_key = h, k
-    temporal = await _temporal_candidates(layers, query)
+    temporal = await temporal_candidates(layers, query)
     all_groups = groups + ([("bm25", bm25)] if bm25 else []) + ([("temporal", temporal)] if temporal else [])
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
@@ -137,15 +139,26 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     return merged, cache_hit, cache_key, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
-async def _temporal_candidates(layers, query) -> list[dict]:
+async def temporal_candidates(
+    layers, query: str, interval: tuple[float, float] | None = None,
+) -> list[dict]:
     """Timestamp-filtered search when ``query`` contains a date/time expression.
 
     Parses the raw query text directly (dateparser), independent of GLiNER's
     entity extraction — GLiNER never tags relative expressions ("ieri", "acum
     2 ore") as DATE/TIME, so gating this on GLiNER entities silently skipped
     every relative-time query (confirmed on real data, 2026-07-08).
+
+    Public (not ``_``-prefixed): also called synchronously by
+    ``orchestrator.run()``'s temporal fast-path, so a query naming an explicit
+    date gets searched for THIS turn instead of only informing the next turn's
+    background prefetch. ``interval`` lets that caller pass an already-parsed
+    ``(after, before)`` window (it must call ``parse_interval`` itself first to
+    decide whether to take the fast-path at all) so the cheap, pure parse
+    isn't repeated; omitted by ``_drift``/``_cold``, which parse fresh here.
     """
-    interval = parse_interval(query)
+    if interval is None:
+        interval = parse_interval(query)
     if not interval:
         return []
     after, before = interval

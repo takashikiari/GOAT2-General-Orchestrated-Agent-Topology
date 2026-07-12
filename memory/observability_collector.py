@@ -10,6 +10,7 @@ derived here so the orchestrator stays lean. Stage timing uses ``start_stage``
 """
 from __future__ import annotations
 
+import json
 import time
 
 from memory.budget import estimate_tokens
@@ -188,6 +189,32 @@ class ObservationCollector:
         self.obs.results_used = results_used
         self.obs.source_tier = tier
         self.obs.budget_used = injected
+
+    def add_prompt_extras(self, guidance_text: str, tool_schemas: list[dict]) -> None:
+        """Fold non-block prompt weight into tokens_injected: guidance text + tool schemas.
+
+        ``set_context_from_blocks`` only sees the three ``assemble_blocks`` blocks
+        (identity/history/related); it runs BEFORE the orchestrator appends the
+        ``_SEARCH_MEMORY_GUIDANCE``/``_STORE_MEMORY_GUIDANCE``/etc. strings to
+        ``system_content`` and attaches ``kw["tools"]`` to the API call, so
+        neither was ever counted — ``tokens_injected`` silently understated real
+        prompt size (measured 2.1x-3.1x on single-call turns, 5x-10x on
+        tool-round turns, 2026-07-12). Call once, after those are known, with the
+        concatenated guidance text (``""`` when no tool guidance applies) and the
+        ``to_openai_schema()`` list actually attached to the API call (``[]``
+        when no tools are configured). Observability-only: does not change what
+        is sent to the LLM, only what the metric reports.
+
+        Tool schemas are estimated from their serialized JSON size — the same
+        ``estimate_tokens`` heuristic used everywhere else, applied to what the
+        API actually receives, not a hand-rolled per-field guess.
+        """
+        guidance_tokens = estimate_tokens(guidance_text) if guidance_text else 0
+        tools_tokens = estimate_tokens(json.dumps(tool_schemas)) if tool_schemas else 0
+        self.obs.tokens_guidance = guidance_tokens
+        self.obs.tokens_tools = tools_tokens
+        self.obs.tokens_injected += guidance_tokens + tools_tokens
+        self.obs.budget_used = self.obs.tokens_injected
 
     def finish(self, total_latency: float) -> None:
         """Set the total latency and emit the structured observation."""

@@ -33,6 +33,8 @@ from memory.config_extra import (
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
+from memory.retrieval import temporal_candidates
+from memory.temporal_route import parse_interval
 from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
@@ -327,9 +329,40 @@ class Orchestrator:
             if activation and activation.merged:
                 l3_results = rescore_recency(activation.merged, time.time())
                 warm_served = bool(l3_results)
+            # Synchronous temporal fast-path — additive to the passive-reader
+            # behaviour above, not a replacement for it. activation.merged was
+            # populated by the PREVIOUS turn's post-turn prefetch, searching the
+            # PREVIOUS turn's query; it structurally cannot contain results for a
+            # date/time window the user names for the FIRST time in THIS turn's
+            # query — that search only starts (in the background, for the NEXT
+            # turn) after this turn's reply is already sent. Confirmed on real
+            # production log (2026-07-12): "ce am discutat pe 9 iulie" got no
+            # temporal context this way and the correct memory only surfaced a
+            # turn later, once the user had already moved on.
+            # parse_interval is pure/cheap (regex + dateparser, no embedding
+            # model, no network) — checking it every turn costs nothing; only
+            # queries that actually name a date pay for the extra search below,
+            # which is a single indexed ChromaDB metadata-range query, not the
+            # full BM25 + dual-semantic + entity-extraction cold pipeline.
+            temporal_interval = parse_interval(intent)
+            if temporal_interval is not None:
+                fresh_temporal = await temporal_candidates(layers, intent, interval=temporal_interval)
+                if fresh_temporal:
+                    # Rerank on this small candidate pool is cheap and worth it
+                    # for quality; boost_by_entities/BM25 are skipped — those
+                    # need GLiNER entity extraction, which this fast-path is
+                    # explicitly avoiding to stay cheap on every turn.
+                    groups = ([("warm", l3_results)] if l3_results else []) + [("temporal", fresh_temporal)]
+                    combined = merge_results(groups)[:PREFETCH_MAX_RESULTS * 2]
+                    l3_results = (await layers.rerank(intent, combined))[:PREFETCH_MAX_RESULTS]
+                    log.info(
+                        "temporal fast-path chat=%s found=%d merged_total=%d",
+                        chat_id, len(fresh_temporal), len(l3_results),
+                    )
+            served = bool(l3_results)
             collector.end_stage("search")
             collector.set_cache(False, None)
-            collector.set_prefetch(True, warm_served, False, len(l3_results), 0)
+            collector.set_prefetch(True, served, False, len(l3_results), 0)
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), 0)
             # 4. Fetch L0/L1/L2 concurrently (all fast — no heavy search I/O)
             #    and assemble L0-L3 context (assemble stage).
@@ -352,14 +385,17 @@ class Orchestrator:
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
+            guidance_texts: list[str] = []
             if self._has_search_memory():
-                system_content += f"\n\n{_SEARCH_MEMORY_GUIDANCE}"
+                guidance_texts.append(_SEARCH_MEMORY_GUIDANCE)
             if self._has_store_memory():
-                system_content += f"\n\n{_STORE_MEMORY_GUIDANCE}"
+                guidance_texts.append(_STORE_MEMORY_GUIDANCE)
             if self._has_tool("promote_memory"):
-                system_content += f"\n\n{_PROMOTE_MEMORY_GUIDANCE}"
+                guidance_texts.append(_PROMOTE_MEMORY_GUIDANCE)
             if self._has_tool("get_memory_metrics") or self._has_tool("get_recent_logs"):
-                system_content += f"\n\n{_INTROSPECTION_GUIDANCE}"
+                guidance_texts.append(_INTROSPECTION_GUIDANCE)
+            for guidance in guidance_texts:
+                system_content += f"\n\n{guidance}"
             api_msgs = [
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": intent},
@@ -367,9 +403,17 @@ class Orchestrator:
             all_tools = self._all_tools()
             kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
                             temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS)
+            tool_schemas: list[dict] = []
             if all_tools:
-                kw["tools"] = [t.to_openai_schema() for t in all_tools]
+                tool_schemas = [t.to_openai_schema() for t in all_tools]
+                kw["tools"] = tool_schemas
                 kw["tool_choice"] = "auto"
+            # Observability-only: fold the guidance text + tool schemas counted
+            # above into tokens_injected so the metric reflects what actually
+            # reaches the LLM (set_context_from_blocks only sees the three
+            # assemble_blocks blocks, measured BEFORE either of these exist).
+            # Does not change kw / api_msgs — same prompt sent either way.
+            collector.add_prompt_extras("\n\n".join(guidance_texts), tool_schemas)
             collector.end_stage("inject")
             # 5. LLM call + tool round (llm stage — the dominant latency).
             collector.start_stage("llm")
