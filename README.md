@@ -8,7 +8,7 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 
 ## What makes it different
 
-- **Zero-latency L3 context.** The prefetch daemon runs in the *inter-turn gap* — after the reply is delivered, before the user sends the next message. ChromaDB, BM25, GLiNER, and CrossEncoder all complete with no time pressure. The next turn reads pre-computed L3 from activation (L2.5) instantly; no search pipeline runs during a turn at all. `search_memory` remains available as an explicit on-demand tool, never as a timeout fallback.
+- **Zero-latency on warm turns, overlapped-not-stacked on cold/drift.** A warm turn (same thread) reads pre-computed L3 from activation (L2.5) instantly — the full ChromaDB + BM25 + GLiNER + CrossEncoder pipeline ran in the *previous* turn's inter-turn gap, with no time pressure. A cold/drift turn (topic break, or a thread that's moved on) can't be served from a stale precomputation of a *different* query, so that pipeline runs synchronously for THIS turn instead — but as a task launched alongside the L0/L1/L2 fetch (`asyncio.gather`), so its latency overlaps rather than stacks on top. Either way it's one LLM call: `search_memory` remains available as an explicit on-demand tool, never as a timeout fallback or a second round-trip — the model is always handed finished context, it never has to go fetch it.
 - **Brain activation, not a cache.** L2.5 holds per-chat *thread state* — the centroid of the current topic and the retrieval it produced. A follow-up on the same thread is served from the held activation (no search); the thread breaks only on a consensus shift (semantic drift AND lexical overlap both drop). The LLM builds on a stable reality instead of a flickering one.
 - **Topic-aware memory.** Every conversation belongs to a topic (UUID, stored in the activation blob). Each L3 archive entry is tagged with its `topic_id`. The prefetch daemon scopes L3 search to the current topic on drift turns and adds a parallel topic-return mechanism on cold breaks. Centroid updates are stability-weighted (`alpha = 1/min(turn_count, 20)`) — early turns move fast, stable topics resist drift. When a cold break matches an archived topic centroid (cosine ≥ 0.75), the session resumes that topic instead of minting a new one.
 - **Live identity updates.** GOAT can update its own L0 persona at runtime via the `set_identity` tool — stored in a Letta `identity` block and fetched concurrently each turn. The config `base_prompt` is always the fallback: if Letta is unreachable, identity loads from config exactly as before.
@@ -49,24 +49,28 @@ The per-turn driver is `Orchestrator.run` (`orchestrator/orchestrator.py`). It t
 
 ## The prefetch daemon
 
-The daemon runs **post-turn** as a fire-and-forget `asyncio.Task`, in the inter-turn gap while the user reads the reply. It has no timeout — the full ChromaDB + BM25 + GLiNER + CrossEncoder pipeline runs to completion. Results are written into activation (L2.5) and read instantly by the *next* turn.
+On **warm** turns the daemon runs post-turn, as a fire-and-forget `asyncio.Task` in the inter-turn gap while the user reads the reply — no timeout, the full ChromaDB + BM25 + GLiNER + CrossEncoder pipeline runs to completion, and results are written into activation (L2.5) for the *next* turn to read instantly.
+
+On **cold/drift** turns the same pipeline (`memory/retrieval.py::retrieve`) instead runs synchronously *within* the current turn: `activation.merged` was computed for a different query — possibly a different topic entirely — so serving it here would be silently wrong, not just stale (fixed 2026-07-26; see Changelog). The call is launched as a task alongside the L0/L1/L2 fetch so its latency overlaps rather than stacks. Its result does double duty — it serves THIS turn's LLM call, and is handed to the post-turn daemon as `precomputed_l3` so the daemon persists it into activation without re-running the same search a second time.
 
 **Turn-time flow (orchestrator.run):**
 
 1. Read activation + embed query (concurrent `asyncio.gather`) — instant.
-2. Classify turn state from activation.
-3. Serve L3 from `activation.merged` (0 ms) — or empty on cold turns.
-4. Fetch L0/L1/L2 concurrently.
+2. Classify turn state from activation (`classify_turn` — pure/cheap, no I/O).
+3. **Warm:** serve L3 from `activation.merged` (0 ms), rescored by recency. **Cold/drift:** launch `retrieve()` as a task (not yet awaited) against the CURRENT query — not a replay of the previous turn's.
+4. Fetch L0/L1/L2 concurrently, joined by the in-flight cold/drift task from step 3 so its latency overlaps instead of stacking on top.
 5. Assemble → LLM → save.
-6. Fire-and-forget `run_prefetch_and_save` for the next turn.
+6. Fire-and-forget `run_prefetch_and_save` for the next turn — reuses step 3's result on cold/drift (no duplicate search), runs its own lightweight refresh search on warm.
 
-**Daemon — turn-state logic:**
+**Turn-state logic** (`classify_turn`, pure/cheap — no I/O):
 
-| State | Trigger | What the daemon does |
-|-------|---------|----------------------|
-| **cold** | No prior activation, or consensus shift (drift < `drift_cold` AND lexical overlap < `lexical_low`) | Up to four concurrent mechanisms; detect topic return; mint or resume topic UUID; build fresh activation |
-| **warm** | `cosine(query, centroid) ≥ drift_warm` | Runs a drift-style search (topic may still evolve); writes updated activation |
-| **drift** | Middle band | Targeted search scoped to current `topic_id`; global fallback; weighted centroid update |
+| State | Trigger | Runs where | What runs |
+|-------|---------|-----------|-----------|
+| **cold** | No prior activation, or consensus shift (drift < `drift_cold` AND lexical overlap < `lexical_low`) | **In-turn**, synchronously — this turn's own LLM call needs it | Up to four concurrent mechanisms; detect topic return; mint or resume topic UUID; build fresh activation |
+| **warm** | `cosine(query, centroid) ≥ drift_warm` | Daemon, post-turn — preparing for the *next* turn | Runs a drift-style search (topic may still evolve); writes updated activation |
+| **drift** | Middle band | **In-turn**, synchronously — this turn's own LLM call needs it | Targeted search scoped to current `topic_id`; global fallback; weighted centroid update |
+
+The daemon still runs post-turn on *every* turn to persist activation for the next one — on cold/drift it just reuses the in-turn result (`precomputed_l3`) instead of searching twice.
 
 **Cold — up to four mechanisms, run concurrently via `asyncio.gather`:**
 
@@ -87,9 +91,9 @@ The daemon runs **post-turn** as a fire-and-forget `asyncio.Task`, in the inter-
 
 Stored as one JSON blob per chat in Redis (`activation:{chat_id}`, 7-day cleanup TTL — not a reset). Holds: `centroid` (thread embedding), `merged` (held L3 results), `last_query`, `recent_queries` (rolling window for lexical signal), `topic_id` (UUID of current topic), `turn_count` (turns since last cold start), `archived_topics` (up to 10 past topic centroids, newest-last).
 
-- **Warm turns:** serve `rescore_recency(activation.merged, now)` — time attenuates, never resets. No ChromaDB query runs.
-- **Drift turns:** weighted centroid update (`alpha = 1/min(turn_count, 20)`); L3 search scoped to current `topic_id` with global fallback when no tagged entries exist yet.
-- **Cold turns:** departing topic centroid is archived (up to `TOPIC_ARCHIVE_MAX = 10`). A new UUID is minted — unless `find_topic_return` matches an archived centroid (cosine ≥ `TOPIC_RETURN_THRESHOLD = 0.75`), in which case that topic resumes.
+- **Warm turns:** serve `rescore_recency(activation.merged, now)` — time attenuates, never resets. No ChromaDB query runs, this turn or the daemon's.
+- **Drift turns:** L3 search scoped to current `topic_id` (global fallback when no tagged entries exist yet) now runs **synchronously, in-turn** — overlapped with the L0/L1/L2 fetch, not deferred to the next turn's daemon. Weighted centroid update (`alpha = 1/min(turn_count, 20)`).
+- **Cold turns:** the four-mechanism search also runs **synchronously, in-turn**, for the same reason. Departing topic centroid is archived (up to `TOPIC_ARCHIVE_MAX = 10`). A new UUID is minted — unless `find_topic_return` matches an archived centroid (cosine ≥ `TOPIC_RETURN_THRESHOLD = 0.75`), in which case that topic resumes.
 - **Enriching writes:** when GOAT stores a fact on-thread (`cosine(content, centroid) ≥ enriching_sim`), the activation is refreshed in-place synchronously before `run()` returns — the next turn sees the new learning folded in.
 - **Embeddings:** reuse ChromaDB's bundled ONNX MiniLM — same vector space as retrieval, no extra API call, degrades to `None` on any failure (turn falls back to cold, never breaks).
 
@@ -457,6 +461,25 @@ goat2/
 ---
 
 ## Changelog
+
+### v0.1.8 — 2026-07-26
+
+*Note: this changelog fell out of sync with the actual release history somewhere*
+*after v0.1.3 — tags v0.1.4 through v0.1.7 (all 2026-07-07) shipped without an*
+*entry here. Not backfilled; picking back up at the true next version.*
+
+**Synchronous in-turn retrieval on cold/drift turns, plus two live-production bugs found while verifying it**
+
+- **The core bug:** post-turn prefetch is fundamentally a *next-turn* mechanism — it searches on the CURRENT turn's query to prepare context for whichever query comes NEXT. On a warm turn that's fine (same thread, so last turn's precomputation is still relevant). On a cold/drift turn — by definition, any turn that starts a new topic or moves the thread on — the orchestrator was still serving `activation.merged`, computed for a *different, no-longer-relevant* query, silently, with no re-check. (Ironically introduced by v0.1.4's own "serve L3 on all turn states" fix, which removed an earlier cold-turn exclusion without noticing the served data was stale.) The v0.1.3 temporal fast-path patched this for one narrow case (explicit date/time mentions); the same staleness existed for plain semantic, lexical, and entity-based recall on every cold/drift turn.
+- **Fix:** `orchestrator.run()` now branches on `turn_state` (already classified cheaply, no I/O, before this point). Warm turns are unchanged — zero added latency. Cold/drift turns launch `memory.retrieval.retrieve()` as a task at the same point the old code just read `activation.merged`, then join it into the L0/L1/L2 `asyncio.gather` a few lines later — so its latency overlaps the other fetches instead of stacking sequentially. The current turn's own LLM call gets the correctly-scoped semantic + BM25 + entity + temporal result set for its own query. Still exactly one LLM call — no tool round, no second inference; the model is handed finished context precisely as before, just correct context.
+- **No duplicate search.** `run_prefetch_and_save` gains a `precomputed_l3` parameter: on cold/drift, the daemon receives the result `run()` already computed synchronously and just persists it into activation — it does not re-run `retrieve()` a second time for the same query.
+- **Temporal fast-path narrowed to warm.** The dedicated synchronous temporal check (v0.1.3) only adds value on warm turns now — cold/drift's `retrieve()` already runs `temporal_candidates()` internally as one of its four mechanisms, so keeping the standalone check unconditional would have searched the same date/time window twice. `temporal_center` is still computed unconditionally (a cheap parse) so budget packing keeps prioritizing content near the moment actually asked about on every turn.
+- **Found live while verifying the above:** `config/agents.toml` had every role hardcoded to `model = "deepseek-chat"` — DeepSeek's API now rejects that name (`deepseek-v4-pro`/`deepseek-v4-flash` only), so every real Telegram message was failing with a 400 before this fix. Corrected to `deepseek-v4-flash` for all roles.
+- **Found live in the same verification pass:** `memory/temporal_route.py`'s `parse_interval` (dateparser-backed) misreads the common Romanian adverb "mai" ("more"/"still"/"also" — "mai știi", "ce mai faci", "nu mai am") as the month name "mai" (May), misrouting ordinary conversational messages to a bogus May date. A bare "mai" match with no day-of-month digit is now dropped; a real day reference ("4 mai") is still trusted. Same underlying class of ambiguity as the already-documented, intentionally-unfixed "luni"/Monday gap — but "mai" is common enough in casual speech that leaving it unfixed was a live, frequent misfire rather than a rare edge case.
+- **414 tests** (`tests/` + `workflow/`, 413 passing — one pre-existing, unrelated `workflow/runner.py::cleanup()` failure, see that file's own tracking). Two orchestrator tests that asserted the *old* behaviour (an unrelated topic's stale `activation.merged` entry "must survive" into a cold turn) were rewritten to assert the corrected invariant instead; `tests/_orch_fakes.py`'s `_FakeLayers` gained `extract_query_entities` and a `pre_extracted`-aware `boost_by_entities`, previously never exercised because the orchestrator never called into the cold/drift retrieval path synchronously. 12 new tests cover the "mai" false-positive fix.
+
+**Modified:** `orchestrator/orchestrator.py`, `orchestrator/prefetch.py`, `memory/temporal_route.py`, `config/agents.toml`, `version.py`, `tests/_orch_fakes.py`, `tests/test_orchestrator_memory_flow.py`, `tests/test_orchestrator_temporal_fastpath.py`, `tests/test_temporal_route.py`
+**New:** `scripts/chat_cli.py` (ad-hoc terminal verification harness against real backends, no tools exposed)
 
 ### v0.1.3 — 2026-07-07
 

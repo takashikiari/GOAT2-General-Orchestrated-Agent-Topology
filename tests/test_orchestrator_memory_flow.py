@@ -10,11 +10,13 @@ from tests._orch_fakes import (
 
 
 def test_search_runs_unconditionally_and_reports_cache_key():
-    """Search always runs — now post-turn (no timeout), not blocking the LLM call.
+    """Search always runs. Cold/drift turns now run it synchronously, in-turn.
 
     In the old architecture a low-confidence intent ('la' → 0.2) skipped L3 entirely.
-    In the new architecture search is always scheduled post-turn regardless of confidence,
-    so the turn itself returns instantly with warm-served=False on a cold first turn.
+    Later, search moved to a post-turn-only daemon that a cold first turn could
+    never benefit from itself. Since the 2026-07-26 fix, cold/drift turns call
+    retrieve() synchronously (overlapped with the L0/L1/L2 fetch) so THIS turn
+    finds whatever the backend has to offer, not just the next one.
     """
     intent = "Pai și după atâtea tokens prefetchul a folosit 0 blocks la fiecare qwery"
     layers = _FakeLayers(results=[{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}])
@@ -22,11 +24,9 @@ def test_search_runs_unconditionally_and_reports_cache_key():
     reply = asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager, analytics=reg.memory_analytics, tools=[]).run(intent, "chat"))
     assert reply == "reply"
     obs = reg.memory_analytics.records[-1]
-    # Post-turn prefetch is always attempted; on the first cold turn no pre-fetched
-    # results are in activation yet (warm_served=False), so results_found=0.
     assert obs.prefetch_attempted is True
-    assert obs.prefetch_timeout is False            # no timeout — search is post-turn
-    assert obs.prefetch_results_returned == 0       # cold first turn: nothing pre-fetched yet
+    assert obs.prefetch_timeout is False            # no timeout — daemon still saves for next turn
+    assert obs.prefetch_results_returned == 1       # cold turn's synchronous retrieve() found it now
 
 
 def test_prefetch_blocks_used_reflects_real_l3_used():

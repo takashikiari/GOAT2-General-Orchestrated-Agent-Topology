@@ -218,6 +218,87 @@ class TestMultipleMatches:
         assert abs(before - (center + 3600)) < 1
 
 
+class TestBareMaiFalsePositive:
+    """Regression coverage for the live-confirmed bug (2026-07-26): "mai"
+    ("more"/"still"/"also" — an extremely common Romanian adverb) collides
+    with the month name "mai" (May) in dateparser's ro locale, misrouting
+    ordinary conversational messages to a bogus May date. A bare "mai" match
+    with no day-of-month digit is dropped; a match that does carry a digit
+    (a real day reference, e.g. "4 mai") is still trusted.
+    """
+
+    def test_mai_as_filler_word_returns_none(self):
+        assert parse_interval("Mai stii ce discutam?", now=_NOW) is None
+
+    def test_ce_mai_faci_returns_none(self):
+        assert parse_interval("Ce mai faci?", now=_NOW) is None
+
+    def test_mai_vrei_ceva_returns_none(self):
+        assert parse_interval("Mai vrei ceva?", now=_NOW) is None
+
+    def test_nu_mai_am_chef_returns_none(self):
+        assert parse_interval("nu mai am chef", now=_NOW) is None
+
+    def test_mai_bine_returns_none(self):
+        assert parse_interval("mai bine plecam", now=_NOW) is None
+
+    def test_bare_mai_alone_returns_none(self):
+        assert parse_interval("mai", now=_NOW) is None
+
+    def test_day_and_month_mai_still_parses(self):
+        """A genuine day reference in May ("4 mai") must still work — only
+        the bare, digit-less "mai" collision is treated as a false positive."""
+        result = parse_interval("Am fost in Grecia pe 4 mai", now=_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 5, 4, 12, 0, 0).timestamp()
+        assert abs(after - (center - 12 * 3600)) < 1
+        assert abs(before - (center + 12 * 3600)) < 1
+
+    def test_relative_expression_containing_no_mai_unaffected(self):
+        """Regression guard: the fix must not affect any query that doesn't
+        contain the word "mai" at all."""
+        result = parse_interval("Ce am discutat acum 2 zile?", now=_NOW)
+        assert result is not None
+
+    def test_in_mai_prefix_still_parses(self):
+        """"în mai"/"in mai" (leading preposition) is dateparser's one
+        genuine-month-reference form that keeps the preposition in the
+        matched span — confirmed live it's unambiguous ("in May"), so it must
+        still be trusted even though it has no digit."""
+        result = parse_interval("Ce am discutat in mai?", now=_NOW)
+        assert result is not None
+
+    def test_mixed_matches_drops_only_the_mai_false_positive(self, monkeypatch):
+        """If search_dates ever returns a bare "mai" false positive ALONGSIDE
+        a genuine match for the same query, only the false positive must be
+        dropped — the genuine match must still be used."""
+        import memory.temporal_route as mod
+
+        def fake_search_dates(text, languages=None, settings=None):
+            return [
+                ("mai", datetime(2026, 5, 26, 0, 0)),
+                ("4 iulie 07:00", datetime(2026, 7, 4, 7, 0, 0)),
+            ]
+
+        monkeypatch.setattr(mod, "search_dates", fake_search_dates)
+        result = mod.parse_interval("mai ce discutam pe 4 iulie 07:00?", now=_NOW)
+        assert result is not None
+        after, before = result
+        center = datetime(2026, 7, 4, 7, 0, 0).timestamp()
+        assert abs(after - (center - 3600)) < 1
+        assert abs(before - (center + 3600)) < 1
+
+    def test_all_matches_being_mai_false_positives_returns_none(self, monkeypatch):
+        import memory.temporal_route as mod
+
+        def fake_search_dates(text, languages=None, settings=None):
+            return [("Mai", datetime(2026, 5, 26, 0, 0)), ("mai am", datetime(2026, 5, 26, 0, 0))]
+
+        monkeypatch.setattr(mod, "search_dates", fake_search_dates)
+        assert mod.parse_interval("Mai stii, nu mai am", now=_NOW) is None
+
+
 class TestKnownUnparseableGaps:
     """Documented gaps, not fixed here (see temporal_route.py module
     docstring): both require a hand-rolled relative-expression lexicon,

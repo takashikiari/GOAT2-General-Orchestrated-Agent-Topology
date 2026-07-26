@@ -16,6 +16,15 @@ dateparser's RO relative-date lexicon even with diacritics restored — both
 return no match with languages=["ro", "en"]. Fixing either would mean adding
 a hand-rolled relative-expression lexicon, which is disproportionate to a
 single-word gap; documented here instead of scope-creeping into this bugfix.
+
+Fixed 2026-07-26: "mai" ("more"/"still"/"also" — an extremely common Romanian
+adverb, as in "mai știi", "ce mai faci", "nu mai am") collides with the month
+name "mai" (May) the same way "luni" collides above — but unlike "luni",
+"mai" is common enough in ordinary conversation that leaving it unfixed
+mis-routes a large fraction of everyday messages to a bogus May date.
+Confirmed live: "Mai stii ce discutam?", "Ce mai faci?", "mai bine plecam"
+and "nu mai am chef" all parsed as a real (wrong) date. See
+``_drop_bare_mai_false_positives`` below.
 """
 from __future__ import annotations
 
@@ -44,6 +53,42 @@ _SPOKEN_HOUR_RE = re.compile(r"\b((?:la\s+)?ora)\s+(\d{1,2})\b(?!\s*:)", re.IGNO
 # Trailing "(la) ora N[:MM]" phrase, stripped during the implausible-year
 # retry in parse_interval (see _IMPLAUSIBLE_YEAR guard below).
 _TRAILING_HOUR_PHRASE_RE = re.compile(r"\s*\b(?:la\s+)?ora\s+\d{1,2}(?::\d{2})?\.?\s*$", re.IGNORECASE)
+
+# "mai" as a whole word anywhere in the matched span — the collision is with
+# the bare month token, not with any specific position in the sentence.
+_MAI_WORD_RE = re.compile(r"\bmai\b", re.IGNORECASE)
+# The one unambiguous form: "în mai"/"in mai" (leading preposition) really
+# does mean "in May" and nothing else in Romanian — confirmed live this is
+# the only prefix dateparser keeps in the matched span for a genuine month
+# reference (bare "pe mai"/"prin mai"/"din mai" reference all get stripped
+# down to bare "mai" by dateparser too, indistinguishable from the filler
+# word at the span level — see module docstring for why this is an accepted
+# asymmetric tradeoff rather than a fully precise fix).
+_MAI_MONTH_REF_RE = re.compile(r"^(?:în|in)\s+mai\b", re.IGNORECASE)
+
+
+def _drop_bare_mai_false_positives(
+    matches: list[tuple[str, datetime]],
+) -> list[tuple[str, datetime]]:
+    """Drop matches that are almost certainly the "mai" filler-word collision.
+
+    A match is dropped when its matched_text contains "mai" as a whole word,
+    carries no digit (a real day-of-month reference like "4 mai" always has
+    one), and isn't the one unambiguous "în mai" prefix form. See module
+    docstring ("Fixed 2026-07-26") for the live-confirmed false positives and
+    the rationale for this being an accepted asymmetric tradeoff, not a fully
+    precise fix.
+    """
+    kept = []
+    for text, dt in matches:
+        if (
+            _MAI_WORD_RE.search(text)
+            and not any(ch.isdigit() for ch in text)
+            and not _MAI_MONTH_REF_RE.match(text.strip())
+        ):
+            continue
+        kept.append((text, dt))
+    return kept
 
 
 def _normalize_spoken_hours(query: str) -> str:
@@ -87,6 +132,9 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
         return None
     if not matches:
         return None
+    matches = _drop_bare_mai_false_positives(matches)
+    if not matches:
+        return None
 
     matched_text, center = matches[0]
     # search_dates can return several fragments for one query (e.g. a vague
@@ -121,6 +169,8 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
                 retry_matches = search_dates(stripped_query, languages=["ro", "en"], settings=settings)
             except Exception:  # noqa: BLE001 — same rationale as the primary call above
                 retry_matches = None
+            if retry_matches:
+                retry_matches = _drop_bare_mai_false_positives(retry_matches)
         if not retry_matches:
             return None
         matched_text, center = retry_matches[0]

@@ -7,51 +7,51 @@
 # Supported providers: openai | deepseek | groq
 
 [defaults]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.4
 tool_calling    = true
 max_tool_rounds = 6
 
 [planner]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure reasoning — no tools
 
 [researcher]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.4
 max_tool_rounds = 8   # may chain several web searches
 
 [coder]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 6   # file ops + validate_syntax rounds
 
 [critic]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure analysis — no tools
 
 [summarizer]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure synthesis — no tools
 
 [tool_caller]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.1
 tool_calling    = true
 max_tool_rounds = 6
 
 [memory]
-model           = "deepseek-chat"
+model           = "deepseek-v4-flash"
 provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 4   # memory reads/writes only

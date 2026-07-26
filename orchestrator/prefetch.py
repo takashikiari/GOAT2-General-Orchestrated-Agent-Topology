@@ -24,6 +24,7 @@ async def run_prefetch_and_save(
     topic_return_id: str | None = None,
     forced_topic_id: str | None = None,
     turn_start: float | None = None,
+    precomputed_l3: list[dict] | None = None,
 ) -> None:
     """Pre-compute L3 for the next turn and persist into activation (L2.5).
 
@@ -32,12 +33,25 @@ async def run_prefetch_and_save(
     guard in ``ActivationStore.set`` can tell an out-of-order-finishing but
     logically-older write apart from a genuinely newer one. See
     ``update_activation`` for the full rationale.
+
+    ``precomputed_l3``: on cold/drift turns, ``orchestrator.run()`` already
+    calls ``retrieve()`` synchronously for THIS turn's query (to serve the
+    current LLM call with fresh, current-query-relevant context — see
+    ``orchestrator.py`` step 3). Passing that result through here avoids
+    running the exact same search a second time; this daemon just persists it.
+    ``None`` (the warm case) preserves the original behaviour: a fresh
+    ``"cold"``-mechanism search run in the background, since a warm turn never
+    triggers a synchronous search of its own.
     """
     try:
-        search_state = "drift" if turn_state == "warm" else "cold"
-        l3_results, _, _, _ = await retrieve(
-            layers, chat_id, intent, search_state, activation, topic_return_id,
-        )
+        if precomputed_l3 is not None:
+            l3_results = precomputed_l3
+            search_state = turn_state
+        else:
+            search_state = "drift" if turn_state == "warm" else "cold"
+            l3_results, _, _, _ = await retrieve(
+                layers, chat_id, intent, search_state, activation, topic_return_id,
+            )
         await update_activation(
             layers, chat_id, intent, query_emb,
             turn_state, activation, l3_results,

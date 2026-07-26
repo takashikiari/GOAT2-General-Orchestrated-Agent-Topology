@@ -33,7 +33,7 @@ from memory.config_extra import (
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
-from memory.retrieval import temporal_candidates
+from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tools import ToolDefinition
@@ -318,62 +318,84 @@ class Orchestrator:
                 "AITS budget=%d confidence=%.2f complexity=%.2f chat=%s",
                 budget, confidence, complexity, chat_id,
             )
-            # 3. Get L3 from activation — pre-fetched by the previous turn's
-            #    post-turn daemon (instant read, no search pipeline).
-            #    Orchestrator is a passive reader: it serves whatever prefetch
-            #    wrote into L2.5, regardless of turn state. AITS budgeting
-            #    handles relevance filtering; no memory logic here.
+            # 3. Get L3. Warm: serve activation.merged (held from a previous
+            #    turn on the SAME thread — still valid, no search needed).
+            #    Cold/drift: activation.merged was computed for a DIFFERENT
+            #    query (a topic break or a moved-on thread) — reusing it here
+            #    would serve stale, likely-irrelevant context to THIS turn's
+            #    LLM call, silently, forever (the model never re-checks it).
+            #    Confirmed on real production log (2026-07-12): a topic-shift
+            #    turn got no relevant context this way; the correct memory
+            #    only surfaced a turn later, once the user had already moved
+            #    on. So cold/drift must search NOW, on the current query —
+            #    fired as a task (not awaited yet) so it overlaps with the
+            #    L0/L1/L2 fetch below instead of stacking sequentially.
+            #    Warm turns alone stay at zero added latency.
             collector.start_stage("search")
+            l3_task: asyncio.Task | None = None
             l3_results: list[dict] = []
             warm_served = False
-            if activation and activation.merged:
-                l3_results = rescore_recency(activation.merged, time.time())
-                warm_served = bool(l3_results)
-            # Synchronous temporal fast-path — additive to the passive-reader
-            # behaviour above, not a replacement for it. activation.merged was
-            # populated by the PREVIOUS turn's post-turn prefetch, searching the
-            # PREVIOUS turn's query; it structurally cannot contain results for a
-            # date/time window the user names for the FIRST time in THIS turn's
-            # query — that search only starts (in the background, for the NEXT
-            # turn) after this turn's reply is already sent. Confirmed on real
-            # production log (2026-07-12): "ce am discutat pe 9 iulie" got no
-            # temporal context this way and the correct memory only surfaced a
-            # turn later, once the user had already moved on.
-            # parse_interval is pure/cheap (regex + dateparser, no embedding
-            # model, no network) — checking it every turn costs nothing; only
-            # queries that actually name a date pay for the extra search below,
-            # which is a single indexed ChromaDB metadata-range query, not the
-            # full BM25 + dual-semantic + entity-extraction cold pipeline.
+            if turn_state == "warm":
+                if activation and activation.merged:
+                    l3_results = rescore_recency(activation.merged, time.time())
+                    warm_served = bool(l3_results)
+            else:
+                l3_task = asyncio.create_task(
+                    retrieve(layers, chat_id, intent, turn_state, activation, topic_return_id)
+                )
+            # temporal_center: parse_interval is pure/cheap (regex + dateparser,
+            # no embedding model, no network) — computed unconditionally so
+            # assemble_context can always prioritize content near the moment
+            # actually asked about, regardless of turn_state.
+            #
+            # The EXTRA synchronous search-and-merge below only runs on WARM
+            # turns though: on cold/drift, retrieve() above already runs
+            # temporal_candidates internally (memory/retrieval.py::_cold/
+            # _drift), so doing it again here would just duplicate that
+            # search. Warm turns' activation.merged carries no fresh search at
+            # all, so an explicit date/time mention mid-thread still needs
+            # this dedicated cheap fast-path — a single indexed ChromaDB
+            # metadata-range query, not the full BM25 + dual-semantic +
+            # entity-extraction pipeline.
             temporal_interval = parse_interval(intent)
             temporal_center: float | None = None
             if temporal_interval is not None:
                 temporal_center = (temporal_interval[0] + temporal_interval[1]) / 2
-                fresh_temporal = await temporal_candidates(layers, intent, interval=temporal_interval)
-                if fresh_temporal:
-                    # Rerank on this small candidate pool is cheap and worth it
-                    # for quality; boost_by_entities/BM25 are skipped — those
-                    # need GLiNER entity extraction, which this fast-path is
-                    # explicitly avoiding to stay cheap on every turn.
-                    groups = ([("warm", l3_results)] if l3_results else []) + [("temporal", fresh_temporal)]
-                    combined = merge_results(groups)[:PREFETCH_MAX_RESULTS * 2]
-                    l3_results = (await layers.rerank(intent, combined))[:PREFETCH_MAX_RESULTS]
-                    log.info(
-                        "temporal fast-path chat=%s found=%d merged_total=%d",
-                        chat_id, len(fresh_temporal), len(l3_results),
-                    )
-            served = bool(l3_results)
+                if turn_state == "warm":
+                    fresh_temporal = await temporal_candidates(layers, intent, interval=temporal_interval)
+                    if fresh_temporal:
+                        # Rerank on this small candidate pool is cheap and worth
+                        # it for quality; boost_by_entities/BM25 are skipped —
+                        # those need GLiNER entity extraction, which this
+                        # fast-path is explicitly avoiding to stay cheap.
+                        groups = ([("warm", l3_results)] if l3_results else []) + [("temporal", fresh_temporal)]
+                        combined = merge_results(groups)[:PREFETCH_MAX_RESULTS * 2]
+                        l3_results = (await layers.rerank(intent, combined))[:PREFETCH_MAX_RESULTS]
+                        log.info(
+                            "temporal fast-path chat=%s found=%d merged_total=%d",
+                            chat_id, len(fresh_temporal), len(l3_results),
+                        )
             collector.end_stage("search")
-            collector.set_cache(False, None)
-            collector.set_prefetch(True, served, False, len(l3_results), 0)
-            collector.set_prefetch_mechanisms(warm_served, len(l3_results), 0)
-            # 4. Fetch L0/L1/L2 concurrently (all fast — no heavy search I/O)
-            #    and assemble L0-L3 context (assemble stage).
+            # 4. Fetch L0/L1/L2 concurrently (all fast — no heavy search I/O),
+            #    joined by the in-flight cold/drift retrieve() task above so
+            #    its search latency overlaps with these fetches instead of
+            #    adding on top of them.
             collector.start_stage("assemble")
-            facts, identity_prompt, messages = await asyncio.gather(
+            gather_targets: list = [
                 layers.get_identity_and_facts(),
                 layers.get_identity_prompt(),
                 layers.get_working_context(chat_id),
-            )
+            ]
+            if l3_task is not None:
+                gather_targets.append(l3_task)
+            gathered = await asyncio.gather(*gather_targets)
+            facts, identity_prompt, messages = gathered[:3]
+            if l3_task is not None:
+                l3_results, _, _, _ = gathered[3]
+            served = bool(l3_results)
+            collector.set_cache(False, None)
+            collector.set_prefetch(True, served, False, len(l3_results), 0)
+            collector.set_prefetch_mechanisms(warm_served, len(l3_results), 0)
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
@@ -519,11 +541,16 @@ class Orchestrator:
             #    way to ActivationStore.set as the write-race ordering key —
             #    if this turn's prefetch is slow and a later turn's faster
             #    prefetch already wrote, this write must lose, not clobber it.
+            # turn_state != "warm" means retrieve() already ran synchronously
+            # above (step 3) for THIS turn's query — pass its result through so
+            # the daemon doesn't re-run the same search a second time; it only
+            # needs to persist it into activation for the next turn to read.
             _prefetch_bg = asyncio.create_task(
                 run_prefetch_and_save(
                     layers, chat_id, intent, query_emb, turn_state, activation,
                     topic_return_id=topic_return_id, forced_topic_id=current_topic_id,
                     turn_start=start,
+                    precomputed_l3=l3_results if turn_state != "warm" else None,
                 ))
             self._pending_bg.add(_prefetch_bg)
             _prefetch_bg.add_done_callback(self._pending_bg.discard)

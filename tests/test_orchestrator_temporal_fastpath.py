@@ -10,6 +10,19 @@ correct search only ran afterward, preparing context for the turn AFTER
 that. These tests prove the fix: parse_interval(intent) gates a synchronous,
 targeted temporal_candidates() search that merges into l3_results for THIS
 turn, before assemble_context runs.
+
+2026-07-26 update: the underlying bug turned out to be broader than temporal
+queries — ANY cold/drift turn served whatever unrelated topic's stale
+activation.merged happened to be sitting there, not just non-temporal ones.
+Cold/drift turns now run retrieve() synchronously for the current query
+(orchestrator.py step 3), which already runs temporal_candidates() as one of
+its internal mechanisms — so on a cold turn, the fixture's "unrelated
+previous-turn topic" (topic-prev/prev-1) is correctly NOT carried forward
+into a different topic's turn. The standalone synchronous temporal fast-path
+tested here now only fires on WARM turns (see orchestrator.py's
+`if turn_state == "warm"` gate on `temporal_interval`), where the cold/drift
+retrieve() call never runs and activation.merged genuinely needs the extra
+temporal check merged in additively.
 """
 from __future__ import annotations
 
@@ -114,8 +127,11 @@ def test_first_time_date_query_gets_synchronous_temporal_context():
         "the CURRENT turn's temporal search result must be merged into "
         f"l3_results before assemble_context runs; got {result_ids}"
     )
-    # Additive, not a replacement: the existing warm-served result must survive.
-    assert "prev-1" in result_ids
+    # This is a cold turn (topic-prev's centroid-less activation never
+    # classifies as warm) — activation.merged's "prev-1" belongs to an
+    # UNRELATED topic and must NOT leak into a different topic's turn. That
+    # was the passive-reader bug itself, not a property to preserve.
+    assert "prev-1" not in result_ids
     # The window's midpoint must reach assemble_context (-> fit_search_results'
     # proximity-to-requested-moment ordering) so packing under a tight budget
     # prioritizes content near the moment actually asked about, not just the
@@ -148,9 +164,12 @@ def test_temporal_fresh_result_carries_temporal_mechanism_tag():
     assert "temporal" in by_id["target-1"].get("mechanisms", [])
 
 
-def test_no_temporal_expression_leaves_existing_behaviour_unchanged():
-    """A query with no date/time expression must not trigger any extra search
-    — the existing warm-serving/background-prefetch behaviour is untouched.
+def test_no_temporal_expression_runs_plain_cold_search_without_stale_carryover():
+    """A query with no date/time expression on a cold turn: no temporal search
+    fires, and the previous, UNRELATED topic's stale activation.merged
+    ("prev-1") is correctly dropped rather than carried forward — cold turns
+    run a fresh synchronous retrieve() for the current query now, they don't
+    fall back to replaying whatever an unrelated earlier topic left behind.
     """
     intent = "Care a fost cauza confuziei cu logurile?"
     assert parse_interval(intent) is None
@@ -166,5 +185,8 @@ def test_no_temporal_expression_leaves_existing_behaviour_unchanged():
 
     assert layers.temporal_search_calls == 0
     result_ids = {r.get("metadata", {}).get("message_id") for r in layers.captured_l3_results}
-    assert result_ids == {"prev-1"}
+    assert result_ids == set(), (
+        "cold retrieve() found nothing for this query in the fake backend; "
+        "the unrelated topic's 'prev-1' must not appear either"
+    )
     assert layers.captured_temporal_center is None

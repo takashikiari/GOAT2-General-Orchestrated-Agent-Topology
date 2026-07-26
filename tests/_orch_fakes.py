@@ -107,8 +107,11 @@ class _FakeLayers:
     async def embed_query(self, query):
         return None
 
-    async def boost_by_entities(self, query, results):
+    async def boost_by_entities(self, query, results, pre_extracted=None):
         return results
+
+    async def extract_query_entities(self, query):
+        return {"entities": [], "entity_types": [], "memory_type": "conversation"}
 
     async def bm25_search(self, query, limit=15):
         return []
