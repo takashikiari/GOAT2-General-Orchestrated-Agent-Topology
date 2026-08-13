@@ -70,3 +70,13 @@ def test_missing_hash_rejected():
 
 def test_malformed_query_string_rejected():
     assert verify_init_data("noequalsatall", _BOT_TOKEN, max_age_seconds=86400) is None
+
+
+def test_non_string_init_data_int_returns_none():
+    """Non-string init_data (int) should return None, not raise TypeError."""
+    assert verify_init_data(123, _BOT_TOKEN, max_age_seconds=86400) is None
+
+
+def test_non_string_init_data_list_returns_none():
+    """Non-string init_data (list) should return None, not raise TypeError."""
+    assert verify_init_data(["a=1"], _BOT_TOKEN, max_age_seconds=86400) is None

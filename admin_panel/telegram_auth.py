@@ -25,7 +25,7 @@ def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> di
     """
     try:
         pairs = dict(parse_qsl(init_data, strict_parsing=True))
-    except ValueError:
+    except (ValueError, TypeError):
         return None
     received_hash = pairs.pop("hash", None)
     if not received_hash:
