@@ -11,6 +11,8 @@ the admin panel is a debug convenience, not a hard dependency of the bot's
 core Telegram function, so a missing dependency (e.g. fastapi/uvicorn not
 installed) or a bad ``config/admin_panel.toml`` must degrade to a logged
 warning instead of preventing the bot from starting at all.
+The ``admin_panel.tunnel`` (Cloudflare Quick Tunnel) is scheduled the same way,
+for the same reason.
 """
 from __future__ import annotations
 
@@ -69,4 +71,9 @@ def post_init_hook(registry: "ServiceRegistry"):
             asyncio.create_task(_start_admin_panel(registry))
         except Exception as exc:  # noqa: BLE001 — panel is optional, bot startup is not
             log.warning("admin panel unavailable: %s", exc)
+        try:
+            from admin_panel.tunnel import start as _start_admin_tunnel
+            asyncio.create_task(_start_admin_tunnel(application))
+        except Exception as exc:  # noqa: BLE001 — tunnel is optional, bot startup is not
+            log.warning("admin panel tunnel unavailable: %s", exc)
     return _post_init

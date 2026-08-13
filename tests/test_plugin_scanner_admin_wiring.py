@@ -48,3 +48,34 @@ def test_post_init_schedules_admin_panel_start(monkeypatch):
     asyncio.run(_run())
 
     assert calls == [fake_registry]
+
+
+def test_post_init_schedules_admin_tunnel_start(monkeypatch):
+    import admin_panel.tunnel as tunnel_mod
+
+    calls = []
+
+    async def _fake_admin_start(registry):
+        pass
+
+    async def _fake_tunnel_start(application):
+        calls.append(application)
+
+    async def _fake_loop(registry):
+        pass
+
+    monkeypatch.setattr(admin_server_mod, "start", _fake_admin_start)
+    monkeypatch.setattr(tunnel_mod, "start", _fake_tunnel_start)
+    monkeypatch.setattr(mod, "_loop", _fake_loop)
+
+    fake_registry = _FakeRegistry()
+    hook = mod.post_init_hook(fake_registry)
+    fake_application = object()
+
+    async def _run():
+        await hook(fake_application)
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert calls == [fake_application]
