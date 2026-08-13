@@ -59,30 +59,40 @@ async def start(application: "Application") -> None:
         return
 
     assert process.stderr is not None
-    url_found = False
-    while True:
-        try:
-            raw = await asyncio.wait_for(
-                process.stderr.readline(),
-                timeout=TUNNEL_TIMEOUT_SECONDS if not url_found else None,
-            )
-        except asyncio.TimeoutError:
-            log.warning("cloudflared did not report a tunnel URL within %ds", TUNNEL_TIMEOUT_SECONDS)
-            return
-        if not raw:
-            log.warning("cloudflared exited%s", "" if url_found else " before reporting a tunnel URL")
-            return
-        if url_found:
-            continue  # keep draining so the pipe never fills
-        url = extract_tunnel_url(raw.decode(errors="replace"))
-        if url is None:
-            continue
-        url_found = True
-        log.info("admin panel tunnel ready: %s", url)
-        try:
-            await application.bot.set_chat_menu_button(
-                chat_id=int(admin_chat_id),
-                menu_button=MenuButtonWebApp(text="Admin Panel", web_app=WebAppInfo(url=url)),
-            )
-        except Exception as exc:  # noqa: BLE001 — menu button update is best-effort
-            log.warning("failed to update chat menu button: %s", exc)
+    try:
+        url_found = False
+        while True:
+            try:
+                raw = await asyncio.wait_for(
+                    process.stderr.readline(),
+                    timeout=TUNNEL_TIMEOUT_SECONDS if not url_found else None,
+                )
+            except (asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+                log.warning(
+                    "cloudflared did not report a tunnel URL within %ds (%s)",
+                    TUNNEL_TIMEOUT_SECONDS, exc,
+                )
+                return
+            if not raw:
+                log.warning("cloudflared exited%s", "" if url_found else " before reporting a tunnel URL")
+                return
+            if url_found:
+                continue  # keep draining so the pipe never fills
+            url = extract_tunnel_url(raw.decode(errors="replace"))
+            if url is None:
+                continue
+            url_found = True
+            log.info("admin panel tunnel ready: %s", url)
+            try:
+                await application.bot.set_chat_menu_button(
+                    chat_id=int(admin_chat_id),
+                    menu_button=MenuButtonWebApp(text="Admin Panel", web_app=WebAppInfo(url=url)),
+                )
+            except Exception as exc:  # noqa: BLE001 — menu button update is best-effort
+                log.warning("failed to update chat menu button: %s", exc)
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
