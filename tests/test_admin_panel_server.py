@@ -1,9 +1,12 @@
 """tests.test_admin_panel_server — create_app wires all four routers together."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 from fastapi.testclient import TestClient
 
+import admin_panel.admin_config as admin_config
 import admin_panel.server as server_module
 from admin_panel.server import create_app, start
 
@@ -66,3 +69,27 @@ async def test_start_never_raises_when_create_app_fails(monkeypatch):
     # Must not raise — start() is documented to never propagate exceptions,
     # even ones that occur before uvicorn.Server._serve() is reached.
     await start(_FakeRegistry())
+
+
+@pytest.mark.asyncio
+async def test_start_never_raises_when_port_already_bound(monkeypatch):
+    # Regression test for the SystemExit gap: uvicorn's Server.startup()
+    # doesn't raise OSError when the bind fails — it catches it internally
+    # and calls sys.exit(1), which raises SystemExit (a BaseException, not
+    # an Exception). A plain `except Exception` in start() would miss this
+    # entirely and let SystemExit propagate up into python-telegram-bot's
+    # own (KeyboardInterrupt, SystemExit) handler, silently killing the
+    # whole bot. Bind a real socket first so the admin panel's own attempt
+    # to bind the same host:port actually fails the way it would in prod.
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        blocker.bind((admin_config.ADMIN_HOST, 0))
+        blocker.listen(1)
+        bound_port = blocker.getsockname()[1]
+
+        monkeypatch.setattr(server_module, "ADMIN_PORT", bound_port)
+
+        # Must not raise — this is the exact scenario finding #1 fixes.
+        await start(_FakeRegistry())
+    finally:
+        blocker.close()

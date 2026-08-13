@@ -42,11 +42,22 @@ async def start(registry: "ServiceRegistry") -> None:
     ``capture_signals()``, which would clobber python-telegram-bot's own
     shutdown handling since both run in the same process's main thread.
     ``_serve()`` is the same coroutine minus that signal capture.
+
+    Catches ``SystemExit`` in addition to ``Exception``: uvicorn's
+    ``Server.startup()`` does not raise ``OSError`` on a bind failure (e.g.
+    port already in use) — it catches that internally and calls
+    ``sys.exit(1)`` instead. ``SystemExit`` derives from ``BaseException``,
+    so it would otherwise skip a plain ``except Exception`` and propagate up
+    through python-telegram-bot's own top-level ``(KeyboardInterrupt,
+    SystemExit)`` handler, silently shutting down the entire bot. We
+    deliberately do NOT catch bare ``BaseException`` here, since that would
+    also swallow ``asyncio.CancelledError``, which PTB's own shutdown relies
+    on being able to propagate through tasks it cancels.
     """
     try:
         app = create_app(registry)
         config = uvicorn.Config(app, host=ADMIN_HOST, port=ADMIN_PORT, log_level="warning")
         server = uvicorn.Server(config)
         await server._serve()
-    except Exception as exc:  # noqa: BLE001 — must never take the bot down with it
-        log.warning("admin panel server failed to start on %s:%d: %s", ADMIN_HOST, ADMIN_PORT, exc)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — SystemExit: uvicorn's startup() sys.exit(1)s on bind failure; must never take the bot down with it
+        log.warning("admin panel server stopped (%s:%d): %s", ADMIN_HOST, ADMIN_PORT, exc)
