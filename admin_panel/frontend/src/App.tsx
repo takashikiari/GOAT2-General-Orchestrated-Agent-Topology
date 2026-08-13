@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Dashboard } from './pages/Dashboard'
+import { Logs } from './pages/Logs'
 
 type Tab = 'dashboard' | 'logs' | 'memory' | 'conversations'
 
@@ -37,7 +38,11 @@ export default function App() {
             <Dashboard />
           </div>
         )}
-        {activeTab === 'logs' && <div data-testid="panel-logs">Logs coming soon</div>}
+        {activeTab === 'logs' && (
+          <div data-testid="panel-logs">
+            <Logs />
+          </div>
+        )}
         {activeTab === 'memory' && <div data-testid="panel-memory">Memory coming soon</div>}
         {activeTab === 'conversations' && <div data-testid="panel-conversations">Conversations coming soon</div>}
       </main>
