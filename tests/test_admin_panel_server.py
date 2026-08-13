@@ -1,9 +1,11 @@
 """tests.test_admin_panel_server — create_app wires all four routers together."""
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
-from admin_panel.server import create_app
+import admin_panel.server as server_module
+from admin_panel.server import create_app, start
 
 
 class _FakeAnalytics:
@@ -52,3 +54,15 @@ def test_create_app_wires_all_routers():
     assert client.get("/api/memory/episodic/chat1").status_code == 200
     assert client.get("/api/conversations").status_code == 200
     assert client.get("/api/conversations/chat1").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_start_never_raises_when_create_app_fails(monkeypatch):
+    def _boom(_registry):
+        raise RuntimeError("router registration exploded")
+
+    monkeypatch.setattr(server_module, "create_app", _boom)
+
+    # Must not raise — start() is documented to never propagate exceptions,
+    # even ones that occur before uvicorn.Server._serve() is reached.
+    await start(_FakeRegistry())

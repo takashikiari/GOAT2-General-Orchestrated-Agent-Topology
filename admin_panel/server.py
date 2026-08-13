@@ -43,10 +43,10 @@ async def start(registry: "ServiceRegistry") -> None:
     shutdown handling since both run in the same process's main thread.
     ``_serve()`` is the same coroutine minus that signal capture.
     """
-    app = create_app(registry)
-    config = uvicorn.Config(app, host=ADMIN_HOST, port=ADMIN_PORT, log_level="warning")
-    server = uvicorn.Server(config)
     try:
+        app = create_app(registry)
+        config = uvicorn.Config(app, host=ADMIN_HOST, port=ADMIN_PORT, log_level="warning")
+        server = uvicorn.Server(config)
         await server._serve()
     except Exception as exc:  # noqa: BLE001 — must never take the bot down with it
         log.warning("admin panel server failed to start on %s:%d: %s", ADMIN_HOST, ADMIN_PORT, exc)
