@@ -112,3 +112,16 @@ def test_get_episodic_unknown_order_returns_error():
 def test_get_episodic_chromadb_down_returns_error():
     resp = _client(_FakeRegistry(episodic=_FakeEpisodic(raise_error=True))).get("/api/memory/episodic/chat1")
     assert "error" in resp.json()
+
+
+def test_get_episodic_limit_zero_rejected():
+    # Regression test: entries[-0:] == entries[0:] in Python, so limit=0 used
+    # to silently return the ENTIRE history instead of nothing. The route now
+    # rejects it at the FastAPI validation boundary instead.
+    resp = _client(_FakeRegistry()).get("/api/memory/episodic/chat1?limit=0")
+    assert resp.status_code == 422
+
+
+def test_get_episodic_limit_over_cap_rejected():
+    resp = _client(_FakeRegistry()).get("/api/memory/episodic/chat1?limit=1000")
+    assert resp.status_code == 422

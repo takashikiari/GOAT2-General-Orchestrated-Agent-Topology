@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 import redis.exceptions
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 router = APIRouter()
 
@@ -37,7 +37,12 @@ async def get_working(request: Request, chat_id: str) -> dict:
 
 
 @router.get("/api/memory/episodic/{chat_id}")
-async def get_episodic(request: Request, chat_id: str, limit: int = 50, order: str = "recent") -> dict:
+async def get_episodic(
+    request: Request,
+    chat_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    order: str = "recent",
+) -> dict:
     if order not in _VALID_ORDERS:
         return {"error": f"unknown order {order!r}; expected 'recent' or 'oldest'"}
     registry = request.app.state.registry
