@@ -1,0 +1,6 @@
+[server]
+# Bind address for the admin panel HTTP server. Loopback-only by design —
+# the panel is not intended for LAN/internet exposure (see
+# docs/superpowers/specs/2026-08-13-admin-panel-design.md).
+host = "127.0.0.1"
+port = 8765
