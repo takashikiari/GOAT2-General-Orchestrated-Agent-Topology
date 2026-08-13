@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from admin_panel.server import start as _start_admin_panel
 from plugins.plugins_config import PLUGIN_SCAN_INTERVAL_SECONDS as _SCAN_INTERVAL
 from utils.logging.setup import get_logger
 
@@ -57,4 +58,5 @@ def post_init_hook(registry: "ServiceRegistry"):
             if isinstance(result, BaseException):
                 log.error("warmup failed for %s: %s — first turn may be slow", name, result)
         asyncio.create_task(_loop(registry))
+        asyncio.create_task(_start_admin_panel(registry))
     return _post_init
