@@ -4,16 +4,23 @@ Runs read-only HTTP routes over the live ServiceRegistry, started as a
 background asyncio task from the bot's post_init hook (same event loop, same
 registry instance — metrics reflect the bot's real live state, and Redis/
 Chroma/Letta clients stay bound to the one loop they were created on).
+
+Every /api/* route requires require_admin_auth (Telegram initData, restricted
+to admin_chat_id) — this matters once [tunnel] enabled makes the panel
+reachable over the internet, not just from localhost. The index page is
+exempt: it carries no sensitive data, only the JS that will itself attach
+initData to its own API calls.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from admin_panel.admin_config import ADMIN_HOST, ADMIN_PORT
-from admin_panel.routes import conversations, logs, memory, metrics
+from admin_panel.routes import conversations, index, logs, memory, metrics
+from admin_panel.telegram_auth import require_admin_auth
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -27,10 +34,12 @@ def create_app(registry: "ServiceRegistry") -> FastAPI:
     """Build the FastAPI app, wiring ``registry`` into app.state for every route."""
     app = FastAPI(title="GOAT 2.0 Admin Panel")
     app.state.registry = registry
-    app.include_router(metrics.router)
-    app.include_router(logs.router)
-    app.include_router(memory.router)
-    app.include_router(conversations.router)
+    app.include_router(index.router)
+    auth = [Depends(require_admin_auth)]
+    app.include_router(metrics.router, dependencies=auth)
+    app.include_router(logs.router, dependencies=auth)
+    app.include_router(memory.router, dependencies=auth)
+    app.include_router(conversations.router, dependencies=auth)
     return app
 
 

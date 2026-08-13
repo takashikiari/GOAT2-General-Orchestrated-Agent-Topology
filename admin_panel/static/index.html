@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GOAT 2.0 Admin Panel</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<pre id="out">loading…</pre>
+<script>
+  const tg = window.Telegram.WebApp;
+  tg.ready();
+  fetch("/api/metrics", {
+    headers: { "X-Telegram-Init-Data": tg.initData }
+  })
+    .then(r => r.json())
+    .then(data => { document.getElementById("out").textContent = JSON.stringify(data, null, 2); })
+    .catch(err => { document.getElementById("out").textContent = "Error: " + err; });
+</script>
+</body>
+</html>
