@@ -10,3 +10,13 @@ port = 8765
 # rejected as expired — replay protection for the Mini App auth (see
 # docs/superpowers/specs/2026-08-13-admin-panel-miniapp-tunnel-design.md).
 max_age_seconds = 86400
+
+[tunnel]
+# Cloudflare Quick Tunnel — exposes the panel as a Telegram Mini App over a
+# fresh *.trycloudflare.com URL on every restart. Opt-in: enabling this
+# changes the panel's security posture from "loopback only" to "internet
+# reachable, gated by Telegram initData auth" (see
+# docs/superpowers/specs/2026-08-13-admin-panel-miniapp-tunnel-design.md).
+enabled = false
+# Seconds to wait for cloudflared to print the assigned URL before giving up.
+timeout_seconds = 15
