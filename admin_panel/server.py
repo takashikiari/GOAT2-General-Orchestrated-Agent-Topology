@@ -13,10 +13,12 @@ initData to its own API calls.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import uvicorn
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from admin_panel.admin_config import ADMIN_HOST, ADMIN_PORT
 from admin_panel.routes import conversations, index, logs, memory, metrics
@@ -25,6 +27,8 @@ from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
     from registry.registry import ServiceRegistry
+
+_STATIC_ASSETS_DIR = Path(__file__).parent / "static" / "assets"
 
 log = get_logger(__name__)
 __all__ = ["create_app", "start"]
@@ -38,6 +42,10 @@ def create_app(registry: "ServiceRegistry") -> FastAPI:
     app = FastAPI(title="GOAT 2.0 Admin Panel", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.registry = registry
     app.include_router(index.router)
+    # check_dir=False: a missing build (e.g. before the first `npm run build`)
+    # must degrade to 404s on /assets/*, not crash create_app and take the
+    # whole panel (including / and /api/*) down with it.
+    app.mount("/assets", StaticFiles(directory=_STATIC_ASSETS_DIR, check_dir=False), name="assets")
     auth = [Depends(require_admin_auth)]
     app.include_router(metrics.router, dependencies=auth)
     app.include_router(logs.router, dependencies=auth)
