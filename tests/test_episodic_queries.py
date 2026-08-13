@@ -104,3 +104,13 @@ def test_search_returns_score_closest_first():
     assert res[1]["score"] == 0.2
     assert res[2]["score"] == 0.4
     assert all("metadata" in r for r in res)
+
+
+def test_list_chat_ids_dedupes_and_sorts():
+    e = _episodic([_entry(0, "b", "x", 1), _entry(1, "a", "y", 2), _entry(2, "a", "z", 3)])
+    assert asyncio.run(e.list_chat_ids()) == ["a", "b"]
+
+
+def test_list_chat_ids_empty_collection():
+    e = _episodic([])
+    assert asyncio.run(e.list_chat_ids()) == []
