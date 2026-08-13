@@ -96,6 +96,16 @@ def test_api_routes_reject_unauthenticated_requests():
     assert client.get("/api/metrics").status_code == 401
 
 
+def test_auto_docs_endpoints_are_disabled():
+    # Finding 1: FastAPI's auto-generated docs are unauthenticated by
+    # default, and once [tunnel] enabled proxies the whole app (not just
+    # /api/*), they'd be internet-reachable. create_app() must disable them.
+    client = TestClient(create_app(_FakeRegistry()))
+    assert client.get("/openapi.json").status_code == 404
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+
+
 @pytest.mark.asyncio
 async def test_start_never_raises_when_create_app_fails(monkeypatch):
     def _boom(_registry):

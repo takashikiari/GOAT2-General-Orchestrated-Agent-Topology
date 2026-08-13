@@ -30,7 +30,7 @@ def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> di
     never raises on untrusted input.
     """
     try:
-        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+        pairs = dict(parse_qsl(init_data, strict_parsing=True, keep_blank_values=True))
     except (ValueError, TypeError):
         return None
     received_hash = pairs.pop("hash", None)
@@ -71,6 +71,13 @@ async def require_admin_auth(
     """
     if not x_telegram_init_data:
         raise HTTPException(status_code=401, detail="missing X-Telegram-Init-Data header")
+    if not settings.TELEGRAM_BOT_TOKEN:
+        # An empty token would make the HMAC secret key a publicly-derivable
+        # constant (hmac.new(b"WebAppData", b"", sha256)), letting anyone forge
+        # initData for any user id. Not reachable in production today — PTB's
+        # build_app raises InvalidToken on an empty token before this hook ever
+        # runs — but treat "unconfigured" as "deny", same as admin_chat_id below.
+        raise HTTPException(status_code=401, detail="admin panel not configured")
     parsed = verify_init_data(x_telegram_init_data, settings.TELEGRAM_BOT_TOKEN, AUTH_MAX_AGE_SECONDS)
     if parsed is None:
         raise HTTPException(status_code=401, detail="invalid or expired initData")

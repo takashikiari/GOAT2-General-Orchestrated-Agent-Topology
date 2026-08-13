@@ -80,3 +80,25 @@ def test_non_string_init_data_int_returns_none():
 def test_non_string_init_data_list_returns_none():
     """Non-string init_data (list) should return None, not raise TypeError."""
     assert verify_init_data(["a=1"], _BOT_TOKEN, max_age_seconds=86400) is None
+
+
+def test_blank_valued_field_preserved_and_accepted():
+    """Finding 3: parse_qsl must use keep_blank_values=True.
+
+    Telegram can legitimately send a field with an empty value (e.g.
+    start_param=""). That blank value has to be included in the data-check
+    string when it's signed, and preserved on parse so the recomputed hash
+    still matches — proving the whole sign-with-blank-included -> verify
+    round-trip works, not just that parsing doesn't crash.
+    """
+    fields = {
+        "query_id": "AAEXample",
+        "start_param": "",
+        "user": json.dumps({"id": 42, "first_name": "Test"}),
+        "auth_date": str(int(time.time())),
+    }
+    fields["hash"] = _sign(fields, _BOT_TOKEN)
+    result = verify_init_data(urlencode(fields), _BOT_TOKEN, max_age_seconds=86400)
+    assert result is not None
+    assert result["start_param"] == ""
+    assert result["user"]["id"] == 42

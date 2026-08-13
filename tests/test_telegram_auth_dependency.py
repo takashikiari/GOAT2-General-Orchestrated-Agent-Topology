@@ -79,3 +79,23 @@ def test_no_admin_configured_rejects_everyone(monkeypatch):
     client = TestClient(app)
     resp = client.get("/protected", headers={"X-Telegram-Init-Data": _build_init_data(user_id=42)})
     assert resp.status_code == 401
+
+
+def test_empty_bot_token_rejects_everyone(monkeypatch):
+    # Finding 2: an empty TELEGRAM_BOT_TOKEN would make the HMAC secret key
+    # a publicly-derivable constant (hmac.new(b"WebAppData", b"", sha256)),
+    # letting anyone forge initData for any user id. Sign against that same
+    # empty-string key here to prove the guard denies even an
+    # otherwise-valid-looking (correctly self-signed) payload.
+    monkeypatch.setattr("config.settings.TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(auth_module, "load_admin_chat_id", lambda: _ADMIN_ID)
+    app = FastAPI()
+
+    @app.get("/protected", dependencies=[Depends(auth_module.require_admin_auth)])
+    async def protected():
+        return {"ok": True}
+
+    client = TestClient(app)
+    forged = _build_init_data(user_id=int(_ADMIN_ID), bot_token="")
+    resp = client.get("/protected", headers={"X-Telegram-Init-Data": forged})
+    assert resp.status_code == 401

@@ -32,7 +32,10 @@ __all__ = ["create_app", "start"]
 
 def create_app(registry: "ServiceRegistry") -> FastAPI:
     """Build the FastAPI app, wiring ``registry`` into app.state for every route."""
-    app = FastAPI(title="GOAT 2.0 Admin Panel")
+    # docs_url/redoc_url/openapi_url disabled: once [tunnel] enabled proxies the
+    # whole app (not just /api/*), FastAPI's auto-generated docs endpoints would
+    # otherwise be unauthenticated and internet-reachable.
+    app = FastAPI(title="GOAT 2.0 Admin Panel", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.registry = registry
     app.include_router(index.router)
     auth = [Depends(require_admin_auth)]
