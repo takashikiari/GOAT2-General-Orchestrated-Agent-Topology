@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+import admin_panel.server as admin_server_mod
 import telegram_interface._plugin_scanner as mod
 
 
@@ -29,7 +30,12 @@ def test_post_init_schedules_admin_panel_start(monkeypatch):
     async def _fake_loop(registry):
         pass
 
-    monkeypatch.setattr(mod, "_start_admin_panel", _fake_start)
+    # admin_panel.server.start is now imported lazily inside _post_init
+    # (see finding #3: the import must not be a hard module-level
+    # dependency), so it's no longer a persistent attribute on
+    # telegram_interface._plugin_scanner to monkeypatch directly — patch
+    # the real source instead.
+    monkeypatch.setattr(admin_server_mod, "start", _fake_start)
     monkeypatch.setattr(mod, "_loop", _fake_loop)
 
     fake_registry = _FakeRegistry()
