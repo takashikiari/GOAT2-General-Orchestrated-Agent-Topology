@@ -65,4 +65,10 @@ tiktoken>=0.7.0         # memory/budget.py
 
 # Admin panel — read-only local web UI embedded in the bot process
 fastapi>=0.136.0        # admin_panel/server.py, admin_panel/routes/*
-uvicorn>=0.41.0         # admin_panel/server.py — embedded ASGI server
+uvicorn>=0.41.0,<0.42.0  # admin_panel/server.py — embedded ASGI server. Pinned
+                         # below the next major: admin_panel/server.py relies
+                         # on two undocumented internals — the private
+                         # Server._serve() (skips signal-handler installation)
+                         # and Server.startup()'s sys.exit(1)-on-bind-failure
+                         # behavior (which start() catches via SystemExit) —
+                         # neither of which is a stable public contract.
