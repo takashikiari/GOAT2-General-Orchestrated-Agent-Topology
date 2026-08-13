@@ -14,7 +14,13 @@ import json
 import time
 from urllib.parse import parse_qsl
 
-__all__ = ["verify_init_data"]
+from fastapi import Header, HTTPException
+
+from admin_panel.auth_config import AUTH_MAX_AGE_SECONDS
+from config import settings
+from config.admin_chat import load_admin_chat_id
+
+__all__ = ["verify_init_data", "require_admin_auth"]
 
 
 def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> dict | None:
@@ -51,3 +57,25 @@ def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> di
         except json.JSONDecodeError:
             return None
     return result
+
+
+async def require_admin_auth(
+    x_telegram_init_data: str | None = Header(default=None),
+) -> dict:
+    """FastAPI dependency: 401s unless x_telegram_init_data is valid AND belongs to admin_chat_id.
+
+    Deliberately different from telegram_interface.bot's _is_admin: an
+    unconfigured admin_chat_id here means DENY everyone, not allow everyone
+    — this route is potentially internet-reachable via the tunnel, unlike
+    the bot's own chat-based check.
+    """
+    if not x_telegram_init_data:
+        raise HTTPException(status_code=401, detail="missing X-Telegram-Init-Data header")
+    parsed = verify_init_data(x_telegram_init_data, settings.TELEGRAM_BOT_TOKEN, AUTH_MAX_AGE_SECONDS)
+    if parsed is None:
+        raise HTTPException(status_code=401, detail="invalid or expired initData")
+    user = parsed.get("user")
+    admin_chat_id = load_admin_chat_id()
+    if not admin_chat_id or not isinstance(user, dict) or str(user.get("id")) != admin_chat_id:
+        raise HTTPException(status_code=401, detail="unauthorized user")
+    return parsed
