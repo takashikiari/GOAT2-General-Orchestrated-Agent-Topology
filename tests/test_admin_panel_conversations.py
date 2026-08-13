@@ -86,6 +86,16 @@ def test_list_conversations_both_down_returns_empty_with_two_warnings():
     assert len(body["warnings"]) == 2
 
 
+def test_list_conversations_chromadb_down_still_returns_active():
+    working = _FakeWorking(chat_ids=["a", "b"])
+    episodic = _FakeEpisodic(raise_error=True)
+    resp = _client(_FakeRegistry(working=working, episodic=episodic)).get("/api/conversations")
+    body = resp.json()
+    assert body["conversations"] == [{"chat_id": "a", "status": "active"}, {"chat_id": "b", "status": "active"}]
+    assert "warnings" in body and len(body["warnings"]) == 1
+    assert not any(c["status"] == "archived_only" for c in body["conversations"])
+
+
 def test_get_conversation_merges_l2_and_l3_sorted_by_timestamp():
     working = _FakeWorking(messages={"chat1": [{"role": "user", "content": "hi", "timestamp": 2.0}]})
     episodic = _FakeEpisodic(recent=[{"content": "archived note", "metadata": {"timestamp": 1.0}}])
@@ -104,3 +114,13 @@ def test_get_conversation_partial_failure_still_returns_other_tier():
     body = resp.json()
     assert len(body["timeline"]) == 1
     assert "warnings" in body
+
+
+def test_get_conversation_chromadb_down_still_returns_l2():
+    working = _FakeWorking(messages={"chat1": [{"role": "user", "content": "hi", "timestamp": 2.0}]})
+    episodic = _FakeEpisodic(raise_error=True)
+    resp = _client(_FakeRegistry(working=working, episodic=episodic)).get("/api/conversations/chat1")
+    body = resp.json()
+    assert [e["tier"] for e in body["timeline"]] == ["L2"]
+    assert body["timeline"][0]["content"] == "hi"
+    assert "warnings" in body and len(body["warnings"]) == 1
