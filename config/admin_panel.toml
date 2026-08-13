@@ -4,3 +4,9 @@
 # docs/superpowers/specs/2026-08-13-admin-panel-design.md).
 host = "127.0.0.1"
 port = 8765
+
+[auth]
+# Max age (seconds) of a Telegram initData payload's auth_date before it's
+# rejected as expired — replay protection for the Mini App auth (see
+# docs/superpowers/specs/2026-08-13-admin-panel-miniapp-tunnel-design.md).
+max_age_seconds = 86400
