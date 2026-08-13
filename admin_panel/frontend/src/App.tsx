@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Conversations } from './pages/Conversations'
 import { Dashboard } from './pages/Dashboard'
 import { Logs } from './pages/Logs'
 import { Memory } from './pages/Memory'
@@ -49,7 +50,11 @@ export default function App() {
             <Memory />
           </div>
         )}
-        {activeTab === 'conversations' && <div data-testid="panel-conversations">Conversations coming soon</div>}
+        {activeTab === 'conversations' && (
+          <div data-testid="panel-conversations">
+            <Conversations />
+          </div>
+        )}
       </main>
     </div>
   )
