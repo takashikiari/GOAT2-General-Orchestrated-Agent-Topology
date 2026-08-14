@@ -23,10 +23,26 @@ export function usePolling<T>(
   const [tick, setTick] = useState(0)
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher
+  const prevDepsRef = useRef<unknown[] | undefined>(undefined)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+
+    // Only clear stale data when `deps` itself actually changed (e.g. a
+    // different chat_id was selected) — not on every interval tick, and not
+    // on an unrelated re-run of this effect (intervalMs/tick), so a stale
+    // value from a previous selection is never shown alongside a `loading`
+    // state for a new one, without introducing a flicker on each poll.
+    const prevDeps = prevDepsRef.current
+    const depsChanged =
+      prevDeps === undefined ||
+      prevDeps.length !== deps.length ||
+      prevDeps.some((d, i) => d !== deps[i])
+    prevDepsRef.current = deps
+    if (depsChanged) {
+      setData(null)
+    }
 
     const run = async () => {
       try {
