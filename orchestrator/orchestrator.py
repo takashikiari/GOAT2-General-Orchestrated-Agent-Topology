@@ -59,6 +59,17 @@ _DSML_PARAM = re.compile(
     re.DOTALL,
 )
 
+# When DSML markup shows up AFTER the structured tool-calls loop already hit
+# its cap (the model refusing to stop even once tools were withheld), the
+# DSML round gets a small dedicated budget, not a second full
+# AGENTIC_MAX_ITERATIONS allowance — that would let a model alternate
+# structured calls and DSML markup to roughly double its real ceiling on a
+# live, cost-per-call Telegram turn. When DSML is the model's native style
+# for the WHOLE turn (no structured tool_calls used at all), it gets the
+# full budget instead, mirroring the structured-call loop it's standing in
+# for — see the two _run_dsml_tool_round call sites in run().
+_DSML_CONTINUATION_MAX_ITERATIONS = 3
+
 # Guidance appended to the system prompt when the search_memory tool is
 # configured, so GOAT knows to fetch L3 on demand rather than claim it doesn't
 # recall something. A constant (content, not a tunable), like _BASE_IDENTITY.
@@ -471,15 +482,33 @@ class Orchestrator:
                 _t_tool_rounds = round_usage["latency"]
                 if _DSML_BLOCK.search(reply):
                     log.warning("DSML in _run_tool_round reply chat=%s; running DSML round", chat_id)
-                    reply, dsml_summary, dsml_stored = await self._run_dsml_tool_round(
-                        reply, chat_id, all_tools, api_msgs)
+                    # Continuation budget, not a fresh full one — the structured
+                    # loop already spent its allowance; see
+                    # _DSML_CONTINUATION_MAX_ITERATIONS.
+                    reply, dsml_summary, dsml_stored, dsml_usage = await self._run_dsml_tool_round(
+                        reply, chat_id, all_tools, api_msgs,
+                        max_iterations=_DSML_CONTINUATION_MAX_ITERATIONS,
+                        chars_already_spent=round_usage["output_chars"],
+                    )
                     if dsml_summary:
                         tool_summary = f"{tool_summary}\n{dsml_summary}".strip()
                     stored_contents.extend(dsml_stored)
+                    _usage_prompt += dsml_usage["prompt_tokens"]
+                    _usage_completion += dsml_usage["completion_tokens"]
+                    _usage_total += dsml_usage["total_tokens"]
+                    _llm_calls += dsml_usage["calls"]
+                    _t_tool_rounds += dsml_usage["latency"]
             elif _DSML_BLOCK.search(content):
                 log.warning("DSML tool calls in content (model=%s); running DSML round", settings.MODEL_NAME)
-                reply, tool_summary, stored_contents = await self._run_dsml_tool_round(
+                # No structured tool_calls were used at all this turn — DSML
+                # IS the primary loop here, so it gets the full budget.
+                reply, tool_summary, stored_contents, dsml_usage = await self._run_dsml_tool_round(
                     content, chat_id, all_tools, api_msgs)
+                _usage_prompt += dsml_usage["prompt_tokens"]
+                _usage_completion += dsml_usage["completion_tokens"]
+                _usage_total += dsml_usage["total_tokens"]
+                _llm_calls += dsml_usage["calls"]
+                _t_tool_rounds += dsml_usage["latency"]
             else:
                 reply = content
             if on_tool_summary is not None:
@@ -725,6 +754,7 @@ class Orchestrator:
             "total_tokens": _round_total,
             "calls": _round_calls,
             "latency": _t_rounds,
+            "output_chars": _round_output_chars,
         }
         return reply, _compact_tool_summary(calls_and_results), stored_contents, round_usage
 
@@ -745,80 +775,154 @@ class Orchestrator:
         self, content: str, chat_id: str,
         tools: list[ToolDefinition],
         api_msgs: list | None = None,
-    ) -> tuple[str, str, list[str]]:
+        *,
+        max_iterations: int = AGENTIC_MAX_ITERATIONS,
+        chars_already_spent: int = 0,
+    ) -> tuple[str, str, list[str], dict]:
         """Handle DSML-format tool calls (deepseek-v4-flash fallback path).
 
-        Parses DSML markup from content, executes each tool, then makes one
-        synthesis LLM call (when api_msgs is provided) so the user sees a
-        natural reply rather than raw tool output.
+        An agentic loop, the same shape as _run_tool_round — NOT a one-shot
+        fallback. deepseek-v4-flash keeps its DSML habit even in a synthesis
+        call made WITHOUT tools offered (it has no structured tool_calls
+        field to use, so it fakes one in text instead of answering). A
+        single execute-then-synthesize pass left that second DSML block
+        completely unchecked: every OTHER reply-producing path in this file
+        re-checks itself for DSML markup before returning, but this
+        function's own synthesis reply did not — real production incident,
+        raw DSML markup reaching the user's Telegram chat unexecuted.
 
-        Previously this returned raw joined tool output with no synthesis call —
-        the root cause of raw tool results appearing in chat. The fix mirrors
-        _run_tool_round: execute tools, then call the LLM with
-        _TOOL_SYNTHESIS_BRIDGE so it composes a response from the results.
+        Bounded by ``max_iterations`` (round count) and
+        ``TOOL_ROUND_MAX_OUTPUT_CHARS`` (cumulative output size, offset by
+        ``chars_already_spent`` so a DSML round invoked after the structured
+        loop already spent some of that budget doesn't get to double-count
+        it) — same two independent backstops _run_tool_round uses, for the
+        same reason. Absolute last resort: even after the cap forces a
+        final reply, if it STILL contains DSML markup, it is stripped
+        before returning — raw DSML must never reach the user, full stop.
 
-        Returns (reply, tool_summary, stored_contents) to match _run_tool_round
-        so call sites can update tracking uniformly.
+        Returns (reply, tool_summary, stored_contents, round_usage) — same
+        shape as _run_tool_round's return, so call sites can fold usage/cost
+        uniformly.
         """
-        invocations = _DSML_INVOKE.findall(content)
-        if not invocations:
-            log.warning("DSML block detected but no parseable invocations chat=%s", chat_id)
-            return "", "", []
         calls_and_results: list[tuple[str, str, str]] = []
         stored_contents: list[str] = []
-        for name, raw_args in invocations:
-            stripped = raw_args.strip()
-            try:
-                args = json.loads(stripped) if stripped else {}
-            except json.JSONDecodeError:
-                # parameter-tag format: <｜｜DSML｜｜parameter name="k" string="bool">v</>
-                args = {}
-                for param_name, is_string, raw_val in _DSML_PARAM.findall(stripped):
-                    val: object = raw_val.strip()
-                    if is_string.lower() != "true":
-                        try:
-                            val = json.loads(str(val))
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                    args[param_name] = val
-            handler = next((t for t in tools if t.name == name), None)
-            args_json = json.dumps(args)
-            if handler is None:
-                result = json.dumps({"error": f"unknown tool: {name}"})
-            else:
+        _round_prompt = 0
+        _round_completion = 0
+        _round_total = 0
+        _round_calls = 0
+        _round_output_chars = 0
+        _t_start = time.time()
+        reply = ""
+
+        for iteration in range(max_iterations):
+            invocations = _DSML_INVOKE.findall(content)
+            if not invocations:
+                log.warning("DSML block detected but no parseable invocations chat=%s", chat_id)
+                reply = ""
+                break
+            iter_results: list[tuple[str, str, str]] = []
+            for name, raw_args in invocations:
+                stripped = raw_args.strip()
                 try:
-                    args["chat_id"] = chat_id
-                    result = str(await handler.handler(**args))
-                except Exception as exc:
-                    log.warning("DSML tool %s raised: %s", name, exc)
-                    result = json.dumps({"error": str(exc)}
-)
-            calls_and_results.append((name, args_json, result))
-            if name == "store_memory":
-                stored_contents.append(self._extract_content(args_json))
-        raw = "\n\n".join(r for _, _, r in calls_and_results)
-        tool_summary = _compact_tool_summary(calls_and_results)
-        if not api_msgs:
-            # No conversation context available — return raw output as fallback.
-            log.warning("DSML synthesis skipped (no api_msgs) chat=%s", chat_id)
-            return raw, tool_summary, stored_contents
-        # Synthesize: present the tool results to the model and ask it to respond
-        # naturally. This mirrors the synthesis step in _run_tool_round and is
-        # the fix for raw tool output reaching the user on the DSML path.
-        synth_msgs = list(api_msgs) + [
-            {"role": "assistant", "content": content},
-            {"role": "user", "content": f"Tool results:\n{raw}\n\n{_TOOL_SYNTHESIS_BRIDGE}"},
-        ]
-        try:
-            r = await self._llm.chat.completions.create(
-                model=settings.MODEL_NAME, messages=synth_msgs,
-                temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                    args = json.loads(stripped) if stripped else {}
+                except json.JSONDecodeError:
+                    # parameter-tag format: <｜｜DSML｜｜parameter name="k" string="bool">v</>
+                    args = {}
+                    for param_name, is_string, raw_val in _DSML_PARAM.findall(stripped):
+                        val: object = raw_val.strip()
+                        if is_string.lower() != "true":
+                            try:
+                                val = json.loads(str(val))
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        args[param_name] = val
+                handler = next((t for t in tools if t.name == name), None)
+                args_json = json.dumps(args)
+                if handler is None:
+                    result = json.dumps({"error": f"unknown tool: {name}"})
+                else:
+                    try:
+                        args["chat_id"] = chat_id
+                        result = str(await handler.handler(**args))
+                    except Exception as exc:
+                        log.warning("DSML tool %s raised: %s", name, exc)
+                        result = json.dumps({"error": str(exc)})
+                iter_results.append((name, args_json, result))
+                _round_output_chars += len(result)
+                if name == "store_memory":
+                    stored_contents.append(self._extract_content(args_json))
+            calls_and_results.extend(iter_results)
+            raw = "\n\n".join(r for _, _, r in iter_results)
+
+            if not api_msgs:
+                # No conversation context available — return raw output as fallback.
+                log.warning("DSML synthesis skipped (no api_msgs) chat=%s", chat_id)
+                reply = raw
+                break
+
+            size_cap_hit = chars_already_spent + _round_output_chars > TOOL_ROUND_MAX_OUTPUT_CHARS
+            # Synthesize: present the tool results to the model and ask it to
+            # respond naturally, mirroring _run_tool_round's synthesis step.
+            synth_msgs = list(api_msgs) + [
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": f"Tool results:\n{raw}\n\n{_TOOL_SYNTHESIS_BRIDGE}"},
+            ]
+            try:
+                r = await self._llm.chat.completions.create(
+                    model=settings.MODEL_NAME, messages=synth_msgs,
+                    temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                )
+                _round_calls += 1
+                _ru = getattr(r, "usage", None)
+                if _ru is not None:
+                    _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
+                    _round_completion += getattr(_ru, "completion_tokens", 0) or 0
+                    _round_total += getattr(_ru, "total_tokens", 0) or 0
+                synth_reply = r.choices[0].message.content or raw
+            except Exception as exc:
+                log.warning("DSML synthesis LLM call failed chat=%s: %s — returning raw", chat_id, exc)
+                reply = raw
+                break
+
+            if not _DSML_BLOCK.search(synth_reply):
+                reply = synth_reply
+                break
+
+            if iteration + 1 >= max_iterations or size_cap_hit:
+                log.warning(
+                    "dsml_round cap-forced reply chat=%s iters=%d reason=%s output_chars=%d",
+                    chat_id, iteration + 1, "size" if size_cap_hit else "iterations",
+                    _round_output_chars,
+                )
+                reply = synth_reply
+                break
+
+            log.warning(
+                "DSML synthesis itself contained DSML chat=%s iter=%d; looping",
+                chat_id, iteration + 1,
             )
-            reply = r.choices[0].message.content or raw
-        except Exception as exc:
-            log.warning("DSML synthesis LLM call failed chat=%s: %s — returning raw", chat_id, exc)
-            reply = raw
-        return reply, tool_summary, stored_contents
+            content = synth_reply
+
+        # Absolute last resort — raw DSML markup must never reach the user,
+        # no matter what the model does on the very last call.
+        if _DSML_BLOCK.search(reply):
+            log.warning("DSML markup survived the round cap chat=%s; stripping before reply", chat_id)
+            reply = _DSML_BLOCK.sub("", reply).strip()
+            if not reply:
+                reply = (
+                    "I gathered some information but couldn't put together a clean answer "
+                    "yet — ask me to continue and I'll pick up where I left off."
+                )
+
+        round_usage = {
+            "prompt_tokens": _round_prompt,
+            "completion_tokens": _round_completion,
+            "total_tokens": _round_total,
+            "calls": _round_calls,
+            "latency": time.time() - _t_start,
+            "output_chars": _round_output_chars,
+        }
+        return reply, _compact_tool_summary(calls_and_results), stored_contents, round_usage
 
     async def _call_tool(self, tc, chat_id: str, tools: list[ToolDefinition]) -> str:
         """Dispatch a tool call. Returns str(result) or JSON {"error": ...} on failure.
