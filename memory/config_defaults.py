@@ -68,14 +68,6 @@ _DEFAULTS: dict = {
         "topic_return_threshold": 0.75,
         "topic_archive_max": 10,
     },
-    "tool_loop": {
-        "max_iterations": 6,
-        "max_output_chars": 60000,
-        "result_short_threshold": 400,
-        "result_head_chars": 200,
-        "result_tail_chars": 150,
-        "args_preview_chars": 200,
-    },
     "reranker": {
         "enabled": True,
         "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",

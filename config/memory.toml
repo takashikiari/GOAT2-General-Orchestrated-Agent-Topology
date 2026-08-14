@@ -158,28 +158,10 @@ lexical_window = 5
 topic_return_threshold = 0.75   # cosine sim required to recognise a topic return
 topic_archive_max = 10          # past topic centroids kept per chat (newest-last)
 
-# Agentic tool-calling loop — see config/memory.toml [tool_loop]. The cap is a
-# hard backstop (bounds cost/latency per turn, kills a runaway loop), never a
-# grounding decider. Below the cap the model is called with tools so it can
-# chain; at the cap tools are withheld and synthesis is forced.
-[tool_loop]
-max_iterations = 6
-# Cumulative chars of tool output (across every call, every iteration) allowed
-# before the round is force-synthesized, same backstop as max_iterations but
-# sized to content instead of round count -- a model issuing several large
-# read_file/shell_run calls can otherwise blow the resent conversation past
-# the model's context window well before max_iterations is reached (2026-07-09
-# incident: 6 iterations reached 2.08M tokens in one turn and the API call
-# was rejected outright).
-max_output_chars = 60000
-# Per-tool-call evidence preview formatting (orchestrator._compact_tool_summary).
-# Results shorter than result_short_threshold chars are stored verbatim; longer
-# ones are head/tail-truncated (head_tail-classified tools) or head-only.
-result_short_threshold = 400
-result_head_chars = 200
-result_tail_chars = 150
-# Max chars of a tool call's JSON arguments shown in the evidence preview.
-args_preview_chars = 200
+# Agentic tool-calling loop config moved to config/tools.toml [tool_loop]
+# (2026-08-14) — it's orchestrator/tool-call behavior, not a memory-tier
+# setting, and belongs alongside [shell]/[web]/etc. Read by
+# orchestrator.tool_loop_config, not memory.config.
 
 # Cross-encoder reranker — re-scores the merged candidate list after BM25 +
 # semantic hybrid retrieval. Runs on top_k candidates inside the prefetch

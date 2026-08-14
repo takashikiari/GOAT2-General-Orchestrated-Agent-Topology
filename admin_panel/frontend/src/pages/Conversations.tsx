@@ -20,36 +20,38 @@ export function Conversations() {
   )
 
   return (
-    <div className="flex gap-4">
-      <div className="w-64 shrink-0">
+    <div className="flex flex-col gap-4 md:flex-row">
+      <div className="shrink-0 md:w-64">
         {list.error && <Banner kind="error" message={list.error} />}
         {list.data?.warnings?.map((w) => (
           <Banner key={w} kind="warning" message={w} />
         ))}
-        <ul className="text-sm">
+        <ul className="space-y-1 rounded-xl border border-edge bg-surface p-2 text-sm">
           {list.data?.conversations.map((c) => (
             <li key={c.chat_id}>
               <button
                 onClick={() => setSelected(c.chat_id)}
-                className={`w-full text-left ${selected === c.chat_id ? 'font-semibold' : ''}`}
+                className={`min-h-[44px] w-full rounded-lg px-2 text-left transition-colors ${
+                  selected === c.chat_id ? 'bg-surface2 text-accent' : 'text-zinc-300 hover:bg-surface2'
+                }`}
               >
-                {c.chat_id} <span className="text-xs text-gray-400">({c.status})</span>
+                {c.chat_id} <span className="text-xs text-zinc-500">({c.status})</span>
               </button>
             </li>
           ))}
         </ul>
       </div>
-      <div className="flex-1">
-        {!selected && <p className="text-gray-500">Select a conversation.</p>}
+      <div className="flex-1 rounded-xl border border-edge bg-surface p-3">
+        {!selected && <p className="py-10 text-center text-zinc-400">Select a conversation.</p>}
         {selected && detail.error && <Banner kind="error" message={detail.error} />}
         {selected &&
           detail.data?.warnings?.map((w) => <Banner key={w} kind="warning" message={w} />)}
         {selected && detail.data?.timeline && (
-          <ul className="space-y-1 text-sm">
+          <ul className="animate-fade-in space-y-1.5 text-sm">
             {detail.data.timeline.map((entry, i) => (
-              <li key={i}>
-                <span className="text-xs text-gray-400">[{entry.tier}]</span>{' '}
-                {entry.role && <span className="font-medium">{entry.role}: </span>}
+              <li key={i} className="text-zinc-300">
+                <span className="text-xs text-zinc-500">[{entry.tier}]</span>{' '}
+                {entry.role && <span className="font-medium text-zinc-200">{entry.role}: </span>}
                 {entry.content}
               </li>
             ))}

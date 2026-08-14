@@ -59,3 +59,36 @@ def test_unknown_level_raises_value_error(tmp_path):
     _write_log(path, [_line(1, "INFO", "x")])
     with pytest.raises(ValueError):
         tail_log(path, minutes=30, level="BOGUS", limit=100, max_lines=500)
+
+
+def test_unstamped_continuation_lines_age_out_with_their_parent(tmp_path):
+    # A traceback's continuation lines (raised by Python's own exception
+    # printer, not the structured logger) carry no timestamp of their own —
+    # they must inherit the recency of the ERROR line that started them, not
+    # bypass the cutoff forever just because _parse_ts can't read them.
+    path = tmp_path / "goat2.log"
+    _write_log(
+        path,
+        [
+            _line(120, "ERROR", "old traceback header"),
+            "  File \"mod.py\", line 1, in old_fn",
+            "    raise RuntimeError from exc",
+            _line(1, "INFO", "recent line"),
+        ],
+    )
+    lines = tail_log(path, minutes=30, level="ALL", limit=100, max_lines=500)
+    assert not any("old traceback" in l or "old_fn" in l for l in lines)
+    assert any("recent line" in l for l in lines)
+
+
+def test_unstamped_continuation_lines_included_when_parent_is_recent(tmp_path):
+    path = tmp_path / "goat2.log"
+    _write_log(
+        path,
+        [
+            _line(1, "ERROR", "recent traceback header"),
+            "  File \"mod.py\", line 1, in recent_fn",
+        ],
+    )
+    lines = tail_log(path, minutes=30, level="ALL", limit=100, max_lines=500)
+    assert any("recent_fn" in l for l in lines)

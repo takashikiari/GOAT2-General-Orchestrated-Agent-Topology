@@ -5,6 +5,7 @@ Timeout clamped to [1, 300]s; output truncated to 4 KB.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -54,7 +55,16 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         log.debug("shell_run: cmd=%r timeout=%ds", command[:_CMD_LIMIT], t)
         t0 = time.monotonic()
         try:
-            r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=t)
+            # subprocess.run blocks its calling thread for up to `t` seconds.
+            # This handler is a coroutine sharing the bot's single event loop
+            # with Telegram polling AND the admin panel's HTTP server — a
+            # bare synchronous call here would freeze the entire process
+            # (not just this tool call) for the whole command duration, up
+            # to SHELL_MAX_TIMEOUT (300s). to_thread runs it on a worker
+            # thread so everything else keeps running concurrently.
+            r = await asyncio.to_thread(
+                subprocess.run, command, shell=True, capture_output=True, text=True, timeout=t,
+            )
         except subprocess.TimeoutExpired:
             log.warning("shell_run: timeout %ds cmd=%r", t, command[:_CMD_LIMIT])
             return f"ERROR: command timed out after {t}s"

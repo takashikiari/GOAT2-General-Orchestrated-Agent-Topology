@@ -6,7 +6,7 @@ type BannerProps = {
 export function Banner({ kind, message }: BannerProps) {
   const color =
     kind === 'error'
-      ? 'bg-red-50 text-red-800 border-red-200'
-      : 'bg-yellow-50 text-yellow-800 border-yellow-200'
-  return <div className={`mb-3 rounded border px-3 py-2 text-sm ${color}`}>{message}</div>
+      ? 'border-danger/30 bg-danger/10 text-danger'
+      : 'border-warn/30 bg-warn/10 text-warn'
+  return <div className={`animate-fade-in mb-3 rounded-lg border px-3 py-2 text-sm ${color}`}>{message}</div>
 }

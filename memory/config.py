@@ -154,14 +154,6 @@ TOPIC_ARCHIVE_MAX: Final[int] = int(
     _activation_cfg.get("topic_archive_max", _DEFAULTS["activation"]["topic_archive_max"])
 )
 
-_tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
-AGENTIC_MAX_ITERATIONS: Final[int] = int(
-    _tool_loop.get("max_iterations", _DEFAULTS["tool_loop"]["max_iterations"])
-)
-TOOL_ROUND_MAX_OUTPUT_CHARS: Final[int] = int(
-    _tool_loop.get("max_output_chars", _DEFAULTS["tool_loop"]["max_output_chars"])
-)
-
 _reranker_cfg = _cfg.get("reranker", _DEFAULTS["reranker"])
 RERANKER_ENABLED: Final[bool] = bool(
     _reranker_cfg.get("enabled", _DEFAULTS["reranker"]["enabled"])
@@ -211,8 +203,6 @@ __all__ = [
     "ACTIVATION_LEXICAL_WINDOW",
     "TOPIC_RETURN_THRESHOLD",
     "TOPIC_ARCHIVE_MAX",
-    "AGENTIC_MAX_ITERATIONS",
-    "TOOL_ROUND_MAX_OUTPUT_CHARS",
     "RERANKER_ENABLED",
     "RERANKER_MODEL",
     "RERANKER_TOP_K",

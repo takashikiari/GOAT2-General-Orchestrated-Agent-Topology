@@ -44,25 +44,38 @@ export function Memory() {
 
   return (
     <div>
-      <div className="mb-3 flex gap-3 text-sm">
-        {(['facts', 'working', 'episodic'] as Tier[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTier(t)}
-            className={tier === t ? 'font-semibold underline' : 'text-gray-500'}
-          >
-            {t}
-          </button>
-        ))}
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+        <div className="flex gap-1 rounded-lg border border-edge bg-surface p-1">
+          {(['facts', 'working', 'episodic'] as Tier[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTier(t)}
+              className={`min-h-[36px] rounded-md px-3 capitalize transition-colors ${
+                tier === t ? 'bg-surface2 text-accent' : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
         {tier !== 'facts' && (
-          <label>
-            chat_id: <input value={chatId} onChange={(e) => setChatId(e.target.value)} className="rounded border px-1" />
+          <label className="flex items-center gap-2 text-zinc-400">
+            chat_id
+            <input
+              value={chatId}
+              onChange={(e) => setChatId(e.target.value)}
+              className="min-h-[44px] rounded-lg border border-edge bg-surface px-2 text-zinc-200"
+            />
           </label>
         )}
         {tier === 'episodic' && (
-          <label>
-            order:{' '}
-            <select value={order} onChange={(e) => setOrder(e.target.value as Order)}>
+          <label className="flex items-center gap-2 text-zinc-400">
+            order
+            <select
+              value={order}
+              onChange={(e) => setOrder(e.target.value as Order)}
+              className="min-h-[44px] rounded-lg border border-edge bg-surface px-2 text-zinc-200"
+            >
               <option value="recent">recent</option>
               <option value="oldest">oldest</option>
             </select>
@@ -74,7 +87,11 @@ export function Memory() {
         <>
           {facts.error && <Banner kind="error" message={facts.error} />}
           {facts.data?.error && <Banner kind="error" message={facts.data.error} />}
-          {facts.data?.facts && <pre className="text-xs">{JSON.stringify(facts.data.facts, null, 2)}</pre>}
+          {facts.data?.facts && (
+            <pre className="animate-fade-in overflow-auto rounded-xl border border-edge bg-surface p-3 text-xs text-zinc-300">
+              {JSON.stringify(facts.data.facts, null, 2)}
+            </pre>
+          )}
         </>
       )}
       {tier === 'working' && chatId && (
@@ -82,7 +99,9 @@ export function Memory() {
           {working.error && <Banner kind="error" message={working.error} />}
           {working.data?.error && <Banner kind="error" message={working.data.error} />}
           {working.data?.messages && (
-            <pre className="text-xs">{JSON.stringify(working.data.messages, null, 2)}</pre>
+            <pre className="animate-fade-in overflow-auto rounded-xl border border-edge bg-surface p-3 text-xs text-zinc-300">
+              {JSON.stringify(working.data.messages, null, 2)}
+            </pre>
           )}
         </>
       )}
@@ -91,11 +110,13 @@ export function Memory() {
           {episodic.error && <Banner kind="error" message={episodic.error} />}
           {episodic.data?.error && <Banner kind="error" message={episodic.data.error} />}
           {episodic.data?.entries && (
-            <pre className="text-xs">{JSON.stringify(episodic.data.entries, null, 2)}</pre>
+            <pre className="animate-fade-in overflow-auto rounded-xl border border-edge bg-surface p-3 text-xs text-zinc-300">
+              {JSON.stringify(episodic.data.entries, null, 2)}
+            </pre>
           )}
         </>
       )}
-      {tier !== 'facts' && !chatId && <p className="text-gray-500">Enter a chat_id above.</p>}
+      {tier !== 'facts' && !chatId && <p className="py-10 text-center text-zinc-400">Enter a chat_id above.</p>}
     </div>
   )
 }

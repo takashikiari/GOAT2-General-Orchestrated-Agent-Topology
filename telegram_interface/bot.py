@@ -122,7 +122,7 @@ def _pick_dag_summary(result: dict) -> str:
     return str(next(reversed(results.values())))
 
 
-def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
+def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) -> Application:
     """Build and return a configured Telegram Application.
 
     Creates the Orchestrator with direct dependency references (not the
@@ -405,9 +405,15 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
             await update.message.reply_text(_truncate(reply))
 
     async def drain_background(application: Application) -> None:
-        """post_shutdown: drain orchestrator + layers background tasks before exit."""
+        """post_shutdown: drain orchestrator + layers background tasks, then
+        run the caller's own post_shutdown (e.g. cancelling the plugin
+        scanner / admin panel / tunnel tasks) — PTB only takes one
+        post_shutdown callback, so this is where the two get chained.
+        """
         await orchestrator.drain_background()
         await registry.memory_layers.drain_background()
+        if post_shutdown:
+            await post_shutdown(application)
 
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
     if post_init:
@@ -428,4 +434,5 @@ def run_polling() -> None:
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
-    build_app(registry, post_init=post_init_hook(registry)).run_polling()
+    post_init, post_shutdown = post_init_hook(registry)
+    build_app(registry, post_init=post_init, post_shutdown=post_shutdown).run_polling()
