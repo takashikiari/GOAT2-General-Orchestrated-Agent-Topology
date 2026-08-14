@@ -11,7 +11,10 @@ import httpx
 import redis.exceptions
 from fastapi import APIRouter, Query, Request
 
+from utils.logging.setup import get_logger
+
 router = APIRouter()
+log = get_logger(__name__)
 
 _VALID_ORDERS = frozenset({"recent", "oldest"})
 
@@ -22,7 +25,8 @@ async def get_facts(request: Request) -> dict:
     try:
         facts = await registry.permanent_memory.get_all_facts()
     except httpx.HTTPError as exc:
-        return {"error": f"Letta unavailable: {exc}"}
+        log.warning("get_facts: Letta unavailable: %s", exc)
+        return {"error": "Letta unavailable"}
     return {"facts": facts}
 
 
@@ -32,7 +36,8 @@ async def get_working(request: Request, chat_id: str) -> dict:
     try:
         messages = await registry.working_memory.get_messages(chat_id)
     except redis.exceptions.RedisError as exc:
-        return {"error": f"Redis unavailable: {exc}"}
+        log.warning("get_working: Redis unavailable: %s", exc)
+        return {"error": "Redis unavailable"}
     return {"messages": messages}
 
 
@@ -52,5 +57,6 @@ async def get_episodic(
         else:
             entries = await registry.episodic_memory.get_recent(chat_id, limit=limit)
     except Exception as exc:  # noqa: BLE001 — ChromaDB has no single documented exception base
-        return {"error": f"ChromaDB unavailable: {exc}"}
+        log.warning("get_episodic: ChromaDB unavailable: %s", exc)
+        return {"error": "ChromaDB unavailable"}
     return {"entries": entries}

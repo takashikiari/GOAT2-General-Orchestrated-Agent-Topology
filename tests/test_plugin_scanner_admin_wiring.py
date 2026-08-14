@@ -22,12 +22,17 @@ class _FakeRegistry:
 
 
 def test_post_init_schedules_admin_panel_start(monkeypatch):
+    import admin_panel.tunnel as tunnel_mod
+
     calls = []
 
     async def _fake_start(registry):
         calls.append(registry)
 
     async def _fake_loop(registry):
+        pass
+
+    async def _fake_tunnel_start(application):
         pass
 
     # admin_panel.server.start is now imported lazily inside _post_init
@@ -37,6 +42,12 @@ def test_post_init_schedules_admin_panel_start(monkeypatch):
     # the real source instead.
     monkeypatch.setattr(admin_server_mod, "start", _fake_start)
     monkeypatch.setattr(mod, "_loop", _fake_loop)
+    # admin_panel.tunnel.start must also be mocked, or a real cloudflared
+    # tunnel gets launched whenever [tunnel] enabled = true in this
+    # machine's config/admin_panel.toml — this test only cares about the
+    # admin panel server being scheduled, not the tunnel (that's the
+    # sibling test below).
+    monkeypatch.setattr(tunnel_mod, "start", _fake_tunnel_start)
 
     fake_registry = _FakeRegistry()
     hook = mod.post_init_hook(fake_registry)
