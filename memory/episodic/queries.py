@@ -137,6 +137,19 @@ class EpisodicQueries:
                  for i, d, m in zip(results["ids"], results["documents"], results["metadatas"])]
         return sorted(all_e, key=lambda e: float(e["metadata"].get("timestamp", 0)))[:limit]
 
+    async def list_chat_ids(self) -> list[str]:
+        """Return the distinct chat_ids present in the collection (metadata-only read).
+
+        Cheaper than ``get_all_for_index`` — reads only ``metadatas``, never
+        ``documents``, since only ``chat_id`` is needed. O(collection size),
+        like the other bulk-read methods on this mixin.
+        """
+        results = await asyncio.to_thread(
+            self._get_collection().get, include=["metadatas"],
+        )
+        metas = results.get("metadatas") or []
+        return sorted({m.get("chat_id") for m in metas if m.get("chat_id")})
+
     async def delete_entries(self, entry_ids: list[str]) -> None:
         """Delete entries by their ChromaDB document IDs (write-locked)."""
         if not entry_ids:

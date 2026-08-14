@@ -25,6 +25,7 @@ from telegram.ext import (
 _ROOT = Path(__file__).parent.parent
 
 from config import settings
+from config.admin_chat import load_admin_chat_id
 from memory.config import WORKING_STORAGE_URL
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
@@ -51,19 +52,6 @@ _ERROR_REPLY = "Something went wrong, please try again."
 def _truncate(text: str) -> str:
     """Truncate text to Telegram's 4096-character message limit."""
     return text[:_MAX_TG_LEN] if len(text) > _MAX_TG_LEN else text
-
-
-def _load_admin_chat_id() -> str:
-    """Read admin_chat_id from goat2.toml, or empty string if not configured."""
-    cfg = _ROOT / "goat2.toml"
-    if not cfg.exists():
-        return ""
-    try:
-        with open(cfg, "rb") as f:
-            data = tomllib.load(f)
-        return str(data.get("interface", {}).get("telegram", {}).get("admin_chat_id", ""))
-    except Exception:
-        return ""
 
 
 def _current_version() -> str:
@@ -227,7 +215,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
         tools=[search_memory, store_memory, promote_memory, set_identity, *manager_tools, *workflow_tools],
     )
 
-    admin_chat_id = _load_admin_chat_id()
+    admin_chat_id = load_admin_chat_id()
 
     def _is_admin(update: Update) -> bool:
         if not admin_chat_id:

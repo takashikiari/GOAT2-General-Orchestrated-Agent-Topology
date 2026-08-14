@@ -93,3 +93,6 @@ benchmark/data/
 
 # DAG runtime workspace
 dag_workspace/
+
+# Frontend (admin_panel/frontend)
+admin_panel/frontend/node_modules/

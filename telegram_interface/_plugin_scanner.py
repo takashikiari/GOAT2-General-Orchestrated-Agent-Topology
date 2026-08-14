@@ -4,6 +4,15 @@ Provides a PTB ``post_init`` hook that runs one immediate plugin scan, then a
 30-second reconcile loop. The loop catches and logs per-iteration errors so a
 single bad scan never kills the watcher. Started via the bot's ``post_init``
 so the task lives and dies with the application.
+
+Also schedules the (optional) admin panel server as a background task.
+``admin_panel.server`` is imported lazily, inside ``_post_init``, and guarded:
+the admin panel is a debug convenience, not a hard dependency of the bot's
+core Telegram function, so a missing dependency (e.g. fastapi/uvicorn not
+installed) or a bad ``config/admin_panel.toml`` must degrade to a logged
+warning instead of preventing the bot from starting at all.
+The ``admin_panel.tunnel`` (Cloudflare Quick Tunnel) is scheduled the same way,
+for the same reason.
 """
 from __future__ import annotations
 
@@ -57,4 +66,14 @@ def post_init_hook(registry: "ServiceRegistry"):
             if isinstance(result, BaseException):
                 log.error("warmup failed for %s: %s — first turn may be slow", name, result)
         asyncio.create_task(_loop(registry))
+        try:
+            from admin_panel.server import start as _start_admin_panel
+            asyncio.create_task(_start_admin_panel(registry))
+        except Exception as exc:  # noqa: BLE001 — panel is optional, bot startup is not
+            log.warning("admin panel unavailable: %s", exc)
+        try:
+            from admin_panel.tunnel import start as _start_admin_tunnel
+            asyncio.create_task(_start_admin_tunnel(application))
+        except Exception as exc:  # noqa: BLE001 — tunnel is optional, bot startup is not
+            log.warning("admin panel tunnel unavailable: %s", exc)
     return _post_init
