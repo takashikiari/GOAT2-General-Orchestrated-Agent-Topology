@@ -21,19 +21,23 @@ export function Logs() {
 
   return (
     <div>
-      <div className="mb-3 flex gap-3 text-sm">
-        <label>
-          Minutes:{' '}
+      <div className="mb-3 flex flex-wrap gap-3 text-sm text-zinc-400">
+        <label className="flex items-center gap-2">
+          Minutes
           <input
             type="number"
             value={minutes}
             onChange={(e) => setMinutes(Number(e.target.value))}
-            className="w-16 rounded border px-1"
+            className="min-h-[44px] w-16 rounded-lg border border-edge bg-surface px-2 text-zinc-200"
           />
         </label>
-        <label>
-          Level:{' '}
-          <select value={level} onChange={(e) => setLevel(e.target.value as Level)}>
+        <label className="flex items-center gap-2">
+          Level
+          <select
+            value={level}
+            onChange={(e) => setLevel(e.target.value as Level)}
+            className="min-h-[44px] rounded-lg border border-edge bg-surface px-2 text-zinc-200"
+          >
             {LEVELS.map((l) => (
               <option key={l} value={l}>
                 {l}
@@ -41,21 +45,21 @@ export function Logs() {
             ))}
           </select>
         </label>
-        <label>
-          Limit:{' '}
+        <label className="flex items-center gap-2">
+          Limit
           <input
             type="number"
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            className="w-16 rounded border px-1"
+            className="min-h-[44px] w-16 rounded-lg border border-edge bg-surface px-2 text-zinc-200"
           />
         </label>
       </div>
       {error && <Banner kind="error" message={error} />}
       {data?.error && <Banner kind="error" message={data.error} />}
-      {loading && !data && <div>Loading…</div>}
+      {loading && !data && <p className="py-10 text-center text-zinc-600">Loading logs…</p>}
       {data?.lines && (
-        <pre className="max-h-[70vh] overflow-auto rounded border bg-gray-900 p-3 text-xs text-gray-100">
+        <pre className="max-h-[70vh] overflow-auto rounded-xl border border-edge bg-surface p-3 text-xs text-zinc-300">
           {data.lines.join('\n')}
         </pre>
       )}

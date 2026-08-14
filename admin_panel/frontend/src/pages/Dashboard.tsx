@@ -27,9 +27,9 @@ function pct(n: number | undefined): string {
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="rounded border bg-white p-4 shadow-sm">
-      <h3 className="mb-2 text-sm font-semibold text-gray-500">{title}</h3>
-      {children}
+    <div className="animate-fade-in rounded-xl border border-edge bg-surface p-4">
+      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h3>
+      <div className="space-y-1.5 text-sm text-zinc-300">{children}</div>
     </div>
   )
 }
@@ -38,7 +38,7 @@ export function Dashboard() {
   const { data, error, loading } = usePolling<MetricsReport>(() => apiGet('/api/metrics'), 15000, [])
 
   if (error) return <Banner kind="error" message={error} />
-  if (loading && !data) return <div>Loading…</div>
+  if (loading && !data) return <p className="py-10 text-center text-zinc-600">Loading dashboard…</p>
   if (!data) return null
 
   return (
