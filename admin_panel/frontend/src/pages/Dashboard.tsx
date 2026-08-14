@@ -27,7 +27,7 @@ function pct(n: number | undefined): string {
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="animate-fade-in rounded-xl border border-edge bg-surface p-4">
+    <div className="animate-fade-in rounded-xl border border-edge bg-gradient-to-br from-surface to-surface2 p-4 shadow-card transition-shadow hover:shadow-glow">
       <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h3>
       <div className="space-y-1.5 text-sm text-zinc-300">{children}</div>
     </div>

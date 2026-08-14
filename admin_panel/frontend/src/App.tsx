@@ -29,11 +29,12 @@ const TABS: { id: Tab; label: string; Icon: IconComponent }[] = [
   { id: 'conversations', label: 'Conversations', Icon: ConversationsIcon },
 ]
 
-const NAV_BUTTON = 'flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-sm transition-colors'
-const NAV_BUTTON_ACTIVE = 'bg-surface2 text-accent'
-const NAV_BUTTON_INACTIVE = 'text-zinc-400 hover:bg-surface2 hover:text-zinc-200'
+const NAV_BUTTON =
+  'flex min-h-[44px] w-full items-center gap-3 rounded-lg border-l-2 border-transparent px-3 text-sm transition-all'
+const NAV_BUTTON_ACTIVE = 'border-l-accent bg-gradient-to-r from-accent/15 to-transparent text-accent font-medium'
+const NAV_BUTTON_INACTIVE = 'text-zinc-500 hover:bg-surface2 hover:text-zinc-200'
 
-function StatusHeader() {
+function StatusHeader({ compact = false }: { compact?: boolean }) {
   const health = usePolling<Record<string, unknown>>(() => apiGet('/api/metrics'), 10000, [])
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
@@ -44,14 +45,16 @@ function StatusHeader() {
   const up = !health.error
 
   return (
-    <div className="flex items-center gap-2 text-xs text-zinc-400">
+    <div className={`flex items-center gap-2 text-xs ${compact ? 'text-zinc-500' : 'text-zinc-400'}`}>
       <span
-        className={`h-2 w-2 rounded-full ${up ? 'bg-accent-green' : 'bg-danger'}`}
+        className={`h-2 w-2 rounded-full ${up ? 'bg-accent-green shadow-glow-green' : 'bg-danger'}`}
         aria-label={up ? 'server up' : 'server down'}
       />
-      <span className="hidden sm:inline">{up ? 'Online' : 'Offline'}</span>
+      <span className={compact ? '' : 'hidden sm:inline'}>{up ? 'Online' : 'Offline'}</span>
       {lastUpdated && (
-        <span className="hidden text-zinc-600 sm:inline">· updated {lastUpdated.toLocaleTimeString()}</span>
+        <span className={`text-zinc-600 ${compact ? 'hidden lg:inline' : 'hidden sm:inline'}`}>
+          · updated {lastUpdated.toLocaleTimeString()}
+        </span>
       )}
     </div>
   )
@@ -83,10 +86,17 @@ function NavItems({
 
 function Sidebar({ activeTab, setActiveTab }: { activeTab: Tab; setActiveTab: (tab: Tab) => void }) {
   return (
-    <nav className="fixed inset-y-0 left-0 flex w-56 flex-col border-r border-edge bg-surface">
-      <div className="px-4 py-5 text-sm font-semibold tracking-wide text-zinc-200">GOAT 2.0</div>
-      <div className="flex-1 space-y-1 px-2">
+    <nav className="fixed inset-y-0 left-0 flex w-60 flex-col border-r border-edge bg-surface">
+      <div className="flex items-center gap-2.5 border-b border-edge px-4 py-5">
+        <span className="h-2.5 w-2.5 shrink-0 animate-pulse-live rounded-full bg-accent shadow-glow" />
+        <span className="text-sm font-bold tracking-wide text-zinc-100">GOAT 2.0</span>
+      </div>
+      <div className="flex-1 space-y-1 px-2 py-3">
         <NavItems activeTab={activeTab} onSelect={setActiveTab} />
+      </div>
+      <div className="border-t border-edge px-4 py-4">
+        <StatusHeader compact />
+        <p className="mt-1 text-[11px] text-zinc-700">Admin Panel · v1</p>
       </div>
     </nav>
   )
@@ -150,13 +160,8 @@ export default function App() {
       ) : (
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       )}
-      <div className={isMobile ? '' : 'pl-56'}>
-        {!isMobile && (
-          <header className="sticky top-0 z-20 flex items-center justify-end border-b border-edge bg-base/80 px-6 py-3 backdrop-blur">
-            <StatusHeader />
-          </header>
-        )}
-        <main className="mx-auto max-w-6xl px-3 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
+      <div className={isMobile ? '' : 'pl-60'}>
+        <main className="mx-auto max-w-6xl px-3 py-5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
           {TABS.map(
             ({ id }) =>
               activeTab === id && (
