@@ -57,7 +57,7 @@ export function Logs() {
       </div>
       {error && <Banner kind="error" message={error} />}
       {data?.error && <Banner kind="error" message={data.error} />}
-      {loading && !data && <p className="py-10 text-center text-zinc-600">Loading logs…</p>}
+      {loading && !data && <p className="py-10 text-center text-zinc-400">Loading logs…</p>}
       {data?.lines && (
         <pre className="max-h-[70vh] overflow-auto rounded-xl border border-edge bg-surface p-3 text-xs text-zinc-300">
           {data.lines.join('\n')}

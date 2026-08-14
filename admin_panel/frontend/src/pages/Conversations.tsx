@@ -42,7 +42,7 @@ export function Conversations() {
         </ul>
       </div>
       <div className="flex-1 rounded-xl border border-edge bg-surface p-3">
-        {!selected && <p className="py-10 text-center text-zinc-600">Select a conversation.</p>}
+        {!selected && <p className="py-10 text-center text-zinc-400">Select a conversation.</p>}
         {selected && detail.error && <Banner kind="error" message={detail.error} />}
         {selected &&
           detail.data?.warnings?.map((w) => <Banner key={w} kind="warning" message={w} />)}

@@ -55,12 +55,22 @@ describe('Live', () => {
     vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) =>
       path.startsWith('/api/logs')
         ? { lines: [] }
-        : { total_requests: 42, avg_latency_total: 0.987, tier_hit_rates: { L1: 0.25, L2: 0.5 } },
+        : { total_requests: 42, avg_latency_total: 0.987, tier_hit_rates: { working: 0.25, episodic: 0.5 } },
     )
     render(<Live />)
     await waitFor(() => expect(screen.getByText('42')).toBeInTheDocument())
     expect(screen.getByText('0.99s')).toBeInTheDocument()
-    expect(screen.getByText('L1')).toBeInTheDocument()
+    expect(screen.getByText('working')).toBeInTheDocument()
+  })
+
+  it('always shows all three known memory tiers, even ones absent from the response', async () => {
+    vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) =>
+      path.startsWith('/api/logs') ? { lines: [] } : { total_requests: 0, tier_hit_rates: { episodic: 1 } },
+    )
+    render(<Live />)
+    await waitFor(() => expect(screen.getByText('episodic')).toBeInTheDocument())
+    expect(screen.getByText('working')).toBeInTheDocument()
+    expect(screen.getByText('permanent')).toBeInTheDocument()
   })
 
   it('pauses auto-scroll when the user scrolls away from the bottom, and resumes on click', async () => {

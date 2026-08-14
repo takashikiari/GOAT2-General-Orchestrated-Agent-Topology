@@ -116,7 +116,7 @@ export function Memory() {
           )}
         </>
       )}
-      {tier !== 'facts' && !chatId && <p className="py-10 text-center text-zinc-600">Enter a chat_id above.</p>}
+      {tier !== 'facts' && !chatId && <p className="py-10 text-center text-zinc-400">Enter a chat_id above.</p>}
     </div>
   )
 }

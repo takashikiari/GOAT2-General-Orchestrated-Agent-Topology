@@ -52,7 +52,7 @@ function StatusHeader({ compact = false }: { compact?: boolean }) {
       />
       <span className={compact ? '' : 'hidden sm:inline'}>{up ? 'Online' : 'Offline'}</span>
       {lastUpdated && (
-        <span className={`text-zinc-600 ${compact ? 'hidden lg:inline' : 'hidden sm:inline'}`}>
+        <span className={`text-zinc-500 ${compact ? 'hidden lg:inline' : 'hidden sm:inline'}`}>
           · updated {lastUpdated.toLocaleTimeString()}
         </span>
       )}
@@ -96,7 +96,7 @@ function Sidebar({ activeTab, setActiveTab }: { activeTab: Tab; setActiveTab: (t
       </div>
       <div className="border-t border-edge px-4 py-4">
         <StatusHeader compact />
-        <p className="mt-1 text-[11px] text-zinc-700">Admin Panel · v1</p>
+        <p className="mt-1 text-[11px] text-zinc-500">Admin Panel · v1</p>
       </div>
     </nav>
   )

@@ -12,6 +12,17 @@ type MetricsSlice = {
   error?: string
 }
 
+// The only three real values memory/observability.py's source_tier ever
+// takes — always shown, even at 0%, so a tier that simply hasn't been hit
+// yet doesn't silently disappear from the panel instead of reading "0%".
+const KNOWN_TIERS = ['working', 'permanent', 'episodic'] as const
+
+function tierEntries(rates: Record<string, number> | undefined): [string, number][] {
+  const present = rates ?? {}
+  const extra = Object.keys(present).filter((k) => !(KNOWN_TIERS as readonly string[]).includes(k))
+  return [...KNOWN_TIERS, ...extra].map((tier) => [tier, present[tier] ?? 0])
+}
+
 type Level = 'ALL' | 'INFO' | 'WARNING' | 'ERROR'
 const LEVELS: { id: Level; label: string }[] = [
   { id: 'ALL', label: 'All' },
@@ -104,23 +115,20 @@ function MetricsMini({ metrics }: { metrics: MetricsSlice }) {
       <div className="rounded-xl border border-edge bg-surface p-4 shadow-card">
         <div className="mb-3 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Memory tier hit rate</div>
         <div className="space-y-2.5">
-          {Object.entries(metrics.tier_hit_rates ?? {}).map(([tier, rate]) => (
+          {tierEntries(metrics.tier_hit_rates).map(([tier, rate]) => (
             <div key={tier} className="flex items-center gap-2 text-xs">
-              <span className="w-16 shrink-0 truncate text-zinc-400" title={tier}>
+              <span className="w-20 shrink-0 truncate text-zinc-300" title={tier}>
                 {tier}
               </span>
               <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface2">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-accent-green to-accent shadow-glow"
-                  style={{ width: `${Math.min(rate * 100, 100)}%` }}
+                  className={`h-full rounded-full ${rate > 0 ? 'bg-gradient-to-r from-accent-green to-accent shadow-glow' : 'bg-zinc-700'}`}
+                  style={{ width: `${Math.max(Math.min(rate * 100, 100), rate > 0 ? 2 : 0)}%` }}
                 />
               </div>
               <span className="w-10 text-right font-medium text-zinc-300">{(rate * 100).toFixed(0)}%</span>
             </div>
           ))}
-          {Object.keys(metrics.tier_hit_rates ?? {}).length === 0 && (
-            <p className="text-xs text-zinc-600">No tier activity yet.</p>
-          )}
         </div>
       </div>
     </div>
@@ -135,7 +143,7 @@ function LogEntry({ group }: { group: LogGroup }) {
     >
       {header && (
         <div className="flex flex-wrap items-baseline gap-2">
-          <span className="shrink-0 font-mono text-[11px] text-zinc-600">
+          <span className="shrink-0 font-mono text-[11px] text-zinc-500">
             {header.timestamp ? header.timestamp.toLocaleTimeString() : ''}
           </span>
           <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold ${levelBadgeClass(header.level)}`}>
@@ -145,7 +153,7 @@ function LogEntry({ group }: { group: LogGroup }) {
         </div>
       )}
       {extra.length > 0 && (
-        <pre className={`overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-zinc-600 ${header ? 'mt-1.5 pl-1' : ''}`}>
+        <pre className={`overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-zinc-400 ${header ? 'mt-1.5 pl-1' : ''}`}>
           {extra.join('\n')}
         </pre>
       )}
@@ -217,7 +225,7 @@ export function Live() {
 
       <div ref={scrollRef} onScroll={onScroll} className="relative min-h-[50vh] flex-1 overflow-y-auto p-3">
         {groups.length === 0 && !logs.error && (
-          <p className="py-10 text-center text-zinc-600">Waiting for activity…</p>
+          <p className="py-10 text-center text-zinc-400">Waiting for activity…</p>
         )}
         {groups.map((group) => (
           <LogEntry key={group.key} group={group} />

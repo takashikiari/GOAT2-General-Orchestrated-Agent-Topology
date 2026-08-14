@@ -38,7 +38,7 @@ export function Dashboard() {
   const { data, error, loading } = usePolling<MetricsReport>(() => apiGet('/api/metrics'), 15000, [])
 
   if (error) return <Banner kind="error" message={error} />
-  if (loading && !data) return <p className="py-10 text-center text-zinc-600">Loading dashboard…</p>
+  if (loading && !data) return <p className="py-10 text-center text-zinc-400">Loading dashboard…</p>
   if (!data) return null
 
   return (
