@@ -18,17 +18,9 @@ from memory.aits import (
 from memory.analytics import MemoryAnalytics
 from memory.budget import enforce_result_limit
 from memory.config import (
-    AGENTIC_MAX_ITERATIONS,
     ANALYTICS_LOG_INTERVAL,
     PREFETCH_MAX_RESULTS,
-    TOOL_ROUND_MAX_OUTPUT_CHARS,
     TOPIC_RETURN_THRESHOLD,
-)
-from memory.config_extra import (
-    TOOL_ARGS_PREVIEW_CHARS,
-    TOOL_RESULT_HEAD_CHARS,
-    TOOL_RESULT_SHORT_THRESHOLD,
-    TOOL_RESULT_TAIL_CHARS,
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
@@ -36,6 +28,14 @@ from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from orchestrator.prefetch import run_prefetch_and_save
+from orchestrator.tool_loop_config import (
+    AGENTIC_MAX_ITERATIONS,
+    TOOL_ARGS_PREVIEW_CHARS,
+    TOOL_RESULT_HEAD_CHARS,
+    TOOL_RESULT_SHORT_THRESHOLD,
+    TOOL_RESULT_TAIL_CHARS,
+    TOOL_ROUND_MAX_OUTPUT_CHARS,
+)
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger

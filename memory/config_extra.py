@@ -2,8 +2,9 @@
 
 Split from memory.config to stay under the file line-count convention. Reads
 the SAME config/memory.toml file, exposing sections memory.config doesn't:
-tool_loop preview/formatting constants, auto_promote, context_assembler,
-observability thresholds, and entity_boost.
+auto_promote, context_assembler, observability thresholds, and entity_boost.
+(tool_loop moved to orchestrator.tool_loop_config / config/tools.toml on
+2026-08-14 — it's orchestrator/tool-call behavior, not a memory-tier setting.)
 """
 from __future__ import annotations
 
@@ -28,20 +29,6 @@ def _load() -> dict:
 
 
 _cfg = _load()
-
-_tool_loop = _cfg.get("tool_loop", _DEFAULTS["tool_loop"])
-TOOL_RESULT_SHORT_THRESHOLD: Final[int] = int(
-    _tool_loop.get("result_short_threshold", _DEFAULTS["tool_loop"]["result_short_threshold"])
-)
-TOOL_RESULT_HEAD_CHARS: Final[int] = int(
-    _tool_loop.get("result_head_chars", _DEFAULTS["tool_loop"]["result_head_chars"])
-)
-TOOL_RESULT_TAIL_CHARS: Final[int] = int(
-    _tool_loop.get("result_tail_chars", _DEFAULTS["tool_loop"]["result_tail_chars"])
-)
-TOOL_ARGS_PREVIEW_CHARS: Final[int] = int(
-    _tool_loop.get("args_preview_chars", _DEFAULTS["tool_loop"]["args_preview_chars"])
-)
 
 _auto_promote = _cfg.get("auto_promote", _DEFAULTS["auto_promote"])
 AUTO_PROMOTE_CHUNK_SIZE: Final[int] = int(
@@ -91,10 +78,6 @@ TEMPORAL_MAX_YEARS_IN_PAST: Final[int] = int(
 # constant on purpose.
 
 __all__ = [
-    "TOOL_RESULT_SHORT_THRESHOLD",
-    "TOOL_RESULT_HEAD_CHARS",
-    "TOOL_RESULT_TAIL_CHARS",
-    "TOOL_ARGS_PREVIEW_CHARS",
     "AUTO_PROMOTE_CHUNK_SIZE",
     "AUTO_PROMOTE_MIN_SURPLUS",
     "BLENDED_MIN_SCORE",
