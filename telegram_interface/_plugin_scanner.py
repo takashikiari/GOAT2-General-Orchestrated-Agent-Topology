@@ -62,8 +62,15 @@ def post_init_hook(registry: "ServiceRegistry"):
     module's background tasks — start them on init, cancel them on shutdown.
     """
     tasks: list[asyncio.Task] = []
+    admin_task: asyncio.Task | None = None
+    # Single-slot holder for the uvicorn.Server instance, populated by
+    # admin_panel.server.start()'s on_started callback once it exists —
+    # needed so _post_shutdown can request graceful shutdown instead of
+    # cancelling that task outright (see admin_panel/server.py:start).
+    admin_server: list = []
 
     async def _post_init(application: "Application") -> None:
+        nonlocal admin_task
         # Pre-warm ChromaDB first (serial: BM25 build reads from it).
         await registry.episodic_memory.warmup()
         # Then warm BM25 + GLiNER + CrossEncoder in parallel — all outside the
@@ -85,7 +92,10 @@ def post_init_hook(registry: "ServiceRegistry"):
         tasks.append(asyncio.create_task(_loop(registry)))
         try:
             from admin_panel.server import start as _start_admin_panel
-            tasks.append(asyncio.create_task(_start_admin_panel(registry)))
+            admin_task = asyncio.create_task(
+                _start_admin_panel(registry, on_started=admin_server.append)
+            )
+            tasks.append(admin_task)
         except Exception as exc:  # noqa: BLE001 — panel is optional, bot startup is not
             log.warning("admin panel unavailable: %s", exc)
         try:
@@ -98,8 +108,17 @@ def post_init_hook(registry: "ServiceRegistry"):
         """Cancel and await every task this module started, before the event
         loop closes. Never raises — a task that's already finished or whose
         cancellation itself errors must not block the rest of shutdown.
+
+        The admin-panel task is deliberately excluded from the raw-cancel
+        loop: it's asked to exit gracefully instead (``should_exit = True``),
+        since a raw cancel there skips uvicorn's own shutdown path and leaks
+        its internal lifespan task. It's still awaited below like the rest.
         """
+        if admin_server:
+            admin_server[0].should_exit = True
         for task in tasks:
+            if task is admin_task:
+                continue
             task.cancel()
         for task in tasks:
             try:

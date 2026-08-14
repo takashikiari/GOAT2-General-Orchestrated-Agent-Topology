@@ -27,7 +27,7 @@ def test_post_init_schedules_admin_panel_start(monkeypatch):
 
     calls = []
 
-    async def _fake_start(registry):
+    async def _fake_start(registry, *, on_started=None):
         calls.append(registry)
 
     async def _fake_loop(registry):
@@ -67,7 +67,7 @@ def test_post_init_schedules_admin_tunnel_start(monkeypatch):
 
     calls = []
 
-    async def _fake_admin_start(registry):
+    async def _fake_admin_start(registry, *, on_started=None):
         pass
 
     async def _fake_tunnel_start(application):
@@ -106,11 +106,25 @@ def test_post_shutdown_cancels_background_tasks_instead_of_abandoning_them(monke
     since nothing here awaits the tasks directly — the actual invariant
     checked is that every task the module scheduled is genuinely `.done()`
     after post_shutdown returns, not merely that the test finished fast).
+
+    The admin-panel fake mimics uvicorn.Server's actual shutdown contract
+    (poll a `should_exit` flag) rather than sleeping — post_shutdown
+    deliberately does NOT cancel that task outright (see
+    admin_panel/server.py:start's docstring for why), so a plain sleep()
+    fake would never be woken and this test would hang for real.
     """
     import admin_panel.tunnel as tunnel_mod
 
-    async def _fake_admin_start(registry):
-        await asyncio.sleep(5)
+    class _FakeUvicornServer:
+        def __init__(self):
+            self.should_exit = False
+
+    async def _fake_admin_start(registry, *, on_started=None):
+        server = _FakeUvicornServer()
+        if on_started:
+            on_started(server)
+        while not server.should_exit:
+            await asyncio.sleep(0.05)
 
     async def _fake_tunnel_start(application):
         await asyncio.sleep(5)
