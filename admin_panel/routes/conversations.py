@@ -12,7 +12,10 @@ from __future__ import annotations
 import redis.exceptions
 from fastapi import APIRouter, Request
 
+from utils.logging.setup import get_logger
+
 router = APIRouter()
+log = get_logger(__name__)
 
 
 @router.get("/api/conversations")
@@ -24,11 +27,13 @@ async def list_conversations(request: Request) -> dict:
     try:
         active = await registry.working_memory.list_chat_ids()
     except redis.exceptions.RedisError as exc:
-        warnings.append(f"Redis unavailable: {exc}")
+        log.warning("list_conversations: Redis unavailable: %s", exc)
+        warnings.append("Redis unavailable")
     try:
         all_episodic = await registry.episodic_memory.list_chat_ids()
     except Exception as exc:  # noqa: BLE001 — ChromaDB has no single documented exception base
-        warnings.append(f"ChromaDB unavailable: {exc}")
+        log.warning("list_conversations: ChromaDB unavailable: %s", exc)
+        warnings.append("ChromaDB unavailable")
     archived = sorted(set(all_episodic) - set(active))
     conversations = (
         [{"chat_id": c, "status": "active"} for c in sorted(active)]
@@ -49,11 +54,13 @@ async def get_conversation(request: Request, chat_id: str) -> dict:
     try:
         l2 = await registry.working_memory.get_messages(chat_id)
     except redis.exceptions.RedisError as exc:
-        warnings.append(f"Redis unavailable: {exc}")
+        log.warning("get_conversation: Redis unavailable: %s", exc)
+        warnings.append("Redis unavailable")
     try:
         l3 = await registry.episodic_memory.get_recent(chat_id, limit=100)
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"ChromaDB unavailable: {exc}")
+        log.warning("get_conversation: ChromaDB unavailable: %s", exc)
+        warnings.append("ChromaDB unavailable")
     timeline = [
         {"tier": "L2", "timestamp": m.get("timestamp", 0), "role": m.get("role", ""), "content": m.get("content", "")}
         for m in l2
