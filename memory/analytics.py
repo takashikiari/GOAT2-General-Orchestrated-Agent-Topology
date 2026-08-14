@@ -36,6 +36,9 @@ class MemoryAnalytics:
         self.cache_hits = 0
         self.cache_misses = 0
         self.tier_hits: defaultdict[str, int] = defaultdict(int)
+        # Multi-label: how many turns had EACH tier present, not just the
+        # single highest-priority one — see MemoryObservation.tiers_used.
+        self.tier_presence: defaultdict[str, int] = defaultdict(int)
         self.intent_counts: defaultdict[str, int] = defaultdict(int)
         self.total_tokens_injected = 0
         self.total_tokens_l0_l1 = 0
@@ -85,6 +88,8 @@ class MemoryAnalytics:
             self.cache_misses += 1
         if obs.source_tier:
             self.tier_hits[obs.source_tier] += 1
+        for tier in obs.tiers_used:
+            self.tier_presence[tier] += 1
         if obs.intent_category:
             self.intent_counts[obs.intent_category] += 1
         self.total_tokens_injected += obs.tokens_injected
@@ -137,7 +142,10 @@ class MemoryAnalytics:
             "prefetch_attempt_rate": self.total_prefetch_attempts / n,
             "prefetch_success_rate": self.total_prefetch_successes / attempts,
             "prefetch_timeout_rate": self.total_prefetch_timeouts / attempts,
-            "tier_hit_rates": {k: v / n for k, v in self.tier_hits.items()},
+            # Multi-label: fraction of turns where EACH tier's block was
+            # present (a turn commonly has more than one, so these can sum
+            # past 100%) — not the old single "highest priority tier" view.
+            "tier_hit_rates": {k: v / n for k, v in self.tier_presence.items()},
             "top_intents": dict(sorted(self.intent_counts.items(), key=lambda x: -x[1])[:5]),
             "avg_tokens_injected": self.total_tokens_injected / n,
             "avg_tokens_l0_l1": self.total_tokens_l0_l1 / n,
