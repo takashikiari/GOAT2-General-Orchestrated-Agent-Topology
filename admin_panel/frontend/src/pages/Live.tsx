@@ -223,7 +223,7 @@ export function Live() {
       {logs.error && <div className="p-3"><Banner kind="error" message={logs.error} /></div>}
       {logs.data?.error && <div className="p-3"><Banner kind="error" message={logs.data.error} /></div>}
 
-      <div ref={scrollRef} onScroll={onScroll} className="relative min-h-[50vh] flex-1 overflow-y-auto p-3">
+      <div ref={scrollRef} onScroll={onScroll} className="relative min-h-0 flex-1 overflow-y-auto p-3">
         {groups.length === 0 && !logs.error && (
           <p className="py-10 text-center text-zinc-400">Waiting for activity…</p>
         )}
@@ -245,8 +245,8 @@ export function Live() {
 
   if (isMobile) {
     return (
-      <div className="flex min-h-[calc(100dvh-8rem)] flex-col gap-3">
-        <details className="animate-fade-in rounded-xl border border-edge bg-surface p-3 shadow-card">
+      <div className="flex h-[calc(100dvh-8rem)] flex-col gap-3">
+        <details className="animate-fade-in shrink-0 rounded-xl border border-edge bg-surface p-3 shadow-card">
           <summary className="min-h-[44px] cursor-pointer text-sm font-medium text-zinc-300">Live metrics</summary>
           <div className="mt-3">
             <MetricsMini metrics={metrics.data ?? { error: metrics.error ?? undefined }} />
@@ -258,9 +258,9 @@ export function Live() {
   }
 
   return (
-    <div className="flex min-h-[calc(100dvh-9rem)] gap-4">
+    <div className="flex h-[calc(100dvh-9rem)] gap-4">
       {feed}
-      <aside className="w-80 shrink-0 space-y-3">
+      <aside className="w-80 shrink-0 space-y-3 overflow-y-auto">
         <MetricsMini metrics={metrics.data ?? { error: metrics.error ?? undefined }} />
       </aside>
     </div>
