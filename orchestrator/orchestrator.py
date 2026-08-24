@@ -511,6 +511,23 @@ class Orchestrator:
                 _t_tool_rounds += dsml_usage["latency"]
             else:
                 reply = content
+            if not reply.strip():
+                # Real, observed failure mode (2026-08-24): the model can run a
+                # full tool round (petvoyageuk_review_git etc.), gather real
+                # results, and then terminate with empty message content - no
+                # tool_calls, no text. Silently returning "" here used to mean
+                # telegram_interface's `if reply:` guard never fired at all:
+                # no message, no error, no log line - the user just never got
+                # a reply and had no way to tell the turn even completed.
+                # Falling back to a short, honest acknowledgment (naming the
+                # tools that ran, if any) keeps every turn visibly answered.
+                if tool_summary:
+                    used = ", ".join(sorted(set(re.findall(r"called (\S+)\(", tool_summary)))) or "unelte"
+                    reply = f"✓ Am rulat {used}, dar n-am generat un mesaj text pentru turul asta. Intreaba-ma direct daca vrei un rezumat."
+                else:
+                    reply = "N-am reusit sa generez un raspuns pentru mesajul tau - poti reincerca?"
+                log.warning("empty reply after synthesis chat=%s tool_summary_present=%s",
+                            chat_id, bool(tool_summary))
             if on_tool_summary is not None:
                 on_tool_summary(tool_summary)
             collector.end_stage("llm")
