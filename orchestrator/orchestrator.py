@@ -141,6 +141,16 @@ _RESULT_HEAD = TOOL_RESULT_HEAD_CHARS
 _RESULT_TAIL = TOOL_RESULT_TAIL_CHARS
 _ARGS_MAX = TOOL_ARGS_PREVIEW_CHARS
 
+# Cap on what a single tool result contributes to a DEBUG log line (see the
+# log.debug call in _run_tool_round). This is independent of every cap above -
+# those govern what the MODEL sees (tool_exchange) and what gets PERSISTED as
+# evidence (_compact_tool_summary); this one only governs what gets WRITTEN TO
+# THE LOG FILE, which get_recent_logs then reads back. Kept generous enough
+# for real debugging (2000 chars is several full log statements' worth) while
+# making it structurally impossible for one big tool result to single-handedly
+# produce a multi-KB log line.
+_LOG_RESULT_PREVIEW_CHARS = 2000
+
 
 def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
     """One evidence line per tool call: 'called {name}({args}) → {result_preview}'.
@@ -703,9 +713,24 @@ class Orchestrator:
                 result = await self._call_tool(tc, chat_id, tools)
                 if tc.function.name == "store_memory":
                     stored_contents.append(self._extract_content(tc.function.arguments))
+                # Log a truncated preview only - `result` itself stays full-size
+                # for tool_exchange/calls_and_results/_round_output_chars below,
+                # this truncation is purely for what gets WRITTEN TO THE LOG FILE.
+                # Real incident (2026-08-24): logging tool results verbatim at
+                # DEBUG meant a single big result (e.g. a git status dump) became
+                # one multi-KB log line; get_recent_logs (which reads this same
+                # file) could then scoop up a couple of those lines and alone
+                # blow past the 60k-char tool-round budget, forcing an empty-
+                # context-starved synthesis - a self-referential feedback loop
+                # where asking about recent logs was what broke the round.
+                _log_preview = (
+                    result if len(result) <= _LOG_RESULT_PREVIEW_CHARS
+                    else result[:_LOG_RESULT_PREVIEW_CHARS]
+                    + f"...[{len(result) - _LOG_RESULT_PREVIEW_CHARS} more chars omitted from log]"
+                )
                 log.debug(
                     "tool_result tool=%s chat=%s iter=%d content=%r",
-                    tc.function.name, chat_id, iteration, result,
+                    tc.function.name, chat_id, iteration, _log_preview,
                 )
                 tool_exchange.append({"role": "tool", "tool_call_id": tc.id,
                                       "content": result})
