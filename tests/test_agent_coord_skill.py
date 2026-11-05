@@ -20,7 +20,8 @@ def fake(monkeypatch, result, calls=None):
 
 
 def test_build_exposes_three_tools():
-    assert set(tools()) == {"agent_coord_sessions", "agent_coord_journal", "agent_coord_send", "agent_coord_inbox"}
+    assert set(tools()) == {"agent_coord_sessions", "agent_coord_journal", "agent_coord_send", "agent_coord_inbox",
+                            "agent_coord_events"}
 
 
 async def test_sessions_tool_labels_information(monkeypatch):
@@ -150,3 +151,20 @@ def test_fmt_sessions_age_units_and_invalid():
     for bad in (None, "x", -5, True):
         assert "acum" not in line(bad)
     assert "acum" not in acli.fmt_sessions([{"identity": "i"}])
+
+
+async def test_inbox_keeps_newest_when_long(monkeypatch):
+    lines = [f"[2026-11-05 10:{i:02d}:00] a -> lenovo/goat: " + "x" * 200 for i in range(40)]
+    fake(monkeypatch, (0, "\n".join(lines), ""))
+    out = await tools()["agent_coord_inbox"].handler(last=40)
+    assert len(out) <= 3000 and lines[-1] in out and lines[0] not in out and "mai vechi tăiate" in out
+
+
+async def test_events_tool_args_and_tail(monkeypatch):
+    calls = []
+    fake(monkeypatch, (0, "[11-05 21:27:40] lenovo/a/b tool: Bash git (activity)", ""), calls)
+    out = await tools()["agent_coord_events"].handler(last=999, identity="lenovo/a/b")
+    assert calls[-1] == ("events", "--last=200", "--identity=lenovo/a/b")
+    assert out.startswith("[agent-coord]") and "tool: Bash git" in out
+    fake(monkeypatch, (3, "", "hub inaccesibil"))
+    assert "hub inaccesibil" in await tools()["agent_coord_events"].handler()
