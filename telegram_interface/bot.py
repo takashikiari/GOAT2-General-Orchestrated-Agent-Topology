@@ -122,7 +122,7 @@ def _pick_dag_summary(result: dict) -> str:
     return str(next(reversed(results.values())))
 
 
-def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
+def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) -> Application:
     """Build and return a configured Telegram Application.
 
     Creates the Orchestrator with direct dependency references (not the
@@ -401,13 +401,27 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
             except Exception:
                 log.exception("orchestrator.run() failed for chat=%s", chat_id)
                 reply = _ERROR_REPLY
-        if reply:
-            await update.message.reply_text(_truncate(reply))
+        # orchestrator.run() now guards its own empty-reply case, but this is
+        # the last line of defense before Telegram: `if reply:` used to mean
+        # an empty string here (2026-08-24 incident: a tool round terminated
+        # with blank model output) silently sent nothing at all - no message,
+        # no error, no log - the user just waited forever with no signal the
+        # turn had even completed. Always send something.
+        if not reply or not reply.strip():
+            log.warning("handle_message: empty reply reached telegram layer chat=%s", chat_id)
+            reply = _ERROR_REPLY
+        await update.message.reply_text(_truncate(reply))
 
     async def drain_background(application: Application) -> None:
-        """post_shutdown: drain orchestrator + layers background tasks before exit."""
+        """post_shutdown: drain orchestrator + layers background tasks, then
+        run the caller's own post_shutdown (e.g. cancelling the plugin
+        scanner / admin panel / tunnel tasks) — PTB only takes one
+        post_shutdown callback, so this is where the two get chained.
+        """
         await orchestrator.drain_background()
         await registry.memory_layers.drain_background()
+        if post_shutdown:
+            await post_shutdown(application)
 
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
     if post_init:
@@ -423,9 +437,23 @@ def build_app(registry: ServiceRegistry, *, post_init=None) -> Application:
 
 
 def run_polling() -> None:
-    """Build registry, wire the plugin scanner, and start long-polling."""
-    from telegram_interface._plugin_scanner import post_init_hook  # cycle-safe: telegram only
+    """Build registry, wire the plugin scanner + coord poller, and start
+    long-polling. Each hook module owns its own tasks; this just composes
+    their (post_init, post_shutdown) pairs into the single pair PTB accepts."""
+    from telegram_interface._plugin_scanner import post_init_hook as _plugin_hook  # cycle-safe: telegram only
+    from telegram_interface._coord_poller import post_init_hook as _coord_hook
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
-    build_app(registry, post_init=post_init_hook(registry)).run_polling()
+    plugin_post_init, plugin_post_shutdown = _plugin_hook(registry)
+    coord_post_init, coord_post_shutdown = _coord_hook(registry)
+
+    async def _post_init(application: Application) -> None:
+        await plugin_post_init(application)
+        await coord_post_init(application)
+
+    async def _post_shutdown(application: Application) -> None:
+        await plugin_post_shutdown(application)
+        await coord_post_shutdown(application)
+
+    build_app(registry, post_init=_post_init, post_shutdown=_post_shutdown).run_polling()

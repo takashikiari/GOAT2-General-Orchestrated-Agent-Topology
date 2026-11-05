@@ -1,12 +1,29 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
+function stubMatchMedia(matches: boolean) {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia
+}
+
 describe('App', () => {
-  it('shows the Dashboard tab active by default', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('shows the Live tab active by default', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: 'Dashboard' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByTestId('panel-dashboard')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByTestId('panel-live')).toBeInTheDocument()
   })
 
   it('switches the active tab on click', () => {
@@ -46,6 +63,7 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }))
 
     await waitFor(() => expect(screen.getByText(/Hit rate: 50.0%/)).toBeInTheDocument())
 
@@ -55,5 +73,22 @@ describe('App', () => {
         headers: expect.objectContaining({ 'X-Telegram-Init-Data': expect.any(String) }),
       }),
     )
+  })
+
+  it('renders a mobile hamburger nav that opens a drawer and switches tabs on narrow viewports', () => {
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 375 })
+    stubMatchMedia(true)
+
+    render(<App />)
+
+    // No always-visible sidebar buttons on mobile.
+    expect(screen.queryByRole('button', { name: 'Dashboard' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /open navigation/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }))
+
+    expect(screen.getByTestId('panel-dashboard')).toBeInTheDocument()
+    // Drawer closes after selecting a tab.
+    expect(screen.queryByRole('button', { name: 'Dashboard' })).not.toBeInTheDocument()
   })
 })

@@ -26,3 +26,28 @@ max_lines = 500
 
 [plugins]
 scan_interval_seconds = 30
+
+# Agentic tool-calling loop (orchestrator.orchestrator._run_tool_round). Two
+# independent hard backstops: round COUNT (max_iterations) and cumulative
+# tool-output SIZE (max_output_chars) -- never a grounding decider. Below
+# both caps the model is called WITH tools so it can chain freely; at either
+# cap tools are withheld and synthesis is forced.
+# 2026-08-14: bumped max_iterations 6 -> 200 to test whether the round-count
+# cap (vs. the char cap below) was the thing actually walling off deep
+# multi-step investigations -- see [shell] above for the per-call timeout.
+[tool_loop]
+max_iterations = 200
+# Cumulative chars of tool output (across every call, every iteration) allowed
+# before the round is force-synthesized -- sized to content instead of round
+# count, since a model issuing several large read_file/shell_run calls can
+# otherwise blow the resent conversation past the model's context window well
+# before max_iterations is reached (2026-07-09 incident: 6 iterations reached
+# 2.08M tokens in one turn and the API call was rejected outright).
+max_output_chars = 60000
+# Per-tool-call evidence preview formatting (orchestrator._compact_tool_summary).
+# Results shorter than result_short_threshold chars are stored verbatim; longer
+# ones are head/tail-truncated (head_tail-classified tools) or head-only.
+result_short_threshold = 400
+result_head_chars = 200
+result_tail_chars = 150
+args_preview_chars = 200
