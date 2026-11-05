@@ -3,6 +3,8 @@
 2026-07-09: moved orchestrator.py's tool-summary preview constants,
 auto_promote, context_assembler, and entity_boost from hardcoded module
 literals into config/memory.toml, mirroring memory.config's own pattern.
+2026-08-14: tool-summary preview constants (tool_loop section) moved out to
+orchestrator.tool_loop_config / config/tools.toml — see test_tool_loop_config.py.
 """
 from __future__ import annotations
 
@@ -15,18 +17,7 @@ from memory.config_extra import (
     RELATIVE_HORIZON_SECONDS,
     SESSION_GAP_SECONDS,
     TEMPORAL_MAX_YEARS_IN_PAST,
-    TOOL_ARGS_PREVIEW_CHARS,
-    TOOL_RESULT_HEAD_CHARS,
-    TOOL_RESULT_SHORT_THRESHOLD,
-    TOOL_RESULT_TAIL_CHARS,
 )
-
-
-def test_tool_loop_preview_defaults():
-    assert TOOL_RESULT_SHORT_THRESHOLD == 400
-    assert TOOL_RESULT_HEAD_CHARS == 200
-    assert TOOL_RESULT_TAIL_CHARS == 150
-    assert TOOL_ARGS_PREVIEW_CHARS == 200
 
 
 def test_auto_promote_defaults():

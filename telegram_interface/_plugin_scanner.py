@@ -13,6 +13,19 @@ installed) or a bad ``config/admin_panel.toml`` must degrade to a logged
 warning instead of preventing the bot from starting at all.
 The ``admin_panel.tunnel`` (Cloudflare Quick Tunnel) is scheduled the same way,
 for the same reason.
+
+``post_init_hook`` returns a ``(post_init, post_shutdown)`` pair rather than
+just the former: the plugin-scan loop and the admin panel/tunnel tasks are
+started with a bare ``asyncio.create_task`` and never awaited anywhere, so
+without an explicit cancel-and-await on shutdown, PTB's own graceful
+shutdown finishes and closes the event loop while these tasks are still
+mid-flight — they get destroyed abruptly instead of cancelled cleanly,
+producing "Task was destroyed but it is pending!" plus a cascading
+"RuntimeError: Event loop is closed" traceback from uvicorn's lifespan
+handling, on every single bot restart. The returned ``post_shutdown``
+cancels and awaits every task this module started, mirroring the pattern
+``telegram_interface.bot``'s own ``drain_background`` already uses for the
+orchestrator/memory-layers background work.
 """
 from __future__ import annotations
 
@@ -45,8 +58,19 @@ async def _loop(registry: "ServiceRegistry") -> None:
 
 
 def post_init_hook(registry: "ServiceRegistry"):
-    """Return a PTB ``post_init`` coroutine that warms memory and starts the scanner."""
+    """Return ``(post_init, post_shutdown)`` PTB coroutines sharing this
+    module's background tasks — start them on init, cancel them on shutdown.
+    """
+    tasks: list[asyncio.Task] = []
+    admin_task: asyncio.Task | None = None
+    # Single-slot holder for the uvicorn.Server instance, populated by
+    # admin_panel.server.start()'s on_started callback once it exists —
+    # needed so _post_shutdown can request graceful shutdown instead of
+    # cancelling that task outright (see admin_panel/server.py:start).
+    admin_server: list = []
+
     async def _post_init(application: "Application") -> None:
+        nonlocal admin_task
         # Pre-warm ChromaDB first (serial: BM25 build reads from it).
         await registry.episodic_memory.warmup()
         # Then warm BM25 + GLiNER + CrossEncoder in parallel — all outside the
@@ -65,15 +89,45 @@ def post_init_hook(registry: "ServiceRegistry"):
         for (name, _), result in zip(warmup_tasks, results):
             if isinstance(result, BaseException):
                 log.error("warmup failed for %s: %s — first turn may be slow", name, result)
-        asyncio.create_task(_loop(registry))
+        tasks.append(asyncio.create_task(_loop(registry)))
         try:
             from admin_panel.server import start as _start_admin_panel
-            asyncio.create_task(_start_admin_panel(registry))
+            admin_task = asyncio.create_task(
+                _start_admin_panel(registry, on_started=admin_server.append)
+            )
+            tasks.append(admin_task)
         except Exception as exc:  # noqa: BLE001 — panel is optional, bot startup is not
             log.warning("admin panel unavailable: %s", exc)
         try:
             from admin_panel.tunnel import start as _start_admin_tunnel
-            asyncio.create_task(_start_admin_tunnel(application))
+            tasks.append(asyncio.create_task(_start_admin_tunnel(application)))
         except Exception as exc:  # noqa: BLE001 — tunnel is optional, bot startup is not
             log.warning("admin panel tunnel unavailable: %s", exc)
-    return _post_init
+
+    async def _post_shutdown(application: "Application") -> None:
+        """Cancel and await every task this module started, before the event
+        loop closes. Never raises — a task that's already finished or whose
+        cancellation itself errors must not block the rest of shutdown.
+
+        The admin-panel task is deliberately excluded from the raw-cancel
+        loop: it's asked to exit gracefully instead (``should_exit = True``),
+        since a raw cancel there skips uvicorn's own shutdown path and leaks
+        its internal lifespan task. It's still awaited below like the rest.
+        """
+        if admin_server:
+            admin_server[0].should_exit = True
+        for task in tasks:
+            if task is admin_task:
+                continue
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            # CancelledError is a BaseException (Python 3.8+), not caught by
+            # `except Exception` — it's expected here since we just cancelled
+            # every one of these tasks ourselves and want that to be quiet,
+            # not propagate as a shutdown failure.
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    return _post_init, _post_shutdown

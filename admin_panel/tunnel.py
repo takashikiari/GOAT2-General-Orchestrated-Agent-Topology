@@ -96,3 +96,9 @@ async def start(application: "Application") -> None:
                 process.kill()
             except ProcessLookupError:
                 pass
+            else:
+                # Reap the process so asyncio can close its subprocess
+                # transport now, while the event loop is still open — skipping
+                # this leaves the transport to close itself via __del__ after
+                # the loop closes, logging a spurious "Event loop is closed".
+                await process.wait()

@@ -12,7 +12,7 @@ the spec's ``latency_rerank`` is renamed ``latency_assemble``).
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 from memory.config_extra import OBS_MAX_MESSAGE_CHARS as _MAX_MESSAGE_CHARS
@@ -58,7 +58,14 @@ class MemoryObservation:
     # Results
     results_found: int = 0
     results_used: int = 0
-    source_tier: str = ""  # "episodic" | "working" | "permanent" | "none"
+    source_tier: str = ""  # "episodic" | "working" | "permanent" | "none" — highest-
+    # priority tier only (episodic > working > permanent); kept as-is for
+    # benchmark/ compatibility. Most turns inject more than one tier at once
+    # (L0/L1 identity is mandatory, L2 history whenever present) — tiers_used
+    # below is the honest multi-label view; source_tier alone understates it.
+    tiers_used: list[str] = field(default_factory=list)  # every tier whose block
+    # was actually present this turn — "permanent" | "working" | "episodic",
+    # zero or more, not mutually exclusive.
 
     # Tokens injected, per tier
     tokens_injected: int = 0

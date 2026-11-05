@@ -14,7 +14,7 @@ initData to its own API calls.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import uvicorn
 from fastapi import Depends, FastAPI
@@ -54,7 +54,11 @@ def create_app(registry: "ServiceRegistry") -> FastAPI:
     return app
 
 
-async def start(registry: "ServiceRegistry") -> None:
+async def start(
+    registry: "ServiceRegistry",
+    *,
+    on_started: "Callable[[uvicorn.Server], None] | None" = None,
+) -> None:
     """Start the admin server in the current event loop. Never raises.
 
     Calls ``Server._serve()`` directly instead of the public ``serve()`` —
@@ -62,6 +66,15 @@ async def start(registry: "ServiceRegistry") -> None:
     ``capture_signals()``, which would clobber python-telegram-bot's own
     shutdown handling since both run in the same process's main thread.
     ``_serve()`` is the same coroutine minus that signal capture.
+
+    ``on_started``, if given, is called with the ``uvicorn.Server`` instance
+    right after it's constructed — this is how a caller gets a handle to
+    request graceful shutdown (``server.should_exit = True``) instead of
+    cancelling this coroutine outright. Raw cancellation lands mid
+    ``main_loop()`` and skips ``_serve()``'s own ``await self.shutdown()``
+    call, which is what tears down uvicorn's internal lifespan task cleanly
+    — cancelling from outside always leaked that task as a "Task was
+    destroyed but it is pending!" error on every bot restart.
 
     Catches ``SystemExit`` in addition to ``Exception``: uvicorn's
     ``Server.startup()`` does not raise ``OSError`` on a bind failure (e.g.
@@ -78,6 +91,8 @@ async def start(registry: "ServiceRegistry") -> None:
         app = create_app(registry)
         config = uvicorn.Config(app, host=ADMIN_HOST, port=ADMIN_PORT, log_level="warning")
         server = uvicorn.Server(config)
+        if on_started is not None:
+            on_started(server)
         await server._serve()
     except (Exception, SystemExit) as exc:  # noqa: BLE001 — SystemExit: uvicorn's startup() sys.exit(1)s on bind failure; must never take the bot down with it
         log.warning("admin panel server stopped (%s:%d): %s", ADMIN_HOST, ADMIN_PORT, exc)

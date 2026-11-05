@@ -39,6 +39,9 @@ class _FakeProcess:
         self.killed = True
         self.returncode = -9
 
+    async def wait(self):
+        return self.returncode
+
 
 def _patch_subprocess_exec(monkeypatch, fake_process):
     async def fake_create_subprocess_exec(*args, **kwargs):

@@ -164,28 +164,35 @@ class ObservationCollector:
         and sums estimated tokens. ``results_found`` is the search result count
         (from the orchestrator); ``results_used`` is how many actually fit the
         budget (returned by ``assemble_context``). Sets tokens_*, results_found,
-        results_used, source_tier (highest contributing tier), and
+        results_used, source_tier (highest-priority single tier — episodic >
+        working > permanent, kept for benchmark/ compatibility), tiers_used
+        (every tier actually present this turn, not mutually exclusive), and
         budget_used (== tokens_injected).
         """
         l0_l1 = l2 = l3 = 0
         tier = "none"
+        tiers_used: set[str] = set()
         for block in blocks:
             if block.startswith(_IDENTITY_HEADER):
                 l0_l1 = estimate_tokens(block)
                 if tier == "none":
                     tier = "permanent"
+                tiers_used.add("permanent")
             elif block.startswith(_HISTORY_HEADER):
                 l2 = estimate_tokens(block)
                 tier = "working" if tier != "episodic" else tier
+                tiers_used.add("working")
             elif block.startswith(_RELATED_HEADER):
                 l3 = estimate_tokens(block)
                 tier = "episodic"
+                tiers_used.add("episodic")
         injected = l0_l1 + l2 + l3
         self.obs.results_found = results_found
         self.obs.tokens_l0_l1 = l0_l1
         self.obs.tokens_l2 = l2
         self.obs.tokens_l3 = l3
         self.obs.tokens_injected = injected
+        self.obs.tiers_used = sorted(tiers_used)
         self.obs.results_used = results_used
         self.obs.source_tier = tier
         self.obs.budget_used = injected

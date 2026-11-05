@@ -107,3 +107,34 @@ def test_tool_round_turn_tracks_meaningfully_more_tokens_than_bare_blocks():
     loaded.add_prompt_extras(guidance, tool_schemas)
 
     assert loaded.obs.tokens_injected > bare.obs.tokens_injected
+
+
+def test_tiers_used_lists_every_tier_present_not_just_one():
+    """Regression: source_tier collapses identity+history+related down to a
+    single "episodic" label whenever a related block exists, silently hiding
+    that identity (permanent) and history (working) were injected too.
+    tiers_used must report all three.
+    """
+    c = ObservationCollector("chat1", "hi")
+    blocks = [
+        "[Identity]\nYou are GOAT.",
+        "[Conversation History]\nuser: hi\nassistant: hello",
+        "[Context recuperat din istoric]\nsome retrieved memory",
+    ]
+    c.set_context_from_blocks(blocks, results_found=1, results_used=1)
+    assert c.obs.tiers_used == ["episodic", "permanent", "working"]
+    # source_tier keeps its old single-label behavior — unchanged for
+    # benchmark/ compatibility.
+    assert c.obs.source_tier == "episodic"
+
+
+def test_tiers_used_with_only_identity_and_history():
+    c = _collector_with_blocks()  # identity + history, no related block
+    assert c.obs.tiers_used == ["permanent", "working"]
+
+
+def test_tiers_used_empty_when_no_blocks_match():
+    c = ObservationCollector("chat1", "hi")
+    c.set_context_from_blocks([], results_found=0, results_used=0)
+    assert c.obs.tiers_used == []
+    assert c.obs.source_tier == "none"
