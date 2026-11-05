@@ -217,6 +217,40 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
 
     admin_chat_id = load_admin_chat_id()
 
+    async def _on_coord_messages(messages: list[dict]) -> None:
+        """Route new PetVoyageUK agent-coord messages through GOAT's own
+        orchestrator loop instead of a raw Telegram push - mirrors
+        _on_dag_complete above. Without this, GOAT never actually "read" or
+        remembered coordination activity; it only knew about it if asked
+        directly (2026-08-25 finding)."""
+        if not admin_chat_id:
+            return
+        from telegram_interface._coord_poller import format_digest
+        synthetic = format_digest(messages)
+        async with _chat_locks[admin_chat_id]:
+            try:
+                reply = await orchestrator.run(synthetic, admin_chat_id)
+            except Exception:
+                log.exception("coord_poller orchestrator.run() failed")
+                reply = ""
+        # orchestrator.run() can return an empty reply (e.g. a tool round
+        # that ran out of budget mid-synthesis - see the 2026-08-24 incident
+        # noted on handle_message below). Falling back to the raw digest
+        # here, instead of silently sending nothing, is what the admin sees
+        # as "GOAT gives fallback / doesn't respond" - the admin must always
+        # see that new coordination activity happened, even when GOAT's own
+        # reasoning about it failed (2026-08-25 regression, caught same day).
+        if not reply or not reply.strip():
+            log.warning("coord_poller: empty reply from orchestrator, falling back to raw digest")
+            reply = synthetic
+        try:
+            from telegram import Bot
+            await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
+                chat_id=int(admin_chat_id), text=_truncate(reply)
+            )
+        except Exception as exc:
+            log.warning("coord_poller send failed: %s", exc)
+
     def _is_admin(update: Update) -> bool:
         if not admin_chat_id:
             return True  # no admin configured → allow everyone (open instance)
@@ -308,6 +342,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     # ── inline keyboard callbacks ─────────────────────────────────────────────
 
     async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_admin(update):
+            log.warning("ignored %s from non-admin chat=%s", "callback", update.effective_chat.id if update.effective_chat else "?")
+            return
         if await _is_duplicate_update(update):
             log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
             return
@@ -389,6 +426,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
 
     async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward the incoming text to the orchestrator and reply."""
+        if not _is_admin(update):
+            log.warning("ignored %s from non-admin chat=%s", "message", update.effective_chat.id if update.effective_chat else "?")
+            return
         if await _is_duplicate_update(update):
             log.warning("duplicate update_id=%s skipped (redelivery)", update.update_id)
             return
@@ -412,6 +452,18 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
             reply = _ERROR_REPLY
         await update.message.reply_text(_truncate(reply))
 
+    # Coord poller is wired here, not in run_polling(), because its
+    # on_messages callback (_on_coord_messages above) needs closure access
+    # to `orchestrator` and `_chat_locks` — both created inside build_app —
+    # the same reason DagManager's on_complete is wired here too.
+    from telegram_interface._coord_poller import post_init_hook as _coord_hook
+    coord_post_init, coord_post_shutdown = _coord_hook(registry, _on_coord_messages)
+
+    async def _combined_post_init(application: Application) -> None:
+        if post_init:
+            await post_init(application)
+        await coord_post_init(application)
+
     async def drain_background(application: Application) -> None:
         """post_shutdown: drain orchestrator + layers background tasks, then
         run the caller's own post_shutdown (e.g. cancelling the plugin
@@ -420,12 +472,12 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         """
         await orchestrator.drain_background()
         await registry.memory_layers.drain_background()
+        await coord_post_shutdown(application)
         if post_shutdown:
             await post_shutdown(application)
 
     builder = Application.builder().token(settings.TELEGRAM_BOT_TOKEN)
-    if post_init:
-        builder = builder.post_init(post_init)
+    builder = builder.post_init(_combined_post_init)
     builder = builder.post_shutdown(drain_background)
     app = builder.build()
     app.add_handler(CommandHandler("update",   handle_update))
@@ -437,23 +489,13 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
 
 
 def run_polling() -> None:
-    """Build registry, wire the plugin scanner + coord poller, and start
-    long-polling. Each hook module owns its own tasks; this just composes
-    their (post_init, post_shutdown) pairs into the single pair PTB accepts."""
+    """Build registry, wire the plugin scanner, and start long-polling.
+    The coord poller is wired inside build_app itself (needs closure access
+    to the orchestrator - see the comment above drain_background there)."""
     from telegram_interface._plugin_scanner import post_init_hook as _plugin_hook  # cycle-safe: telegram only
-    from telegram_interface._coord_poller import post_init_hook as _coord_hook
 
     log.info("Starting GOAT 2.0 Telegram bot (model=%s)", settings.MODEL_NAME)
     registry = ServiceRegistry()
     plugin_post_init, plugin_post_shutdown = _plugin_hook(registry)
-    coord_post_init, coord_post_shutdown = _coord_hook(registry)
 
-    async def _post_init(application: Application) -> None:
-        await plugin_post_init(application)
-        await coord_post_init(application)
-
-    async def _post_shutdown(application: Application) -> None:
-        await plugin_post_shutdown(application)
-        await coord_post_shutdown(application)
-
-    build_app(registry, post_init=_post_init, post_shutdown=_post_shutdown).run_polling()
+    build_app(registry, post_init=plugin_post_init, post_shutdown=plugin_post_shutdown).run_polling()

@@ -1,0 +1,4 @@
+[agent_coord]
+cli_path = "~/agent-coord/bin/agent-coord"
+timeout_seconds = 10
+supervisor_info = "~/.cache/agent-coord/supervisor.json"
