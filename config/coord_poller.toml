@@ -1,0 +1,6 @@
+[coord_poller]
+# GOAT is the agent-coord supervisor: messages for GOAT on the agent-coord v2 hub (read through the
+# local agent-coord CLI) are routed into GOAT's conversation and reported to Laris.
+# Disable with enabled = false.
+enabled = true
+interval_seconds = 30
