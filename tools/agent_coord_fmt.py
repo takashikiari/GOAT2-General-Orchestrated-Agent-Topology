@@ -27,11 +27,20 @@ def _dicts(value) -> list:
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
+def _age(value) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return ""
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if value >= size:
+            return f" — acum {int(value // size)}{unit}"
+    return f" — acum {int(value)}s"
+
+
 def fmt_sessions(rows) -> str:
     lines = [NOTE]
     for r in _dicts(rows):
         lines.append(f"- {one_line(r.get('identity'))}: {one_line(r.get('effective_status'))} — "
-                     f"„{one_line(r.get('task') or '-')}”")
+                     f"„{one_line(r.get('task') or '-')}”{_age(r.get('age'))}")
     if len(lines) == 1:
         lines.append("(nicio sesiune înregistrată)")
     return "\n".join(lines)[:MAX_OUT]

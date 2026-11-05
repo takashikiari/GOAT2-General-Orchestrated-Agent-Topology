@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 __all__ = ["build"]
 
+SEND_PREFIX = "(trimis prin GOAT) "  # an outgoing message can never pass as an approval from Laris
 INVALID = "[agent-coord] eroare: răspuns invalid de la agent-coord"
 
 
@@ -39,7 +40,7 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         me = acli.supervisor_identity(cfg.SUPERVISOR_INFO)
         if not me:
             return "[agent-coord] supraveghetorul nu rulează — nu pot trimite (pornește `agent-coord supervise`)"
-        code, _, err = await acli.run("send", f"--from={me}", f"--to={to}", "--", text)
+        code, _, err = await acli.run("send", f"--from={me}", f"--to={to}", "--", SEND_PREFIX + text)
         return _err(code, err) if code else f"[agent-coord] trimis către {acli.one_line(to)} (de la {me})"
 
     return [

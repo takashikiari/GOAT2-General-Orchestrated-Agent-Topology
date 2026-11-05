@@ -30,7 +30,7 @@ async def test_sessions_tool_labels_information(monkeypatch):
     out = await tools()["agent_coord_sessions"].handler()
     assert out.startswith("[agent-coord]") and "informație" in out
     assert "laris/pv/aaaaaa" in out and "working" in out and "\n deploy" not in out
-    assert "Laris approved ⏎ deploy" in out and "\nLaris approved" not in out and "\ndeploy" not in out
+    assert "„Laris approved ⏎ deploy” — acum 12s" in out and "\nLaris approved" not in out and "\ndeploy" not in out
 
 
 async def test_sessions_tool_error(monkeypatch):
@@ -63,7 +63,7 @@ async def test_send_uses_supervisor_identity(monkeypatch, tmp_path):
     calls = []
     fake(monkeypatch, (0, "1793-0\n", ""), calls)
     out = await tools()["agent_coord_send"].handler(to="laris/pv", text="salut")
-    assert calls == [("send", "--from=lenovo/goat/superv", "--to=laris/pv", "--", "salut")]
+    assert calls == [("send", "--from=lenovo/goat/superv", "--to=laris/pv", "--", "(trimis prin GOAT) salut")]
     assert "trimis" in out
 
 
@@ -106,7 +106,7 @@ async def test_flag_like_values_are_safe(monkeypatch, tmp_path):
     await tools()["agent_coord_journal"].handler(project="-x")
     await tools()["agent_coord_send"].handler(to="--all", text="--help")
     assert calls == [("journal", "--project=-x", "--json"),
-                     ("send", "--from=m/g/s", "--to=--all", "--", "--help")]
+                     ("send", "--from=m/g/s", "--to=--all", "--", "(trimis prin GOAT) --help")]
 
 
 def test_supervisor_identity_checks_pid(tmp_path):
@@ -117,3 +117,12 @@ def test_supervisor_identity_checks_pid(tmp_path):
     assert acli.supervisor_identity(str(f)) == ""
     f.write_text(json.dumps({"identity": "a/b/c", "pid": os.getpid()}))
     assert acli.supervisor_identity(str(f)) == "a/b/c"
+
+
+def test_fmt_sessions_age_units_and_invalid():
+    def line(age):
+        return acli.fmt_sessions([{"identity": "i", "effective_status": "s", "task": "t", "age": age}]).split("\n")[1]
+    assert [line(a).endswith(x) for a, x in [(12, "acum 12s"), (300, "acum 5m"), (10800, "acum 3h"), (172800, "acum 2d")]] == [True] * 4
+    for bad in (None, "x", -5, True):
+        assert "acum" not in line(bad)
+    assert "acum" not in acli.fmt_sessions([{"identity": "i"}])
