@@ -72,8 +72,9 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                        parameters={"type": "object", "properties": {"project": {"type": "string"}},
                                    "required": ["project"]}, handler=journal),
         ToolDefinition(name="agent_coord_send",
-                       description="Trimite un mesaj unei sesiuni Claude prin agent-coord (doar la cererea "
-                                   "utilizatorului). to = identitate, machine/proiect, mașină sau all.",
+                       description="Trimite un mesaj unei sesiuni Claude prin agent-coord: la cererea lui Laris sau ca "
+                                   "răspuns la un mesaj primit pe canal (nu pentru push/merge/deploy fără OK-ul "
+                                   "lui Laris). to = identitate, machine/proiect, mașină sau all.",
                        parameters={"type": "object", "properties": {"to": {"type": "string"},
                                                                     "text": {"type": "string"}},
                                    "required": ["to", "text"]}, handler=send),
