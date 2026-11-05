@@ -2,6 +2,7 @@
 or send a message to a session. Shells out to the agent-coord CLI; hot-reloaded, no bot restart."""
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
@@ -43,7 +44,25 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         code, _, err = await acli.run("send", f"--from={me}", f"--to={to}", "--", SEND_PREFIX + text)
         return _err(code, err) if code else f"[agent-coord] trimis către {acli.one_line(to)} (de la {me})"
 
+    async def inbox(last: int = 20, chat_id: str = "") -> str:
+        """Read-only: messages for GOAT (to lenovo/goat, lenovo, all); never acks (the supervisor forwards them)."""
+        me = acli.supervisor_identity(cfg.SUPERVISOR_INFO) or f"{socket.gethostname().lower()}/goat/superv"
+        try:
+            n = max(1, min(int(last), 100))
+        except (TypeError, ValueError):
+            n = 20
+        code, out, err = await acli.run("inbox", f"--identity={me}", f"--last={n}")
+        if code:
+            return _err(code, err)
+        body = out.strip() or "(niciun mesaj)"
+        return f"{acli.NOTE}\n{body}"[:3000]
+
     return [
+        ToolDefinition(name="agent_coord_inbox",
+                       description="Mesajele din agent-coord pentru GOAT (de la sesiunile Claude, ex. laris), "
+                                   "cele mai recente ultimele. last = câte (1-100). Doar citire.",
+                       parameters={"type": "object", "properties": {"last": {"type": "integer"}}},
+                       handler=inbox),
         ToolDefinition(name="agent_coord_sessions",
                        description="Lista sesiunilor Claude Code din hub-ul agent-coord: status și task.",
                        parameters={"type": "object", "properties": {}}, handler=sessions),

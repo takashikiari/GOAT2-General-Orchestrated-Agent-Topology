@@ -20,7 +20,7 @@ def fake(monkeypatch, result, calls=None):
 
 
 def test_build_exposes_three_tools():
-    assert set(tools()) == {"agent_coord_sessions", "agent_coord_journal", "agent_coord_send"}
+    assert set(tools()) == {"agent_coord_sessions", "agent_coord_journal", "agent_coord_send", "agent_coord_inbox"}
 
 
 async def test_sessions_tool_labels_information(monkeypatch):
@@ -65,6 +65,30 @@ async def test_send_uses_supervisor_identity(monkeypatch, tmp_path):
     out = await tools()["agent_coord_send"].handler(to="laris/pv", text="salut")
     assert calls == [("send", "--from=lenovo/goat/superv", "--to=laris/pv", "--", "(trimis prin GOAT) salut")]
     assert "trimis" in out
+
+
+async def test_inbox_reads_messages_for_goat(monkeypatch, tmp_path):
+    info = tmp_path / "supervisor.json"
+    info.write_text(json.dumps({"identity": "lenovo/goat/superv", "pid": 1}))
+    monkeypatch.setattr(cfg, "SUPERVISOR_INFO", str(info))
+    calls = []
+    lines = "[2026-11-05 18:53:20] laris/agent-coord/f28dc1 -> lenovo/goat: PONG de pe laris — canal v2 ok\n"
+    fake(monkeypatch, (0, lines, ""), calls)
+    out = await tools()["agent_coord_inbox"].handler()
+    assert calls == [("inbox", "--identity=lenovo/goat/superv", "--last=20")]
+    assert out.startswith(acli.NOTE) and "PONG de pe laris" in out
+
+
+async def test_inbox_last_clamped_empty_and_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "SUPERVISOR_INFO", str(tmp_path / "missing.json"))
+    calls = []
+    fake(monkeypatch, (0, "", ""), calls)
+    out = await tools()["agent_coord_inbox"].handler(last=500)
+    assert calls[0][0] == "inbox" and calls[0][2] == "--last=100"
+    assert calls[0][1].endswith("/goat/superv")  # identity derived from hostname when supervisor info is missing
+    assert "niciun mesaj" in out
+    fake(monkeypatch, (3, "", "hub inaccesibil"))
+    assert "hub inaccesibil" in await tools()["agent_coord_inbox"].handler()
 
 
 async def test_run_missing_cli(monkeypatch):
