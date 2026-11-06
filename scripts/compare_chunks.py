@@ -31,24 +31,33 @@ from memory.reranker import CrossEncoderReranker  # noqa: E402
 L3_BUDGET = 2500
 
 
-def real_queries(n: int) -> list[str]:
+def real_queries(n: int) -> list[tuple[str, float]]:
+    """(text, timestamp) of real user messages, oldest first."""
     seen, out = set(), []
     for f in sorted(glob.glob("/tmp/goat2/logs/goat2.log*"), reverse=True):
         for line in open(f, errors="replace"):
             if "memory.observability" in line and "{" in line:
                 try:
-                    q = json.loads(line[line.index("{"):]).get("user_message", "").strip()
+                    rec = json.loads(line[line.index("{"):])
                 except ValueError:
                     continue
+                q = str(rec.get("user_message", "")).strip()
                 if len(q.split()) >= 3 and q not in seen:
                     seen.add(q)
-                    out.append(q)
+                    out.append((q, float(rec.get("timestamp") or 0)))
+    out.sort(key=lambda x: x[1])
     return out[-n:]
 
 
 def rows(res) -> list[dict]:
-    return [{"content": d, "metadata": m, "score": s}
+    return [{"content": d or "", "metadata": m or {}, "score": s}
             for d, m, s in zip(res["documents"][0], res["metadatas"][0], res["distances"][0])]
+
+
+def as_of(ts: float, results: list[dict]) -> list[dict]:
+    """Keep only entries that existed when the query was asked: the test queries are past messages whose own
+    exchange (and everything after it) is now in L3, which the live turn could not see."""
+    return [r for r in results if float((r["metadata"] or {}).get("timestamp") or 0) < ts]
 
 
 def parents(results) -> list[str]:
@@ -82,12 +91,13 @@ async def main_async(a) -> int:
         rr._load_and_prime()
         tok = rr._get_model().tokenizer
         qs = real_queries(a.queries)
-        stats = {"before": [], "after": []}
-        agree1 = overlap3 = 0
-        for q in qs:
-            before = await run_variant(rr, q, rows(main_col.query(query_texts=[q], n_results=20)), tok)
+        stats = {"before": [], "after": [], "highlights": []}
+        agree1 = overlap3 = h_agree1 = h_overlap3 = 0
+        h_diff = []
+        for q, ts in qs:
+            before = await run_variant(rr, q, as_of(ts, rows(main_col.query(query_texts=[q], n_results=60)))[:20], tok)
             seen, cands = set(), []
-            for r in rows(ch_col.query(query_texts=[q], n_results=40)):  # one chunk per parent, like merge_results
+            for r in as_of(ts, rows(ch_col.query(query_texts=[q], n_results=120))):  # one chunk per parent
                 pid = r["metadata"].get("message_id")
                 if pid not in seen:
                     seen.add(pid)
@@ -101,8 +111,26 @@ async def main_async(a) -> int:
                 return [dict(r, content=window_text(text.get(r["metadata"]["parent_id"], r["content"]),
                                                     r["metadata"].get("chunk_index", 0))) for r in kept]
             after = await run_variant(rr, q, cands, tok, expand=expand)
+            # highlights: SAME candidates as before (whole documents), each replaced by its closest chunk
+            base = as_of(ts, rows(main_col.query(query_texts=[q], n_results=60)))[:20]
+            pids = [(r["metadata"] or {}).get("message_id") for r in base if (r["metadata"] or {}).get("message_id")]
+            best = {}
+            if pids:
+                hits = rows(ch_col.query(query_texts=[q], n_results=min(200, 8 * len(pids)),
+                                         where={"parent_id": {"$in": pids}}))
+                for r in hits:  # nearest chunk first
+                    best.setdefault(r["metadata"]["parent_id"], r)
+            h_cands = [best.get((r["metadata"] or {}).get("message_id"), r) for r in base]
+            hl = await run_variant(rr, q, h_cands, tok, expand=expand)
             stats["before"].append(before)
             stats["after"].append(after)
+            stats["highlights"].append(hl)
+            if before["parents"][:1] and before["parents"][:1] == hl["parents"][:1]:
+                h_agree1 += 1
+            elif hl["parents"][:1]:
+                h_diff.append(q)
+            hb3, ha3 = set(before["parents"][:3]), set(hl["parents"][:3])
+            h_overlap3 += len(hb3 & ha3) / max(1, len(hb3)) if hb3 else 1
             if before["parents"][:1] and before["parents"][:1] == after["parents"][:1]:
                 agree1 += 1
             b3, a3 = set(before["parents"][:3]), set(after["parents"][:3])
@@ -110,11 +138,15 @@ async def main_async(a) -> int:
         n = len(qs)
         med = lambda k, v: st.median(x[k] for x in stats[v])
         print(f"queries: {n} (real user messages from goat2.log; vector search + rerank only)")
-        for v in ("before", "after"):
-            print(f"  {v:6}: rerank median {med('ms', v):.0f} ms (p90 {sorted(x['ms'] for x in stats[v])[int(0.9*(n-1))]:.0f}) · "
+        for v in ("before", "after", "highlights"):
+            print(f"  {v:10}: rerank median {med('ms', v):.0f} ms (p90 {sorted(x['ms'] for x in stats[v])[int(0.9*(n-1))]:.0f}) · "
                   f"padded pair median {med('pad', v):.0f} tok · L3 injected median {med('tokens', v):.0f} tok · "
                   f"entries median {med('used', v):.0f}")
-        print(f"  top-1 same parent: {agree1}/{n} ({agree1*100//max(1,n)}%) · top-3 parent overlap: {overlap3/max(1,n)*100:.0f}%")
+        print(f"  chunks     vs before: top-1 same parent {agree1}/{n} ({agree1*100//max(1,n)}%) · top-3 overlap {overlap3/max(1,n)*100:.0f}%")
+        print(f"  highlights vs before: top-1 same parent {h_agree1}/{n} ({h_agree1*100//max(1,n)}%) · top-3 overlap {h_overlap3/max(1,n)*100:.0f}%")
+        print(f"  highlights picked another top-1 for {len(h_diff)} queries (judge these by hand):")
+        for q in h_diff[:10]:
+            print("    -", " ".join(q.split())[:110])
     return 0
 
 
