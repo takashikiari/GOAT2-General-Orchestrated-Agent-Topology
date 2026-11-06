@@ -14,6 +14,14 @@ _DEFAULTS: dict = {
     "episodic": {
         "storage_path": "./chroma_data",
         "collection_name": "episodic_memory",
+        "chunk_storage_path": "./chroma_chunks",
+        "chunk_collection_name": "episodic_chunks",
+        "chunk_target_tokens": 220,
+        "chunk_overlap_tokens": 40,
+        "chunk_neighbor_radius": 1,
+        "chunks_write": False,
+        "chunks_search": False,
+        "chunks_highlights": False,
     },
     "permanent": {
         "letta_url": "http://localhost:8283",

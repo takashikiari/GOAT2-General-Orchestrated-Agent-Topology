@@ -42,6 +42,24 @@ EPISODIC_COLLECTION_NAME: str = str(
     _episodic.get("collection_name", _DEFAULTS["episodic"]["collection_name"])
 )
 
+
+def _ep(key: str):
+    return _episodic.get(key, _DEFAULTS["episodic"][key])
+
+
+# Phase 1 (memory spec v4): chunked L3 in a separate store. chunks_write keeps it in sync with every
+# L3 write/enrichment/delete; chunks_search makes retrieval use it. Rollback = chunks_search = false.
+CHUNK_STORAGE_PATH: str = str(_ep("chunk_storage_path"))
+CHUNK_COLLECTION_NAME: str = str(_ep("chunk_collection_name"))
+CHUNK_TARGET_TOKENS: Final[int] = int(_ep("chunk_target_tokens"))
+CHUNK_OVERLAP_TOKENS: Final[int] = int(_ep("chunk_overlap_tokens"))
+CHUNK_NEIGHBOR_RADIUS: Final[int] = int(_ep("chunk_neighbor_radius"))
+CHUNKS_WRITE: Final[bool] = bool(_ep("chunks_write"))
+CHUNKS_SEARCH: Final[bool] = bool(_ep("chunks_search"))
+# highlights (chosen after the offline evaluation): candidates are still found on whole documents, each is
+# swapped for its closest chunk only for the rerank, then given the ±1 window. Needs the chunk store.
+CHUNKS_HIGHLIGHTS: Final[bool] = bool(_ep("chunks_highlights"))
+
 _permanent = _cfg.get("permanent", _DEFAULTS["permanent"])
 PERMANENT_LETTA_URL: str = str(
     _permanent.get("letta_url", _DEFAULTS["permanent"]["letta_url"])
@@ -170,6 +188,14 @@ __all__ = [
     "WORKING_TTL_SECONDS",
     "EPISODIC_STORAGE_PATH",
     "EPISODIC_COLLECTION_NAME",
+    "CHUNK_STORAGE_PATH",
+    "CHUNK_COLLECTION_NAME",
+    "CHUNK_TARGET_TOKENS",
+    "CHUNK_OVERLAP_TOKENS",
+    "CHUNK_NEIGHBOR_RADIUS",
+    "CHUNKS_WRITE",
+    "CHUNKS_SEARCH",
+    "CHUNKS_HIGHLIGHTS",
     "PERMANENT_LETTA_URL",
     "PERMANENT_AGENT_NAME",
     "PERMANENT_LETTA_MODEL",

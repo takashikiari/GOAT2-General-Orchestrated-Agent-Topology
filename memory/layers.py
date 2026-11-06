@@ -264,7 +264,16 @@ class MemoryLayers:
         """
         if self._reranker is None or not results:
             return results
-        return await self._reranker.rerank(query, results)
+        from memory.config import CHUNKS_HIGHLIGHTS, CHUNKS_SEARCH
+        ep = self._episodic
+        if CHUNKS_HIGHLIGHTS and not CHUNKS_SEARCH and ep is not None and hasattr(ep, "highlight"):
+            # highlights: same whole-document candidates, each scored on its closest chunk (no 512 padding).
+            results = await ep.highlight(query, results)
+        ranked = await self._reranker.rerank(query, results)
+        if (CHUNKS_SEARCH or CHUNKS_HIGHLIGHTS) and ep is not None and hasattr(ep, "expand_chunks"):
+            # Phase 1: give the prompt the ±1 window around the chunk the reranker scored.
+            ranked = await ep.expand_chunks(ranked)
+        return ranked
 
     async def extract_query_entities(self, query: str) -> dict:
         """Extract GLiNER entities from query; no-op fallback when extractor unavailable."""
