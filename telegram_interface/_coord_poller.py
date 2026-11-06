@@ -90,7 +90,8 @@ def format_digest(messages: list[dict]) -> str:
     # A concrete, always-answerable ask at the end (see the 2026-08-25 empty-reply finding).
     footer = ("\n\nRezumă-i pe scurt lui Laris ce e nou (1-3 propoziții) și ce ai răspuns pe canal, dacă ai "
               "răspuns. Dacă ai verificat ceva, spune ce ai găsit. Dacă nimic nu cere acțiune, spune asta — "
-              "nu lăsa fără răspuns.")
+              "nu lăsa fără răspuns. Laris citește pe Telegram, pe telefon: scrie scurt, paragrafe mici, "
+              "liste simple cu „-”, bold doar pe 1-2 cuvinte cheie, fără tabele și fără blocuri lungi de cod.")
     return header + "\n\n".join(_line(m) for m in messages) + footer
 
 
