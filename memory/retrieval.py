@@ -29,6 +29,19 @@ from memory.temporal_route import parse_interval
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
+
+
+async def _timed(times: dict, key: str, aw):
+    """Diagnostics only: record how long one awaitable took (ms) under `key`; result unchanged."""
+    t0 = time.perf_counter()
+    try:
+        return await aw
+    finally:
+        times[key] = round((time.perf_counter() - t0) * 1000)
+
+
+def _ms(t0: float) -> int:
+    return round((time.perf_counter() - t0) * 1000)
 _LIMIT = PREFETCH_MAX_RESULTS
 
 __all__ = ["retrieve", "temporal_candidates"]
@@ -58,18 +71,23 @@ async def retrieve(
 
 
 async def _drift(layers, chat_id, query, topic_id, activation=None):
+    times: dict = {}
+    t0 = time.perf_counter()
     s, g, b, ents = await asyncio.gather(
-        layers.search_episodic(query, limit=_LIMIT, topic_id=topic_id),
-        layers.search_episodic(query, limit=_LIMIT),
-        layers.bm25_search(query, limit=_LIMIT),
-        layers.extract_query_entities(query),
+        _timed(times, "dense_topic", layers.search_episodic(query, limit=_LIMIT, topic_id=topic_id)),
+        _timed(times, "dense_global", layers.search_episodic(query, limit=_LIMIT)),
+        _timed(times, "bm25", layers.bm25_search(query, limit=_LIMIT)),
+        _timed(times, "entities", layers.extract_query_entities(query)),
         return_exceptions=True,
     )
+    times["search"] = _ms(t0)
     entities_dict = ents if not isinstance(ents, BaseException) else {}
     labeled = [("semantic_topic_scoped", s), ("semantic_global", g)]
     groups = [(name, enforce_result_limit(p)) for name, p in labeled if not isinstance(p, BaseException)]
     bm25 = [] if isinstance(b, BaseException) else b
+    t1 = time.perf_counter()
     temporal = await temporal_candidates(layers, query)
+    times["temporal"] = _ms(t1)
     # Prediction: previous turn's pre-fetched context added as a candidate group.
     # CrossEncoder scores it against the new query — stays if still relevant,
     # gets ranked out if the topic has shifted.
@@ -80,13 +98,17 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
         + ([("bm25", bm25)] if bm25 else [])
         + ([("temporal", temporal)] if temporal else [])
     )
+    t1 = time.perf_counter()
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
+    times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
     merged = (await layers.rerank(query, merged))[:_LIMIT]
+    times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve drift chat=%s merged=%d temporal=%d prediction=%d",
         chat_id, len(merged), len(temporal), len(prediction),
     )
+    log.info("retrieve timing drift chat=%s n_rerank=%d ms=%s", chat_id, n_rerank, times)
     return merged, False, None, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
@@ -102,12 +124,15 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     if topic_return_id:
         labels.append("semantic_topic_return")
         coros.append(_topic_search(layers, query, topic_return_id))
+    times: dict = {}
+    t0 = time.perf_counter()
     all_res = await asyncio.gather(
-        *coros,
-        layers.bm25_search(query, limit=_LIMIT),
-        layers.extract_query_entities(query),
+        *[_timed(times, f"dense_{label}", c) for label, c in zip(labels, coros)],
+        _timed(times, "bm25", layers.bm25_search(query, limit=_LIMIT)),
+        _timed(times, "entities", layers.extract_query_entities(query)),
         return_exceptions=True,
     )
+    times["search"] = _ms(t0)
     # last two: bm25 result, entity dict
     entities_dict = all_res[-1] if not isinstance(all_res[-1], BaseException) else {}
     bm25 = [] if isinstance(all_res[-2], BaseException) else all_res[-2]
@@ -121,15 +146,20 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
         groups.append((label, r))
         if k is not None:
             cache_hit, cache_key = h, k
+    t1 = time.perf_counter()
     temporal = await temporal_candidates(layers, query)
+    times["temporal"], t1 = _ms(t1), time.perf_counter()
     all_groups = groups + ([("bm25", bm25)] if bm25 else []) + ([("temporal", temporal)] if temporal else [])
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
+    times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
     merged = (await layers.rerank(query, merged))[:_LIMIT]
+    times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve cold chat=%s merged=%d bm25=%d temporal=%d",
         chat_id, len(merged), len(bm25), len(temporal),
     )
+    log.info("retrieve timing cold chat=%s n_rerank=%d ms=%s", chat_id, n_rerank, times)
     ids = [
         r.get("metadata", {}).get("message_id")
         for r in merged if r.get("metadata", {}).get("message_id")
