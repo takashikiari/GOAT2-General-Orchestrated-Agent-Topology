@@ -22,6 +22,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Offline tools must never write into the live bot's /tmp/goat2/logs/goat2.log (their rerank/embedding lines
+# looked like production traffic). Set before any GOAT module configures logging.
+import os  # noqa: E402
+os.environ.setdefault("GOAT_LOG_DIR", str(Path(tempfile.gettempdir()) / "goat2-offline-logs"))
 
 from memory.config import CHUNK_COLLECTION_NAME, EPISODIC_COLLECTION_NAME  # noqa: E402
 from memory.context_assembler import blended_gap_filter, fit_search_results  # noqa: E402
