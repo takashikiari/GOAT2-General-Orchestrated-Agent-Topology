@@ -29,6 +29,7 @@ from config.admin_chat import load_admin_chat_id
 from memory.config import WORKING_STORAGE_URL
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
+from telegram_interface import tg_format
 from tools.memory_manager import build_memory_manager_tools
 from tools.identity_tool import build_set_identity_tool
 from tools.memory_promote import build_promote_memory_tool
@@ -45,13 +46,7 @@ from workflow.runner import WorkflowRunner
 
 log = get_logger(__name__)
 
-_MAX_TG_LEN = 4096  # Telegram's hard message-length limit — protocol constant, not tunable.
 _ERROR_REPLY = "Something went wrong, please try again."
-
-
-def _truncate(text: str) -> str:
-    """Truncate text to Telegram's 4096-character message limit."""
-    return text[:_MAX_TG_LEN] if len(text) > _MAX_TG_LEN else text
 
 
 def _current_version() -> str:
@@ -198,9 +193,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
             if reply:
                 try:
                     from telegram import Bot
-                    await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
-                        chat_id=int(chat_id), text=_truncate(reply)
-                    )
+                    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+                    await tg_format.send(
+                        lambda t, pm: bot.send_message(chat_id=int(chat_id), text=t, parse_mode=pm), reply)
                 except Exception as exc:
                     log.warning("dag completion send failed chat=%s: %s", chat_id, exc)
 
@@ -245,9 +240,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
             reply = synthetic
         try:
             from telegram import Bot
-            await Bot(token=settings.TELEGRAM_BOT_TOKEN).send_message(
-                chat_id=int(admin_chat_id), text=_truncate(reply)
-            )
+            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+            await tg_format.send(
+                lambda t, pm: bot.send_message(chat_id=int(admin_chat_id), text=t, parse_mode=pm), reply)
         except Exception as exc:
             log.warning("coord_poller send failed: %s", exc)
 
@@ -450,7 +445,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         if not reply or not reply.strip():
             log.warning("handle_message: empty reply reached telegram layer chat=%s", chat_id)
             reply = _ERROR_REPLY
-        await update.message.reply_text(_truncate(reply))
+        await tg_format.send(lambda t, pm: update.message.reply_text(t, parse_mode=pm), reply)
 
     # Coord poller is wired here, not in run_polling(), because its
     # on_messages callback (_on_coord_messages above) needs closure access

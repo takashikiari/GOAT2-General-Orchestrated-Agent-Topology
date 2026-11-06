@@ -4,6 +4,7 @@
 openai>=1.0.0          # AsyncOpenAI client; used for any OpenAI-compatible API
                        # (DeepSeek, etc.) — registry/registry.py
 python-telegram-bot>=21.0  # telegram_interface/bot.py
+markdown-it-py>=3.0     # telegram_interface/tg_format.py (Markdown -> Telegram HTML)
 python-dotenv>=1.0.0   # loads .env into os.environ at startup — config/settings.py
 
 # Memory backends
