@@ -61,8 +61,13 @@ def measure(blocks: list[str], reply: str) -> dict:
                      "head": re.sub(r"\s+", " ", entry)[:48]})
     injected = sum(r["tokens"] for r in rows)
     wasted = sum(r["tokens"] for r in rows if not r["used"])
+    # Rank = 1-based position in the injected L3 block. Non-temporal entries keep the reranker's
+    # score order (the block is a prefix of it); rescued temporal entries are placed first, so for
+    # turns with a date in the question the rank is approximate. Entries never injected have no rank.
+    used_ranks = [i + 1 for i, r in enumerate(rows) if r["used"]]
     return {"injected": len(rows), "used": sum(r["used"] for r in rows), "l3_tokens": injected,
-            "unused_tokens": wasted, "entries": rows}
+            "unused_tokens": wasted, "first_used_rank": used_ranks[0] if used_ranks else None,
+            "used_ranks": used_ranks, "entries": rows}
 
 
 def log_usage(chat_id: str, blocks: list[str] | None, reply: str) -> dict | None:
@@ -72,8 +77,10 @@ def log_usage(chat_id: str, blocks: list[str] | None, reply: str) -> dict | None
             return None
         m = measure(blocks, reply)
         log.info(
-            "l3_usage chat=%s approx=term-overlap injected=%d used=%d l3_tokens=%d unused_tokens=%d entries=%s",
-            chat_id, m["injected"], m["used"], m["l3_tokens"], m["unused_tokens"],
+            "l3_usage chat=%s approx=term-overlap injected=%d used=%d first_used_rank=%s used_ranks=%s "
+            "l3_tokens=%d unused_tokens=%d entries=%s",
+            chat_id, m["injected"], m["used"], m["first_used_rank"], m["used_ranks"],
+            m["l3_tokens"], m["unused_tokens"],
             [(r["tokens"], r["overlap"], r["used"], r["head"]) for r in m["entries"]],
         )
         return m

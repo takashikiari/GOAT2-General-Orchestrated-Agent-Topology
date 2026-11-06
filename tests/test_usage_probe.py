@@ -33,3 +33,12 @@ def test_log_line_is_marked_approximate(caplog):
 def test_never_raises_and_skips_without_blocks():
     assert up.log_usage("c1", None, "x") is None
     assert up.log_usage("c1", [None], "x") is None  # malformed input swallowed
+
+
+def test_rank_of_used_entries_is_position_in_block():
+    reply = "Serverul Letta rulează pe portul 8283, deci memoria permanentă e disponibilă."
+    m = up.measure(BLOCKS, reply)
+    assert m["first_used_rank"] == 1 and m["used_ranks"] == [1]
+    swapped = [BLOCKS[0], BLOCKS[1], up.L3_HEADER + "\n- [x] clătite cu banane\n- [y] Laris serverul Letta portul 8283 memoria permanentă"]
+    m2 = up.measure(swapped, reply)
+    assert m2["first_used_rank"] == 2 and m2["used_ranks"] == [2]
