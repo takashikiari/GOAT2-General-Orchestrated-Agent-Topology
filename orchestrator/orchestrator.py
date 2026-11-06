@@ -411,12 +411,16 @@ class Orchestrator:
                 gather_targets.append(l3_task)
             gathered = await asyncio.gather(*gather_targets)
             facts, identity_prompt, messages = gathered[:3]
+            l3_cache_hit, l3_cache_key, l3_mech = False, None, {}
             if l3_task is not None:
-                l3_results, _, _, _ = gathered[3]
+                l3_results, l3_cache_hit, l3_cache_key, l3_mech = gathered[3]
             served = bool(l3_results)
-            collector.set_cache(False, None)
+            # Report what retrieve() actually did (its search cache and mechanism counts) instead of
+            # constants — cache_hit read 0/104 here only because it was hard-coded False.
+            # specific_key stays 0 until a specific-key retrieval mechanism exists: none does today.
+            collector.set_cache(bool(l3_cache_hit), l3_cache_key)
             collector.set_prefetch(True, served, False, len(l3_results), 0)
-            collector.set_prefetch_mechanisms(warm_served, len(l3_results), 0)
+            collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
