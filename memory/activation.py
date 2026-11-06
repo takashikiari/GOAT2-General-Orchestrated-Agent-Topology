@@ -317,15 +317,29 @@ def classify_turn(query: str, activation: Activation | None, query_emb: list[flo
       a targeted single-mechanism refresh re-runs thematic against the new query.
     """
     if activation is None or query_emb is None or not activation.centroid:
-        return "cold"
-    drift = cosine(query_emb, activation.centroid)
-    if drift < ACTIVATION_DRIFT_COLD:
-        lex = lexical_overlap(query, activation.recent_queries)
-        if lex < ACTIVATION_LEXICAL_LOW:
-            return "cold"  # consensus shift — both signals dropped
-    if drift >= ACTIVATION_DRIFT_WARM:
-        return "warm"
-    return "drift"
+        state, drift, lex = "cold", None, None
+    else:
+        drift, lex = cosine(query_emb, activation.centroid), None
+        if drift < ACTIVATION_DRIFT_COLD:
+            lex = lexical_overlap(query, activation.recent_queries)
+        if drift < ACTIVATION_DRIFT_COLD and lex < ACTIVATION_LEXICAL_LOW:
+            state = "cold"  # consensus shift — both signals dropped
+        elif drift >= ACTIVATION_DRIFT_WARM:
+            state = "warm"
+        else:
+            state = "drift"
+    _log_turn(query, state, drift, lex)
+    return state
+
+
+def _log_turn(query: str, state: str, drift: float | None, lex: float | None) -> None:
+    """Diagnostics only: the measured cosine and whether the turn is a channel digest or a human message,
+    so warm/drift rates can be read separately per population (digests share one long header)."""
+    from memory.temporal_route import CHANNEL_DIGEST_PREFIX
+
+    kind = "digest" if (query or "").lstrip().startswith(CHANNEL_DIGEST_PREFIX) else "human"
+    log.info("turn_class state=%s kind=%s cosine=%s lex=%s",
+             state, kind, "-" if drift is None else f"{drift:.3f}", "-" if lex is None else f"{lex:.3f}")
 
 
 def classify_write(content_emb: list[float] | None, centroid: list[float] | None) -> str:
