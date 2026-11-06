@@ -29,6 +29,7 @@ from config.admin_chat import load_admin_chat_id
 from memory.config import WORKING_STORAGE_URL
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
+from memory import usage_probe
 from telegram_interface import tg_format
 from tools.memory_manager import build_memory_manager_tools
 from tools.identity_tool import build_set_identity_tool
@@ -186,7 +187,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         async with _chat_locks[chat_id]:
             log.info("dag_complete: lock acquired chat=%s dag=%s; running orchestrator", chat_id, dag_id)
             try:
-                reply = await orchestrator.run(synthetic, chat_id)
+                injected: list = []
+                reply = await orchestrator.run(synthetic, chat_id, on_context_assembled=injected.append)
+                usage_probe.log_usage(chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("dag completion orchestrator.run() failed chat=%s dag=%s", chat_id, dag_id)
                 return
@@ -224,7 +227,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         synthetic = format_digest(messages)
         async with _chat_locks[admin_chat_id]:
             try:
-                reply = await orchestrator.run(synthetic, admin_chat_id)
+                injected: list = []
+                reply = await orchestrator.run(synthetic, admin_chat_id, on_context_assembled=injected.append)
+                usage_probe.log_usage(admin_chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("coord_poller orchestrator.run() failed")
                 reply = ""
@@ -432,7 +437,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         log.info("chat=%s text=%r", chat_id, text[:80])
         async with _chat_locks[chat_id]:
             try:
-                reply = await orchestrator.run(text, chat_id)
+                injected: list = []
+                reply = await orchestrator.run(text, chat_id, on_context_assembled=injected.append)
+                usage_probe.log_usage(chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("orchestrator.run() failed for chat=%s", chat_id)
                 reply = _ERROR_REPLY
