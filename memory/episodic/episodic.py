@@ -25,6 +25,8 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
+CHUNK_CATCHUP_MAX = 300  # startup catch-up only fills small gaps; a full build is the build script's job
+
 
 class EpisodicMemory(EpisodicQueries):
     """Cross-session memory: semantic search + recency + bulk ops. Lazily connected.
@@ -73,16 +75,25 @@ class EpisodicMemory(EpisodicQueries):
             except Exception as exc:  # noqa: BLE001 - the chunk store must never block startup
                 log.warning("chunk store catch-up failed: %s", exc)
 
-    def _sync_missing_chunks(self) -> int:
-        """Chunk every parent the chunk store does not have yet (entries written before chunks_write)."""
+    def _sync_missing_chunks(self, limit: int | None = None) -> int:
+        """Chunk the parents the chunk store does not have yet (entries written after the build).
+
+        Bounded on purpose: this runs at startup under the write lock that search also takes, so a store
+        that was never built (thousands of parents ≈ minutes of embedding) must NOT be built here — that is
+        scripts/build_chunk_store.py's job. Over ``limit`` missing parents it does nothing and says so.
+        """
+        limit = CHUNK_CATCHUP_MAX if limit is None else limit
         have = self._chunks.parent_ids_sync()
         r = self._get_collection().get(include=["documents", "metadatas"])
-        added = 0
-        for doc_id, doc, meta in zip(r.get("ids") or [], r.get("documents") or [], r.get("metadatas") or []):
-            if doc_id not in have:
-                self._chunks.add_sync(doc_id, doc or "", meta or {})
-                added += 1
-        return added
+        missing = [(i, d, m) for i, d, m in zip(r.get("ids") or [], r.get("documents") or [], r.get("metadatas") or [])
+                   if i not in have]
+        if len(missing) > limit:
+            log.warning("chunk store: %d parents missing (> %d) — not building at startup; run "
+                        "scripts/build_chunk_store.py first", len(missing), limit)
+            return 0
+        for doc_id, doc, meta in missing:
+            self._chunks.add_sync(doc_id, doc or "", meta or {})
+        return len(missing)
 
     async def store(self, chat_id: str, content: str, metadata: dict, doc_id: str | None = None) -> str:
         """Store content + metadata under the write lock; returns the doc_id used.

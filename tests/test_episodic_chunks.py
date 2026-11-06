@@ -204,3 +204,12 @@ def test_layers_rerank_highlights_then_expands(monkeypatch):
     monkeypatch.setattr(cfg, "CHUNKS_HIGHLIGHTS", False)
     asyncio.run(layers.rerank("q", [{"content": "doc"}]))
     assert calls == [("rerank", ["doc"])]
+
+
+def test_startup_catch_up_never_builds_a_whole_store(mem, monkeypatch):
+    """chunks_write on an unbuilt store must not embed thousands of parents under the search lock."""
+    monkeypatch.setattr(ep_mod, "CHUNKS_WRITE", False)
+    for i in range(5):
+        asyncio.run(mem.store("c", f"intrare numărul {i} despre Letta", {"timestamp": float(i)}))
+    assert mem._sync_missing_chunks(limit=3) == 0 and mem._chunks.parent_ids_sync() == set()
+    assert mem._sync_missing_chunks(limit=10) == 5
