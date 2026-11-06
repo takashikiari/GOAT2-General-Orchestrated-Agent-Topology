@@ -8,6 +8,17 @@ max_messages = 20
 [episodic]
 storage_path = "./chroma_data"
 collection_name = "episodic_memory"
+# Phase 1 (memory spec v4): chunked L3 in a SEPARATE store; the collection above stays the source of truth.
+# chunks_write: also write/enrich/delete chunks for every L3 entry (build the store first with
+#   scripts/build_chunk_store.py). chunks_search: retrieval uses chunks + ±chunk_neighbor_radius window.
+# Rollback = chunks_search = false (one line, takes effect on restart).
+chunk_storage_path = "./chroma_chunks"
+chunk_collection_name = "episodic_chunks"
+chunk_target_tokens = 220
+chunk_overlap_tokens = 40
+chunk_neighbor_radius = 1
+chunks_write = false
+chunks_search = false
 
 [permanent]
 letta_url = "http://localhost:8283"

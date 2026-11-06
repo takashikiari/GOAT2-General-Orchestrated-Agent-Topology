@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from memory.config import EPISODIC_COLLECTION_NAME, EPISODIC_STORAGE_PATH
+from memory.config import (
+    CHUNK_NEIGHBOR_RADIUS, CHUNKS_SEARCH, CHUNKS_WRITE, EPISODIC_COLLECTION_NAME, EPISODIC_STORAGE_PATH,
+)
+from memory.episodic.chunks import ChunkStore, window_text
 from memory.episodic.queries import EpisodicQueries
 from memory.episodic.warmup import warmup_collection
 from utils.logging.setup import get_logger
@@ -29,11 +32,18 @@ class EpisodicMemory(EpisodicQueries):
     collection lifecycle, warmup, store, and semantic search.
     """
 
-    def __init__(self, storage_path: str | None = None) -> None:
+    def __init__(self, storage_path: str | None = None, chunks: ChunkStore | None = None) -> None:
         """``storage_path`` overrides the configured live path (e.g. benchmark isolation)."""
         self._storage_path = storage_path or EPISODIC_STORAGE_PATH
         self._collection = None
         self._write_lock = asyncio.Lock()
+        # Phase 1: chunk store kept in sync (chunks_write) and/or searched (chunks_search). Shares the lock.
+        if chunks is not None:
+            self._chunks = chunks
+        elif (CHUNKS_WRITE or CHUNKS_SEARCH) and storage_path is None:  # never for benchmark/isolated stores
+            self._chunks = ChunkStore(lock=self._write_lock)
+        else:
+            self._chunks = None
 
     def _get_collection(self):
         if self._collection is None:
@@ -53,6 +63,25 @@ class EpisodicMemory(EpisodicQueries):
     async def warmup(self) -> None:
         """Pre-warm the collection at startup (delegates to ``episodic.warmup``)."""
         await warmup_collection(self._get_collection)
+        if self._chunks is not None and CHUNKS_WRITE:
+            try:
+                async with self._write_lock:
+                    added = await asyncio.to_thread(self._sync_missing_chunks)
+                if added:
+                    log.info("chunk store: caught up %d parent entr(ies)", added)
+            except Exception as exc:  # noqa: BLE001 - the chunk store must never block startup
+                log.warning("chunk store catch-up failed: %s", exc)
+
+    def _sync_missing_chunks(self) -> int:
+        """Chunk every parent the chunk store does not have yet (entries written before chunks_write)."""
+        have = self._chunks.parent_ids_sync()
+        r = self._get_collection().get(include=["documents", "metadatas"])
+        added = 0
+        for doc_id, doc, meta in zip(r.get("ids") or [], r.get("documents") or [], r.get("metadatas") or []):
+            if doc_id not in have:
+                self._chunks.add_sync(doc_id, doc or "", meta or {})
+                added += 1
+        return added
 
     async def store(self, chat_id: str, content: str, metadata: dict, doc_id: str | None = None) -> str:
         """Store content + metadata under the write lock; returns the doc_id used.
@@ -71,6 +100,11 @@ class EpisodicMemory(EpisodicQueries):
             merged["message_id"] = doc_id
             merged["sequence_number"] = col.count() + 1
             col.add(ids=[doc_id], documents=[content], metadatas=[merged])
+            if self._chunks is not None and CHUNKS_WRITE:
+                try:
+                    self._chunks.add_sync(doc_id, content, merged)
+                except Exception as exc:  # noqa: BLE001 - the source collection already has the entry
+                    log.warning("chunk store write failed doc_id=%s: %s (catch-up fixes it on restart)", doc_id, exc)
 
         async with self._write_lock:
             await asyncio.to_thread(_sync)
@@ -116,8 +150,9 @@ class EpisodicMemory(EpisodicQueries):
         # Hold _write_lock during query: prevents the HNSW/metadata desync
         # ("Error finding id") that occurs when col.add() runs concurrently with
         # col.query() — hnswlib is not read/write thread-safe.
+        query_fn = self._chunks.query_sync if (self._chunks is not None and CHUNKS_SEARCH) else self._get_collection().query
         async with self._write_lock:
-            results = await asyncio.to_thread(self._get_collection().query, **kw)
+            results = await asyncio.to_thread(query_fn, **kw)
         docs = results["documents"][0]
         metas = results["metadatas"][0]
         dists = results.get("distances", [[]])[0]
@@ -150,3 +185,19 @@ class EpisodicMemory(EpisodicQueries):
         except Exception as exc:  # noqa: BLE001
             log.warning("embed_query failed, degrading to cold turn: %s", exc)
             return None
+
+    async def expand_chunks(self, results: list[dict], radius: int = CHUNK_NEIGHBOR_RADIUS) -> list[dict]:
+        """Replace each chunk result by its ±radius window rebuilt from the parent text (no-op otherwise)."""
+        parents = [(r.get("metadata") or {}).get("parent_id") for r in results]
+        ids = sorted({p for p in parents if p})
+        if not ids:
+            return results
+        got = await asyncio.to_thread(self._get_collection().get, ids=ids, include=["documents"])
+        text = dict(zip(got.get("ids") or [], got.get("documents") or []))
+        out = []
+        for r, pid in zip(results, parents):
+            if pid and pid in text:
+                meta = dict(r.get("metadata") or {}, chunk_expanded=True)
+                r = dict(r, content=window_text(text[pid], meta.get("chunk_index", 0), radius), metadata=meta)
+            out.append(r)
+        return out

@@ -156,6 +156,9 @@ class EpisodicQueries:
             return
         async with self._write_lock:
             await asyncio.to_thread(self._get_collection().delete, ids=entry_ids)
+            chunks = getattr(self, "_chunks", None)
+            if chunks is not None:
+                await asyncio.to_thread(chunks.delete_sync, entry_ids)
         log.debug("EpisodicMemory: deleted %d entries", len(entry_ids))
 
     async def get_all_for_index(self) -> list[dict]:
@@ -165,6 +168,10 @@ class EpisodicQueries:
         For collections > 100K docs this would be slow, but GOAT's episodic
         store is conversational-scale (thousands of entries) so it is acceptable.
         """
+        chunks = getattr(self, "_chunks", None)
+        from memory.config import CHUNKS_SEARCH
+        if chunks is not None and CHUNKS_SEARCH:  # Phase 1: BM25 indexes the same units the vectors search
+            return await asyncio.to_thread(chunks.all_for_index_sync)
         results = await asyncio.to_thread(
             self._get_collection().get,
             include=["documents", "metadatas"],
@@ -193,6 +200,9 @@ class EpisodicQueries:
             existing = dict((r.get("metadatas") or [{}])[0] or {})
             existing.update(updates)
             col.update(ids=[doc_id], metadatas=[existing])
+            chunks = getattr(self, "_chunks", None)
+            if chunks is not None:
+                chunks.update_sync(doc_id, updates)  # enrichment (entities, topic …) reaches the chunks too
 
         try:
             async with self._write_lock:
