@@ -58,3 +58,21 @@ def test_tier_hits_single_label_counter_still_populated_for_benchmark_compat():
     analytics = MemoryAnalytics()
     analytics.record(_obs(["episodic", "permanent", "working"], source_tier="episodic"))
     assert analytics.tier_hits == {"episodic": 1}
+
+
+def test_cache_lookups_counted_only_when_a_key_was_looked_up():
+    a = MemoryAnalytics()
+    warm = _obs(["working"])                       # warm/drift turn: no cache lookup, no key
+    cold_miss = _obs(["episodic"]); cold_miss.cache_key = "search:aaa"
+    cold_hit = _obs(["episodic"]); cold_hit.cache_key = "search:bbb"; cold_hit.cache_hit = True; cold_hit.cache_miss = False
+    for o in (warm, warm, cold_miss, cold_hit):
+        a.record(o)
+    r = a.get_report()
+    assert r["cache_lookups"] == 2 and r["cache_lookup_rate"] == 0.5
+    assert r["cache_hit_rate"] == 0.25 and r["cache_hit_rate_on_lookups"] == 0.5
+
+
+def test_no_lookups_reports_none_not_zero():
+    a = MemoryAnalytics()
+    a.record(_obs(["working"]))
+    assert a.get_report()["cache_hit_rate_on_lookups"] is None

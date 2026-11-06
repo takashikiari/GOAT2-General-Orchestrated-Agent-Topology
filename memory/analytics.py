@@ -34,6 +34,7 @@ class MemoryAnalytics:
         self.total_prefetch_successes = 0
         self.total_prefetch_timeouts = 0
         self.cache_hits = 0
+        self.cache_lookups = 0  # turns whose retrieve() actually consulted the search cache (cold turns)
         self.cache_misses = 0
         self.tier_hits: defaultdict[str, int] = defaultdict(int)
         # Multi-label: how many turns had EACH tier present, not just the
@@ -82,6 +83,8 @@ class MemoryAnalytics:
                 self.total_prefetch_successes += 1
             if obs.prefetch_timeout:
                 self.total_prefetch_timeouts += 1
+        if obs.cache_key:  # a key is reported only when the cache was really looked up
+            self.cache_lookups += 1
         if obs.cache_hit:
             self.cache_hits += 1
         if obs.cache_miss:
@@ -138,6 +141,12 @@ class MemoryAnalytics:
         return {
             "total_requests": self.total_requests,
             "cache_hit_rate": self.cache_hits / n,
+            # cache_hit_rate is over ALL turns; only cold turns consult the cache, so read the hit rate
+            # against the lookups actually performed — 0.0 on few lookups means "rarely consulted",
+            # not a broken cache.
+            "cache_lookups": self.cache_lookups,
+            "cache_lookup_rate": self.cache_lookups / n,
+            "cache_hit_rate_on_lookups": self.cache_hits / self.cache_lookups if self.cache_lookups else None,
             "cache_miss_rate": self.cache_misses / n,
             "prefetch_attempt_rate": self.total_prefetch_attempts / n,
             "prefetch_success_rate": self.total_prefetch_successes / attempts,
