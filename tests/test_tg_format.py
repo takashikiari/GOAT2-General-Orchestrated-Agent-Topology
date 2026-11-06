@@ -81,3 +81,8 @@ def test_send_uses_html_then_falls_back_to_plain_on_rejection():
 def test_empty_and_plain_text():
     assert f.to_chunks("") == [""]
     assert f.to_chunks("salut, totul e ok") == ["salut, totul e ok"]
+
+
+def test_markdown_it_is_quiet_in_the_log_file():
+    from utils.logging import setup
+    assert "markdown_it" in setup._QUIET_LIBS

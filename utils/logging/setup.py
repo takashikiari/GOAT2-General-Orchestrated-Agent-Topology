@@ -29,7 +29,7 @@ _LOG_BACKUP_COUNT = int(os.environ.get("GOAT_LOG_BACKUP_COUNT", "5"))
 LOG_FILE: Path = _LOG_FILE
 _FMT = "%(asctime)s  %(name)-35s  %(levelname)-8s  %(message)s"
 _DATE_FMT = "%Y-%m-%dT%H:%M:%S"
-_QUIET_LIBS = ("httpx", "httpcore", "openai", "hpack", "h2", "asyncio")
+_QUIET_LIBS = ("httpx", "httpcore", "openai", "hpack", "h2", "asyncio", "markdown_it")
 _root_configured = False
 
 

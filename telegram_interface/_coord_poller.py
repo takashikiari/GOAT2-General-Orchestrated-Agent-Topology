@@ -35,7 +35,8 @@ OnMessages = Callable[[list[dict]], Awaitable[None]]
 
 _TIMEOUT = 15
 _BATCH = 20          # at most this many messages per GOAT turn; the rest come next interval
-_TEXT_MAX = 1500
+_TEXT_MAX = 4000     # per message in the digest (reports from sessions run ~1-3k chars)
+_DIGEST_MAX = 12000  # per GOAT turn: messages beyond this wait (unacked) for the next interval
 
 
 def _cli(*args: str) -> tuple[int, str, str]:
@@ -61,6 +62,14 @@ def _fetch(me: str) -> tuple[list[dict], str | None] | None:
     if len(msgs) > _BATCH:
         msgs = msgs[:_BATCH]
         last = msgs[-1]["id"]
+    total, kept = 0, []
+    for m in msgs:
+        total += min(len(str(m.get("text") or "")), _TEXT_MAX) + 120
+        if kept and total > _DIGEST_MAX:
+            break
+        kept.append(m)
+    if len(kept) < len(msgs):
+        msgs, last = kept, kept[-1]["id"]
     return msgs, last
 
 

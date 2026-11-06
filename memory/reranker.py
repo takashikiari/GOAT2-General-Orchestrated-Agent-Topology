@@ -13,11 +13,24 @@ from __future__ import annotations
 
 import asyncio
 import math
+import statistics
+import time
 
 from memory.config import RERANKER_MODEL, RERANKER_TOP_K
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
+
+
+def _log_lengths(model, pairs, seconds: float) -> None:
+    """Diagnostics only: how many candidates the cross-encoder scored, their token lengths, and the cost."""
+    try:
+        lens = sorted(len(model.tokenizer(doc, add_special_tokens=False)["input_ids"]) for _, doc in pairs)
+        p90 = lens[min(len(lens) - 1, int(0.9 * len(lens)))]
+        log.info("rerank n=%d tokens min=%d median=%d p90=%d max=%d ms=%d",
+                 len(lens), lens[0], int(statistics.median(lens)), p90, lens[-1], round(seconds * 1000))
+    except Exception:  # noqa: BLE001 - logging must never break reranking
+        log.debug("rerank length logging failed", exc_info=True)
 
 
 class CrossEncoderReranker:
@@ -74,7 +87,9 @@ class CrossEncoderReranker:
         def _predict() -> list[float]:
             return model.predict(pairs).tolist()
 
+        t0 = time.perf_counter()
         raw_scores: list[float] = await asyncio.to_thread(_predict)
+        _log_lengths(model, pairs, time.perf_counter() - t0)
         out: list[dict] = []
         for r, raw in zip(candidates, raw_scores):
             r = dict(r)
