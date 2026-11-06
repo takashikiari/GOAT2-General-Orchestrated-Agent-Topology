@@ -56,6 +56,7 @@ async def main_async(a) -> int:
             seeds_plain = [r["metadata"].get("message_id") for r in plain]
             seeds_kept = [r["metadata"].get("message_id") for r in kept if "wave2" not in r.get("mechanisms", [])]
             res.append({"added": len(extra), "kept_nb": sum("wave2" in r.get("mechanisms", []) for r in kept[:u1]),
+                        "n0": u0, "n1": u1,
                         "tok0": estimate_tokens(b0), "tok1": estimate_tokens(b1), "ms": ms,
                         "same_seeds": seeds_plain == seeds_kept})
         n = len(res)
@@ -68,6 +69,10 @@ async def main_async(a) -> int:
               f"(p90 {sorted(r['tok1'] for r in res)[int(0.9 * (n - 1))]})")
         print(f"  wave-2 lookup time median {st.median(r['ms'] for r in res):.0f} ms (p90 {sorted(r['ms'] for r in res)[int(0.9 * (n - 1))]:.0f})")
         print(f"  seed selection unchanged: {sum(r['same_seeds'] for r in res)}/{n}")
+        tot = lambda k: sum(r[k] for r in res)
+        print(f"  entries injected per query: mean {tot('n0')/n:.2f} → {tot('n1')/n:.2f}, "
+              f"median {st.median(r['n0'] for r in res):.0f} → {st.median(r['n1'] for r in res):.0f}")
+        print(f"  L3 tokens per query: mean {tot('tok0')/n:.0f} → {tot('tok1')/n:.0f}")
     return 0
 
 
