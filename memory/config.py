@@ -56,6 +56,9 @@ CHUNK_OVERLAP_TOKENS: Final[int] = int(_ep("chunk_overlap_tokens"))
 CHUNK_NEIGHBOR_RADIUS: Final[int] = int(_ep("chunk_neighbor_radius"))
 CHUNKS_WRITE: Final[bool] = bool(_ep("chunks_write"))
 CHUNKS_SEARCH: Final[bool] = bool(_ep("chunks_search"))
+# highlights (chosen after the offline evaluation): candidates are still found on whole documents, each is
+# swapped for its closest chunk only for the rerank, then given the ±1 window. Needs the chunk store.
+CHUNKS_HIGHLIGHTS: Final[bool] = bool(_ep("chunks_highlights"))
 
 _permanent = _cfg.get("permanent", _DEFAULTS["permanent"])
 PERMANENT_LETTA_URL: str = str(
@@ -192,6 +195,7 @@ __all__ = [
     "CHUNK_NEIGHBOR_RADIUS",
     "CHUNKS_WRITE",
     "CHUNKS_SEARCH",
+    "CHUNKS_HIGHLIGHTS",
     "PERMANENT_LETTA_URL",
     "PERMANENT_AGENT_NAME",
     "PERMANENT_LETTA_MODEL",

@@ -21,6 +21,7 @@ _DEFAULTS: dict = {
         "chunk_neighbor_radius": 1,
         "chunks_write": False,
         "chunks_search": False,
+        "chunks_highlights": False,
     },
     "permanent": {
         "letta_url": "http://localhost:8283",

@@ -19,6 +19,10 @@ chunk_overlap_tokens = 40
 chunk_neighbor_radius = 1
 chunks_write = false
 chunks_search = false
+# chunks_highlights (recommended mode): keep finding candidates on whole documents (today's selection), swap
+# each for its closest chunk for the rerank only (2.8x faster offline, selection >= today), then ±1 window.
+# Needs chunks_write = true (and a built store). Leave chunks_search = false when using it.
+chunks_highlights = false
 
 [permanent]
 letta_url = "http://localhost:8283"

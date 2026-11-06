@@ -75,7 +75,7 @@ async def run_variant(rr, q, cands, tok, expand=None):
     block, used = fit_search_results(kept, L3_BUDGET)
     from memory.budget import estimate_tokens
     return {"ms": ms, "pad": min(pairs_max, 512), "tokens": estimate_tokens(block), "used": used,
-            "parents": parents(kept[:used])}
+            "parents": parents(kept[:used]), "kept": kept}
 
 
 async def main_async(a) -> int:
@@ -87,6 +87,11 @@ async def main_async(a) -> int:
         main_col = src.get_collection(EPISODIC_COLLECTION_NAME)
         ch_client = chromadb.PersistentClient(path=a.chunks, settings=Settings(anonymized_telemetry=False))
         ch_col = ch_client.get_collection(CHUNK_COLLECTION_NAME)
+        from memory.episodic.chunks import ChunkStore
+        from memory.episodic.episodic import EpisodicMemory
+        mem = EpisodicMemory(storage_path=str(Path(tmp) / "src"),
+                             chunks=ChunkStore(path=a.chunks, collection=CHUNK_COLLECTION_NAME))
+        hl_ms = []
         rr = CrossEncoderReranker()
         rr._load_and_prime()
         tok = rr._get_model().tokenizer
@@ -105,23 +110,25 @@ async def main_async(a) -> int:
             cands = cands[:20]
 
             def expand(kept):
-                ids = sorted({r["metadata"]["parent_id"] for r in kept})
+                # whole-document candidates (no chunk found for them) have no parent_id and stay as they are
+                ids = sorted({r["metadata"]["parent_id"] for r in kept if r["metadata"].get("parent_id")})
                 got = main_col.get(ids=ids, include=["documents"]) if ids else {"ids": [], "documents": []}
                 text = dict(zip(got["ids"], got["documents"]))
                 return [dict(r, content=window_text(text.get(r["metadata"]["parent_id"], r["content"]),
-                                                    r["metadata"].get("chunk_index", 0))) for r in kept]
+                                                    r["metadata"].get("chunk_index", 0)))
+                        if r["metadata"].get("parent_id") else r for r in kept]
             after = await run_variant(rr, q, cands, tok, expand=expand)
-            # highlights: SAME candidates as before (whole documents), each replaced by its closest chunk
+            # highlights through the REAL code path: EpisodicMemory.highlight before the rerank and
+            # EpisodicMemory.expand_chunks after it (same as MemoryLayers.rerank in chunks_highlights mode)
             base = as_of(ts, rows(main_col.query(query_texts=[q], n_results=60)))[:20]
-            pids = [(r["metadata"] or {}).get("message_id") for r in base if (r["metadata"] or {}).get("message_id")]
-            best = {}
-            if pids:
-                hits = rows(ch_col.query(query_texts=[q], n_results=min(200, 8 * len(pids)),
-                                         where={"parent_id": {"$in": pids}}))
-                for r in hits:  # nearest chunk first
-                    best.setdefault(r["metadata"]["parent_id"], r)
-            h_cands = [best.get((r["metadata"] or {}).get("message_id"), r) for r in base]
-            hl = await run_variant(rr, q, h_cands, tok, expand=expand)
+            t0 = time.perf_counter()
+            h_cands = await mem.highlight(q, base)
+            hl_ms.append((time.perf_counter() - t0) * 1000)
+            hl = await run_variant(rr, q, h_cands, tok)  # rerank + gap filter on the chunks; expansion below
+            hl["used_expanded"] = await mem.expand_chunks(hl.pop("kept"))
+            from memory.budget import estimate_tokens as _et
+            block, used = fit_search_results(hl["used_expanded"], L3_BUDGET)
+            hl.update(tokens=_et(block), used=used, parents=parents(hl["used_expanded"][:used]))
             stats["before"].append(before)
             stats["after"].append(after)
             stats["highlights"].append(hl)
@@ -144,6 +151,8 @@ async def main_async(a) -> int:
                   f"entries median {med('used', v):.0f}")
         print(f"  chunks     vs before: top-1 same parent {agree1}/{n} ({agree1*100//max(1,n)}%) · top-3 overlap {overlap3/max(1,n)*100:.0f}%")
         print(f"  highlights vs before: top-1 same parent {h_agree1}/{n} ({h_agree1*100//max(1,n)}%) · top-3 overlap {h_overlap3/max(1,n)*100:.0f}%")
+        print(f"  highlights chunk lookup (extra step before rerank): median {st.median(hl_ms):.0f} ms, "
+              f"p90 {sorted(hl_ms)[int(0.9 * (len(hl_ms) - 1))]:.0f} ms")
         print(f"  highlights picked another top-1 for {len(h_diff)} queries (judge these by hand):")
         for q in h_diff[:10]:
             print("    -", " ".join(q.split())[:110])

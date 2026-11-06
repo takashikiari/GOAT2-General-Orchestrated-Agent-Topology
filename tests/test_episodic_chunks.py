@@ -45,9 +45,16 @@ def test_spans_cover_text_with_bounded_size_and_overlap():
     assert len(spans) > 5
 
 
-def test_short_and_empty_text_is_one_chunk():
+def test_short_text_is_one_chunk():
     assert chunk_spans("salut Laris") == [(0, 2)]
     assert chunk_spans("") == [(0, 0)]
+
+
+@pytest.mark.parametrize("content", [None, "", "   \n\t "])
+def test_empty_parent_gives_no_chunks(content):
+    """Regression for the highlights evaluation (Q2): a parent with None/blank content produced an empty
+    chunk that won the rerank on a short query."""
+    assert chunk_records("doc-empty", content, {"timestamp": 1.0}) == []
 
 
 def test_records_inherit_parent_metadata():
@@ -139,3 +146,61 @@ def test_layers_rerank_expands_only_in_chunk_search_mode(monkeypatch):
     assert [r["content"] for r in asyncio.run(layers.rerank("q", res))] == ["b", "a"]
     monkeypatch.setattr(cfg, "CHUNKS_SEARCH", True)
     assert [r["content"] for r in asyncio.run(layers.rerank("q", res))] == ["b +ctx", "a +ctx"]
+
+
+def test_store_skips_empty_parents_and_purges_old_empty_chunks(tmp_path):
+    store = ChunkStore(path=str(tmp_path / "c"), embedding_function=_EF())
+    assert store.add_sync("empty", None, {}) == 0 and store.add_sync("blank", "  ", {}) == 0
+    assert store.collection().count() == 0
+    store.collection().add(ids=["old#0"], documents=[""], metadatas=[{"parent_id": "old"}])
+    store.add_sync("ok", "un text real despre Letta", {})
+    assert store.purge_empty_sync() == 1 and store.collection().get()["ids"] == ["ok#0"]
+
+
+def test_highlight_swaps_each_candidate_for_its_closest_chunk(mem):
+    doc = asyncio.run(mem.store("c", TEXT, {"timestamp": 1.0}))
+    lone = {"content": "fără chunk", "metadata": {"message_id": "absent"}}
+    cand = [{"content": TEXT, "metadata": {"message_id": doc, "timestamp": 1.0}, "score": 0.3}, lone]
+    out = asyncio.run(mem.highlight("cuvant7 memoria", cand))
+    assert out[0]["metadata"]["parent_id"] == doc and estimate_tokens(out[0]["content"]) <= 300
+    assert out[0]["content"] in TEXT and out[0]["metadata"]["timestamp"] == 1.0  # parent metadata kept
+    assert out[1] == lone  # no chunk → today's behaviour for that candidate
+
+
+def test_highlight_degrades_to_whole_documents_on_store_error(mem, monkeypatch):
+    def boom(**kw):
+        raise RuntimeError("store down")
+    monkeypatch.setattr(mem._chunks, "query_sync", boom)
+    cand = [{"content": TEXT, "metadata": {"message_id": "x"}}]
+    assert asyncio.run(mem.highlight("q", cand)) == cand
+
+
+def test_layers_rerank_highlights_then_expands(monkeypatch):
+    import memory.config as cfg
+    from memory.layers import MemoryLayers
+    calls = []
+
+    class _R:
+        async def rerank(self, q, results):
+            calls.append(("rerank", [r["content"] for r in results]))
+            return results
+
+    class _E:
+        async def highlight(self, q, results):
+            calls.append(("highlight",))
+            return [dict(r, content=r["content"] + "-chunk") for r in results]
+
+        async def expand_chunks(self, results):
+            calls.append(("expand",))
+            return results
+
+    layers = object.__new__(MemoryLayers)
+    layers._reranker, layers._episodic = _R(), _E()
+    monkeypatch.setattr(cfg, "CHUNKS_SEARCH", False)
+    monkeypatch.setattr(cfg, "CHUNKS_HIGHLIGHTS", True)
+    asyncio.run(layers.rerank("q", [{"content": "doc"}]))
+    assert calls == [("highlight",), ("rerank", ["doc-chunk"]), ("expand",)]
+    calls.clear()
+    monkeypatch.setattr(cfg, "CHUNKS_HIGHLIGHTS", False)
+    asyncio.run(layers.rerank("q", [{"content": "doc"}]))
+    assert calls == [("rerank", ["doc"])]

@@ -15,7 +15,8 @@ import asyncio
 import uuid
 
 from memory.config import (
-    CHUNK_NEIGHBOR_RADIUS, CHUNKS_SEARCH, CHUNKS_WRITE, EPISODIC_COLLECTION_NAME, EPISODIC_STORAGE_PATH,
+    CHUNK_NEIGHBOR_RADIUS, CHUNKS_HIGHLIGHTS, CHUNKS_SEARCH, CHUNKS_WRITE, EPISODIC_COLLECTION_NAME,
+    EPISODIC_STORAGE_PATH,
 )
 from memory.episodic.chunks import ChunkStore, window_text
 from memory.episodic.queries import EpisodicQueries
@@ -40,7 +41,7 @@ class EpisodicMemory(EpisodicQueries):
         # Phase 1: chunk store kept in sync (chunks_write) and/or searched (chunks_search). Shares the lock.
         if chunks is not None:
             self._chunks = chunks
-        elif (CHUNKS_WRITE or CHUNKS_SEARCH) and storage_path is None:  # never for benchmark/isolated stores
+        elif (CHUNKS_WRITE or CHUNKS_SEARCH or CHUNKS_HIGHLIGHTS) and storage_path is None:  # never for benchmark/isolated stores
             self._chunks = ChunkStore(lock=self._write_lock)
         else:
             self._chunks = None
@@ -199,5 +200,34 @@ class EpisodicMemory(EpisodicQueries):
             if pid and pid in text:
                 meta = dict(r.get("metadata") or {}, chunk_expanded=True)
                 r = dict(r, content=window_text(text[pid], meta.get("chunk_index", 0), radius), metadata=meta)
+            out.append(r)
+        return out
+
+    async def highlight(self, query: str, results: list[dict]) -> list[dict]:
+        """Swap each whole-document candidate for its closest chunk (rerank input only); a candidate with no
+        chunk in the store is kept as it is, so a missing or partial store degrades to today's behaviour."""
+        if self._chunks is None or not results:
+            return results
+        pids = [(r.get("metadata") or {}).get("message_id") for r in results]
+        wanted = sorted({p for p in pids if p})
+        if not wanted:
+            return results
+        kw = {"query_texts": [query], "n_results": min(200, 8 * len(wanted)), "where": {"parent_id": {"$in": wanted}}}
+        try:
+            async with self._write_lock:
+                got = await asyncio.to_thread(self._chunks.query_sync, **kw)
+        except Exception as exc:  # noqa: BLE001 - highlights must never cost the retrieval
+            log.warning("highlights: chunk query failed (%s), reranking whole documents", exc)
+            return results
+        best: dict = {}
+        for doc, meta in zip(got["documents"][0], got["metadatas"][0]):  # nearest first
+            if doc and doc.strip() and meta.get("parent_id") not in best:
+                best[meta["parent_id"]] = (doc, meta)
+        out = []
+        for r, pid in zip(results, pids):
+            if pid in best:
+                doc, meta = best[pid]
+                r = dict(r, content=doc, metadata=dict(r.get("metadata") or {},
+                                                       parent_id=pid, chunk_index=meta.get("chunk_index", 0)))
             out.append(r)
         return out

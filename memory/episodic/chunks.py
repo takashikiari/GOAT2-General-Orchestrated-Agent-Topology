@@ -55,15 +55,22 @@ def chunk_spans(text: str, target: int = CHUNK_TARGET_TOKENS, overlap: int = CHU
 
 
 def chunk_records(doc_id: str, content: str, meta: dict) -> list[tuple[str, str, dict]]:
-    """(chunk_id, text, metadata) for every chunk of one parent entry."""
+    """(chunk_id, text, metadata) for every chunk of one parent entry; [] for a parent with no text.
+
+    An empty chunk would still get an embedding and win on short queries with nothing to say (seen in the
+    highlights evaluation, Q2), so parents whose content is None or blank are never chunked."""
     words = (content or "").split()
+    if not words:
+        return []
     spans = chunk_spans(content)
     base = {k: v for k, v in (meta or {}).items() if isinstance(v, _SCALARS)}
     base["message_id"] = base.get("message_id") or doc_id
     out = []
     for i, (a, b) in enumerate(spans):
         m = dict(base, parent_id=doc_id, chunk_index=i, n_chunks=len(spans))
-        out.append((f"{doc_id}#{i}", " ".join(words[a:b]) if words else "", m))
+        text = " ".join(words[a:b])
+        if text.strip():
+            out.append((f"{doc_id}#{i}", text, m))
     return out
 
 
@@ -99,6 +106,8 @@ class ChunkStore:
 
     def add_sync(self, doc_id: str, content: str, meta: dict) -> int:
         recs = chunk_records(doc_id, content, meta)
+        if not recs:
+            return 0
         self.collection().upsert(ids=[r[0] for r in recs], documents=[r[1] for r in recs],
                                  metadatas=[r[2] for r in recs])
         return len(recs)
@@ -126,3 +135,11 @@ class ChunkStore:
 
     def query_sync(self, **kw):
         return self.collection().query(**kw)
+
+    def purge_empty_sync(self) -> int:
+        """Delete chunks whose text is blank (stores built before empty parents were skipped)."""
+        r = self.collection().get(include=["documents"])
+        bad = [i for i, d in zip(r.get("ids") or [], r.get("documents") or []) if not (d or "").strip()]
+        if bad:
+            self.collection().delete(ids=bad)
+        return len(bad)
