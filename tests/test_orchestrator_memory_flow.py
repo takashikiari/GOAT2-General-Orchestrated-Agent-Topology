@@ -152,3 +152,21 @@ def test_identity_prompt_is_fetched_and_used():
     assert identity_used[0] == "Custom identity for this test.", (
         f"expected custom identity, got {identity_used[0]!r}"
     )
+
+
+def test_cache_hit_from_retrieve_reaches_observability(monkeypatch):
+    """cache_hit read 0/104 in production only because the orchestrator hard-coded set_cache(False, None)."""
+    import orchestrator.orchestrator as orch_mod
+
+    hit = [{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}]
+
+    async def fake_retrieve(*a, **k):
+        return hit, True, "key-123", {"warm_served": False, "thematic": 1, "specific_key": 0}
+
+    monkeypatch.setattr(orch_mod, "retrieve", fake_retrieve)
+    layers = _FakeLayers(results=hit)
+    reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())
+    asyncio.run(Orchestrator(layers=reg.memory_layers, llm_client=reg.llm_client, plugin_manager=reg.plugin_manager,
+                             analytics=reg.memory_analytics, tools=[]).run("ce știi despre proiectul X", "chat"))
+    obs = reg.memory_analytics.records[-1]
+    assert obs.cache_hit is True and obs.cache_key == "key-123"

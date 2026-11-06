@@ -115,6 +115,14 @@ def _is_plausible_year(year: int, now: datetime) -> bool:
     return now.year - TEMPORAL_MAX_YEARS_IN_PAST <= year <= now.year
 
 
+# GOAT's agent-coord channel digest (telegram_interface/_coord_poller.py builds its header from this):
+# it is a report of other sessions' messages, never a question about a moment in time, and its own
+# instructions ("1-3 propoziții", "1-2 cuvinte") parse as dates — so it never takes the temporal route.
+CHANNEL_DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"
+# Channel log stamps ("[2026-11-06 09:14:04] a -> b: …") are metadata, not what the user asks about.
+_CHANNEL_STAMP = re.compile(r"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\]")
+
+
 def parse_interval(query: str, now: datetime | None = None) -> tuple[float, float] | None:
     """Find a date/time expression in ``query``; return an (after_ts, before_ts) window.
 
@@ -123,6 +131,9 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
     toward the past (recall queries are about past events) — defaults to the
     real current time; tests pass a fixed value.
     """
+    if (query or "").lstrip().startswith(CHANNEL_DIGEST_PREFIX):
+        return None
+    query = _CHANNEL_STAMP.sub(" ", query or "")
     now = now or datetime.now()
     settings = {"RELATIVE_BASE": now, "PREFER_DATES_FROM": "past"}
     normalized_query = _normalize_spoken_hours(query)

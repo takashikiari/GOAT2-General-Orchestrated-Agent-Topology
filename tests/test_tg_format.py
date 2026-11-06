@@ -86,3 +86,15 @@ def test_empty_and_plain_text():
 def test_markdown_it_is_quiet_in_the_log_file():
     from utils.logging import setup
     assert "markdown_it" in setup._QUIET_LIBS
+
+
+def test_channel_digest_never_takes_the_temporal_route():
+    from datetime import datetime
+    from memory.temporal_route import CHANNEL_DIGEST_PREFIX, parse_interval
+    from telegram_interface._coord_poller import format_digest
+    now = datetime(2026, 11, 6, 12, 0)
+    assert format_digest([]).startswith(CHANNEL_DIGEST_PREFIX)
+    msg = {"from": "lenovo/a/b", "to": "lenovo/goat", "text": "PR #6 live, GOAT repornit 09:20, 4000/1500"}
+    assert parse_interval(format_digest([msg]), now=now) is None
+    assert parse_interval("[2026-11-06 09:14:04] lenovo/a -> lenovo/goat: salut", now=now) is None
+    assert parse_interval("ce am făcut ieri?", now=now) is not None
