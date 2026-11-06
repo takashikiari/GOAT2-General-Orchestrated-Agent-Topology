@@ -41,7 +41,12 @@ async def main_async(a) -> int:
         rr = CrossEncoderReranker()
         rr._load_and_prime()
         res = []
-        for q, ts in real_queries(a.queries):
+        if a.queries_file:  # a fixed set kept OUTSIDE the repo (it holds private user messages)
+            import json
+            qs = [(q["text"], float(q["ts"])) for q in json.load(open(a.queries_file))["queries"]]
+        else:
+            qs = real_queries(a.queries)
+        for q, ts in qs:
             base = as_of(ts, rows(col.query(query_texts=[q], n_results=60)))[:20]
             ranked = await mem.expand_chunks(await rr.rerank(q, await mem.highlight(q, base), top_k=len(base)))
             plain = blended_gap_filter([dict(r) for r in ranked])
@@ -81,6 +86,8 @@ def main(argv=None) -> int:
     ap.add_argument("--source", default="./chroma_data")
     ap.add_argument("--chunks", default="./chroma_chunks")
     ap.add_argument("--queries", type=int, default=40)
+    ap.add_argument("--queries-file", default="",
+                    help='fixed set {"queries": [{"text", "ts"}]} kept outside git — it contains private messages')
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--per-seed", type=int, default=2)
     ap.add_argument("--window", type=int, default=2)
