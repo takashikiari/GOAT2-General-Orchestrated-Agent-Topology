@@ -201,6 +201,13 @@ def blended_gap_filter(results: list[dict], significance: float = 3.0) -> list[d
     """
     if not results:
         return []
+    # Phase 2: wave-2 neighbours never take part in the cut (their near-equal scores would shrink the mean gap
+    # and move the cut, i.e. change which seeds are chosen); they are only re-added for surviving seeds below.
+    neighbours = [r for r in results if "wave2" in r.get("mechanisms", [])]
+    if neighbours:
+        results = [r for r in results if "wave2" not in r.get("mechanisms", [])]
+        if not results:
+            return []
     if len(results) < 3:
         kept = [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
     else:
@@ -214,6 +221,9 @@ def blended_gap_filter(results: list[dict], significance: float = 3.0) -> list[d
             kept = [r for r in results if r.get("blended_score", 0.0) >= _BLENDED_MIN_SCORE]
     kept_ids = {id(r) for r in kept}
     rescued = [r for r in results if "temporal" in r.get("mechanisms", []) and id(r) not in kept_ids]
+    # Phase 2 wave 2: a neighbour stays exactly when the seed it was pulled in for survived
+    kept_msgs = {(r.get("metadata") or {}).get("message_id") for r in kept + rescued}
+    rescued += [r for r in neighbours if r.get("wave2_of") in kept_msgs]
     if rescued:
         kept = sorted(kept + rescued, key=lambda r: r.get("blended_score", 0.0), reverse=True)
     return kept

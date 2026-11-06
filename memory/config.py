@@ -59,6 +59,11 @@ CHUNKS_SEARCH: Final[bool] = bool(_ep("chunks_search"))
 # highlights (chosen after the offline evaluation): candidates are still found on whole documents, each is
 # swapped for its closest chunk only for the rerank, then given the ±1 window. Needs the chunk store.
 CHUNKS_HIGHLIGHTS: Final[bool] = bool(_ep("chunks_highlights"))
+# Phase 2 (memory spec v4): wave 2 — the top seeds pull in same-topic neighbours (sequence_number ±window).
+L3_WAVE2: Final[bool] = bool(_ep("l3_wave2"))
+L3_WAVE2_SEEDS: Final[int] = int(_ep("l3_wave2_seeds"))
+L3_WAVE2_PER_SEED: Final[int] = int(_ep("l3_wave2_per_seed"))
+L3_WAVE2_WINDOW: Final[int] = int(_ep("l3_wave2_window"))
 
 _permanent = _cfg.get("permanent", _DEFAULTS["permanent"])
 PERMANENT_LETTA_URL: str = str(
@@ -196,6 +201,10 @@ __all__ = [
     "CHUNKS_WRITE",
     "CHUNKS_SEARCH",
     "CHUNKS_HIGHLIGHTS",
+    "L3_WAVE2",
+    "L3_WAVE2_SEEDS",
+    "L3_WAVE2_PER_SEED",
+    "L3_WAVE2_WINDOW",
     "PERMANENT_LETTA_URL",
     "PERMANENT_AGENT_NAME",
     "PERMANENT_LETTA_MODEL",
