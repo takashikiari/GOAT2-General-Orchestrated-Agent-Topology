@@ -22,6 +22,10 @@ _DEFAULTS: dict = {
         "chunks_write": False,
         "chunks_search": False,
         "chunks_highlights": False,
+        "l3_wave2": False,
+        "l3_wave2_seeds": 3,
+        "l3_wave2_per_seed": 2,
+        "l3_wave2_window": 2,
     },
     "permanent": {
         "letta_url": "http://localhost:8283",

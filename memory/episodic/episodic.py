@@ -242,3 +242,12 @@ class EpisodicMemory(EpisodicQueries):
                                                        parent_id=pid, chunk_index=meta.get("chunk_index", 0)))
             out.append(r)
         return out
+
+    async def neighbors(self, topic_id: str, sequence_number: int, window: int) -> list[dict]:
+        """Entries of ``topic_id`` with sequence_number within ±window (Phase 2 wave 2; read-only)."""
+        where = {"$and": [{"topic_id": {"$eq": topic_id}},
+                          {"sequence_number": {"$gte": sequence_number - window}},
+                          {"sequence_number": {"$lte": sequence_number + window}}]}
+        got = await asyncio.to_thread(self._get_collection().get, where=where, include=["documents", "metadatas"])
+        return [{"content": d or "", "metadata": m or {}}
+                for d, m in zip(got.get("documents") or [], got.get("metadatas") or []) if (d or "").strip()]

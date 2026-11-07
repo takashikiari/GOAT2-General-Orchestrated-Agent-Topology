@@ -23,6 +23,13 @@ chunks_search = false
 # each for its closest chunk for the rerank only (2.8x faster offline, selection >= today), then ±1 window.
 # Needs chunks_write = true (and a built store). Leave chunks_search = false when using it.
 chunks_highlights = false
+# Phase 2 (memory spec v4): wave 2. The top l3_wave2_seeds results pull in up to l3_wave2_per_seed entries of the
+# same topic_id with sequence_number within ±l3_wave2_window (the turns around them); kept only if their seed
+# passes the gap filter, still bounded by the L3 token budget. Rollback = l3_wave2 = false.
+l3_wave2 = false
+l3_wave2_seeds = 3
+l3_wave2_per_seed = 2
+l3_wave2_window = 2
 
 [permanent]
 letta_url = "http://localhost:8283"

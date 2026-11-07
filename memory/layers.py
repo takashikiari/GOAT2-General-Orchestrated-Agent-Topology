@@ -273,6 +273,15 @@ class MemoryLayers:
         if (CHUNKS_SEARCH or CHUNKS_HIGHLIGHTS) and ep is not None and hasattr(ep, "expand_chunks"):
             # Phase 1: give the prompt the ±1 window around the chunk the reranker scored.
             ranked = await ep.expand_chunks(ranked)
+        from memory.config import L3_WAVE2, L3_WAVE2_PER_SEED, L3_WAVE2_SEEDS, L3_WAVE2_WINDOW
+        if L3_WAVE2 and ep is not None:
+            from memory.wave2 import add_neighbors
+            grown = await add_neighbors(ep, ranked, L3_WAVE2_SEEDS, L3_WAVE2_PER_SEED, L3_WAVE2_WINDOW)
+            extra = grown[len(ranked):]
+            if extra and CHUNKS_HIGHLIGHTS and hasattr(ep, "highlight"):
+                # neighbours get the same short window as everything else, not their whole text
+                extra = await ep.expand_chunks(await ep.highlight(query, extra))
+            ranked = ranked + extra
         return ranked
 
     async def extract_query_entities(self, query: str) -> dict:
