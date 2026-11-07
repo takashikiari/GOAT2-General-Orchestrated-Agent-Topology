@@ -47,7 +47,7 @@ def fit_originals_first(results: list[dict], max_tokens: int, temporal_center: f
     """(block, count, packed, info): originals packed as without wave 2, neighbours in the leftover only."""
     originals = [r for r in results if not _is_wave2(r)]
     _, base, used = pack_lines(originals, max_tokens, temporal_center)
-    seeds_in = {(r.get("metadata") or {}).get("message_id") for r in base}
+    seeds_in = {(r.get("metadata") or {}).get("message_id") for r in base} - {None}  # no id → no neighbours
     chosen = {id(r) for r in base}
     left = max_tokens - used
     for n in (r for r in results if _is_wave2(r)):

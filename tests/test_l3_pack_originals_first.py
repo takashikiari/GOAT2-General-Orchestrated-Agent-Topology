@@ -71,3 +71,26 @@ def test_assemble_and_l3_usage_report_sets_and_budget_share(caplog):
     assert 0 < m["wave2_budget_pct"] < 100
     line = next(r.getMessage() for r in caplog.records if "chat=c7" in r.getMessage())
     assert "orig_before=6 orig_after=6 orig_replaced=[]" in line and "wave2_budget_pct=" in line
+
+
+def test_plain_packing_would_degrade_originals_first_never_does():
+    """Counter-proof kept in the repo: packing the gap-filtered mix as-is loses originals at most budget levels."""
+    orig, relevant = _scenario()
+    line_tok = pack_lines([orig[0]], 10_000)[2]
+    levels = range(line_tok, line_tok * 13)
+    plain_lost = new_lost = 0
+    for budget in levels:
+        before = {r["metadata"]["message_id"] for r in pack_lines(orig, budget)[1]}
+        plain = {r["metadata"]["message_id"] for r in pack_lines(relevant, budget)[1]}
+        new = {r["metadata"]["message_id"] for r in fit_originals_first(relevant, budget)[2]}
+        plain_lost += bool(before - plain)
+        new_lost += bool(before - new)
+    assert plain_lost > len(levels) // 2 and new_lost == 0
+
+
+def test_seed_without_message_id_gets_no_neighbours():
+    seed = {"content": "fără id " + "x " * 20, "blended_score": 0.9, "metadata": {"timestamp": 1_700_000_000}}
+    orphan = {"content": "vecin " + "y " * 20, "blended_score": 0.89, "mechanisms": ["wave2"], "wave2_of": None,
+              "metadata": {"timestamp": 1_700_000_000}}
+    _, n, packed, _ = fit_originals_first([seed, orphan], 10_000)
+    assert n == 1 and packed == [seed]
