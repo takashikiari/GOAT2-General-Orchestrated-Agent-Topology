@@ -25,18 +25,20 @@ def _run(monkeypatch, merged):
     return asyncio.run(mt.build_search_memory_tool(object()).handler(query="q", chat_id="c1"))
 
 
-def test_output_to_the_model_is_unchanged(monkeypatch):
+def test_originals_unchanged_and_neighbours_follow_their_seed(monkeypatch):
     merged = _merged()
     out = _run(monkeypatch, merged)
-    assert out == mt._fmt_results(merged[:mt._LIMIT])  # exactly what the tool returned before this change
+    old = merged[:mt._LIMIT]  # what the tool showed before: the same 5 originals
+    expected = [old[0], merged[20], old[1], merged[21]] + old[2:]  # n1 after m0, n2 after m1
+    assert out == mt._fmt_results(expected)
 
 
 def test_logs_neighbours_found_vs_shown(monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="tools.memory_tools")
     _run(monkeypatch, _merged())
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("search_memory_wave2"))
-    assert line == ("search_memory_wave2 chat=c1 shown=5 wave2_found=2 wave2_shown=0 wave2_cut_by_limit=2 "
-                    "wave2_shown_ranks=[]")
+    assert line == ("search_memory_wave2 chat=c1 shown=7 wave2_found=2 wave2_shown=2 wave2_cut_by_limit=0 "
+                    "wave2_shown_ranks=[2, 4]")
 
 
 def test_counts_neighbours_that_do_get_shown(monkeypatch, caplog):
@@ -52,4 +54,20 @@ def test_measurement_never_breaks_the_tool(monkeypatch):
         raise RuntimeError("log down")
     monkeypatch.setattr(mt.log, "info", boom)  # a failure inside the measurement must be swallowed
     merged = _merged()
-    assert _run(monkeypatch, merged) == mt._fmt_results(merged[:mt._LIMIT])
+    assert "text n1" in _run(monkeypatch, merged)
+
+
+def test_neighbour_of_a_seed_not_shown_is_dropped_and_parents_are_deduped():
+    orig = [_r(f"m{i}", 1 - i / 100) for i in range(8)]
+    n_hidden = _r("n7", 0.9, mechanisms=["wave2"], wave2_of="m7")      # m7 is the 8th: not shown
+    n_dup = _r("m2", 0.95, mechanisms=["wave2"], wave2_of="m0")         # parent m2 already shown
+    n_twice = [_r("n0", 0.99, mechanisms=["wave2"], wave2_of="m0")] * 2  # same neighbour twice
+    out = mt._with_seed_neighbours(orig + [n_hidden, n_dup] + n_twice, 5)
+    ids = [r["metadata"]["message_id"] for r in out]
+    assert ids == ["m0", "n0", "m1", "m2", "m3", "m4"]
+    assert [r for r in out if "wave2" not in r.get("mechanisms", [])] == orig[:5]
+
+
+def test_no_neighbours_means_exactly_the_old_cut():
+    orig = [_r(f"m{i}", 1 - i / 100) for i in range(9)]
+    assert mt._with_seed_neighbours(orig, 5) == orig[:5]

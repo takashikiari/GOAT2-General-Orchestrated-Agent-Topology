@@ -69,6 +69,36 @@ def _fmt_results(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _with_seed_neighbours(merged: list[dict], limit: int) -> list[dict]:
+    """The top ``limit`` original results (unchanged) plus the wave-2 neighbours of those results.
+
+    retrieve() puts neighbours after all originals, so a plain ``merged[:limit]`` dropped them: in the
+    2026-11-07 memory test 45 of 47 neighbours never reached the model. The originals shown are exactly
+    the ones shown before (same rule as fit_originals_first: wave 2 never displaces an original); each
+    neighbour is placed right after its seed, and an entry whose parent message is already shown is skipped.
+    """
+    def is_w2(r):
+        return "wave2" in (r.get("mechanisms") or [])
+
+    def mid(r):
+        return (r.get("metadata") or {}).get("message_id")
+
+    originals = [r for r in merged if not is_w2(r)][:limit]
+    shown_ids = {mid(r) for r in originals} - {None}
+    by_seed: dict = {}
+    for n in merged:
+        if is_w2(n) and n.get("wave2_of") in shown_ids and mid(n) not in shown_ids:
+            by_seed.setdefault(n.get("wave2_of"), []).append(n)
+    out, seen = [], set()
+    for r in originals:
+        out.append(r)
+        for n in by_seed.get(mid(r), []):
+            if mid(n) not in seen:
+                seen.add(mid(n))
+                out.append(n)
+    return out
+
+
 def _log_wave2(chat_id: str, merged: list[dict], shown: list[dict]) -> None:
     """Measurement only: wave-2 neighbours found by this tool call vs actually shown to the model.
 
@@ -108,7 +138,7 @@ def build_search_memory_tool(memory_layers: "MemoryLayers") -> ToolDefinition:
                 if (after_ts is None or r["metadata"].get("timestamp", 0) >= after_ts)
                 and (before_ts is None or r["metadata"].get("timestamp", 0) <= before_ts)
             ]
-        results = merged[:_LIMIT]
+        results = _with_seed_neighbours(merged, _LIMIT)
         log.debug("search_memory chat=%s query=%r hits=%d", chat_id, query, len(results))
         _log_wave2(chat_id, merged, results)
         if not results:
