@@ -30,7 +30,8 @@ LOG_FILE: Path = _LOG_FILE
 _FMT = "%(asctime)s  %(name)-35s  %(levelname)-8s  %(message)s"
 _DATE_FMT = "%Y-%m-%dT%H:%M:%S"
 _QUIET_LIBS = ("httpx", "httpcore", "openai", "hpack", "h2", "asyncio", "markdown_it",
-               "chromadb.utils.embedding_functions")  # 'No ONNX providers' DEBUG line on every embedding
+               "chromadb.utils.embedding_functions",  # 'No ONNX providers' DEBUG line on every embedding
+               "chromadb.config")  # 'Starting component System/Posthog' DEBUG lines on every Chroma client start
 _root_configured = False
 
 

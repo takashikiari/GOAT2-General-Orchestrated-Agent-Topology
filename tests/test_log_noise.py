@@ -1,4 +1,4 @@
-"""Noise fixes: chunk store telemetry off, ONNX DEBUG lines quiet, offline scripts never log into goat2.log."""
+"""Noise fixes: chunk store telemetry off, ONNX and Chroma component DEBUG lines quiet, offline scripts never log into goat2.log."""
 import importlib
 import os
 import sys
@@ -15,6 +15,11 @@ def test_chunk_store_disables_chroma_telemetry(tmp_path):
 def test_onnx_provider_debug_lines_are_quiet():
     from utils.logging import setup
     assert "chromadb.utils.embedding_functions" in setup._QUIET_LIBS
+
+
+def test_chroma_component_start_debug_lines_are_quiet():
+    from utils.logging import setup
+    assert "chromadb.config" in setup._QUIET_LIBS
 
 
 def test_offline_scripts_redirect_logs_away_from_live_file(monkeypatch):
