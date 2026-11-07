@@ -69,6 +69,22 @@ def _fmt_results(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _log_wave2(chat_id: str, merged: list[dict], shown: list[dict]) -> None:
+    """Measurement only: wave-2 neighbours found by this tool call vs actually shown to the model.
+
+    Separate from l3_usage (which covers only the context injected at turn start). Never raises.
+    """
+    try:
+        def w2(rs):
+            return [r for r in rs if "wave2" in (r.get("mechanisms") or [])]
+        found, sent = w2(merged), w2(shown)
+        log.info("search_memory_wave2 chat=%s shown=%d wave2_found=%d wave2_shown=%d wave2_cut_by_limit=%d "
+                 "wave2_shown_ranks=%s", chat_id, len(shown), len(found), len(sent), len(found) - len(sent),
+                 [i + 1 for i, r in enumerate(shown) if r in sent])
+    except Exception:  # noqa: BLE001
+        log.debug("search_memory_wave2 measurement failed", exc_info=True)
+
+
 def build_search_memory_tool(memory_layers: "MemoryLayers") -> ToolDefinition:
     """Build the search_memory tool bound to a MemoryLayers instance."""
 
@@ -94,6 +110,7 @@ def build_search_memory_tool(memory_layers: "MemoryLayers") -> ToolDefinition:
             ]
         results = merged[:_LIMIT]
         log.debug("search_memory chat=%s query=%r hits=%d", chat_id, query, len(results))
+        _log_wave2(chat_id, merged, results)
         if not results:
             return "No relevant memories found."
         return _fmt_results(results)
