@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from memory.l3_attribution import mechanism_ranks, pack_order
+from memory.l3_attribution import mechanism_ranks
+from memory.l3_pack import fit_originals_first, pack_lines
 from memory.budget import estimate_tokens
 from memory.config_extra import BLENDED_MIN_SCORE as _BLENDED_MIN_SCORE, SESSION_GAP_SECONDS
 from memory.context_budget import allocate_context_budget
@@ -65,12 +66,11 @@ def assemble_blocks(
                 relevant = blended_gap_filter(ordered, significance)
             else:
                 relevant = gap_filter(l3_results, significance)
-            l3_block, l3_used = fit_search_results(relevant, l3_budget, temporal_center)
+            l3_block, l3_used, packed, info = fit_originals_first(relevant, l3_budget, temporal_center)
             if l3_block:
                 blocks.append(f"[Context recuperat din istoric]\n{l3_block}")
                 if provenance is not None:
-                    packed = pack_order(relevant, temporal_center)[:l3_used]
-                    provenance.update(wave2_ranks=mechanism_ranks(packed, "wave2"),
+                    provenance.update(info, wave2_ranks=mechanism_ranks(packed, "wave2"),
                                       temporal_ranks=mechanism_ranks(packed, "temporal"))
     return blocks, l3_used
 
@@ -151,17 +151,7 @@ def fit_search_results(
 
     Returns (block_text, count). Each line prefixed with [YYYY-MM-DD HH:MM].
     """
-    lines: list[str] = []
-    total = 0
-    for r in pack_order(results, temporal_center):
-        ts = r["metadata"].get("timestamp", 0)
-        dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
-        line = f"- [{dt}] {r['content']}" if dt else f"- {r['content']}"
-        tok = estimate_tokens(line)
-        if total + tok > max_tokens and lines:
-            break
-        lines.append(line)
-        total += tok
+    lines, _, _ = pack_lines(results, max_tokens, temporal_center)
     return "\n".join(lines), len(lines)
 
 

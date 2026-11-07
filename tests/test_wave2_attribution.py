@@ -61,7 +61,7 @@ def test_attribute_counts_used_neighbours():
     m = up.measure(blocks, "Am repornit containerul Letta și am verificat portul 8283 pe server.")
     a = up.attribute(m, blocks.provenance)
     assert a["wave2_ranks"] == [2] and a["wave2_used"] == 1 and a["wave2_tokens"] == m["entries"][1]["tokens"]
-    assert up.attribute(m, None) == {"wave2_ranks": None, "wave2_used": None, "wave2_tokens": None}
+    assert set(up.attribute(m, None).values()) == {None}
     assert up.attribute(m, {"wave2_ranks": [9]})["wave2_ranks"] == []  # out-of-range rank ignored
 
 
@@ -70,10 +70,11 @@ def test_log_line_carries_wave2_fields(caplog):
     blocks = InjectedBlocks(["id", up.L3_HEADER + "\n- [a] unu doi trei\n- [b] patru cinci"], {"wave2_ranks": []})
     up.log_usage("c9", blocks, "nimic")
     line = next(r.getMessage() for r in caplog.records if "chat=c9" in r.getMessage())
-    assert line.endswith("wave2_ranks=[] wave2_used=0 wave2_tokens=0")
+    assert "wave2_ranks=[] wave2_used=0 wave2_tokens=0 " in line
     up.log_usage("c8", ["id", up.L3_HEADER + "\n- [a] x y z"], "nimic")  # plain list: unknown, not zero
     assert next(r.getMessage() for r in caplog.records if "chat=c8" in r.getMessage()).endswith(
-        "wave2_ranks=None wave2_used=None wave2_tokens=None")
+        "wave2_ranks=None wave2_used=None wave2_tokens=None wave2_budget_pct=None orig_before=None "
+        "orig_after=None orig_replaced=None")
 
 
 def test_orchestrator_hands_provenance_to_the_callback():
