@@ -30,6 +30,9 @@ l3_wave2 = false
 l3_wave2_seeds = 3
 l3_wave2_per_seed = 2
 l3_wave2_window = 2
+# T7: drop L3 entries with fewer than l3_min_alnum letters/digits before the rerank — 1-emoji / "Ce?" entries
+# otherwise win on vague queries (seen in the highlights evaluation). 0 = off; 3 recommended.
+l3_min_alnum = 0
 
 [permanent]
 letta_url = "http://localhost:8283"

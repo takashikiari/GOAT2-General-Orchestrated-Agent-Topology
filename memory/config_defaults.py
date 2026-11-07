@@ -26,6 +26,7 @@ _DEFAULTS: dict = {
         "l3_wave2_seeds": 3,
         "l3_wave2_per_seed": 2,
         "l3_wave2_window": 2,
+        "l3_min_alnum": 0,
     },
     "permanent": {
         "letta_url": "http://localhost:8283",
