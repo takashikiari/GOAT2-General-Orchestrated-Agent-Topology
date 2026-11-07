@@ -98,7 +98,12 @@ class ChunkStore:
     def collection(self):
         if self._col is None:
             import chromadb
+            import posthog as _posthog
             from chromadb.config import Settings
+            # Same as the source collection (episodic.py): Chroma's telemetry client is broken here and logs an
+            # ERROR on every client event; GOAT never sends telemetry anyway.
+            _posthog.disabled = True
+            _posthog.capture = lambda *args, **kwargs: None  # type: ignore[assignment]
             client = chromadb.PersistentClient(path=self._path, settings=Settings(anonymized_telemetry=False))
             kw = {"embedding_function": self._ef} if self._ef is not None else {}
             self._col = client.get_or_create_collection(self._name, **kw)
