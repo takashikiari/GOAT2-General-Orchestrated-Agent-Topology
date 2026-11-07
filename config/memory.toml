@@ -17,22 +17,22 @@ chunk_collection_name = "episodic_chunks"
 chunk_target_tokens = 220
 chunk_overlap_tokens = 40
 chunk_neighbor_radius = 1
-chunks_write = false
+chunks_write = true
 chunks_search = false
 # chunks_highlights (recommended mode): keep finding candidates on whole documents (today's selection), swap
 # each for its closest chunk for the rerank only (2.8x faster offline, selection >= today), then ±1 window.
 # Needs chunks_write = true (and a built store). Leave chunks_search = false when using it.
-chunks_highlights = false
+chunks_highlights = true
 # Phase 2 (memory spec v4): wave 2. The top l3_wave2_seeds results pull in up to l3_wave2_per_seed entries of the
 # same topic_id with sequence_number within ±l3_wave2_window (the turns around them); kept only if their seed
 # passes the gap filter, still bounded by the L3 token budget. Rollback = l3_wave2 = false.
-l3_wave2 = false
+l3_wave2 = true
 l3_wave2_seeds = 3
 l3_wave2_per_seed = 2
 l3_wave2_window = 2
 # T7: drop L3 entries with fewer than l3_min_alnum letters/digits before the rerank — 1-emoji / "Ce?" entries
 # otherwise win on vague queries (seen in the highlights evaluation). 0 = off; 3 recommended.
-l3_min_alnum = 0
+l3_min_alnum = 3
 
 [permanent]
 letta_url = "http://localhost:8283"

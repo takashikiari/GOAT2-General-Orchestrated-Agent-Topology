@@ -96,3 +96,12 @@ dag_workspace/
 
 # Frontend (admin_panel/frontend)
 admin_panel/frontend/node_modules/
+
+# Live GOAT state on the production box (data/config, not source)
+chroma_chunks/
+goat2.toml
+memory/l0_identity.md
+memory/notes/
+memory/permanent/metric_interpretation_correction_2026-06-29.md
+openapi_letta.json
+.claude/worktrees/
