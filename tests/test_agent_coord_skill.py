@@ -168,3 +168,18 @@ async def test_events_tool_args_and_tail(monkeypatch):
     assert out.startswith("[agent-coord]") and "tool: Bash git" in out
     fake(monkeypatch, (3, "", "hub inaccesibil"))
     assert "hub inaccesibil" in await tools()["agent_coord_events"].handler()
+
+
+def test_fmt_sessions_shows_last_action():
+    import time as _t
+    from tools.agent_coord_fmt import fmt_sessions
+    out = fmt_sessions([{"identity": "laris/x/aaaaaa", "effective_status": "working", "task": "fix", "age": 3,
+                         "last_action": "Bash git\nrm", "last_action_ts": str(_t.time() - 70)}])
+    assert "„fix” — acum 3s · ultima acțiune: Bash git ⏎ rm — acum 1m" in out
+
+
+def test_fmt_sessions_without_or_bad_last_action_unchanged():
+    from tools.agent_coord_fmt import fmt_sessions
+    for extra in ({}, {"last_action": "Read a.md"}, {"last_action": "Read a.md", "last_action_ts": "x"}):
+        out = fmt_sessions([{"identity": "a/b/c", "effective_status": "standby", "task": "t", "age": 5, **extra}])
+        assert out.endswith("„t” — acum 5s")

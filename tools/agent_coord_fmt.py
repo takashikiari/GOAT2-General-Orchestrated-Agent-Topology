@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 __all__ = ["NOTE", "one_line", "parse_json", "fmt_sessions", "fmt_journal"]
 
@@ -36,11 +37,21 @@ def _age(value) -> str:
     return f" — acum {int(value)}s"
 
 
+def _last_action(r: dict) -> str:
+    """' · ultima acțiune: Bash git — acum 12s' (agent-coord ≥ 2.7.3 stores it; '' when missing)."""
+    action, ts = r.get("last_action"), r.get("last_action_ts")
+    try:
+        age = time.time() - float(ts)
+    except (TypeError, ValueError):
+        return ""
+    return f" · ultima acțiune: {one_line(action, 80)}{_age(max(age, 0.0))}" if action else ""
+
+
 def fmt_sessions(rows) -> str:
     lines = [NOTE]
     for r in _dicts(rows):
         lines.append(f"- {one_line(r.get('identity'))}: {one_line(r.get('effective_status'))} — "
-                     f"„{one_line(r.get('task') or '-')}”{_age(r.get('age'))}")
+                     f"„{one_line(r.get('task') or '-')}”{_age(r.get('age'))}{_last_action(r)}")
     if len(lines) == 1:
         lines.append("(nicio sesiune înregistrată)")
     return "\n".join(lines)[:MAX_OUT]
