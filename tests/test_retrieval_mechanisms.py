@@ -41,7 +41,9 @@ class _FakeLayers:
         pass
 
 
-def test_cold_retrieve_tags_each_result_with_its_mechanisms():
+def test_cold_retrieve_tags_each_result_with_its_mechanisms(monkeypatch):
+    import memory.config as _cfg
+    monkeypatch.setattr(_cfg, "L3_MIN_ALNUM", 0)  # T7 is not under test; fixtures are 1-letter ids
     layers = _FakeLayers()
     merged, _, _, _ = asyncio.run(
         retrieve(layers, "chat1", "query", state="cold", activation=None)

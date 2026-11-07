@@ -6,7 +6,7 @@ queries and take a slot in the prompt. They are dropped before the cross-encoder
 """
 from __future__ import annotations
 
-__all__ = ["alnum_count", "drop_tiny"]
+__all__ = ["alnum_count", "drop_tiny", "drop_tiny_groups"]
 
 
 def alnum_count(text: str | None) -> int:
@@ -17,3 +17,12 @@ def drop_tiny(results: list[dict], min_alnum: int) -> list[dict]:
     if min_alnum <= 0:
         return results
     return [r for r in results if alnum_count(r.get("content")) >= min_alnum]
+
+
+def drop_tiny_groups(groups: list[tuple[str, list[dict]]], min_alnum: int) -> list[tuple[str, list[dict]]]:
+    """drop_tiny on every (label, results) candidate group, before they are merged.
+
+    Filtering before merge_results means a tiny entry never takes one of the merge window's slots, and
+    the filter no longer depends on the cross-encoder being available (it used to live in layers.rerank).
+    """
+    return [(label, drop_tiny(results, min_alnum)) for label, results in groups]
