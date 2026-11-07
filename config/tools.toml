@@ -23,6 +23,9 @@ cmd_log_chars    = 120
 
 [get_recent_logs]
 max_lines = 500
+# Output size cap, on top of max_lines: DEBUG lines can be thousands of chars each, so 500 lines
+# reached 60-90k chars and tripped the tool-loop size cap after one call. The newest lines are kept.
+max_chars = 15000
 
 [plugins]
 scan_interval_seconds = 30

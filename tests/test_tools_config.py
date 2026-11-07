@@ -7,7 +7,7 @@ the existing tools/web_config.py ([web]) pattern.
 from __future__ import annotations
 
 from plugins.plugins_config import PLUGIN_SCAN_INTERVAL_SECONDS
-from tools.get_recent_logs_config import GET_RECENT_LOGS_MAX_LINES
+from tools.get_recent_logs_config import GET_RECENT_LOGS_MAX_CHARS, GET_RECENT_LOGS_MAX_LINES
 from tools.read_file_config import (
     READ_FILE_DEFAULT_MAX_CHARS,
     READ_FILE_HARD_BYTE_CAP,
@@ -48,6 +48,7 @@ def test_shell_defaults():
 
 def test_get_recent_logs_default():
     assert GET_RECENT_LOGS_MAX_LINES == 500
+    assert GET_RECENT_LOGS_MAX_CHARS == 15000
 
 
 def test_plugin_scan_interval_default():
