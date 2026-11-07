@@ -18,7 +18,7 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["L3_HEADER", "split_l3_entries", "measure", "log_usage"]
+__all__ = ["L3_HEADER", "split_l3_entries", "measure", "attribute", "log_usage"]
 
 L3_HEADER = "[Context recuperat din istoric]"
 MIN_OVERLAP = 3
@@ -70,18 +70,33 @@ def measure(blocks: list[str], reply: str) -> dict:
             "used_ranks": used_ranks, "entries": rows}
 
 
+def attribute(m: dict, provenance: dict | None) -> dict:
+    """Wave-2 share of this turn's L3: ranks, how many of them were used, their tokens.
+
+    ``None`` values mean "unknown" (blocks without provenance, e.g. an older caller), not zero.
+    """
+    if provenance is None or "wave2_ranks" not in provenance:
+        return {"wave2_ranks": None, "wave2_used": None, "wave2_tokens": None}
+    rows = m["entries"]
+    ranks = [k for k in provenance["wave2_ranks"] if 1 <= k <= len(rows)]
+    return {"wave2_ranks": ranks, "wave2_used": sum(rows[k - 1]["used"] for k in ranks),
+            "wave2_tokens": sum(rows[k - 1]["tokens"] for k in ranks)}
+
+
 def log_usage(chat_id: str, blocks: list[str] | None, reply: str) -> dict | None:
     """Log one ``l3_usage`` line for this turn; never raises (diagnostics must not cost the reply)."""
     try:
         if not blocks:
             return None
         m = measure(blocks, reply)
+        m.update(attribute(m, getattr(blocks, "provenance", None)))
         log.info(
             "l3_usage chat=%s approx=term-overlap injected=%d used=%d first_used_rank=%s used_ranks=%s "
-            "l3_tokens=%d unused_tokens=%d entries=%s",
+            "l3_tokens=%d unused_tokens=%d entries=%s wave2_ranks=%s wave2_used=%s wave2_tokens=%s",
             chat_id, m["injected"], m["used"], m["first_used_rank"], m["used_ranks"],
             m["l3_tokens"], m["unused_tokens"],
             [(r["tokens"], r["overlap"], r["used"], r["head"]) for r in m["entries"]],
+            m["wave2_ranks"], m["wave2_used"], m["wave2_tokens"],
         )
         return m
     except Exception:  # noqa: BLE001

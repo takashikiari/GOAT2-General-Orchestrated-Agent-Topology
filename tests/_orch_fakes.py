@@ -74,7 +74,7 @@ class _FakeLayers:
 
     async def assemble_context(self, chat_id, budget=None, l3_results=None,
                                facts=None, messages=None, identity_prompt=None,
-                               temporal_center=None):
+                               temporal_center=None, provenance=None):
         return list(self._blocks), self._l3_used
 
     async def get_working_context(self, chat_id):

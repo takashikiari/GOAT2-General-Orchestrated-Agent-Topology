@@ -27,6 +27,7 @@ from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
+from memory.l3_attribution import InjectedBlocks
 from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
 from orchestrator.llm_response import first_choice
 from orchestrator.prefetch import run_prefetch_and_save
@@ -410,17 +411,19 @@ class Orchestrator:
             collector.set_cache(bool(l3_cache_hit), l3_cache_key)
             collector.set_prefetch(True, served, False, len(l3_results), 0)
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
+            l3_provenance: dict = {}
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
                 identity_prompt=identity_prompt,
                 temporal_center=temporal_center,
+                provenance=l3_provenance,
             )
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
             if on_context_assembled is not None:
-                on_context_assembled(list(context_blocks))
+                on_context_assembled(InjectedBlocks(context_blocks, l3_provenance))
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)

@@ -448,6 +448,7 @@ class MemoryLayers:
         messages: list[dict] | None = None,
         identity_prompt: str | None = None,
         temporal_center: float | None = None,
+        provenance: dict | None = None,
     ) -> tuple[list[str], int]:
         """Assemble L0-L3 prompt blocks; returns (blocks, l3_used).
 
@@ -466,5 +467,5 @@ class MemoryLayers:
             identity_prompt = _BASE_IDENTITY
         return assemble_blocks(
             budget, l3_results, facts, identity_prompt, messages,
-            L3_GAP_SIGNIFICANCE, temporal_center,
+            L3_GAP_SIGNIFICANCE, temporal_center, provenance,
         )

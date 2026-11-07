@@ -73,7 +73,7 @@ class _TemporalLayers(_FakeLayers):
 
     async def assemble_context(self, chat_id, budget=None, l3_results=None,
                                 facts=None, messages=None, identity_prompt=None,
-                                temporal_center=None):
+                                temporal_center=None, provenance=None):
         self.captured_l3_results = list(l3_results or [])
         self.captured_temporal_center = temporal_center
         ids = ",".join(
