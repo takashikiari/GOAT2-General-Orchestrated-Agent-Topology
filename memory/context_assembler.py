@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from memory.l3_attribution import mechanism_ranks, pack_order
 from memory.budget import estimate_tokens
 from memory.config_extra import BLENDED_MIN_SCORE as _BLENDED_MIN_SCORE, SESSION_GAP_SECONDS
 from memory.context_budget import allocate_context_budget
@@ -21,8 +22,11 @@ def assemble_blocks(
     messages: list[dict],
     significance: float = 3.0,
     temporal_center: float | None = None,
+    provenance: dict | None = None,
 ) -> tuple[list[str], int]:
     """Build L0-L3 context blocks under ``budget`` tokens; returns (blocks, l3_used).
+
+    ``provenance``, if given, receives the 1-based ranks of injected wave-2 / temporal entries.
 
     L0+L1 mandatory. Budget split by allocate_context_budget: L2 gets its
     capped share, L3 gets the guaranteed minimum first (priority-inverted) so
@@ -64,6 +68,10 @@ def assemble_blocks(
             l3_block, l3_used = fit_search_results(relevant, l3_budget, temporal_center)
             if l3_block:
                 blocks.append(f"[Context recuperat din istoric]\n{l3_block}")
+                if provenance is not None:
+                    packed = pack_order(relevant, temporal_center)[:l3_used]
+                    provenance.update(wave2_ranks=mechanism_ranks(packed, "wave2"),
+                                      temporal_ranks=mechanism_ranks(packed, "temporal"))
     return blocks, l3_used
 
 
@@ -143,17 +151,9 @@ def fit_search_results(
 
     Returns (block_text, count). Each line prefixed with [YYYY-MM-DD HH:MM].
     """
-    temporal = [r for r in results if "temporal" in r.get("mechanisms", [])]
-    if temporal_center is not None:
-        temporal.sort(key=lambda r: abs(r["metadata"].get("timestamp", 0) - temporal_center))
-    else:
-        temporal.sort(key=lambda r: r["metadata"].get("timestamp", 0))
-    temporal_ids = {id(r) for r in temporal}
-    rest = [r for r in results if id(r) not in temporal_ids]
-
     lines: list[str] = []
     total = 0
-    for r in temporal + rest:
+    for r in pack_order(results, temporal_center):
         ts = r["metadata"].get("timestamp", 0)
         dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
         line = f"- [{dt}] {r['content']}" if dt else f"- {r['content']}"
