@@ -75,12 +75,21 @@ def attribute(m: dict, provenance: dict | None) -> dict:
 
     ``None`` values mean "unknown" (blocks without provenance, e.g. an older caller), not zero.
     """
+    unknown = {"wave2_ranks": None, "wave2_used": None, "wave2_tokens": None, "wave2_budget_pct": None,
+               "orig_before": None, "orig_after": None, "orig_replaced": None}
     if provenance is None or "wave2_ranks" not in provenance:
-        return {"wave2_ranks": None, "wave2_used": None, "wave2_tokens": None}
+        return unknown
     rows = m["entries"]
     ranks = [k for k in provenance["wave2_ranks"] if 1 <= k <= len(rows)]
-    return {"wave2_ranks": ranks, "wave2_used": sum(rows[k - 1]["used"] for k in ranks),
-            "wave2_tokens": sum(rows[k - 1]["tokens"] for k in ranks)}
+    tokens = sum(rows[k - 1]["tokens"] for k in ranks)
+    budget = provenance.get("l3_budget")
+    out = dict(unknown, wave2_ranks=ranks, wave2_used=sum(rows[k - 1]["used"] for k in ranks), wave2_tokens=tokens)
+    if budget:
+        out["wave2_budget_pct"] = round(100.0 * tokens / budget, 1)
+    if "orig_before" in provenance:  # sets of original entries packed without vs with wave 2
+        out.update(orig_before=len(provenance["orig_before"]), orig_after=len(provenance["orig_after"]),
+                   orig_replaced=list(provenance["orig_replaced"]))
+    return out
 
 
 def log_usage(chat_id: str, blocks: list[str] | None, reply: str) -> dict | None:
@@ -92,11 +101,13 @@ def log_usage(chat_id: str, blocks: list[str] | None, reply: str) -> dict | None
         m.update(attribute(m, getattr(blocks, "provenance", None)))
         log.info(
             "l3_usage chat=%s approx=term-overlap injected=%d used=%d first_used_rank=%s used_ranks=%s "
-            "l3_tokens=%d unused_tokens=%d entries=%s wave2_ranks=%s wave2_used=%s wave2_tokens=%s",
+            "l3_tokens=%d unused_tokens=%d entries=%s wave2_ranks=%s wave2_used=%s wave2_tokens=%s "
+            "wave2_budget_pct=%s orig_before=%s orig_after=%s orig_replaced=%s",
             chat_id, m["injected"], m["used"], m["first_used_rank"], m["used_ranks"],
             m["l3_tokens"], m["unused_tokens"],
             [(r["tokens"], r["overlap"], r["used"], r["head"]) for r in m["entries"]],
             m["wave2_ranks"], m["wave2_used"], m["wave2_tokens"],
+            m["wave2_budget_pct"], m["orig_before"], m["orig_after"], m["orig_replaced"],
         )
         return m
     except Exception:  # noqa: BLE001
