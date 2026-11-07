@@ -27,6 +27,7 @@ from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
+from orchestrator.llm_response import first_choice
 from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tool_loop_config import (
     AGENTIC_MAX_ITERATIONS,
@@ -470,7 +471,7 @@ class Orchestrator:
             _t_first_start = time.time()
             response = await self._llm.chat.completions.create(**kw)
             _t_first = time.time() - _t_first_start
-            choice = response.choices[0]
+            choice = first_choice(response)
             content = choice.message.content or ""
             log.debug(
                 "LLM response chat=%s tool_calls=%s content_hex=%s",
@@ -765,7 +766,7 @@ class Orchestrator:
                     _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
                     _round_completion += getattr(_ru, "completion_tokens", 0) or 0
                     _round_total += getattr(_ru, "total_tokens", 0) or 0
-                current = r.choices[0]
+                current = first_choice(r)
                 if not current.message.tool_calls:
                     # Natural termination — the model chose to answer with text.
                     reply = current.message.content or ""
@@ -784,7 +785,7 @@ class Orchestrator:
                     _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
                     _round_completion += getattr(_ru, "completion_tokens", 0) or 0
                     _round_total += getattr(_ru, "total_tokens", 0) or 0
-                reply = r.choices[0].message.content or ""
+                reply = first_choice(r).message.content or ""
                 log.warning(
                     "tool_round cap-forced synthesis chat=%s iters=%d reason=%s output_chars=%d",
                     chat_id, iteration + 1, "size" if size_cap_hit else "iterations",
@@ -924,7 +925,7 @@ class Orchestrator:
                     _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
                     _round_completion += getattr(_ru, "completion_tokens", 0) or 0
                     _round_total += getattr(_ru, "total_tokens", 0) or 0
-                synth_reply = r.choices[0].message.content or raw
+                synth_reply = first_choice(r).message.content or raw
             except Exception as exc:
                 log.warning("DSML synthesis LLM call failed chat=%s: %s — returning raw", chat_id, exc)
                 reply = raw
