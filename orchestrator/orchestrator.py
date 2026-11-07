@@ -24,6 +24,8 @@ from memory.config import (
 )
 from memory.layers import MemoryLayers
 from memory.observability_collector import ObservationCollector
+from memory import config as _mem_cfg
+from memory.content_filter import drop_tiny_groups
 from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
@@ -380,7 +382,7 @@ class Orchestrator:
                         # those need GLiNER entity extraction, which this
                         # fast-path is explicitly avoiding to stay cheap.
                         groups = ([("warm", l3_results)] if l3_results else []) + [("temporal", fresh_temporal)]
-                        combined = merge_results(groups)[:PREFETCH_MAX_RESULTS * 2]
+                        combined = merge_results(drop_tiny_groups(groups, _mem_cfg.L3_MIN_ALNUM))[:PREFETCH_MAX_RESULTS * 2]
                         l3_results = (await layers.rerank(intent, combined))[:PREFETCH_MAX_RESULTS]
                         log.info(
                             "temporal fast-path chat=%s found=%d merged_total=%d",

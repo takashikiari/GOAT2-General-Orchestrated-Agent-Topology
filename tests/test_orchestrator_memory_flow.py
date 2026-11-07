@@ -9,7 +9,7 @@ from tests._orch_fakes import (
 )
 
 
-def test_search_runs_unconditionally_and_reports_cache_key():
+def test_search_runs_unconditionally_and_reports_cache_key(monkeypatch):
     """Search always runs. Cold/drift turns now run it synchronously, in-turn.
 
     In the old architecture a low-confidence intent ('la' → 0.2) skipped L3 entirely.
@@ -18,6 +18,8 @@ def test_search_runs_unconditionally_and_reports_cache_key():
     retrieve() synchronously (overlapped with the L0/L1/L2 fetch) so THIS turn
     finds whatever the backend has to offer, not just the next one.
     """
+    import memory.config as _cfg
+    monkeypatch.setattr(_cfg, "L3_MIN_ALNUM", 0)  # T7 is not under test; fixtures are 1-letter
     intent = "Pai și după atâtea tokens prefetchul a folosit 0 blocks la fiecare qwery"
     layers = _FakeLayers(results=[{"content": "m", "metadata": {"timestamp": 0.0}, "score": 0.5}])
     reg = _FakeRegistry(layers, _LLMClient(_Completions("reply")), _FakeAnalytics())

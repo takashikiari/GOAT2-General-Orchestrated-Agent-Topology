@@ -23,7 +23,9 @@ import time
 
 from memory.activation import rescore_recency
 from memory.budget import enforce_result_limit
+from memory import config as _cfg
 from memory.config import PREFETCH_MAX_RESULTS
+from memory.content_filter import drop_tiny, drop_tiny_groups
 from memory.result_merger import merge_results
 from memory.temporal_route import parse_interval
 from utils.logging.setup import get_logger
@@ -73,9 +75,9 @@ async def retrieve(
 ) -> tuple[list[dict], bool, str | None, dict]:
     """L3 retrieval pipeline; state selects warm / drift / cold mechanisms."""
     if state == "warm":
-        merged = (
+        merged = drop_tiny(
             rescore_recency(activation.merged, time.time())
-            if activation and activation.merged else []
+            if activation and activation.merged else [], _cfg.L3_MIN_ALNUM,
         )
         log.info("retrieve warm chat=%s served=%d", chat_id, len(merged))
         return merged, False, None, {"warm_served": True, "thematic": len(merged), "specific_key": 0}
@@ -115,7 +117,7 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
         + ([("temporal", temporal)] if temporal else [])
     )
     t1 = time.perf_counter()
-    merged = merge_results(all_groups)[:_LIMIT * 2]
+    merged = merge_results(drop_tiny_groups(all_groups, _cfg.L3_MIN_ALNUM))[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
     merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)
@@ -166,7 +168,7 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     temporal = await temporal_candidates(layers, query)
     times["temporal"], t1 = _ms(t1), time.perf_counter()
     all_groups = groups + ([("bm25", bm25)] if bm25 else []) + ([("temporal", temporal)] if temporal else [])
-    merged = merge_results(all_groups)[:_LIMIT * 2]
+    merged = merge_results(drop_tiny_groups(all_groups, _cfg.L3_MIN_ALNUM))[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
     merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)

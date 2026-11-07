@@ -264,13 +264,8 @@ class MemoryLayers:
         """
         if self._reranker is None or not results:
             return results
-        from memory.config import CHUNKS_HIGHLIGHTS, CHUNKS_SEARCH, L3_MIN_ALNUM
+        from memory.config import CHUNKS_HIGHLIGHTS, CHUNKS_SEARCH
         ep = self._episodic
-        if L3_MIN_ALNUM > 0:
-            from memory.content_filter import drop_tiny
-            results = drop_tiny(results, L3_MIN_ALNUM)
-            if not results:
-                return results
         if CHUNKS_HIGHLIGHTS and not CHUNKS_SEARCH and ep is not None and hasattr(ep, "highlight"):
             # highlights: same whole-document candidates, each scored on its closest chunk (no 512 padding).
             results = await ep.highlight(query, results)
