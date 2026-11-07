@@ -142,6 +142,10 @@ def test_layers_rerank_expands_only_in_chunk_search_mode(monkeypatch):
     layers = object.__new__(MemoryLayers)
     layers._reranker, layers._episodic = _R(), _E()
     res = [{"content": "a"}, {"content": "b"}]
+    # pin the flags this test is not about: the repo's memory.toml may enable T7/wave2
+    monkeypatch.setattr(cfg, "L3_MIN_ALNUM", 0)
+    monkeypatch.setattr(cfg, "L3_WAVE2", False)
+    monkeypatch.setattr(cfg, "CHUNKS_HIGHLIGHTS", False)
     monkeypatch.setattr(cfg, "CHUNKS_SEARCH", False)
     assert [r["content"] for r in asyncio.run(layers.rerank("q", res))] == ["b", "a"]
     monkeypatch.setattr(cfg, "CHUNKS_SEARCH", True)
