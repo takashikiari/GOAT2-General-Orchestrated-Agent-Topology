@@ -265,6 +265,7 @@ class Orchestrator:
         self, intent: str, chat_id: str, *,
         on_context_assembled: Callable[[list[str]], None] | None = None,
         on_tool_summary: Callable[[str], None] | None = None,
+        retrieval_query: str | None = None,
     ) -> str:
         """Single turn: AITS budget → bounded-time L3 prefetch → assemble → LLM → save.
 
@@ -286,6 +287,12 @@ class Orchestrator:
         kept separate from ``MemoryObservation`` which stays privacy-truncated
         and unconditionally logged.
 
+        ``retrieval_query``, if given, is what memory works on (embedding, turn class, AITS budget,
+        retrieval, temporal parse, rerank, post-turn prefetch) while ``intent`` stays the prompt and
+        what is stored. agent-coord turns pass the messages' own text: their ``intent`` is a digest
+        whose fixed instruction header dominated the search (2026-11-07: 4 of 8 test turns used 0%
+        of the injected L3).
+
         ``on_tool_summary``, if given, is called once with the turn's
         ``tool_summary`` (``""`` when no tools were used) — the same side
         channel for callers that need tool-call evidence, e.g. the
@@ -295,6 +302,7 @@ class Orchestrator:
         layers = self._layers
         analytics = self._analytics
         collector = ObservationCollector(chat_id, intent)
+        query = (retrieval_query or "").strip() or intent
         start = time.time()
         try:
             # 1. Kick off the L0/L1/L2 tier fetch concurrently with the activation
@@ -303,9 +311,9 @@ class Orchestrator:
             #    ChromaDB/BM25/GLiNER/CrossEncoder this turn.
             activation, query_emb = await asyncio.gather(
                 layers.get_activation(chat_id),
-                layers.embed_query(intent),
+                layers.embed_query(query),
             )
-            turn_state = classify_turn(intent, activation, query_emb)
+            turn_state = classify_turn(query, activation, query_emb)
             # Pre-compute topic_id and topic_return_id (pure CPU, no I/O) so that
             # _archive_turn and the post-turn prefetch use the same consistent value.
             topic_return_id: str | None = None
@@ -319,8 +327,8 @@ class Orchestrator:
                 current_topic_id = topic_return_id or str(uuid.uuid4())
             # 2. AITS dynamic budget (classify stage) — CPU, instant.
             collector.start_stage("classify")
-            confidence = calculate_confidence_from_query(intent)
-            complexity = calculate_complexity_from_query(intent)
+            confidence = calculate_confidence_from_query(query)
+            complexity = calculate_complexity_from_query(query)
             budget = calculate_intent_budget(confidence, complexity)
             collector.set_confidence(confidence)
             collector.set_complexity(complexity)
@@ -354,7 +362,7 @@ class Orchestrator:
                     warm_served = bool(l3_results)
             else:
                 l3_task = asyncio.create_task(
-                    retrieve(layers, chat_id, intent, turn_state, activation, topic_return_id)
+                    retrieve(layers, chat_id, query, turn_state, activation, topic_return_id)
                 )
             # temporal_center: parse_interval is pure/cheap (regex + dateparser,
             # no embedding model, no network) — computed unconditionally so
@@ -370,12 +378,12 @@ class Orchestrator:
             # this dedicated cheap fast-path — a single indexed ChromaDB
             # metadata-range query, not the full BM25 + dual-semantic +
             # entity-extraction pipeline.
-            temporal_interval = parse_interval(intent)
+            temporal_interval = parse_interval(query)
             temporal_center: float | None = None
             if temporal_interval is not None:
                 temporal_center = (temporal_interval[0] + temporal_interval[1]) / 2
                 if turn_state == "warm":
-                    fresh_temporal = await temporal_candidates(layers, intent, interval=temporal_interval)
+                    fresh_temporal = await temporal_candidates(layers, query, interval=temporal_interval)
                     if fresh_temporal:
                         # Rerank on this small candidate pool is cheap and worth
                         # it for quality; boost_by_entities/BM25 are skipped —
@@ -383,7 +391,7 @@ class Orchestrator:
                         # fast-path is explicitly avoiding to stay cheap.
                         groups = ([("warm", l3_results)] if l3_results else []) + [("temporal", fresh_temporal)]
                         combined = merge_results(drop_tiny_groups(groups, _mem_cfg.L3_MIN_ALNUM))[:PREFETCH_MAX_RESULTS * 2]
-                        l3_results = (await layers.rerank(intent, combined))[:PREFETCH_MAX_RESULTS]
+                        l3_results = (await layers.rerank(query, combined))[:PREFETCH_MAX_RESULTS]
                         log.info(
                             "temporal fast-path chat=%s found=%d merged_total=%d",
                             chat_id, len(fresh_temporal), len(l3_results),
@@ -605,7 +613,7 @@ class Orchestrator:
             # needs to persist it into activation for the next turn to read.
             _prefetch_bg = asyncio.create_task(
                 run_prefetch_and_save(
-                    layers, chat_id, intent, query_emb, turn_state, activation,
+                    layers, chat_id, query, query_emb, turn_state, activation,
                     topic_return_id=topic_return_id, forced_topic_id=current_topic_id,
                     turn_start=start,
                     precomputed_l3=l3_results if turn_state != "warm" else None,
