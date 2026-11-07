@@ -78,6 +78,8 @@ _DEFAULTS: dict = {
         "lexical_low": 0.10,
         "enriching_sim": 0.55,
         "lexical_window": 5,
+        # turns with fewer content words (3+ letters) never break the thread on their own — memory/turn_words.py
+        "min_words_cold": 4,
         "topic_return_threshold": 0.75,
         "topic_archive_max": 10,
     },

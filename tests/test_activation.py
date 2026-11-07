@@ -155,7 +155,7 @@ def test_classify_turn_still_colds_a_clean_orthogonal_switch():
     # genuinely orthogonal embedding (cosine 0.0) with zero lexical overlap
     # must still hard-reset.
     act = Activation(centroid=[1.0, 0.0], recent_queries=["parola de wifi"])
-    assert classify_turn("reteta de ciorba", act, [0.0, 1.0]) == "cold"
+    assert classify_turn("vreau o reteta de ciorba de burta pentru diseara", act, [0.0, 1.0]) == "cold"
 
 
 # --- classify_turn -----------------------------------------------------------
@@ -193,7 +193,7 @@ def test_classify_turn_drift_in_middle_band():
 def test_classify_turn_cold_on_consensus_shift():
     # cosine 0.0 (< cold) AND lexical 0.0 (< low) → consensus shift → cold
     act = _activation([1.0, 0.0], ["alpha beta"])
-    assert classify_turn("gamma delta", act, [0.0, 1.0]) == "cold"
+    assert classify_turn("gamma delta epsilon zeta theta", act, [0.0, 1.0]) == "cold"
 
 
 def test_classify_turn_drift_not_cold_when_only_one_signal_drops():

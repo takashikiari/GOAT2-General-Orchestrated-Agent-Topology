@@ -172,6 +172,9 @@ ACTIVATION_ENRICHING_SIM: Final[float] = float(
 ACTIVATION_LEXICAL_WINDOW: Final[int] = int(
     _activation_cfg.get("lexical_window", _DEFAULTS["activation"]["lexical_window"])
 )
+ACTIVATION_MIN_WORDS_COLD: Final[int] = int(
+    _activation_cfg.get("min_words_cold", _DEFAULTS["activation"]["min_words_cold"])
+)
 TOPIC_RETURN_THRESHOLD: Final[float] = float(
     _activation_cfg.get("topic_return_threshold", _DEFAULTS["activation"]["topic_return_threshold"])
 )
@@ -239,6 +242,7 @@ __all__ = [
     "ACTIVATION_LEXICAL_LOW",
     "ACTIVATION_ENRICHING_SIM",
     "ACTIVATION_LEXICAL_WINDOW",
+    "ACTIVATION_MIN_WORDS_COLD",
     "TOPIC_RETURN_THRESHOLD",
     "TOPIC_ARCHIVE_MAX",
     "RERANKER_ENABLED",
