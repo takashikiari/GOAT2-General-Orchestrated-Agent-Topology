@@ -105,3 +105,6 @@ memory/notes/
 memory/permanent/metric_interpretation_correction_2026-06-29.md
 openapi_letta.json
 .claude/worktrees/
+
+# old ChromaDB store from abaa16f, unused (live store is chroma_data/)
+chromadb_data/
