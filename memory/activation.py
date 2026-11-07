@@ -30,11 +30,13 @@ from memory.config import (
     ACTIVATION_ENRICHING_SIM,
     ACTIVATION_LEXICAL_LOW,
     ACTIVATION_LEXICAL_WINDOW,
+    ACTIVATION_MIN_WORDS_COLD,
     ACTIVATION_TTL_SECONDS,
     PREFETCH_RECENCY_BASE_WEIGHT,
     PREFETCH_RECENCY_RECENCY_WEIGHT,
     PREFETCH_RECENCY_WINDOW_DAYS,
 )
+from memory.turn_words import content_words
 from utils.logging.setup import get_logger
 
 if TYPE_CHECKING:
@@ -323,7 +325,12 @@ def classify_turn(query: str, activation: Activation | None, query_emb: list[flo
         if drift < ACTIVATION_DRIFT_COLD:
             lex = lexical_overlap(query, activation.recent_queries)
         if drift < ACTIVATION_DRIFT_COLD and lex < ACTIVATION_LEXICAL_LOW:
-            state = "cold"  # consensus shift — both signals dropped
+            # consensus shift — both signals dropped; a too-short message ("Da", "Ok", "Aprob") is not evidence
+            short = content_words(query) < ACTIVATION_MIN_WORDS_COLD
+            state = "drift" if short else "cold"
+            if short:
+                log.info("turn_class short-message guard: cosine=%.3f kept the thread (content words < %d)",
+                         drift, ACTIVATION_MIN_WORDS_COLD)
         elif drift >= ACTIVATION_DRIFT_WARM:
             state = "warm"
         else:
