@@ -27,6 +27,7 @@ from memory.observability_collector import ObservationCollector
 from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
+from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
 from orchestrator.llm_response import first_choice
 from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tool_loop_config import (
@@ -43,22 +44,9 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-# deepseek-v4-flash (and similar models) sometimes return tool call intent as
-# DSML markup in content instead of the standard OpenAI tool_calls field.
-# Two observed formats:
-#   - JSON body:      <｜｜DSML｜｜invoke name="tool">{"key": val}</｜｜DSML｜｜invoke>
-#   - parameter tags: <｜｜DSML｜｜invoke name="tool"><｜｜DSML｜｜parameter name="k" ...>v</...>
-_DSML_BLOCK = re.compile(
-    r"<｜｜DSML｜｜tool_calls>(.*?)</｜｜DSML｜｜tool_calls>", re.DOTALL
-)
-
-_DSML_INVOKE = re.compile(
-    r'<｜｜DSML｜｜invoke name="([^"]+)">(.*?)</｜｜DSML｜｜invoke>', re.DOTALL
-)
-_DSML_PARAM = re.compile(
-    r'<｜｜DSML｜｜parameter name="([^"]+)"\s+string="([^"]*)"[^>]*>(.*?)</｜｜DSML｜｜parameter>',
-    re.DOTALL,
-)
+# DSML tool-call markup (deepseek-v4-flash): patterns and the final strip live in
+# orchestrator/dsml.py — they accept both observed spellings (see that module).
+_DSML_BLOCK, _DSML_INVOKE, _DSML_PARAM = DSML_BLOCK, DSML_INVOKE, DSML_PARAM
 
 # When DSML markup shows up AFTER the structured tool-calls loop already hit
 # its cap (the model refusing to stop even once tools were withheld), the
@@ -526,6 +514,10 @@ class Orchestrator:
                 _t_tool_rounds += dsml_usage["latency"]
             else:
                 reply = content
+            # Last guard before history/L3/Telegram: no DSML may survive any path
+            # (plain-text branch, cap-forced synthesis, DSML round). If only markup
+            # was left, the empty-reply fallback below answers honestly instead.
+            reply = strip_dsml(reply, chat_id)
             if not reply.strip():
                 # Real, observed failure mode (2026-08-24): the model can run a
                 # full tool round (petvoyageuk_review_git etc.), gather real
@@ -952,9 +944,9 @@ class Orchestrator:
 
         # Absolute last resort — raw DSML markup must never reach the user,
         # no matter what the model does on the very last call.
-        if _DSML_BLOCK.search(reply):
+        if "DSML" in reply:
             log.warning("DSML markup survived the round cap chat=%s; stripping before reply", chat_id)
-            reply = _DSML_BLOCK.sub("", reply).strip()
+            reply = strip_dsml(reply, chat_id)
             if not reply:
                 reply = (
                     "I gathered some information but couldn't put together a clean answer "
