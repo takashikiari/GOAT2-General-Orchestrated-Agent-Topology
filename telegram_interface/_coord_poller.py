@@ -105,6 +105,12 @@ def format_digest(messages: list[dict]) -> str:
     return header + "\n\n".join(_line(m) for m in messages) + footer
 
 
+def retrieval_text(messages: list[dict]) -> str:
+    """What memory should search for on a channel turn: the messages' own text, not the digest's
+    fixed instruction header and footer (which dominated the embedding and the search)."""
+    return "\n".join(_acli.one_line(m.get("text"), _TEXT_MAX) for m in messages if m.get("text"))
+
+
 async def _loop(on_messages: OnMessages) -> None:
     while True:
         try:

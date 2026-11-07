@@ -223,12 +223,13 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         directly (2026-08-25 finding)."""
         if not admin_chat_id:
             return
-        from telegram_interface._coord_poller import format_digest
+        from telegram_interface._coord_poller import format_digest, retrieval_text
         synthetic = format_digest(messages)
         async with _chat_locks[admin_chat_id]:
             try:
                 injected: list = []
-                reply = await orchestrator.run(synthetic, admin_chat_id, on_context_assembled=injected.append)
+                reply = await orchestrator.run(synthetic, admin_chat_id, on_context_assembled=injected.append,
+                                               retrieval_query=retrieval_text(messages))
                 usage_probe.log_usage(admin_chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("coord_poller orchestrator.run() failed")
