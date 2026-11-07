@@ -95,3 +95,64 @@ def test_layers_rerank_adds_windowed_neighbours_only_when_enabled(monkeypatch):
     assert out[1]["content"] == "text n11-chunk+win" and out[1]["mechanisms"] == ["wave2"]
     monkeypatch.setattr(cfg, "L3_WAVE2", False)
     assert len(asyncio.run(layers.rerank("q", [_r("s1", 0.0, seq=10)]))) == 1
+
+
+# ── 2026-11-07: neighbours must survive the retrieval cap ─────────────────────
+
+from memory.retrieval import _cap_keep_neighbours  # noqa: E402
+
+
+def _ranked40():
+    return [_r(f"m{i}", 1.0 - i / 100, seq=10 * i) for i in range(40)]
+
+
+def _with_neighbours():
+    ranked = _ranked40()
+    pool = [_r("n1", 0, seq=1), _r("n11", 0, seq=11), _r("n21", 0, seq=21)]  # next to m0, m1, m2
+    return ranked, asyncio.run(add_neighbors(_Ep(pool), ranked, seeds=3, per_seed=2, window=2))
+
+
+def test_old_positional_cut_dropped_every_neighbour():
+    _, grown = _with_neighbours()
+    assert len(grown) == 43 and not [r for r in grown[:20] if "wave2" in r.get("mechanisms", [])]
+
+
+def test_cap_keeps_neighbours_of_surviving_seeds():
+    _, grown = _with_neighbours()
+    out = _cap_keep_neighbours(grown, 20)
+    nb = [r for r in out if "wave2" in r.get("mechanisms", [])]
+    assert {(r["metadata"]["message_id"], r["wave2_of"]) for r in nb} == {("n1", "m0"), ("n11", "m1"), ("n21", "m2")}
+
+
+def test_cap_never_reorders_or_rescores_the_original_results():
+    ranked, grown = _with_neighbours()
+    out = _cap_keep_neighbours(grown, 20)
+    base = [r for r in out if "wave2" not in r.get("mechanisms", [])]
+    assert base == ranked[:20]
+    assert [r["blended_score"] for r in base] == [r["blended_score"] for r in ranked[:20]]
+
+
+def test_neighbour_of_a_seed_below_the_cap_is_dropped():
+    ranked = _ranked40()
+    orphan = _r("x", 0.1, seq=999, mechanisms=["wave2"], wave2_of="m20")  # m20 = 21st, cut
+    out = _cap_keep_neighbours(ranked + [orphan], 20)
+    assert out == ranked[:20]
+
+
+def test_short_lists_are_returned_unchanged():
+    ranked = [_r("a", 0.9), _r("b", 0.8, mechanisms=["wave2"], wave2_of="a")]
+    assert _cap_keep_neighbours(ranked, 20) is ranked
+
+
+def test_e2e_neighbours_reach_the_l3_block_and_seed_order_is_unchanged():
+    from memory.context_assembler import assemble_blocks
+    _, grown = _with_neighbours()
+    for r in grown:
+        r["metadata"]["timestamp"] = 1_700_000_000
+    out = _cap_keep_neighbours(grown, 20)
+    prov: dict = {}
+    blocks, _ = assemble_blocks(100_000, out, {}, "id", [], 3.0, None, prov)
+    old_blocks, _ = assemble_blocks(100_000, grown[:20], {}, "id", [], 3.0, None)
+    assert prov["wave2_ranks"]
+    new_l3 = [ln for ln in blocks[-1].split("\n")[1:] if "text n" not in ln]
+    assert new_l3 == old_blocks[-1].split("\n")[1:]  # original entries: same ones, same order

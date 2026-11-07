@@ -44,6 +44,22 @@ def _ms(t0: float) -> int:
     return round((time.perf_counter() - t0) * 1000)
 _LIMIT = PREFETCH_MAX_RESULTS
 
+
+def _cap_keep_neighbours(merged: list[dict], limit: int) -> list[dict]:
+    """The top ``limit`` non-wave-2 results, plus the wave-2 neighbours of the seeds that survive.
+
+    layers.rerank appends wave-2 neighbours AFTER every reranked result (up to 2*limit), so a plain
+    ``[:limit]`` cut them all: from 2026-11-07 09:39 (l3_wave2 on) not one reached the context
+    (l3_usage wave2_ranks=[] in every turn). The original results keep their exact order and scores.
+    """
+    if len(merged) <= limit:
+        return merged
+    seeds = [r for r in merged if "wave2" not in (r.get("mechanisms") or [])]
+    neighbours = [r for r in merged if "wave2" in (r.get("mechanisms") or [])]
+    kept = seeds[:limit]
+    keep = {(r.get("metadata") or {}).get("message_id") for r in kept}
+    return kept + [n for n in neighbours if n.get("wave2_of") in keep]
+
 __all__ = ["retrieve", "temporal_candidates"]
 
 
@@ -102,7 +118,7 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
-    merged = (await layers.rerank(query, merged))[:_LIMIT]
+    merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)
     times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve drift chat=%s merged=%d temporal=%d prediction=%d",
@@ -153,7 +169,7 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     merged = merge_results(all_groups)[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
-    merged = (await layers.rerank(query, merged))[:_LIMIT]
+    merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)
     times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve cold chat=%s merged=%d bm25=%d temporal=%d",
