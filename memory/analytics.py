@@ -45,6 +45,13 @@ class MemoryAnalytics:
         self.total_tokens_l0_l1 = 0
         self.total_tokens_l2 = 0
         self.total_tokens_l3 = 0
+        # Breakdown of the prompt weight that is not memory (Laris, 2026-11-06): guidance text and tool schemas
+        # are folded into tokens_injected; the rest of tokens_prompt_api is the context re-sent on every extra
+        # LLM call of a tool round plus the tool results themselves.
+        self.total_tokens_guidance = 0
+        self.total_tokens_tools = 0
+        self.total_tokens_resent_est = 0
+        self.total_tokens_tool_results_est = 0
         self.total_results_found = 0
         self.total_results_used = 0
         self.total_latency_classify = 0.0
@@ -99,6 +106,13 @@ class MemoryAnalytics:
         self.total_tokens_l0_l1 += obs.tokens_l0_l1
         self.total_tokens_l2 += obs.tokens_l2
         self.total_tokens_l3 += obs.tokens_l3
+        self.total_tokens_guidance += obs.tokens_guidance
+        self.total_tokens_tools += obs.tokens_tools
+        # Each LLM call re-sends the injected context, so calls 2..k cost (k-1) × injected; what is left of the
+        # API prompt after k × injected is the tool results carried between rounds. Estimates, never negative.
+        calls = max(1, int(obs.llm_calls or 1))
+        self.total_tokens_resent_est += (calls - 1) * obs.tokens_injected
+        self.total_tokens_tool_results_est += max(0, obs.tokens_prompt_api - calls * obs.tokens_injected)
         self.total_results_found += obs.results_found
         self.total_results_used += obs.results_used
         self.total_latency_classify += obs.latency_classify
@@ -160,6 +174,18 @@ class MemoryAnalytics:
             "avg_tokens_l0_l1": self.total_tokens_l0_l1 / n,
             "avg_tokens_l2": self.total_tokens_l2 / n,
             "avg_tokens_l3": self.total_tokens_l3 / n,
+            # New fields only (existing ones unchanged). other = API prompt − memory tiers (L0/L1 + L2 + L3).
+            "avg_tokens_other": (self.total_tokens_prompt_api - self.total_tokens_l0_l1
+                                 - self.total_tokens_l2 - self.total_tokens_l3) / n,
+            "avg_tokens_guidance": self.total_tokens_guidance / n,
+            "avg_tokens_tools": self.total_tokens_tools / n,
+            "avg_tokens_injected_unattributed": (self.total_tokens_injected - self.total_tokens_l0_l1
+                                                 - self.total_tokens_l2 - self.total_tokens_l3
+                                                 - self.total_tokens_guidance - self.total_tokens_tools) / n,
+            "avg_tokens_resent_est": self.total_tokens_resent_est / n,
+            "avg_tokens_tool_results_est": self.total_tokens_tool_results_est / n,
+            "avg_prompt_tokens_per_llm_call": (self.total_tokens_prompt_api / self.total_llm_calls
+                                               if self.total_llm_calls else 0.0),
             "avg_results_found": self.total_results_found / n,
             "avg_results_used": self.total_results_used / n,
             "avg_latency_classify": self.total_latency_classify / n,
