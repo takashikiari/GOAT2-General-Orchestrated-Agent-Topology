@@ -13,6 +13,7 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config" / "tools.toml"
 _DEFAULTS: dict = {
     "get_recent_logs": {
         "max_lines": 500,
+        "max_chars": 15000,
     }
 }
 
@@ -31,4 +32,8 @@ GET_RECENT_LOGS_MAX_LINES: Final[int] = int(
     _cfg.get("max_lines", _DEFAULTS["get_recent_logs"]["max_lines"])
 )
 
-__all__ = ["GET_RECENT_LOGS_MAX_LINES"]
+GET_RECENT_LOGS_MAX_CHARS: Final[int] = int(
+    _cfg.get("max_chars", _DEFAULTS["get_recent_logs"]["max_chars"])
+)
+
+__all__ = ["GET_RECENT_LOGS_MAX_LINES", "GET_RECENT_LOGS_MAX_CHARS"]

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from orchestrator.tools import ToolDefinition
+from tools.get_recent_logs_config import GET_RECENT_LOGS_MAX_CHARS as _MAX_CHARS
 from tools.get_recent_logs_config import GET_RECENT_LOGS_MAX_LINES as _MAX_LINES
 from utils.logging.setup import LOG_FILE
 from utils.logging.tail import tail_log
@@ -25,8 +26,32 @@ __all__ = ["build"]
 _DESCRIPTION = (
     "Recent lines from GOAT's own log file, optionally filtered by level. "
     "Use this when the user asks to see recent logs, warnings, or errors, or "
-    "what happened recently. Returns the last N minutes (default 30)."
+    "what happened recently. Returns the last N minutes (default 30). The output is "
+    "size-capped: when it is too long the newest lines are kept and a note says how many "
+    "older lines were left out (narrow with minutes/level/limit to see them)."
 )
+
+
+def _cap_chars(lines: list[str], max_chars: int) -> str:
+    """Join ``lines`` (oldest-first), keeping the NEWEST ones that fit in ``max_chars``.
+
+    Dropped older lines are counted in a leading note. A newest line that alone exceeds the cap
+    is cut, so the result never exceeds the cap by more than the note.
+    """
+    kept: list[str] = []
+    used = 0
+    for line in reversed(lines):
+        cost = len(line) + 1
+        if used + cost > max_chars:
+            if not kept:
+                kept.append(line[:max_chars] + " [… linie tăiată]")
+            break
+        kept.append(line)
+        used += cost
+    kept.reverse()
+    omitted = len(lines) - len(kept)
+    body = "\n".join(kept)
+    return f"[… {omitted} linii mai vechi omise]\n{body}" if omitted else body
 
 
 def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
@@ -43,7 +68,7 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
             return f"(error reading log file: {exc})"
         if not matched:
             return f"(no matching log lines in the last {minutes} minute(s))"
-        return "\n".join(matched)
+        return _cap_chars(matched, _MAX_CHARS)
 
     return [ToolDefinition(
         name="get_recent_logs",
