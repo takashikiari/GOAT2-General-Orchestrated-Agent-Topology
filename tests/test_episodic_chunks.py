@@ -200,6 +200,9 @@ def test_layers_rerank_highlights_then_expands(monkeypatch):
 
     layers = object.__new__(MemoryLayers)
     layers._reranker, layers._episodic = _R(), _E()
+    # pin the flags this test is not about: the repo's memory.toml enables T7 (min 5 alnum) and wave 2
+    monkeypatch.setattr(cfg, "L3_MIN_ALNUM", 0)
+    monkeypatch.setattr(cfg, "L3_WAVE2", False)
     monkeypatch.setattr(cfg, "CHUNKS_SEARCH", False)
     monkeypatch.setattr(cfg, "CHUNKS_HIGHLIGHTS", True)
     asyncio.run(layers.rerank("q", [{"content": "doc"}]))

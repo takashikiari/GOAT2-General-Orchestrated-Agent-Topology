@@ -34,3 +34,16 @@ def test_layers_rerank_filters_before_scoring_only_when_enabled(monkeypatch):
     monkeypatch.setattr(cfg, "L3_MIN_ALNUM", 0)
     asyncio.run(layers.rerank("q", [{"content": "🤦"}]))
     assert seen[-1] == ["🤦"]
+
+
+def test_threshold_5_boundaries():
+    """T7 at l3_min_alnum = 5 (Laris, 2026-11-07): letters/digits counted, >= 5 passes."""
+    rs = [{"content": c} for c in ("Push", "Gata", "Da ok", "Ce?", "Super", "Gata!!", "Super 1", "   ", "?!... ,,")]
+    kept = [r["content"] for r in drop_tiny(rs, 5)]
+    assert kept == ["Super", "Super 1"]  # 4 ("Push", "Gata", "Da ok", "Gata!!") drops, 5 passes, 6 passes
+    assert [alnum_count(c) for c in ("Gata!!", "Super", "Super 1", "   ", "?!... ,,")] == [4, 5, 6, 0, 0]
+
+
+def test_live_config_threshold_is_5():
+    import memory.config as cfg
+    assert cfg.L3_MIN_ALNUM == 5
