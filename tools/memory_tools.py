@@ -99,6 +99,26 @@ def _with_seed_neighbours(merged: list[dict], limit: int) -> list[dict]:
     return out
 
 
+def _log_shown(chat_id: str, query: str, shown: list[dict]) -> None:
+    """Measurement only: exactly which entries the model was shown, one compact tuple per result.
+
+    The tool_result log line keeps only the first 2000 chars of the output (~3 results), so a recall miss
+    could not be told apart from an interpretation miss ("was the right entry shown and ignored?").
+    Tuple = (rank, entry time, message_id[:8], blended_score, chars shown, "w2" for a wave-2 neighbour).
+    """
+    try:
+        rows = []
+        for i, r in enumerate(shown, 1):
+            meta = r.get("metadata") or {}
+            ts = meta.get("timestamp", 0)
+            rows.append((i, datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "?",
+                         str(meta.get("message_id") or "")[:8], round(float(r.get("blended_score", 0.0)), 3),
+                         len(r.get("content") or ""), "w2" if "wave2" in (r.get("mechanisms") or []) else ""))
+        log.info("search_memory_shown chat=%s query=%r n=%d results=%s", chat_id, (query or "")[:80], len(rows), rows)
+    except Exception:  # noqa: BLE001
+        log.debug("search_memory_shown measurement failed", exc_info=True)
+
+
 def _log_wave2(chat_id: str, merged: list[dict], shown: list[dict]) -> None:
     """Measurement only: wave-2 neighbours found by this tool call vs actually shown to the model.
 
@@ -141,6 +161,7 @@ def build_search_memory_tool(memory_layers: "MemoryLayers") -> ToolDefinition:
         results = _with_seed_neighbours(merged, _LIMIT)
         log.debug("search_memory chat=%s query=%r hits=%d", chat_id, query, len(results))
         _log_wave2(chat_id, merged, results)
+        _log_shown(chat_id, query, results)
         if not results:
             return "No relevant memories found."
         return _fmt_results(results)

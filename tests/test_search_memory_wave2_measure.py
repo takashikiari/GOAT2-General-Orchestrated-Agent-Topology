@@ -71,3 +71,21 @@ def test_neighbour_of_a_seed_not_shown_is_dropped_and_parents_are_deduped():
 def test_no_neighbours_means_exactly_the_old_cut():
     orig = [_r(f"m{i}", 1 - i / 100) for i in range(9)]
     assert mt._with_seed_neighbours(orig, 5) == orig[:5]
+
+
+def test_logs_every_shown_result_compactly(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="tools.memory_tools")
+    merged = _merged()
+    out = _run(monkeypatch, merged)
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("search_memory_shown"))
+    assert "chat=c1 query='q' n=7 results=[(1, " in line
+    assert line.count("'w2')") == 2 and "(2, " in line and "(7, " in line  # all 7 shown entries, neighbours tagged
+    assert "text m0" not in line  # ids, times and sizes only, never the text
+    assert out == mt._fmt_results(mt._with_seed_neighbours(merged, mt._LIMIT))  # output to the model unchanged
+
+
+def test_shown_log_failure_never_breaks_the_tool(monkeypatch):
+    monkeypatch.setattr(mt, "datetime", None)  # anything inside the measurement may fail
+    merged = _merged()
+    monkeypatch.setattr(mt, "_fmt_results", lambda rs: "ok")
+    assert _run(monkeypatch, merged) == "ok"
