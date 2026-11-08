@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as initDataModule from '../telegram/initData'
-import { ApiError, apiGet, apiPost } from './client'
+import { ApiError, apiGet, apiPost, apiPostForm } from './client'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -54,5 +54,27 @@ describe('apiPost', () => {
     await expect(apiPost('/api/chat', { text: 'hi' })).rejects.toMatchObject({ status: 429, detail: 'too many messages waiting' })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => { throw new Error('not json') } }))
     await expect(apiPost('/api/chat')).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('apiPostForm', () => {
+  it('sends the form with the initData header and no Content-Type of its own', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, stub: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const form = new FormData()
+    form.append('duration_ms', '1200')
+    const out = await apiPostForm<{ stub: boolean }>('/api/voice', form)
+    expect(out).toEqual({ ok: true, stub: true })
+    const [path, init] = fetchMock.mock.calls[0]
+    expect(path).toBe('/api/voice')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(form)
+    expect(init.headers).toHaveProperty('X-Telegram-Init-Data')
+    expect(init.headers).not.toHaveProperty('Content-Type')
+  })
+
+  it('throws ApiError with the status and detail', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 413, json: async () => ({ detail: 'audio larger than 5242880 bytes' }) }))
+    await expect(apiPostForm('/api/voice', new FormData())).rejects.toMatchObject({ status: 413, detail: 'audio larger than 5242880 bytes' })
   })
 })

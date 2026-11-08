@@ -355,4 +355,15 @@ describe('Chat', () => {
     callbacks.forEach((cb) => cb())
     expect(writes).toEqual([])
   })
+
+  it('an empty box keeps its resting height even when the placeholder wraps (it must not grow on its own)', async () => {
+    mockGet([])
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    const box = screen.getByLabelText('Message GOAT') as HTMLTextAreaElement
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 78 }) // a three-line placeholder
+    fireEvent.change(box, { target: { value: 'x' } })
+    fireEvent.change(box, { target: { value: '' } })
+    expect(box.style.height).toBe('58px')
+  })
 })

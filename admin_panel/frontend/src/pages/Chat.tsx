@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, MouseEvent, RefObject } from 'react'
-import { ApiError, apiGet, apiPost } from '../api/client'
+import { ApiError, apiGet, apiPost, apiPostForm } from '../api/client'
 import { Banner } from '../components/Banner'
+import { MicIcon } from '../components/icons'
+import { VOICE_MAX_MS, useVoiceRecorder } from '../hooks/useVoiceRecorder'
+import type { VoiceClip } from '../hooks/useVoiceRecorder'
 import { usePolling } from '../hooks/usePolling'
 
 type ChatState = { chat_id: string | null; busy: boolean; external_busy: boolean; active_turn_id: string | null }
@@ -16,6 +19,7 @@ type TurnEvent =
   | { seq: number; ts: number; type: 'tool_end'; id: string; name: string; chars: number; ok: boolean; preview: string }
   | { seq: number; ts: number; type: 'reply'; text: string }
   | { seq: number; ts: number; type: 'error'; message: string }
+type VoiceResponse = { ok: boolean; stub?: boolean; duration_ms: number; bytes: number; content_type: string; text: string }
 type TurnView = { id: string; text: string; status: TurnStatus; reply: string | null; events: TurnEvent[] }
 
 const POLL_TURN_MS = 700
@@ -47,6 +51,13 @@ function useFillViewportHeight(ref: RefObject<HTMLElement>) {
   }, [ref])
 }
 
+const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`
+
+function audioExtension(mime: string): string {
+  const base = mime.split(';')[0].trim().toLowerCase()
+  return base === 'audio/webm' ? 'webm' : base === 'audio/mp4' ? 'm4a' : base === 'audio/ogg' ? 'ogg' : 'bin'
+}
+
 /** Fallback for the height of the 2-row message box when it cannot be measured (tests). */
 const INPUT_BASE_PX = 58
 
@@ -60,6 +71,12 @@ function useAutosize(ref: RefObject<HTMLTextAreaElement>, value: string) {
     const el = ref.current
     if (!el) return
     if (!base.current) base.current = el.offsetHeight || INPUT_BASE_PX
+    if (!value) {
+      // empty: the resting height; a wrapped placeholder must not make the box taller
+      el.style.height = `${base.current}px`
+      el.style.overflowY = 'hidden'
+      return
+    }
     el.style.height = 'auto'
     const border = el.offsetHeight - el.clientHeight
     const natural = el.scrollHeight + border
@@ -104,6 +121,7 @@ function describeError(err: unknown): string {
     if (err.status === 429) return 'Too many messages are waiting — let GOAT finish first.'
     if (err.status === 503) return 'Chat is not available on the bot right now.'
     if (err.status === 422) return err.detail || 'That message cannot be sent.'
+    if (err.status === 413 || err.status === 411) return 'That recording is too large to upload.'
   }
   return err instanceof Error ? err.message : String(err)
 }
@@ -187,6 +205,7 @@ type LocalTurn = {
 export function Chat() {
   const [text, setText] = useState('')
   const [sendError, setSendError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [turns, setTurns] = useState<LocalTurn[]>([])
   const cursors = useRef<Record<string, number>>({})
   const inFlight = useRef(false)
@@ -334,6 +353,7 @@ export function Chat() {
     const message = text.trim()
     if (!message) return
     setSendError(null)
+    setNotice(null)
     stick.current = true
     setAtBottom(true)
     try {
@@ -346,6 +366,33 @@ export function Chat() {
       setSendError(describeError(err))
     }
   }, [text, transcript])
+
+  // PROTOTYPE: the server answers a stub (text is empty) until a speech-to-text provider is connected.
+  const sendVoice = useCallback(async (clip: VoiceClip) => {
+    setSendError(null)
+    setNotice(null)
+    const form = new FormData()
+    form.append('audio', clip.blob, `voice.${audioExtension(clip.mimeType)}`)
+    form.append('duration_ms', String(Math.round(clip.durationMs)))
+    try {
+      const res = await apiPostForm<VoiceResponse>('/api/voice', form)
+      if (res.text) {
+        setText((prev) => (prev.trim() ? `${prev.trim()} ${res.text}` : res.text))
+        textareaRef.current?.focus()
+      } else {
+        const limit = clip.limitReached ? ` Stopped at the ${VOICE_MAX_MS / 1000} s limit.` : ''
+        setNotice(
+          `Voice message received (${(clip.durationMs / 1000).toFixed(1)} s, ${Math.max(1, Math.round(res.bytes / 1024))} KB). ` +
+            `Transcription is not connected yet (prototype).${limit}`,
+        )
+      }
+    } catch (err) {
+      setSendError(describeError(err))
+    }
+  }, [])
+  const voice = useVoiceRecorder(sendVoice)
+  const recording = voice.state === 'recording'
+  const problem = sendError ?? voice.error
 
   const stop = useCallback(async () => {
     const target = turns.find((t) => t.status === 'running') ?? turns.find((t) => t.status === 'queued')
@@ -434,22 +481,64 @@ export function Chat() {
       </div>
 
       <div className="relative shrink-0">
-        {sendError && (
-          <div className="absolute bottom-full left-0 right-0 z-10 mb-2">
-            <Banner kind="error" message={sendError} />
+        {(problem || notice) && (
+          <div className="absolute bottom-full left-0 right-0 z-10 mb-2 overflow-hidden rounded-lg bg-base shadow-card [&>div]:mb-0">
+            {problem && <Banner kind="error" message={problem} />}
+            {notice && !problem && <Banner kind="info" message={notice} />}
           </div>
         )}
         <div className="flex items-end gap-2">
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={onKeyDown}
-            rows={2}
-            placeholder="Message GOAT — Enter to send, Shift+Enter for a new line, Esc to stop"
-            aria-label="Message GOAT"
-            className="min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
-          />
+          <div className="relative min-w-0 flex-1">
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={onKeyDown}
+              readOnly={voice.state !== 'idle'}
+              rows={2}
+              placeholder="Message GOAT — Enter sends, Shift+Enter new line"
+              aria-label="Message GOAT"
+              className="min-h-[44px] w-full resize-none overflow-y-hidden rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
+            />
+            {voice.state !== 'idle' && (
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="voice-overlay"
+                className={`absolute inset-0 flex items-center gap-2.5 rounded-xl border bg-surface px-3 text-sm ${
+                  recording ? 'border-danger/50 text-zinc-100' : 'border-edge text-zinc-400'
+                }`}
+              >
+                {recording ? (
+                  <>
+                    <span className="h-2.5 w-2.5 shrink-0 animate-pulse-live rounded-full bg-danger shadow-[0_0_10px_rgba(248,113,113,0.8)]" />
+                    <span className="tabular-nums">
+                      Recording {clock(voice.elapsedMs)} / {clock(VOICE_MAX_MS)}
+                    </span>
+                    <span className="hidden min-w-0 truncate text-xs text-zinc-500 sm:inline">tap the mic to stop</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-500 border-t-transparent" />
+                    <span>Sending audio…</span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            aria-label={recording ? 'Stop recording' : 'Record voice message'}
+            title={recording ? 'Stop recording' : 'Record a voice message'}
+            disabled={voice.state === 'sending'}
+            onMouseDown={keepFocus}
+            onClick={voice.toggle}
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-colors disabled:opacity-40 ${
+              recording ? 'animate-pulse-live border-danger bg-danger text-base' : 'border-edge text-zinc-300 active:bg-surface2'
+            }`}
+          >
+            <MicIcon className="h-5 w-5" />
+          </button>
           <button
             type="button"
             aria-label="Stop"
