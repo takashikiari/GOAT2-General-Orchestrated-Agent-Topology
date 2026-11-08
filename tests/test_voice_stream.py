@@ -104,8 +104,8 @@ class FakeDeepgram:
 
     def stop(self) -> None:
         if self._loop and self._server:
-            self._loop.call_soon_threadsafe(self._server.close)
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            with contextlib.suppress(Exception):  # Server.close() is a coroutine: it has to run on the server's own loop
+                asyncio.run_coroutine_threadsafe(self._server.close(), self._loop).result(3)
 
 
 def _wait(cond, seconds=3.0):

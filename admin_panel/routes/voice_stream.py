@@ -3,10 +3,7 @@
 The browser streams 16 kHz mono 16-bit PCM here; this route forwards it to Deepgram's streaming API and hands back
 simple events. The Deepgram key stays on the server: the browser never sees it.
 
-Auth. A browser cannot put a header on a WebSocket handshake, so this router is mounted WITHOUT the header-based
-dependency the other routes use. The first message the page sends is ``{"type": "auth", "initData": "..."}``, checked
-with the same Telegram initData verification and the same freshness limit as the other routes that act; nothing is
-forwarded and no Deepgram connection is opened before that succeeds.
+Auth: the first message from the page is checked before anything is forwarded (see ``admin_panel.voice_ws``).
 
 Messages to the page (JSON text frames):
   {"type": "ready"}                                              Deepgram is connected, start sending audio
@@ -20,12 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
 from admin_panel import voice_config
-from admin_panel.telegram_auth import authorize_write
+from admin_panel.voice_ws import authenticate, send_error as _error
 from utils.logging.setup import get_logger
 
 router = APIRouter()
@@ -35,14 +32,6 @@ __all__ = ["router", "AUTH_TIMEOUT_SECONDS", "MAX_FRAME_BYTES"]
 
 AUTH_TIMEOUT_SECONDS = 10.0
 MAX_FRAME_BYTES = 64 * 1024  # 2 s of 16 kHz 16-bit mono is 64 KB; the page sends ~0.25 s at a time
-
-
-async def _error(ws: WebSocket, code: str, message: str, close_code: int = 1011) -> None:
-    try:
-        await ws.send_json({"type": "error", "code": code, "message": message})
-        await ws.close(code=close_code)
-    except Exception:  # noqa: BLE001 - the page may already be gone
-        pass
 
 
 def _event_for(raw: str) -> dict | None:
@@ -69,18 +58,7 @@ def _event_for(raw: str) -> dict | None:
 @router.websocket("/api/voice/stream")
 async def voice_stream(ws: WebSocket) -> None:
     await ws.accept()
-    try:
-        first = await asyncio.wait_for(ws.receive_json(), timeout=AUTH_TIMEOUT_SECONDS)
-    except (asyncio.TimeoutError, ValueError, WebSocketDisconnect, RuntimeError):
-        await _error(ws, "unauthorized", "authentication message missing", 4401)
-        return
-    if not isinstance(first, dict) or first.get("type") != "auth" or not isinstance(first.get("initData"), str):
-        await _error(ws, "unauthorized", "authentication message missing", 4401)
-        return
-    try:
-        authorize_write(first["initData"])
-    except HTTPException:
-        await _error(ws, "unauthorized", "session expired: reopen the panel from the Telegram menu button", 4401)
+    if not await authenticate(ws, AUTH_TIMEOUT_SECONDS):
         return
 
     key = voice_config.api_key()

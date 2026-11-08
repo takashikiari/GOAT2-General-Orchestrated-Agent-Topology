@@ -507,13 +507,22 @@ export function Chat() {
         )}
         <button
           type="button"
+          title="Who reads GOAT's replies aloud in a conversation: Deepgram's Romanian voice, or this device's own voice"
+          onMouseDown={keepFocus}
+          onClick={() => conversation.setVoiceKind(conversation.voiceKind === 'deepgram' ? 'browser' : 'deepgram')}
+          className="ml-auto h-7 shrink-0 rounded-full px-2 text-[11px] text-zinc-500 active:bg-surface2"
+        >
+          {conversation.voiceKind === 'deepgram' ? 'Voice: Deepgram' : 'Voice: browser'}
+        </button>
+        <button
+          type="button"
           aria-label={inConversation ? 'End voice conversation' : 'Start voice conversation'}
           aria-pressed={inConversation}
           title={inConversation ? 'End the voice conversation' : 'Talk with GOAT: it listens, answers and speaks'}
           disabled={!chatId || voice.state !== 'idle'}
           onMouseDown={keepFocus}
           onClick={inConversation ? conversation.end : conversation.start}
-          className={`ml-auto flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] transition-colors disabled:opacity-40 ${
+          className={`flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] transition-colors disabled:opacity-40 ${
             inConversation ? 'border-accent bg-accent/15 text-accent' : 'border-edge text-zinc-400 active:bg-surface2'
           }`}
         >

@@ -40,6 +40,27 @@ vi.mock('./speech', async (importActual) => {
   }
 })
 
+const remote = vi.hoisted(() => ({
+  available: false,
+  spoken: [] as string[],
+  primed: 0,
+  finish: null as null | ((r: 'ended' | 'unavailable') => void),
+  cancel: vi.fn(),
+}))
+vi.mock('./remoteVoice', () => ({
+  remoteVoiceAvailable: () => remote.available,
+  createRemoteVoice: () => ({
+    prime: () => { remote.primed++ },
+    speak: (text: string) => {
+      remote.spoken.push(text)
+      let resolve: (r: 'ended' | 'unavailable') => void = () => {}
+      const done = new Promise<'ended' | 'unavailable'>((r) => { resolve = r })
+      remote.finish = resolve
+      return { done, cancel: () => { remote.cancel(); resolve('ended') } }
+    },
+  }),
+}))
+
 import { IDLE_MS, useConversation } from './useConversation'
 
 type Turn = { id: string; status: string; reply: string | null }
@@ -61,6 +82,9 @@ beforeEach(() => {
   stream.start.mockClear(); stream.stop.mockClear(); stream.setPaused.mockClear()
   Object.assign(speech, { available: true, voice: { lang: 'ro-RO', name: 'Ioana' }, spoken: [], finish: null })
   speech.cancel.mockClear()
+  Object.assign(remote, { available: false, spoken: [], primed: 0, finish: null })
+  remote.cancel.mockClear()
+  window.localStorage.clear()
 })
 afterEach(() => vi.useRealTimers())
 
@@ -206,5 +230,91 @@ describe('useConversation', () => {
     await flush()
     expect(result.current.active).toBe(false)
     expect(result.current.error).toMatch(/permission denied/i)
+  })
+
+  describe('with the Deepgram voice', () => {
+    const reply = async (text: string) => {
+      const hook = await open()
+      await say('salut')
+      hook.rerender({ turns: [{ id: 't1', status: 'done', reply: text }] })
+      await flush()
+      return hook
+    }
+
+    it('reads the reply with Deepgram (not the browser voice), primed by the tap that started the conversation', async () => {
+      remote.available = true
+      const { result } = await reply('Gata: totul e în regulă.')
+      expect(remote.primed).toBe(1)
+      expect(remote.spoken).toEqual(['Gata: totul e în regulă.'])
+      expect(speech.spoken).toEqual([])
+      expect(result.current.phase).toBe('speaking')
+      await act(async () => { remote.finish?.('ended') })
+      await flush()
+      expect(result.current.phase).toBe('listening')
+    })
+
+    it('tapping to interrupt stops it and listens again', async () => {
+      remote.available = true
+      const { result } = await reply('Un răspuns destul de lung. Încă o propoziție.')
+      act(() => result.current.interrupt())
+      await flush()
+      expect(remote.cancel).toHaveBeenCalled()
+      expect(result.current.phase).toBe('listening')
+    })
+
+    it('falls back to the browser voice, once, with a notice, when Deepgram cannot speak', async () => {
+      remote.available = true
+      const ids = ['t1', 't2']
+      const hook = await open(vi.fn(async (_t: string) => ids.shift() as string))
+      await say('salut')
+      hook.rerender({ turns: [{ id: 't1', status: 'done', reply: 'Primul răspuns.' }] })
+      await flush()
+      await act(async () => { remote.finish?.('unavailable') })
+      await flush()
+      expect(hook.result.current.notice).toMatch(/Deepgram voice is not available/)
+      expect(speech.spoken).toEqual(['Primul răspuns.'])
+      await act(async () => { speech.finish?.() })
+      await flush()
+      expect(hook.result.current.phase).toBe('listening')
+      // the next reply goes straight to the browser voice: Deepgram is not asked again in this conversation
+      await say('încă ceva')
+      hook.rerender({ turns: [{ id: 't1', status: 'done', reply: 'Primul răspuns.' }, { id: 't2', status: 'done', reply: 'Al doilea răspuns.' }] })
+      await flush()
+      expect(remote.spoken).toEqual(['Primul răspuns.'])
+      expect(speech.spoken).toEqual(['Primul răspuns.', 'Al doilea răspuns.'])
+    })
+
+    it('says both things when Deepgram failed and the device has no voice to fall back on', async () => {
+      remote.available = true
+      speech.voice = null
+      const { result } = await reply('Răspuns.')
+      await act(async () => { remote.finish?.('unavailable') })
+      await flush()
+      expect(result.current.notice).toMatch(/Deepgram voice is not available right now and no Romanian voice/)
+      expect(result.current.phase).toBe('listening')
+    })
+
+    it('uses the browser voice when the device cannot play Deepgram audio', async () => {
+      remote.available = false
+      await reply('Răspuns.')
+      expect(speech.spoken).toEqual(['Răspuns.'])
+    })
+
+    it('the voice choice is remembered and decides who speaks', async () => {
+      remote.available = true
+      const first = await open()
+      expect(first.result.current.voiceKind).toBe('deepgram')
+      act(() => first.result.current.setVoiceKind('browser'))
+      expect(first.result.current.voiceKind).toBe('browser')
+      expect(window.localStorage.getItem('goat.voice')).toBe('browser')
+      await say('salut')
+      first.rerender({ turns: [{ id: 't1', status: 'done', reply: 'Cu vocea browserului.' }] })
+      await flush()
+      expect(speech.spoken).toEqual(['Cu vocea browserului.'])
+      expect(remote.spoken).toEqual([])
+      first.unmount()
+      const again = renderHook(() => useConversation({ turns: [], submit: async () => null }))
+      expect(again.result.current.voiceKind).toBe('browser')
+    })
   })
 })

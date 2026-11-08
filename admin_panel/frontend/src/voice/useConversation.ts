@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createRemoteVoice, remoteVoiceAvailable } from './remoteVoice'
+import type { RemoteVoice } from './remoteVoice'
 import { pickVoice, speak, speechAvailable, toSpeakable } from './speech'
-import type { Speaking } from './speech'
 import { useVoiceStream } from './useVoiceStream'
 
 export type Phase = 'connecting' | 'listening' | 'thinking' | 'speaking'
+/** Who reads GOAT's reply aloud: Deepgram's Romanian voice (through the panel), or the browser's own voice (free). */
+export type VoiceKind = 'deepgram' | 'browser'
+const VOICE_KEY = 'goat.voice'
+
+function savedVoice(): VoiceKind {
+  try {
+    return window.localStorage.getItem(VOICE_KEY) === 'browser' ? 'browser' : 'deepgram'
+  } catch {
+    return 'deepgram'
+  }
+}
 type TurnLike = { id: string; status: string; reply: string | null }
 
 /** No speech for this long ends the conversation (the microphone and the streaming are billed per second). */
@@ -21,11 +33,15 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
   const [muted, setMuted] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
+  const [voiceKind, setVoiceKindState] = useState<VoiceKind>(savedVoice)
+  const voiceKindRef = useRef<VoiceKind>(voiceKind)
   const phaseRef = useRef<Phase>('connecting')
   const mutedRef = useRef(false)
   const activeRef = useRef(false)
   const pending = useRef<string | null>(null)
-  const speaking = useRef<Speaking | null>(null)
+  const speaking = useRef<{ cancel: () => void } | null>(null)
+  const remote = useRef<RemoteVoice | null>(null)
+  const remoteDown = useRef(false)
   const idle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const noVoiceTold = useRef(false)
   const onUtterance = useRef<(text: string) => void>(() => {})
@@ -100,16 +116,41 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     async (reply: string) => {
       const text = toSpeakable(reply)
       if (!text) return resume()
+      goTo('speaking')
+      if (voiceKindRef.current === 'deepgram' && remote.current && !remoteDown.current) {
+        const spoken = remote.current.speak(text)
+        speaking.current = spoken
+        const result = await spoken.done
+        if (speaking.current === spoken) speaking.current = null
+        if (!activeRef.current) return
+        if (result === 'ended') {
+          if (phaseRef.current === 'speaking') resume()
+          return
+        }
+        remoteDown.current = true
+        setNotice('The Deepgram voice is not available right now; using the browser voice.')
+      }
       if (!speechAvailable()) {
-        if (!noVoiceTold.current) setNotice('This browser cannot speak; GOAT answers in the chat.')
+        if (!noVoiceTold.current) {
+          setNotice(
+            remoteDown.current
+              ? 'The Deepgram voice is not available right now and this browser cannot speak; GOAT answers in the chat.'
+              : 'This browser cannot speak; GOAT answers in the chat.',
+          )
+        }
         noVoiceTold.current = true
         return resume()
       }
-      goTo('speaking')
       const voice = await pickVoice('ro')
       if (!activeRef.current) return
       if (!voice) {
-        if (!noVoiceTold.current) setNotice('No Romanian voice is installed on this device, so GOAT answers in the chat only.')
+        if (!noVoiceTold.current) {
+          setNotice(
+            remoteDown.current
+              ? 'The Deepgram voice is not available right now and no Romanian voice is installed on this device, so GOAT answers in the chat only.'
+              : 'No Romanian voice is installed on this device, so GOAT answers in the chat only.',
+          )
+        }
         noVoiceTold.current = true
         return resume()
       }
@@ -173,6 +214,10 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     if (activeRef.current) return
     setNotice(null)
     noVoiceTold.current = false
+    remoteDown.current = false
+    // created and primed here, inside the tap that starts the conversation, so the browser lets it play later
+    remote.current = remoteVoiceAvailable() ? createRemoteVoice() : null
+    remote.current?.prime()
     mutedRef.current = false
     setMuted(false)
     activeRef.current = true
@@ -188,6 +233,16 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     if (phaseRef.current === 'listening') streamSetPaused(next)
   }, [streamSetPaused])
 
+  const setVoiceKind = useCallback((kind: VoiceKind) => {
+    voiceKindRef.current = kind
+    setVoiceKindState(kind)
+    try {
+      window.localStorage.setItem(VOICE_KEY, kind)
+    } catch {
+      /* private mode: the choice just lasts until the page is closed */
+    }
+  }, [])
+
   const interrupt = useCallback(() => {
     if (phaseRef.current === 'speaking') speaking.current?.cancel()
   }, [])
@@ -200,6 +255,8 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     error: stream.error,
     notice,
     elapsedMs,
+    voiceKind,
+    setVoiceKind,
     start,
     end: () => finish(),
     toggleMute,

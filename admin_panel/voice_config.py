@@ -1,4 +1,4 @@
-"""admin_panel.voice_config — where the speech-to-text provider (Deepgram) is and how it is called.
+"""admin_panel.voice_config — where the speech provider (Deepgram: speech-to-text and text-to-speech) is and how it is called.
 
 The API key is read from the environment at call time (``DEEPGRAM_API_KEY``, from GOAT's ``.env``, never from the
 browser and never logged). Everything else has a default and can be overridden by environment variables, which is also
@@ -9,11 +9,19 @@ from __future__ import annotations
 import os
 from urllib.parse import urlencode
 
-__all__ = ["api_key", "http_listen_url", "ws_listen_url", "MODEL", "LANGUAGE", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS"]
+__all__ = [
+    "api_key", "http_listen_url", "ws_listen_url", "ws_speak_url", "tts_enabled", "MODEL", "LANGUAGE", "TTS_MODEL",
+    "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
+]
 
 # Nova-3 supports Romanian ("ro"); Flux (the conversational turn-taking model) does not.
 MODEL = os.environ.get("DEEPGRAM_MODEL", "nova-3")
 LANGUAGE = os.environ.get("DEEPGRAM_LANGUAGE", "ro")
+# Flux TTS is the only Deepgram text-to-speech with Romanian (Aura and Aura-2 have none): flux-ioana-ro female, flux-cosmin-ro male.
+TTS_MODEL = os.environ.get("DEEPGRAM_TTS_MODEL", "flux-ioana-ro")
+TTS_SAMPLE_RATE = 24000            # Hz, 16-bit mono PCM: what the server asks Deepgram for and tells the page
+TTS_MAX_CHARS = 1000               # one reply (the page already cuts it to about 700)
+MAX_SPEAK_SECONDS = 90             # hard cap on one spoken reply, whatever Deepgram does
 KEEPALIVE_SECONDS = 4.0            # Deepgram closes a stream after 10 s without audio or a KeepAlive
 MAX_STREAM_SECONDS = 30 * 60       # hard cap on one streaming session, whatever the page does
 
@@ -42,3 +50,14 @@ def ws_listen_url() -> str:
         "smart_format": "true", "punctuate": "true",
     }
     return f"{base}?{urlencode(params)}"
+
+
+def ws_speak_url() -> str:
+    """Live text-to-speech (Flux TTS): text in, raw 16-bit PCM out as it is generated."""
+    base = os.environ.get("DEEPGRAM_SPEAK_URL", "wss://api.deepgram.com/v2/speak")
+    return f"{base}?{urlencode({'model': TTS_MODEL, 'encoding': 'linear16', 'sample_rate': str(TTS_SAMPLE_RATE)})}"
+
+
+def tts_enabled() -> bool:
+    """Deepgram voice-back is on when there is a key, unless ``DEEPGRAM_TTS=off`` (the page then uses the browser voice)."""
+    return api_key() is not None and os.environ.get("DEEPGRAM_TTS", "on").strip().lower() not in ("off", "0", "false", "no")
