@@ -12,7 +12,7 @@ import re
 
 from memory.temporal_route import CHANNEL_DIGEST_PREFIX
 
-__all__ = ["is_digest", "parse_digest", "split_conversation"]
+__all__ = ["is_digest", "parse_digest", "split_conversation", "split_tools"]
 
 # "[from -> to][ [alertă supraveghetor]][ ⚠ origine reală: host] „text”", one message per line
 _LINE = re.compile(r"^\[(?P<frm>[^\]]*?) -> (?P<to>[^\]]*?)\](?P<mid>[^„\n]*)„(?P<text>.*)”\s*$")
@@ -51,12 +51,22 @@ def parse_digest(content: str) -> list[dict]:
 
 
 def _split_tools(content: str) -> tuple[str | None, str]:
-    """GOAT's stored replies start with "[Tool calls]\\n<summary>\\n\\n<reply>" when tools ran."""
-    if content.startswith(_TOOLS_HEAD):
-        end = content.find("\n\n")
-        if end > 0:
-            return content[len(_TOOLS_HEAD):end], content[end + 2:]
-    return None, content
+    """GOAT's stored replies start with "[Tool calls]\\n<summary>\\n\\n<reply>" when tools ran.
+
+    The reply starts at the first blank line after the LAST evidence line ("called …"): older summaries copied
+    multi-line tool output (blank lines included), so the first blank line could fall inside the evidence and leak
+    tool output into the reply (2026-11-08: a .gitignore's "# Virtual ..." showed up as a heading in the panel).
+    """
+    if not content.startswith(_TOOLS_HEAD):
+        return None, content
+    body = content[len(_TOOLS_HEAD):]
+    last = 0
+    for m in re.finditer(r"(?m)^called ", body):
+        last = m.start()
+    end = body.find("\n\n", last)
+    if end < 0:
+        return body, ""
+    return body[:end], body[end + 2:]
 
 
 def split_conversation(messages: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -81,3 +91,8 @@ def split_conversation(messages: list[dict]) -> tuple[list[dict], list[dict]]:
         })
         i += 2 if reply is not None else 1
     return chat, agent
+
+
+def split_tools(content: str) -> tuple[str | None, str]:
+    """Public: (tool evidence or None, the reply as it was sent) for a stored GOAT reply."""
+    return _split_tools(content)

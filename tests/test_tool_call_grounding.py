@@ -184,7 +184,7 @@ def test_compact_tool_summary_short_result_stored_in_full():
     from orchestrator.orchestrator import _compact_tool_summary
 
     result = _compact_tool_summary([("shell_run", '{"command":"echo hi"}', "hi\n")])
-    assert "hi\n" in result
+    assert "→ hi" in result
     assert "shell_run" in result
     assert "echo hi" in result
 
@@ -211,8 +211,22 @@ def test_compact_tool_summary_shell_run_long_uses_head_and_tail():
     result = _compact_tool_summary([("shell_run", '{"command":"wc -l *.py"}', long_output)])
 
     # Head must be present (first _RESULT_HEAD chars)
-    assert long_output[:_RESULT_HEAD] in result, "head of output missing"
+    def one_line(text):
+        return " ⏎ ".join(text.split("\n"))
+    assert one_line(long_output[:_RESULT_HEAD]) in result, "head of output missing"
     # Tail must be present (last _RESULT_TAIL chars) — captures the total line
-    assert long_output[-_RESULT_TAIL:] in result, "tail of output missing (totals line cut off)"
+    assert one_line(long_output[-_RESULT_TAIL:]) in result, "tail of output missing (totals line cut off)"
     # The '...' separator must be present
     assert "..." in result
+
+
+def test_compact_tool_summary_is_one_line_per_call_so_no_blank_line_hides_the_reply():
+    """A multi-line result (a .gitignore with blank lines) stays on its call's line: the stored message is
+    "[Tool calls]\\n<summary>\\n\\n<reply>", so a blank line inside the summary would be read as the reply's start."""
+    from orchestrator.orchestrator import _compact_tool_summary
+
+    gitignore = "# Virtual environments\nvenv/\n\n# Logs\r\nlogs/\n"
+    result = _compact_tool_summary([("repo_git", '{"op":"show"}', gitignore), ("shell_run", '{"command":"ls"}', "a\n\nb")])
+    assert "\n\n" not in result
+    assert result.count("\n") == 1 and all(line.startswith("called ") for line in result.split("\n"))
+    assert "# Virtual environments ⏎ venv/ ⏎  ⏎ # Logs ⏎ logs/" in result

@@ -72,8 +72,9 @@ def test_chat_history_has_the_conversation_and_no_agent_coord_turns(make):
         body = c.get("/api/chat/history", headers=_headers()).json()
     assert wm.asked == ["42"]
     assert body["chat_id"] == "42"
-    assert [(m["role"], m["content"]) for m in body["messages"]] == [("user", "salut"), ("assistant", "[Tool calls]\ncalled x({})\n\nbună")]
-    assert set(body["messages"][0]) == {"role", "content", "timestamp"}
+    assert [(m["role"], m["content"]) for m in body["messages"]] == [("user", "salut"), ("assistant", "bună")]
+    assert body["messages"][1]["tools"] == "called x({})" and body["messages"][0]["tools"] is None
+    assert set(body["messages"][0]) == {"role", "content", "tools", "timestamp"}
 
 
 def test_agents_has_only_the_agent_coord_turns(make):

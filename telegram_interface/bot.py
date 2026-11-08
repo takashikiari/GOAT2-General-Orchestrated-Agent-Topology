@@ -32,6 +32,7 @@ from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
 from memory import usage_probe
 from telegram_interface import tg_format
+from telegram_interface.panel_mirror import mirror_panel_turn
 from tools.memory_manager import build_memory_manager_tools
 from tools.identity_tool import build_set_identity_tool
 from tools.memory_promote import build_promote_memory_tool
@@ -218,6 +219,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     # Telegram and the panel are one conversation and two turns never overlap (see orchestrator.chat_service).
     registry.chat_service = ChatService(
         run=orchestrator.run, locks=_chat_locks, chat_id=load_admin_chat_id, log_usage=usage_probe.log_usage,
+        mirror=mirror_panel_turn,
     )
 
     admin_chat_id = load_admin_chat_id()

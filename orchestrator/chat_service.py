@@ -58,9 +58,12 @@ class ChatService:
     def __init__(
         self, *, run: Callable[..., Awaitable[str]], locks: MutableMapping[str, asyncio.Lock],
         chat_id: Callable[[], str | None], log_usage: Callable[[str, object, str], object] | None = None,
+        mirror: Callable[[str, str, str], Awaitable[None]] | None = None,
         max_turns: int = 20, max_queue: int = 3, max_text: int = 8000,
     ) -> None:
         self._run, self._locks, self._chat_id, self._log_usage = run, locks, chat_id, log_usage
+        # mirror(chat_id, role, text): copies a panel turn to Telegram so both show the same conversation
+        self._mirror = mirror
         self._max_turns, self._max_queue, self._max_text = max_turns, max_queue, max_text
         self._turns: dict[str, Turn] = {}
 
@@ -115,6 +118,7 @@ class ChatService:
             async with lock:
                 turn.status = "running"
                 turn.add("started")
+                await self._mirror_safely(chat_id, "user", turn.text)
                 injected: list = []
                 token = turn_events.bind(lambda ev: self._on_event(turn, ev))
                 try:
@@ -125,6 +129,7 @@ class ChatService:
             turn.reply = reply if reply and reply.strip() else _EMPTY_TEXT
             turn.status = "done"
             turn.add("reply", text=turn.reply)
+            await self._mirror_safely(chat_id, "assistant", turn.reply)
         except asyncio.CancelledError:
             turn.status = "cancelled"
             turn.add("cancelled")
@@ -144,6 +149,15 @@ class ChatService:
             result = result if isinstance(result, str) else str(result)
             turn.add("tool_end", id=ev.get("id"), name=ev.get("name"), chars=len(result),
                      ok=not result.lstrip().startswith('{"error"'), preview=_cut(result))
+
+    async def _mirror_safely(self, chat_id: str, role: str, text: str) -> None:
+        """Telegram copy of a panel message; a Telegram failure never fails or delays the panel turn's result."""
+        if self._mirror is None:
+            return
+        try:
+            await self._mirror(chat_id, role, text)
+        except Exception:  # noqa: BLE001
+            log.warning("panel chat: Telegram mirror failed role=%s", role, exc_info=True)
 
     def _record_usage(self, chat_id: str, injected: list, reply: str) -> None:
         if self._log_usage is None:

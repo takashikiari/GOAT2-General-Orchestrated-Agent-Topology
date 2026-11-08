@@ -5,7 +5,7 @@ from __future__ import annotations
 import redis.exceptions
 from fastapi import APIRouter, Request
 
-from admin_panel.coord_feed import split_conversation
+from admin_panel.coord_feed import split_conversation, split_tools
 from config.admin_chat import load_admin_chat_id
 from utils.logging.setup import get_logger
 
@@ -36,9 +36,13 @@ def _with_warnings(body: dict, warnings: list[str]) -> dict:
 async def chat_history(request: Request) -> dict:
     chat_id, stored, warnings = await _stored(request)
     chat, _ = split_conversation(stored)
-    messages = [
-        {"role": m.get("role", ""), "content": m.get("content") or "", "timestamp": m.get("timestamp", 0)} for m in chat
-    ]
+    messages = []
+    for m in chat:
+        content = m.get("content") or ""
+        tools = None
+        if m.get("role") == "assistant":  # what Telegram showed: the reply, without GOAT's [Tool calls] evidence
+            tools, content = split_tools(content)
+        messages.append({"role": m.get("role", ""), "content": content, "tools": tools, "timestamp": m.get("timestamp", 0)})
     return _with_warnings({"chat_id": chat_id, "messages": messages}, warnings)
 
 

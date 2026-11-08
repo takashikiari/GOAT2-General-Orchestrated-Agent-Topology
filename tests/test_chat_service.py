@@ -217,3 +217,50 @@ def test_old_turns_are_dropped_beyond_max_turns():
             await _until(lambda: svc.get(t.id)["status"] == "done")
         assert svc.get(ids[0]) is None and svc.get(ids[-1]) is not None
     asyncio.run(main())
+
+
+def _mirror(seen, fail=False):
+    async def mirror(chat_id, role, text):
+        seen.append((chat_id, role, text))
+        if fail:
+            raise RuntimeError("telegram down")
+    return mirror
+
+
+def test_a_panel_turn_is_mirrored_to_telegram_message_then_reply():
+    async def main():
+        seen = []
+        svc = _svc(_Run(), mirror=_mirror(seen))
+        turn = svc.submit("din panou")
+        await _until(lambda: svc.get(turn.id)["status"] == "done")
+        assert seen == [("42", "user", "din panou"), ("42", "assistant", "re: din panou")]
+    asyncio.run(main())
+
+
+def test_a_telegram_failure_does_not_fail_the_panel_turn():
+    async def main():
+        seen = []
+        svc = _svc(_Run(), mirror=_mirror(seen, fail=True))
+        turn = svc.submit("x")
+        await _until(lambda: svc.get(turn.id)["status"] == "done")
+        assert svc.get(turn.id)["reply"] == "re: x" and [r for _, r, _ in seen] == ["user", "assistant"]
+    asyncio.run(main())
+
+
+def test_no_reply_is_mirrored_for_a_failed_or_cancelled_turn():
+    async def main():
+        seen = []
+        svc = _svc(_Run(fail=True), mirror=_mirror(seen))
+        turn = svc.submit("x")
+        await _until(lambda: svc.get(turn.id)["status"] == "error")
+        assert [r for _, r, _ in seen] == ["user"]
+
+        seen2 = []
+        run = _Run(gate=True)
+        svc2 = _svc(run, mirror=_mirror(seen2))
+        t2 = svc2.submit("lung")
+        await _until(lambda: svc2.get(t2.id)["status"] == "running")
+        svc2.cancel(t2.id)
+        await _until(lambda: svc2.get(t2.id)["status"] == "cancelled")
+        assert [r for _, r, _ in seen2] == ["user"]
+    asyncio.run(main())
