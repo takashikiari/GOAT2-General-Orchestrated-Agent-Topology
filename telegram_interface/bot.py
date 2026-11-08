@@ -27,6 +27,7 @@ _ROOT = Path(__file__).parent.parent
 from config import settings
 from config.admin_chat import load_admin_chat_id
 from memory.config import WORKING_STORAGE_URL
+from orchestrator.chat_service import ChatService
 from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
 from memory import usage_probe
@@ -211,6 +212,12 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         plugin_manager=registry.plugin_manager,
         analytics=registry.memory_analytics,
         tools=[search_memory, store_memory, promote_memory, set_identity, *manager_tools, *workflow_tools],
+    )
+
+    # The admin panel chat talks to THIS orchestrator, under the same per-chat locks as the handlers below, so
+    # Telegram and the panel are one conversation and two turns never overlap (see orchestrator.chat_service).
+    registry.chat_service = ChatService(
+        run=orchestrator.run, locks=_chat_locks, chat_id=load_admin_chat_id, log_usage=usage_probe.log_usage,
     )
 
     admin_chat_id = load_admin_chat_id()
