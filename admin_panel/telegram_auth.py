@@ -16,11 +16,11 @@ from urllib.parse import parse_qsl
 
 from fastapi import Header, HTTPException
 
-from admin_panel.auth_config import AUTH_MAX_AGE_SECONDS
+from admin_panel.auth_config import AUTH_MAX_AGE_SECONDS, AUTH_WRITE_MAX_AGE_SECONDS
 from config import settings
 from config.admin_chat import load_admin_chat_id
 
-__all__ = ["verify_init_data", "require_admin_auth"]
+__all__ = ["verify_init_data", "require_admin_auth", "require_admin_write_auth"]
 
 
 def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> dict | None:
@@ -59,10 +59,8 @@ def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> di
     return result
 
 
-async def require_admin_auth(
-    x_telegram_init_data: str | None = Header(default=None),
-) -> dict:
-    """FastAPI dependency: 401s unless x_telegram_init_data is valid AND belongs to admin_chat_id.
+def _authorize(x_telegram_init_data: str | None, max_age_seconds: int) -> dict:
+    """401s unless x_telegram_init_data is valid (at most max_age_seconds old) AND belongs to admin_chat_id.
 
     Deliberately different from telegram_interface.bot's _is_admin: an
     unconfigured admin_chat_id here means DENY everyone, not allow everyone
@@ -78,7 +76,7 @@ async def require_admin_auth(
         # build_app raises InvalidToken on an empty token before this hook ever
         # runs — but treat "unconfigured" as "deny", same as admin_chat_id below.
         raise HTTPException(status_code=401, detail="admin panel not configured")
-    parsed = verify_init_data(x_telegram_init_data, settings.TELEGRAM_BOT_TOKEN, AUTH_MAX_AGE_SECONDS)
+    parsed = verify_init_data(x_telegram_init_data, settings.TELEGRAM_BOT_TOKEN, max_age_seconds)
     if parsed is None:
         raise HTTPException(status_code=401, detail="invalid or expired initData")
     user = parsed.get("user")
@@ -86,3 +84,18 @@ async def require_admin_auth(
     if not admin_chat_id or not isinstance(user, dict) or str(user.get("id")) != admin_chat_id:
         raise HTTPException(status_code=401, detail="unauthorized user")
     return parsed
+
+
+async def require_admin_auth(
+    x_telegram_init_data: str | None = Header(default=None),
+) -> dict:
+    """FastAPI dependency for read routes: see ``_authorize``; initData may be up to AUTH_MAX_AGE_SECONDS old."""
+    return _authorize(x_telegram_init_data, AUTH_MAX_AGE_SECONDS)
+
+
+async def require_admin_write_auth(
+    x_telegram_init_data: str | None = Header(default=None),
+) -> dict:
+    """FastAPI dependency for routes that act (chat): same checks, but initData must be fresher
+    (AUTH_WRITE_MAX_AGE_SECONDS), because these routes can make GOAT run tools."""
+    return _authorize(x_telegram_init_data, AUTH_WRITE_MAX_AGE_SECONDS)

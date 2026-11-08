@@ -41,6 +41,7 @@ from orchestrator.tool_loop_config import (
     TOOL_RESULT_TAIL_CHARS,
     TOOL_ROUND_MAX_OUTPUT_CHARS,
 )
+from orchestrator import turn_events
 from orchestrator.tools import ToolDefinition
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
@@ -977,6 +978,13 @@ class Orchestrator:
         return reply, _compact_tool_summary(calls_and_results), stored_contents, round_usage
 
     async def _call_tool(self, tc, chat_id: str, tools: list[ToolDefinition]) -> str:
+        """Run one tool call and report it to the turn's live listener (admin panel chat), if any."""
+        turn_events.emit({"type": "tool_start", "id": tc.id, "name": tc.function.name, "args": tc.function.arguments})
+        result = await self._call_tool_inner(tc, chat_id, tools)
+        turn_events.emit({"type": "tool_end", "id": tc.id, "name": tc.function.name, "result": result})
+        return result
+
+    async def _call_tool_inner(self, tc, chat_id: str, tools: list[ToolDefinition]) -> str:
         """Dispatch a tool call. Returns str(result) or JSON {"error": ...} on failure.
 
         The current ``chat_id`` is injected into the handler kwargs so tools

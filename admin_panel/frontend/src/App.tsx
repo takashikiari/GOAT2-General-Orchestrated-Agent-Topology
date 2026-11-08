@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { apiGet } from './api/client'
 import {
+  ChatIcon,
   CloseIcon,
   ConversationsIcon,
   DashboardIcon,
@@ -12,17 +13,19 @@ import {
 } from './components/icons'
 import { useIsMobile } from './hooks/useIsMobile'
 import { usePolling } from './hooks/usePolling'
+import { Chat } from './pages/Chat'
 import { Conversations } from './pages/Conversations'
 import { Dashboard } from './pages/Dashboard'
 import { Live } from './pages/Live'
 import { Logs } from './pages/Logs'
 import { Memory } from './pages/Memory'
 
-type Tab = 'live' | 'dashboard' | 'logs' | 'memory' | 'conversations'
+type Tab = 'live' | 'chat' | 'dashboard' | 'logs' | 'memory' | 'conversations'
 type IconComponent = (props: { className?: string }) => ReactNode
 
 const TABS: { id: Tab; label: string; Icon: IconComponent }[] = [
   { id: 'live', label: 'Live', Icon: LiveIcon },
+  { id: 'chat', label: 'Chat', Icon: ChatIcon },
   { id: 'dashboard', label: 'Dashboard', Icon: DashboardIcon },
   { id: 'logs', label: 'Logs', Icon: LogsIcon },
   { id: 'memory', label: 'Memory', Icon: MemoryIcon },
@@ -167,6 +170,7 @@ export default function App() {
               activeTab === id && (
                 <div key={id} data-testid={`panel-${id}`} className="animate-fade-in">
                   {id === 'live' && <Live />}
+                  {id === 'chat' && <Chat />}
                   {id === 'dashboard' && <Dashboard />}
                   {id === 'logs' && <Logs />}
                   {id === 'memory' && <Memory />}
