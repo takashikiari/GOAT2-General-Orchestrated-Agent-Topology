@@ -2,9 +2,10 @@
 
 Flux's Romanian voices (Early Access) do not normalise text: digits, times, dates and percentages are not read
 properly. ``normalize`` writes them out in words before the text is sent. It covers whole numbers up to 999 999 999,
-decimals, percentages, ``HH:MM`` times and ``DD.MM.YYYY`` dates; anything else is left as it is.
+decimals, percentages, ``HH:MM`` times, ``DD.MM.YYYY`` and ``YYYY-MM-DD`` dates; anything else is left as it is.
 
-Limit: the gender of 1 and 2 is not inferred from the noun that follows ("2 ore" is read "doi", not "două").
+A 1 or a 2 right before a word takes that word's gender, guessed from its ending ("1 fișier" → "un fișier", "1 eroare"
+→ "o eroare", "2 erori" → "două erori"). Limit: "2" before a masculine person ("2 băieți") is still read "două".
 """
 from __future__ import annotations
 
@@ -89,11 +90,21 @@ def _plain_int(s: str) -> str:
 
 
 _DATE = re.compile(r"(?<![\d.])(\d{1,2})[./](\d{1,2})[./](\d{4})(?![\d.])")
+_ISO_DATE = re.compile(r"(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?![\d-])")
 _TIME = re.compile(r"(?<![\d:.])(\d{1,2}):(\d{2})(?![\d:])")
 _PERCENT = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)\s*%")
 _DECIMAL = re.compile(r"(?<![\w.,/:-])(\d+)(?:,(\d+)|\.(\d{1,2}))(?![\w-]|[.,]\d)")
 _THOUSANDS = re.compile(r"(?<![\w.,/:-])\d{1,3}(?:\.\d{3})+(?![\w.,/:-])")
 _INTEGER = re.compile(r"(?<![\w.,/:-])\d+(?![\w/:-]|[.,]\d)")
+_ONE_TWO = re.compile(r"(?<![\w.,/:-])([12])[ ]+([^\W\d_]+)(?![\w/:-]|[.,]\d)")
+# words after a 1 or a 2 that do not tell its gender ("între 1 și 2", "1 sau 2", "1 la 1")
+_LINKS = {
+    "și", "sau", "la", "din", "de", "cu", "în", "pe", "până", "dar", "iar", "ori", "a", "ca", "față", "spre", "către",
+    "e", "este", "sunt", "nu", "au", "era", "va", "să", "se", "mai", "ar", "fi", "are", "am",
+}
+# feminine singular nouns that do not end in -ă / -e, and neuter ones that end in -e
+_FEMININE = {"zi", "noapte", "sesiune"}
+_NEUTER_IN_E = {"nume", "munte", "părinte", "frate", "câine"}
 
 
 def _date(m: re.Match[str]) -> str:
@@ -114,6 +125,32 @@ def _decimal_words(whole: str, frac: str) -> str:
     return f"{number_to_words(int(whole))} virgulă {_digits(frac)}"
 
 
+def _iso_date(m: re.Match[str]) -> str:
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return m.group(0)
+    return f"{'întâi' if day == 1 else number_to_words(day)} {_MONTHS[month - 1]} {number_to_words(year)}"
+
+
+def _one_or_two(m: re.Match[str]) -> str:
+    """"1 fișier" → "un fișier", "1 eroare" → "o eroare", "2 erori" → "două erori"; before a link word, left for the plain pass."""
+    number, word = m.group(1), m.group(2)
+    if word.lower() in _LINKS:
+        return m.group(0)
+    if number == "2":
+        return f"două {word}"
+    feminine = word.lower() in _FEMININE or (word.lower().endswith(("ă", "e")) and word.lower() not in _NEUTER_IN_E)
+    return f"{'o' if feminine else 'un'} {word}"
+
+
+_CONTRACTED = re.compile(r"\b(în|din) (un|o)\b(?= )", re.IGNORECASE)
+
+
+def _contract(m: re.Match[str]) -> str:
+    """"în un fișier" → "într-un fișier", "din o zi" → "dintr-o zi" (what a 1 turned into after "în" or "din")."""
+    return f"{'într' if m.group(1).lower() == 'în' else 'dintr'}-{m.group(2)}"
+
+
 def _percent(m: re.Match[str]) -> str:
     value = m.group(1)
     sep = "," if "," in value else "."
@@ -126,8 +163,10 @@ def _percent(m: re.Match[str]) -> str:
 def normalize(text: str) -> str:
     """``text`` with dates, times, percentages, decimals and numbers written in words."""
     text = _DATE.sub(_date, text)
+    text = _ISO_DATE.sub(_iso_date, text)
     text = _TIME.sub(_time, text)
     text = _PERCENT.sub(_percent, text)
     text = _DECIMAL.sub(lambda m: _decimal_words(m.group(1), m.group(2) or m.group(3)), text)
     text = _THOUSANDS.sub(lambda m: number_to_words(int(m.group(0).replace(".", ""))), text)
+    text = _CONTRACTED.sub(_contract, _ONE_TWO.sub(_one_or_two, text))
     return _INTEGER.sub(lambda m: _plain_int(m.group(0)), text)

@@ -206,6 +206,8 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     () => () => {
       clearIdle()
       speaking.current?.cancel()
+      remote.current?.close()
+      remote.current = null
     },
     [clearIdle],
   )
@@ -215,8 +217,8 @@ export function useConversation({ turns, submit }: { turns: TurnLike[]; submit: 
     setNotice(null)
     noVoiceTold.current = false
     remoteDown.current = false
-    // created and primed here, inside the tap that starts the conversation, so the browser lets it play later
-    remote.current = remoteVoiceAvailable() ? createRemoteVoice() : null
+    // made once and primed here, inside the tap that starts the conversation, so the browser lets it play later
+    if (remote.current === null && remoteVoiceAvailable()) remote.current = createRemoteVoice()
     remote.current?.prime()
     mutedRef.current = false
     setMuted(false)

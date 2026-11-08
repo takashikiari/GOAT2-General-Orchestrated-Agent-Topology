@@ -13,7 +13,7 @@ const LEAD_S = 0.12
 
 /** ``ended``: it was read (or cancelled, or broke off part-way). ``unavailable``: no sound at all, so use another voice. */
 export type RemoteSpeaking = { done: Promise<'ended' | 'unavailable'>; cancel: () => void }
-export type RemoteVoice = { prime: () => void; speak: (text: string) => RemoteSpeaking }
+export type RemoteVoice = { prime: () => void; speak: (text: string) => RemoteSpeaking; close: () => void }
 
 type AudioContextCtor = typeof AudioContext
 const audioContextCtor = (): AudioContextCtor | undefined =>
@@ -31,7 +31,8 @@ function socketUrl(): string {
 
 /**
  * ``prime`` must be called inside the tap that starts the conversation: the browser only lets a page make sound after
- * one, and a context created (and resumed) there stays allowed for the later replies.
+ * one, and a context created (and resumed) there stays allowed for the later replies. One voice serves every
+ * conversation of the page (iOS only allows a few audio contexts at once); ``close`` releases it.
  */
 export function createRemoteVoice(openSocket: () => WebSocket = () => new WebSocket(socketUrl())): RemoteVoice {
   let ctx: AudioContext | null = null
@@ -45,15 +46,26 @@ export function createRemoteVoice(openSocket: () => WebSocket = () => new WebSoc
 
   return {
     prime() {
-      const c = context()
-      if (c.state === 'suspended') void c.resume().catch(() => {})
+      try {
+        const c = context()
+        if (c.state === 'suspended') void c.resume().catch(() => {})
+      } catch {
+        /* no audio here: speak() will say "unavailable" and the browser voice takes over */
+      }
+    },
+
+    close() {
+      const c = ctx
+      ctx = null
+      void c?.close().catch(() => {})
     },
 
     speak(text) {
-      const c = context()
-      if (c.state === 'suspended') void c.resume().catch(() => {})
+      let c: AudioContext
       let socket: WebSocket
       try {
+        c = context()
+        if (c.state === 'suspended') void c.resume().catch(() => {})
         socket = openSocket()
       } catch {
         return { done: Promise.resolve('unavailable'), cancel: () => {} }

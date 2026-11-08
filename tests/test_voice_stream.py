@@ -92,7 +92,10 @@ class FakeDeepgram:
                 self._server = await serve(handler, "127.0.0.1", 0, process_request=process_request)
                 self.port = self._server.sockets[0].getsockname()[1]
                 ready.set()
-                await self._server.serve_forever()
+                try:
+                    await self._server.serve_forever()
+                finally:
+                    await self._server.wait_closed()  # the close task has to finish before this loop goes away
 
             try:
                 self._loop.run_until_complete(main())
@@ -104,8 +107,10 @@ class FakeDeepgram:
 
     def stop(self) -> None:
         if self._loop and self._server:
-            with contextlib.suppress(Exception):  # Server.close() is a coroutine: it has to run on the server's own loop
-                asyncio.run_coroutine_threadsafe(self._server.close(), self._loop).result(3)
+            self._loop.call_soon_threadsafe(self._server.close)  # serve_forever() then ends, and the thread with it
+
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(shut(), self._loop).result(3)
 
 
 def _wait(cond, seconds=3.0):

@@ -61,6 +61,9 @@ class FakeContext {
   resume = vi.fn(async () => {
     this.state = 'running'
   })
+  close = vi.fn(async () => {
+    this.state = 'closed'
+  })
   constructor() {
     FakeContext.instances.push(this)
   }
@@ -200,6 +203,22 @@ describe('remote voice (Deepgram, streamed through the panel)', () => {
     expect(ctx().resume).toHaveBeenCalled()
     voice.speak('x')
     expect(FakeContext.instances.length).toBe(1) // the same context is used for the replies
+  })
+
+  it('priming never throws, and speaking without audio support is "unavailable"', async () => {
+    vi.stubGlobal('AudioContext', class { constructor() { throw new Error('too many contexts') } })
+    const voice = make()
+    expect(() => voice.prime()).not.toThrow()
+    expect(await voice.speak('x').done).toBe('unavailable')
+  })
+
+  it('close releases the audio context, and a later use makes a new one', () => {
+    const voice = make()
+    voice.prime()
+    voice.close()
+    expect(ctx().close).toHaveBeenCalled()
+    voice.prime()
+    expect(FakeContext.instances.length).toBe(2)
   })
 
   it('is available where there are WebSockets and Web Audio, including the old webkit name', () => {

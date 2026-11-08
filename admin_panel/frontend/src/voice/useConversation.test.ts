@@ -44,21 +44,27 @@ const remote = vi.hoisted(() => ({
   available: false,
   spoken: [] as string[],
   primed: 0,
+  created: 0,
+  closed: 0,
   finish: null as null | ((r: 'ended' | 'unavailable') => void),
   cancel: vi.fn(),
 }))
 vi.mock('./remoteVoice', () => ({
   remoteVoiceAvailable: () => remote.available,
-  createRemoteVoice: () => ({
-    prime: () => { remote.primed++ },
-    speak: (text: string) => {
-      remote.spoken.push(text)
-      let resolve: (r: 'ended' | 'unavailable') => void = () => {}
-      const done = new Promise<'ended' | 'unavailable'>((r) => { resolve = r })
-      remote.finish = resolve
-      return { done, cancel: () => { remote.cancel(); resolve('ended') } }
-    },
-  }),
+  createRemoteVoice: () => {
+    remote.created++
+    return {
+      close: () => { remote.closed++ },
+      prime: () => { remote.primed++ },
+      speak: (text: string) => {
+        remote.spoken.push(text)
+        let resolve: (r: 'ended' | 'unavailable') => void = () => {}
+        const done = new Promise<'ended' | 'unavailable'>((r) => { resolve = r })
+        remote.finish = resolve
+        return { done, cancel: () => { remote.cancel(); resolve('ended') } }
+      },
+    }
+  },
 }))
 
 import { IDLE_MS, useConversation } from './useConversation'
@@ -82,7 +88,7 @@ beforeEach(() => {
   stream.start.mockClear(); stream.stop.mockClear(); stream.setPaused.mockClear()
   Object.assign(speech, { available: true, voice: { lang: 'ro-RO', name: 'Ioana' }, spoken: [], finish: null })
   speech.cancel.mockClear()
-  Object.assign(remote, { available: false, spoken: [], primed: 0, finish: null })
+  Object.assign(remote, { available: false, spoken: [], primed: 0, created: 0, closed: 0, finish: null })
   remote.cancel.mockClear()
   window.localStorage.clear()
 })
@@ -251,6 +257,19 @@ describe('useConversation', () => {
       await act(async () => { remote.finish?.('ended') })
       await flush()
       expect(result.current.phase).toBe('listening')
+    })
+
+    it('one voice (one audio context) serves every conversation, and it is released when the page goes', async () => {
+      remote.available = true
+      const { result, unmount } = await open()
+      act(() => result.current.end())
+      act(() => result.current.start())
+      act(() => result.current.end())
+      act(() => result.current.start())
+      expect(remote.created).toBe(1)
+      expect(remote.primed).toBe(3)
+      unmount()
+      expect(remote.closed).toBe(1)
     })
 
     it('tapping to interrupt stops it and listens again', async () => {

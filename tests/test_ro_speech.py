@@ -40,6 +40,8 @@ def test_numbers_beyond_the_range_stay_digits():
         ("1.234 de linii", "o mie două sute treizeci și patru de linii"),
         ("2.500.000 de utilizatori", "două milioane cinci sute de mii de utilizatori"),
         ("cod 007", "cod zero zero șapte"),
+        ("pe 2026-11-08", "pe opt noiembrie două mii douăzeci și șase"),
+        ("pe 2026-11-01", "pe întâi noiembrie două mii douăzeci și șase"),
     ],
 )
 def test_normalize_writes_numbers_in_words(text, spoken):
@@ -49,3 +51,22 @@ def test_normalize_writes_numbers_in_words(text, spoken):
 @pytest.mark.parametrize("text", ["GPT-4 și v2.5", "IP 10.0.0.1", "fișierul log2.txt", "raport 1/2", "ora 25:61", "nimic de schimbat aici"])
 def test_things_that_are_not_plain_numbers_are_left_alone(text):
     assert normalize(text) == text
+
+
+@pytest.mark.parametrize(
+    "text, spoken",
+    [
+        ("am găsit 2 erori în 1 fișier", "am găsit două erori într-un fișier"),
+        ("în 1 eroare și din 1 oră", "într-o eroare și dintr-o oră"),
+        ("1 eroare, 1 oră, 1 zi, 1 colecție", "o eroare, o oră, o zi, o colecție"),
+        ("1 minut, 1 serviciu, 1 nume", "un minut, un serviciu, un nume"),
+        ("2 fișiere și 2 ore", "două fișiere și două ore"),
+        ("între 1 și 2", "între unu și doi"),
+        ("1 sau 2 minute", "unu sau două minute"),
+        ("versiunea 2 e gata", "versiunea doi e gata"),
+        ("am găsit 2.", "am găsit doi."),
+        ("sunt 21 de fișiere", "sunt douăzeci și unu de fișiere"),
+    ],
+)
+def test_one_and_two_take_the_gender_of_the_word_after_them(text, spoken):
+    assert normalize(text) == spoken
