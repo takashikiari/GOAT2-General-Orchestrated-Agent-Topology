@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from admin_panel.admin_config import ADMIN_HOST, ADMIN_PORT
-from admin_panel.routes import agents, chat, conversations, index, logs, memory, metrics, tunnel, voice, voice_speak, voice_stream
+from admin_panel.routes import agents, chat, conversations, index, logs, memory, metrics, tunnel, voice, voice_live, voice_speak, voice_stream
 from admin_panel.telegram_auth import require_admin_auth
 from utils.logging.setup import get_logger
 
@@ -56,9 +56,10 @@ def create_app(registry: "ServiceRegistry") -> FastAPI:
     app.include_router(voice.router, dependencies=auth)
     app.include_router(agents.router, dependencies=auth)
     # no header dependency here: a browser cannot put a header on a WebSocket handshake, so this router checks the
-    # initData in the first message it receives (admin_panel/voice_ws.py; routes/voice_stream.py and voice_speak.py)
+    # initData in the first message it receives (admin_panel/voice_ws.py; routes/voice_stream.py, voice_speak.py and voice_live.py)
     app.include_router(voice_stream.router)
     app.include_router(voice_speak.router)
+    app.include_router(voice_live.router)
     return app
 
 

@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as client from '../api/client'
 
 const conv = vi.hoisted(() => {
-  const fns = { start: vi.fn(), end: vi.fn(), toggleMute: vi.fn(), interrupt: vi.fn(), setVoiceKind: vi.fn() }
-  const base = { active: false, phase: 'listening', muted: false, interim: '', error: null as string | null, notice: null as string | null, elapsedMs: 0, voiceKind: 'deepgram' }
+  const fns = { start: vi.fn(), end: vi.fn(), toggleMute: vi.fn(), interrupt: vi.fn(), cycleVoice: vi.fn() }
+  const base = { active: false, phase: 'listening', muted: false, interim: '', error: null as string | null, notice: null as string | null, elapsedMs: 0, activity: null as string | null, voiceMode: 'deepgram' }
   return { args: null as null | { submit: (t: string) => Promise<string | null>; turns: unknown[] }, fns, value: { ...base, ...fns }, base }
 })
-vi.mock('../voice/useConversation', () => ({
-  useConversation: (args: { submit: (t: string) => Promise<string | null>; turns: unknown[] }) => {
+vi.mock('../voice/useVoiceConversation', () => ({
+  useVoiceConversation: (args: { submit: (t: string) => Promise<string | null>; turns: unknown[] }) => {
     conv.args = args
     return conv.value
   },
@@ -41,17 +41,28 @@ describe('Chat voice conversation', () => {
     expect(conv.fns.start).toHaveBeenCalledTimes(1)
   })
 
-  it('shows which voice reads the replies and switches it with one tap', async () => {
+  it('shows which voice talks and switches it with one tap', async () => {
     await open()
     fireEvent.click(screen.getByRole('button', { name: 'Voice: Deepgram' }))
-    expect(conv.fns.setVoiceKind).toHaveBeenCalledWith('browser')
+    expect(conv.fns.cycleVoice).toHaveBeenCalledTimes(1)
   })
 
-  it('shows the browser voice when that one is chosen', async () => {
-    set({ voiceKind: 'browser' })
+  it.each([['browser', 'Voice: browser'], ['live', 'Voice: Live']])('shows %s as the voice that is chosen', async (mode, label) => {
+    set({ voiceMode: mode })
     await open()
-    fireEvent.click(screen.getByRole('button', { name: 'Voice: browser' }))
-    expect(conv.fns.setVoiceKind).toHaveBeenCalledWith('deepgram')
+    expect(screen.getByRole('button', { name: label })).toBeEnabled()
+  })
+
+  it('the voice cannot be switched while a conversation is running', async () => {
+    set({ active: true })
+    await open()
+    expect(screen.getByRole('button', { name: 'Voice: Deepgram' })).toBeDisabled()
+  })
+
+  it('while GOAT works for the live voice, the overlay says which tool it is using', async () => {
+    set({ active: true, phase: 'thinking', activity: 'get_recent_logs', voiceMode: 'live' })
+    await open()
+    expect(screen.getByTestId('conversation-overlay')).toHaveTextContent('GOAT is working: get_recent_logs…')
   })
 
   it('while listening: live words over the box, Mute in the mic slot, End in the send slot, nothing else', async () => {
