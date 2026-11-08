@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent, MouseEvent, RefObject } from 'react'
 import { ApiError, apiGet, apiPost } from '../api/client'
 import { Banner } from '../components/Banner'
 import { usePolling } from '../hooks/usePolling'
@@ -21,6 +21,50 @@ type TurnView = { id: string; text: string; status: TurnStatus; reply: string | 
 const POLL_TURN_MS = 700
 const DONE_FALLBACK_MS = 30000
 const isTerminal = (s: TurnStatus) => s === 'done' || s === 'error' || s === 'cancelled'
+/** Within this many pixels of the end of the list counts as "at the bottom" (the user is following the conversation). */
+const NEAR_BOTTOM_PX = 80
+
+/**
+ * Size the chat to the visible viewport (below whatever header the page has), so the PAGE never scrolls and
+ * only the message list does. Re-fits on resize and when the on-screen keyboard changes the visual viewport.
+ */
+function useFillViewportHeight(ref: RefObject<HTMLElement>) {
+  useLayoutEffect(() => {
+    const fit = () => {
+      const el = ref.current
+      if (!el) return
+      const viewport = window.visualViewport?.height ?? window.innerHeight
+      const top = el.getBoundingClientRect().top + window.scrollY
+      el.style.setProperty('--chat-h', `${Math.max(320, Math.floor(viewport - top - 16))}px`)
+    }
+    fit()
+    window.addEventListener('resize', fit)
+    window.visualViewport?.addEventListener('resize', fit)
+    return () => {
+      window.removeEventListener('resize', fit)
+      window.visualViewport?.removeEventListener('resize', fit)
+    }
+  }, [ref])
+}
+
+/** Buttons must not take focus from the message box: on a phone that closes the keyboard and the page jumps. */
+const keepFocus = (e: MouseEvent) => e.preventDefault()
+
+function SendGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5" aria-hidden="true">
+      <path d="M12 19V5M5 12l7-7 7 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function StopGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+      <rect x="5" y="5" width="14" height="14" rx="2" />
+    </svg>
+  )
+}
 
 /** Assistant messages are stored as "[Tool calls]\n<summary>\n\n<reply>" when tools ran; show the two parts apart. */
 function splitToolSummary(content: string): { tools: string | null; text: string } {
@@ -124,7 +168,13 @@ export function Chat() {
   const [turns, setTurns] = useState<LocalTurn[]>([])
   const cursors = useRef<Record<string, number>>({})
   const inFlight = useRef(false)
-  const bottomRef = useRef<HTMLDivElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const stick = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
+  useFillViewportHeight(rootRef)
 
   const state = usePolling<ChatState>(() => apiGet('/api/chat/state'), 2000, [])
   const chatId = state.data?.chat_id ?? null
@@ -220,19 +270,52 @@ export function Chat() {
     })
   }, [transcript, statusKey])
 
+  // Follow the conversation only while the user is already at the bottom; if they scrolled up to read, leave them there.
+  const toBottom = useCallback(() => {
+    const el = scrollerRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [])
+  const onScroll = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX
+    stick.current = near
+    setAtBottom((prev) => (prev === near ? prev : near))
+  }, [])
+  const contentKey = `${transcript.length}|${hiddenUserEntries.size}|${turns
+    .map((t) => `${t.id}:${t.status}:${t.events.length}:${t.reply ? 1 : 0}`)
+    .join(',')}`
+  useLayoutEffect(() => {
+    if (stick.current) toBottom()
+  }, [contentKey, toBottom])
+  // The list can change height without new data (a tool row opened, a live turn swapped for its stored copy).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ block: 'end' })
-  }, [transcript.length, turns])
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (stick.current) toBottom()
+    })
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [toBottom])
+  const jumpToLatest = useCallback(() => {
+    stick.current = true
+    setAtBottom(true)
+    toBottom()
+  }, [toBottom])
 
   const send = useCallback(async () => {
     const message = text.trim()
     if (!message) return
     setSendError(null)
+    stick.current = true
+    setAtBottom(true)
     try {
       const { turn_id } = await apiPost<{ turn_id: string }>('/api/chat', { text: message })
       const baseline = transcript.filter((e) => e.role === 'user' && e.content === message).length
       setTurns((prev) => [...prev, { id: turn_id, text: message, status: 'queued', reply: null, events: [], baseline }])
       setText('')
+      textareaRef.current?.focus()
     } catch (err) {
       setSendError(describeError(err))
     }
@@ -262,65 +345,106 @@ export function Chat() {
   const working = hasActive || !!state.data?.busy
   const status = external ? 'GOAT is answering on Telegram — your message will wait its turn' : working ? 'GOAT is working…' : 'Ready'
 
+  const seen = new Map<string, number>()
   return (
-    <div className="flex min-h-[70vh] flex-col gap-3">
+    <div
+      ref={rootRef}
+      className="flex flex-col gap-3"
+      style={{ height: 'calc(var(--chat-h, 70vh) - max(0px, env(safe-area-inset-bottom, 0px) - 1rem))' }}
+    >
       {state.error && <Banner kind="error" message={state.error} />}
       {history.data?.warnings?.map((w) => <Banner key={w} kind="warning" message={w} />)}
-      <div className="flex items-center gap-2 text-xs text-zinc-400" aria-live="polite">
-        <span className={`h-2 w-2 rounded-full ${working ? 'animate-pulse-live bg-warn' : 'bg-accent-green'}`} />
-        <span>{status}</span>
-        {chatId && <span className="text-zinc-600">· one conversation with Telegram (chat {chatId})</span>}
+      <div className="flex min-h-[1.25rem] shrink-0 items-center gap-2 text-xs text-zinc-400" aria-live="polite">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${working ? 'animate-pulse-live bg-warn' : 'bg-accent-green'}`} />
+        <span className="min-w-0 truncate">{status}</span>
+        {chatId && (
+          <span className="hidden shrink-0 text-zinc-600 sm:inline">· one conversation with Telegram (chat {chatId})</span>
+        )}
       </div>
 
-      <div className="flex-1 space-y-3 rounded-xl border border-edge bg-surface p-3" data-testid="chat-transcript">
-        {!chatId && !state.error && <p className="py-10 text-center text-zinc-400">Loading…</p>}
-        {transcript.map((e, i) => {
-          if (hiddenUserEntries.has(i)) return null
-          const { tools, text: body } = e.role === 'assistant' ? splitToolSummary(e.content) : { tools: null, text: e.content }
-          return (
-            <div key={`${e.timestamp}-${i}`} className="space-y-1.5">
-              {tools && (
-                <details className="rounded-lg border border-edge px-2.5 py-1.5 text-xs text-zinc-500">
-                  <summary className="cursor-pointer select-none">tools used</summary>
-                  <pre className="mt-1.5 whitespace-pre-wrap break-words">{tools}</pre>
-                </details>
-              )}
-              <Bubble role={e.role as 'user' | 'assistant'}>{body}</Bubble>
-            </div>
-          )
-        })}
-        {turns.map((t) => (
-          <LiveTurn key={t.id} turn={t} />
-        ))}
-        <div ref={bottomRef} />
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollerRef}
+          onScroll={onScroll}
+          className="h-full overflow-y-auto overscroll-contain rounded-xl border border-edge bg-surface p-3"
+          data-testid="chat-transcript"
+        >
+          <div ref={contentRef} className="space-y-3">
+            {!chatId && !state.error && <p className="py-10 text-center text-zinc-400">Loading…</p>}
+            {transcript.map((e, i) => {
+              if (hiddenUserEntries.has(i)) return null
+              const { tools, text: body } =
+                e.role === 'assistant' ? splitToolSummary(e.content) : { tools: null, text: e.content }
+              const base = `${e.timestamp}-${e.role}`
+              const n = seen.get(base) ?? 0
+              seen.set(base, n + 1)
+              return (
+                <div key={`${base}-${n}`} className="space-y-1.5">
+                  {tools && (
+                    <details className="rounded-lg border border-edge px-2.5 py-1.5 text-xs text-zinc-500">
+                      <summary className="cursor-pointer select-none">tools used</summary>
+                      <pre className="mt-1.5 whitespace-pre-wrap break-words">{tools}</pre>
+                    </details>
+                  )}
+                  <Bubble role={e.role as 'user' | 'assistant'}>{body}</Bubble>
+                </div>
+              )
+            })}
+            {turns.map((t) => (
+              <LiveTurn key={t.id} turn={t} />
+            ))}
+          </div>
+        </div>
+        {!atBottom && (
+          <button
+            type="button"
+            onMouseDown={keepFocus}
+            onClick={jumpToLatest}
+            className="absolute bottom-3 right-4 rounded-full border border-edge bg-surface2 px-3 py-1.5 text-xs text-zinc-200 shadow-card"
+          >
+            ↓ Latest
+          </button>
+        )}
       </div>
 
-      <div className="sticky bottom-0 space-y-2 bg-base pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1">
-        {sendError && <Banner kind="error" message={sendError} />}
+      <div className="relative shrink-0">
+        {sendError && (
+          <div className="absolute bottom-full left-0 right-0 z-10 mb-2">
+            <Banner kind="error" message={sendError} />
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
+            ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             rows={2}
             placeholder="Message GOAT — Enter to send, Shift+Enter for a new line, Esc to stop"
             aria-label="Message GOAT"
-            className="min-h-[44px] flex-1 resize-none rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
+            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
           />
-          {hasActive && (
-            <button
-              onClick={() => void stop()}
-              className="min-h-[44px] rounded-xl border border-danger/40 px-4 text-sm text-danger active:bg-surface2"
-            >
-              Stop
-            </button>
-          )}
           <button
-            onClick={() => void send()}
-            disabled={!text.trim() || !chatId}
-            className="min-h-[44px] rounded-xl bg-accent px-4 text-sm font-medium text-base disabled:opacity-40"
+            type="button"
+            aria-label="Stop"
+            title="Stop (Esc)"
+            disabled={!hasActive}
+            onMouseDown={keepFocus}
+            onClick={() => void stop()}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-opacity active:bg-surface2 disabled:opacity-30"
           >
-            Send
+            <StopGlyph />
+          </button>
+          <button
+            type="button"
+            aria-label="Send"
+            title="Send (Enter)"
+            disabled={!text.trim() || !chatId}
+            onMouseDown={keepFocus}
+            onClick={() => void send()}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-base transition-opacity disabled:opacity-40"
+          >
+            <SendGlyph />
           </button>
         </div>
       </div>
