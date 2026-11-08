@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { apiGet } from '../api/client'
 import { Banner } from '../components/Banner'
@@ -34,13 +35,85 @@ function Card({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+type TunnelInfo = {
+  status: 'off' | 'starting' | 'ready' | 'down' | 'unavailable'
+  url: string | null
+  since: number | null
+  detail: string
+}
+
+const TUNNEL_LABEL: Record<TunnelInfo['status'], { text: string; dot: string }> = {
+  ready: { text: 'Online', dot: 'bg-accent-green' },
+  starting: { text: 'Starting…', dot: 'animate-pulse-live bg-warn' },
+  down: { text: 'Down', dot: 'bg-danger' },
+  unavailable: { text: 'Unavailable', dot: 'bg-danger' },
+  off: { text: 'Off', dot: 'bg-zinc-600' },
+}
+
+/** The Cloudflare quick-tunnel link the panel is reachable on right now (a new one is created on every bot start). */
+function TunnelCard() {
+  const { data } = usePolling<TunnelInfo>(() => apiGet('/api/tunnel'), 5000, [])
+  const [copied, setCopied] = useState(false)
+  if (!data || typeof data.status !== 'string' || !(data.status in TUNNEL_LABEL)) return null
+  const label = TUNNEL_LABEL[data.status]
+  const canCopy = !!data.url && typeof navigator !== 'undefined' && !!navigator.clipboard
+  const copy = async () => {
+    if (!data.url) return
+    try {
+      await navigator.clipboard.writeText(data.url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* clipboard blocked: the link stays selectable */
+    }
+  }
+  return (
+    <Card title="Panel link (Cloudflare tunnel)">
+      <p className="flex items-center gap-2">
+        <span className={`h-2 w-2 rounded-full ${label.dot}`} />
+        <span>{label.text}</span>
+        {data.since && <span className="text-xs text-zinc-500">since {new Date(data.since * 1000).toLocaleTimeString()}</span>}
+      </p>
+      {data.url && (
+        <p className="flex flex-wrap items-center gap-2">
+          <a href={data.url} target="_blank" rel="noreferrer" className="break-all text-accent underline">
+            {data.url}
+          </a>
+          {canCopy && (
+            <button
+              type="button"
+              onClick={() => void copy()}
+              className="min-h-[32px] rounded-lg border border-edge px-2.5 text-xs text-zinc-300 active:bg-surface2"
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          )}
+        </p>
+      )}
+      {!data.url && data.detail && <p className="text-xs text-zinc-500">{data.detail}</p>}
+      <p className="text-xs text-zinc-600">A new link is created every time the bot starts; this always shows the current one.</p>
+    </Card>
+  )
+}
+
 export function Dashboard() {
   const { data, error, loading } = usePolling<MetricsReport>(() => apiGet('/api/metrics'), 15000, [])
 
-  if (error) return <Banner kind="error" message={error} />
-  if (loading && !data) return <p className="py-10 text-center text-zinc-400">Loading dashboard…</p>
-  if (!data) return null
+  return (
+    <div className="space-y-4">
+      <TunnelCard />
+      {error ? (
+        <Banner kind="error" message={error} />
+      ) : loading && !data ? (
+        <p className="py-10 text-center text-zinc-400">Loading dashboard…</p>
+      ) : data ? (
+        <MetricsGrid data={data} />
+      ) : null}
+    </div>
+  )
+}
 
+function MetricsGrid({ data }: { data: MetricsReport }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <Card title="Cache & Prefetch">
