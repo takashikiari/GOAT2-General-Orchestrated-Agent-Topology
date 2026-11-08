@@ -62,7 +62,7 @@ describe('Chat', () => {
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
 
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/chat', { text: 'ce faci?' }))
     await waitFor(() => expect(screen.getByTestId('tool-row')).toHaveTextContent('get_recent_logs'))
@@ -92,7 +92,7 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText(/answering on Telegram/)).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(screen.getByText(/Waiting for the current turn to finish/)).toBeInTheDocument())
   })
 
@@ -103,9 +103,9 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'lung' } })
-    fireEvent.click(screen.getByText('Send'))
-    await waitFor(() => expect(screen.getByText('Stop')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Stop'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/chat/turns/t1/cancel'))
     post.mockClear()
     fireEvent.keyDown(screen.getByLabelText('Message GOAT'), { key: 'Escape' })
@@ -118,7 +118,7 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(screen.getByText(/Session expired/)).toBeInTheDocument())
     expect(screen.getByLabelText('Message GOAT')).toHaveValue('x')
   })
@@ -129,7 +129,7 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(get).toHaveBeenCalledWith(expect.stringContaining('/api/chat/turns/t1')))
     await waitFor(() => expect(screen.queryByTestId('live-turn')).not.toBeInTheDocument(), { timeout: 3000 })
     expect(screen.getAllByText('Buna! Totul e ok.')).toHaveLength(1)
@@ -140,7 +140,7 @@ describe('Chat', () => {
       { ...IDLE, busy: true, active_turn_id: 't1' })
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('mesaj de pe alt device')).toBeInTheDocument())
-    expect(screen.getByText('Stop')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled()
   })
 
   it('shows a stopped tool as stopped, not running', async () => {
@@ -153,7 +153,7 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(screen.getByText('Stopped.')).toBeInTheDocument())
     expect(screen.getByTestId('tool-row')).toHaveTextContent('stopped')
     expect(screen.getByTestId('tool-row')).not.toHaveTextContent('running')
@@ -173,9 +173,112 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
-    fireEvent.click(screen.getByText('Send'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(screen.getByTestId('live-turn')).toBeInTheDocument())
     await new Promise((r) => setTimeout(r, 2600)) // let the 2 s history poll pick the stored message up
     expect(screen.getAllByText('ce faci?')).toHaveLength(1)
+  })
+
+  it('keeps Stop and Send in place all the time: Stop is just disabled while nothing runs', async () => {
+    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])])
+    vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't1' })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
+  })
+
+  it('the buttons do not take focus from the message box (the phone keyboard would close and the page jump)', async () => {
+    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])], { ...IDLE, busy: true, active_turn_id: 't1' })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
+    expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Send' }))).toBe(false)
+    expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Stop' }))).toBe(false)
+  })
+
+  describe('scrolling', () => {
+    /** jsdom has no layout: give the message list a height, a scroll position and a log of every write to it. */
+    function fakeLayout(el: HTMLElement, opts: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
+      const state = { ...opts }
+      const writes: number[] = []
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => state.scrollHeight })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => state.clientHeight })
+      Object.defineProperty(el, 'scrollTop', {
+        configurable: true,
+        get: () => state.scrollTop,
+        set: (v: number) => {
+          state.scrollTop = v
+          writes.push(v)
+        },
+      })
+      return { state, writes }
+    }
+
+    async function openAt(opts: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
+      render(<Chat />)
+      await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+      const scroller = screen.getByTestId('chat-transcript')
+      const layout = fakeLayout(scroller, opts)
+      return { scroller, ...layout }
+    }
+
+    const RUNNING = { ...IDLE, busy: true, active_turn_id: 't1' }
+    const GROWS = () => [
+      view('running', [{ seq: 1, ts: 1, type: 'started' }]),
+      view('running', [{ seq: 2, ts: 2, type: 'tool_start', id: 'a', name: 'get_recent_logs', args: '{}' }]),
+    ]
+
+    it('follows new activity while the user is at the bottom', async () => {
+      mockGet(GROWS(), RUNNING)
+      const { state, writes } = await openAt({ scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+      state.scrollHeight = 1300 // the live turn made the list taller
+      await waitFor(() => expect(screen.getByTestId('tool-row')).toBeInTheDocument(), { timeout: 3000 })
+      expect(writes.length).toBeGreaterThan(0)
+      expect(writes[writes.length - 1]).toBe(1300)
+    })
+
+    it('does not drag the user back down after they scrolled up, and offers a way back', async () => {
+      mockGet(GROWS(), RUNNING)
+      const { scroller, state, writes } = await openAt({ scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+      state.scrollTop = 100 // the user scrolled up to read
+      fireEvent.scroll(scroller)
+      const latest = await screen.findByText('↓ Latest')
+      const before = writes.length
+      state.scrollHeight = 1300
+      await waitFor(() => expect(screen.getByTestId('tool-row')).toBeInTheDocument(), { timeout: 3000 })
+      expect(writes.length).toBe(before) // nothing moved the list
+      expect(state.scrollTop).toBe(100)
+      fireEvent.click(latest)
+      expect(state.scrollTop).toBe(1300)
+      await waitFor(() => expect(screen.queryByText('↓ Latest')).not.toBeInTheDocument())
+    })
+
+    it('a poll that brings nothing new does not touch the scroll position', async () => {
+      mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])], RUNNING)
+      const { writes } = await openAt({ scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+      await waitFor(() => expect(screen.getByTestId('live-turn')).toBeInTheDocument())
+      await new Promise((r) => setTimeout(r, 300))
+      const settled = writes.length
+      await new Promise((r) => setTimeout(r, 1700)) // two or more further polls of the same turn
+      expect(writes.length).toBe(settled)
+    })
+
+    it('sending always brings the user back to the bottom', async () => {
+      mockGet([view('queued', [])])
+      vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't1' })
+      const { scroller, state } = await openAt({ scrollHeight: 1000, clientHeight: 400, scrollTop: 600 })
+      state.scrollTop = 50
+      fireEvent.scroll(scroller)
+      await screen.findByText('↓ Latest')
+      state.scrollHeight = 1200
+      fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ceva' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => expect(state.scrollTop).toBe(1200))
+    })
   })
 })
