@@ -9,8 +9,9 @@ import { usePolling } from '../hooks/usePolling'
 
 type ChatState = { chat_id: string | null; busy: boolean; external_busy: boolean; active_turn_id: string | null }
 
-type TimelineEntry = { tier: 'L2' | 'L3'; timestamp: number; role: string; content: string }
-type ConversationResponse = { chat_id: string; timeline: TimelineEntry[]; warnings?: string[] }
+type HistoryMessage = { timestamp: number; role: string; content: string }
+/** The stored conversation WITHOUT the agent-coord digests (those are on the Agents page). */
+type HistoryResponse = { chat_id: string; messages: HistoryMessage[]; warnings?: string[] }
 
 type TurnStatus = 'queued' | 'running' | 'done' | 'error' | 'cancelled'
 type TurnEvent =
@@ -221,8 +222,8 @@ export function Chat() {
   const state = usePolling<ChatState>(() => apiGet('/api/chat/state'), 2000, [])
   const chatId = state.data?.chat_id ?? null
   const hasActive = turns.some((t) => !isTerminal(t.status))
-  const history = usePolling<ConversationResponse | null>(
-    () => (chatId ? apiGet(`/api/conversations/${encodeURIComponent(chatId)}`) : Promise.resolve(null)),
+  const history = usePolling<HistoryResponse | null>(
+    () => (chatId ? apiGet('/api/chat/history') : Promise.resolve(null)),
     hasActive ? 2000 : 4000,
     [chatId],
   )
@@ -282,7 +283,7 @@ export function Chat() {
 
   const transcript = useMemo(
     () =>
-      (history.data?.timeline ?? []).filter((e) => e.tier === 'L2' && (e.role === 'user' || e.role === 'assistant')),
+      (history.data?.messages ?? []).filter((e) => e.role === 'user' || e.role === 'assistant'),
     [history.data],
   )
 

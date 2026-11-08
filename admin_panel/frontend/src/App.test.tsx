@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -20,10 +20,19 @@ describe('App', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the Live tab active by default', () => {
+  it('opens on the Chat tab, which is first in the list, with Agents right after it', () => {
     render(<App />)
-    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByTestId('panel-live')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByTestId('panel-chat')).toBeInTheDocument()
+    const names = within(screen.getByRole('navigation')).getAllByRole('button').map((b) => b.textContent)
+    expect(names.slice(0, 3)).toEqual(['Chat', 'Agents', 'Live'])
+  })
+
+  it('shows the Agents page on its tab', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Agents' }))
+    expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByTestId('panel-agents')).toBeInTheDocument()
   })
 
   it('switches the active tab on click', () => {

@@ -5,7 +5,7 @@ import { FakeRecorder, installFakeMedia } from '../test/fakeMedia'
 import { Chat } from './Chat'
 
 const IDLE = { chat_id: '42', busy: false, external_busy: false, active_turn_id: null }
-const HISTORY = { chat_id: '42', timeline: [{ tier: 'L2', timestamp: 1, role: 'user', content: 'salut' }] }
+const HISTORY = { chat_id: '42', messages: [{ timestamp: 1, role: 'user', content: 'salut' }] }
 
 const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0) })
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
