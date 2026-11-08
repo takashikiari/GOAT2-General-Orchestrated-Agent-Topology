@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from admin_panel.admin_config import ADMIN_HOST, ADMIN_PORT
-from admin_panel.routes import chat, conversations, index, logs, memory, metrics, tunnel
+from admin_panel.routes import agents, chat, conversations, index, logs, memory, metrics, tunnel, voice
 from admin_panel.telegram_auth import require_admin_auth
 from utils.logging.setup import get_logger
 
@@ -53,6 +53,8 @@ def create_app(registry: "ServiceRegistry") -> FastAPI:
     app.include_router(conversations.router, dependencies=auth)
     app.include_router(chat.router, dependencies=auth)
     app.include_router(tunnel.router, dependencies=auth)
+    app.include_router(voice.router, dependencies=auth)
+    app.include_router(agents.router, dependencies=auth)
     return app
 
 

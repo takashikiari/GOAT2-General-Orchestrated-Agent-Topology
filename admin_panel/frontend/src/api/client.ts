@@ -26,6 +26,17 @@ export class ApiError extends Error {
   }
 }
 
+async function failure(path: string, resp: Response): Promise<ApiError> {
+  let detail = ''
+  try {
+    const data = (await resp.json()) as { detail?: unknown }
+    detail = typeof data.detail === 'string' ? data.detail : ''
+  } catch {
+    /* non-JSON error body */
+  }
+  return new ApiError(`${path} failed: ${resp.status}`, resp.status, detail)
+}
+
 /** POST JSON (or nothing) to a route that acts; throws ApiError with the status and server detail on failure. */
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   const resp = await fetch(path, {
@@ -33,15 +44,13 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     headers: { 'X-Telegram-Init-Data': getInitData(), 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (!resp.ok) {
-    let detail = ''
-    try {
-      const data = (await resp.json()) as { detail?: unknown }
-      detail = typeof data.detail === 'string' ? data.detail : ''
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(`${path} failed: ${resp.status}`, resp.status, detail)
-  }
+  if (!resp.ok) throw await failure(path, resp)
+  return (await resp.json()) as T
+}
+
+/** POST a multipart form (files). No Content-Type header: the browser adds it with the boundary. */
+export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
+  const resp = await fetch(path, { method: 'POST', headers: { 'X-Telegram-Init-Data': getInitData() }, body: form })
+  if (!resp.ok) throw await failure(path, resp)
   return (await resp.json()) as T
 }

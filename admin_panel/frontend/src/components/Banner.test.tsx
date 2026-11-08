@@ -12,4 +12,9 @@ describe('Banner', () => {
     render(<Banner kind="warning" message="Redis unavailable" />)
     expect(screen.getByText('Redis unavailable')).toBeInTheDocument()
   })
+
+  it("renders an info message", () => {
+    render(<Banner kind="info" message="Voice message received" />)
+    expect(screen.getByText("Voice message received")).toBeInTheDocument()
+  })
 })

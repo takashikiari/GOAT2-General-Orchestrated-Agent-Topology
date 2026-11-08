@@ -6,10 +6,9 @@ import { Chat } from './Chat'
 const IDLE = { chat_id: '42', busy: false, external_busy: false, active_turn_id: null }
 const HISTORY = {
   chat_id: '42',
-  timeline: [
-    { tier: 'L3', timestamp: 1, role: '', content: 'archived memory entry' },
-    { tier: 'L2', timestamp: 2, role: 'user', content: 'salut din telegram' },
-    { tier: 'L2', timestamp: 3, role: 'assistant', content: '[Tool calls]\ncalled get_recent_logs({})\n\nBuna! Totul e ok.' },
+  messages: [
+    { timestamp: 2, role: 'user', content: 'salut din telegram' },
+    { timestamp: 3, role: 'assistant', content: '[Tool calls]\ncalled get_recent_logs({})\n\nBuna! Totul e ok.' },
   ],
 }
 
@@ -18,7 +17,7 @@ function mockGet(turnViews: unknown[], state: unknown = IDLE) {
   let n = 0
   return vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) => {
     if (path.startsWith('/api/chat/state')) return state as never
-    if (path.startsWith('/api/conversations/')) return HISTORY as never
+    if (path === '/api/chat/history') return HISTORY as never
     if (path.startsWith('/api/chat/turns/')) return turnViews[Math.min(n++, turnViews.length - 1)] as never
     throw new Error(`unexpected GET ${path}`)
   })
@@ -32,17 +31,18 @@ afterEach(() => vi.restoreAllMocks())
 
 const HISTORY_WITH_NEW_MESSAGE = {
   ...HISTORY,
-  timeline: [...HISTORY.timeline, { tier: 'L2', timestamp: 4, role: 'user', content: 'ce faci?' }],
+  messages: [...HISTORY.messages, { timestamp: 4, role: 'user', content: 'ce faci?' }],
 }
 
 describe('Chat', () => {
-  it('shows the Telegram conversation (user and assistant messages only) and folds the tool summary', async () => {
-    mockGet([])
+  it('shows the Telegram conversation from the chat history route (no agent-coord, no raw memory) and folds the tool summary', async () => {
+    const get = mockGet([])
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     expect(screen.getByText('Buna! Totul e ok.')).toBeInTheDocument()
     expect(screen.getByText('called get_recent_logs({})')).toBeInTheDocument()
-    expect(screen.queryByText('archived memory entry')).not.toBeInTheDocument()
+    expect(get).toHaveBeenCalledWith('/api/chat/history')
+    expect(get).not.toHaveBeenCalledWith(expect.stringContaining('/api/conversations'))
     expect(screen.getByText(/one conversation with Telegram/)).toBeInTheDocument()
   })
 
@@ -163,7 +163,7 @@ describe('Chat', () => {
     let posted = false
     vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) => {
       if (path.startsWith('/api/chat/state')) return IDLE as never
-      if (path.startsWith('/api/conversations/')) return (posted ? HISTORY_WITH_NEW_MESSAGE : HISTORY) as never
+      if (path === '/api/chat/history') return (posted ? HISTORY_WITH_NEW_MESSAGE : HISTORY) as never
       return view('running', [{ seq: 1, ts: 1, type: 'started' }]) as never
     })
     vi.spyOn(client, 'apiPost').mockImplementation(async () => {
@@ -354,5 +354,16 @@ describe('Chat', () => {
     writes.length = 0
     callbacks.forEach((cb) => cb())
     expect(writes).toEqual([])
+  })
+
+  it('an empty box keeps its resting height even when the placeholder wraps (it must not grow on its own)', async () => {
+    mockGet([])
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    const box = screen.getByLabelText('Message GOAT') as HTMLTextAreaElement
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 78 }) // a three-line placeholder
+    fireEvent.change(box, { target: { value: 'x' } })
+    fireEvent.change(box, { target: { value: '' } })
+    expect(box.style.height).toBe('58px')
   })
 })
