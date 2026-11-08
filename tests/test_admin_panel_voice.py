@@ -115,3 +115,13 @@ def test_a_body_without_a_length_is_refused(client):
         yield WEBM
     resp = client.post("/api/voice", content=chunks(), headers={**_headers(), "Content-Type": "multipart/form-data; boundary=x"})
     assert resp.status_code in (411, 413)
+
+
+def test_live_status_needs_auth_and_says_whether_the_live_voice_exists(client, monkeypatch):
+    assert client.get("/api/voice/live/status").status_code == 401
+    monkeypatch.delenv("VOICE_LIVE_PROVIDER", raising=False)
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}
+    monkeypatch.setenv("VOICE_LIVE_PROVIDER", "fake")
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True}
+    monkeypatch.setenv("VOICE_LIVE_PROVIDER", "gemini")  # named, but its adapter is not built yet
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}

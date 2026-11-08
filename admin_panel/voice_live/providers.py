@@ -10,7 +10,7 @@ from typing import Callable
 from admin_panel.voice_live.fake import FakeProvider
 from admin_panel.voice_live.provider import Provider
 
-__all__ = ["PROVIDERS", "make_provider"]
+__all__ = ["PROVIDERS", "make_provider", "is_available"]
 
 PROVIDERS: dict[str, Callable[[], Provider]] = {"fake": FakeProvider}
 
@@ -18,3 +18,8 @@ PROVIDERS: dict[str, Callable[[], Provider]] = {"fake": FakeProvider}
 def make_provider(name: str | None) -> Provider | None:
     factory = PROVIDERS.get((name or "").strip().lower())
     return factory() if factory is not None else None
+
+
+def is_available(name: str | None) -> bool:
+    """Whether ``name`` is an adapter that exists (the page only offers the live voice when it does)."""
+    return (name or "").strip().lower() in PROVIDERS

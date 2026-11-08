@@ -5,8 +5,9 @@ import { Banner } from '../components/Banner'
 import { EndCallIcon, HeadsetIcon, MicIcon, MicOffIcon, SpeakerIcon } from '../components/icons'
 import { VOICE_MAX_MS, useVoiceRecorder } from '../hooks/useVoiceRecorder'
 import type { VoiceClip } from '../hooks/useVoiceRecorder'
-import { useConversation } from '../voice/useConversation'
 import type { Phase } from '../voice/useConversation'
+import { useVoiceConversation } from '../voice/useVoiceConversation'
+import type { VoiceMode } from '../voice/useVoiceConversation'
 import { usePolling } from '../hooks/usePolling'
 
 type ChatState = { chat_id: string | null; busy: boolean; external_busy: boolean; active_turn_id: string | null }
@@ -205,13 +206,14 @@ type LocalTurn = {
   baseline?: number
 }
 
+const VOICE_LABEL: Record<VoiceMode, string> = { live: 'Voice: Live', deepgram: 'Voice: Deepgram', browser: 'Voice: browser' }
 const OVERLAY = 'absolute inset-0 flex w-full items-center gap-2.5 rounded-xl border bg-surface px-3 text-left text-sm'
 const CLAMP2 = '[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden break-words'
 
 /** The state of a voice conversation, laid over the message box (same size, so nothing moves). */
 function ConversationOverlay({
-  phase, muted, interim, onInterrupt,
-}: { phase: Phase; muted: boolean; interim: string; onInterrupt: () => void }) {
+  phase, muted, interim, activity, onInterrupt,
+}: { phase: Phase; muted: boolean; interim: string; activity: string | null; onInterrupt: () => void }) {
   if (phase === 'speaking') {
     return (
       <button
@@ -232,7 +234,7 @@ function ConversationOverlay({
     body = (
       <>
         <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-500 border-t-transparent" />
-        <span>{phase === 'connecting' ? 'Connecting…' : 'GOAT is thinking…'}</span>
+        <span className="min-w-0 truncate">{phase === 'connecting' ? 'Connecting…' : activity ? `GOAT is working: ${activity}…` : 'GOAT is thinking…'}</span>
       </>
     )
   } else if (muted) {
@@ -458,7 +460,7 @@ export function Chat() {
   }, [])
   const voice = useVoiceRecorder(sendVoice)
   const recording = voice.state === 'recording'
-  const conversation = useConversation({ turns, submit: sendText })
+  const conversation = useVoiceConversation({ turns, submit: sendText })
   const inConversation = conversation.active
   const problem = sendError ?? voice.error ?? conversation.error
   const shownNotice = notice ?? conversation.notice
@@ -507,12 +509,13 @@ export function Chat() {
         )}
         <button
           type="button"
-          title="Who reads GOAT's replies aloud in a conversation: Deepgram's Romanian voice, or this device's own voice"
+          title="Who talks in a conversation: the live speech-to-speech voice, Deepgram's Romanian voice reading GOAT's text, or this device's own voice"
+          disabled={inConversation}
           onMouseDown={keepFocus}
-          onClick={() => conversation.setVoiceKind(conversation.voiceKind === 'deepgram' ? 'browser' : 'deepgram')}
-          className="ml-auto h-7 shrink-0 rounded-full px-2 text-[11px] text-zinc-500 active:bg-surface2"
+          onClick={conversation.cycleVoice}
+          className="ml-auto h-7 shrink-0 rounded-full px-2 text-[11px] text-zinc-500 active:bg-surface2 disabled:opacity-40"
         >
-          {conversation.voiceKind === 'deepgram' ? 'Voice: Deepgram' : 'Voice: browser'}
+          {VOICE_LABEL[conversation.voiceMode]}
         </button>
         <button
           type="button"
@@ -601,6 +604,7 @@ export function Chat() {
                 phase={conversation.phase}
                 muted={conversation.muted}
                 interim={conversation.interim}
+                activity={conversation.activity}
                 onInterrupt={conversation.interrupt}
               />
             )}

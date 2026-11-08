@@ -117,7 +117,10 @@ socket) was considered: it fixes the walkie-talkie turn-taking but is still text
 ## 6. Risks
 
 - **Emotion and Romanian quality** are only judged by ear: the first listening sample is a phase gate, not a footnote.
-- **Echo / barge-in on phones** (Telegram webview, iOS may route the voice to the earpiece while the mic is live).
+- **Echo / barge-in on phones**: an open microphone with echo cancellation makes phones play everything at the quiet
+  call volume and may route it to the earpiece (found in #41, which therefore releases the microphone while GOAT
+  speaks). Talking over the model by voice may simply not be possible on a phone; tap-to-interrupt is then the design
+  there, and the page releases the microphone while the model's voice plays (it reopens it right after).
 - **Latency of GOAT's turn** (5-60 s): mitigated by non-blocking tools and fillers, but the model must not talk over
   itself or invent a result while waiting.
 - **Voice model drift:** it may answer from its own head instead of asking GOAT; the prompt and an eval list of

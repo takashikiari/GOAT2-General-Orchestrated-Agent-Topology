@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.datastructures import UploadFile
 
 from admin_panel import deepgram, voice_config
+from admin_panel.voice_live import providers
 from admin_panel.telegram_auth import require_admin_write_auth
 
 router = APIRouter()
@@ -97,3 +98,9 @@ async def voice(request: Request) -> dict:
         "content_type": content_type,
         "text": text,
     }
+
+
+@router.get("/api/voice/live/status")
+async def live_status() -> dict:
+    """Whether the speech-to-speech conversation can be started on this server (the page offers "Live" only then)."""
+    return {"available": providers.is_available(voice_config.live_provider())}

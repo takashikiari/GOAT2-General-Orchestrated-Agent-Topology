@@ -15,7 +15,7 @@ provider key is never printed, logged or committed.
 | 4 | Barge-in by voice (full duplex) with echo cancellation, filler tuning, "must call ask_goat" eval list | phone test; ee1c5e's notes from #41 on echo and the pause | interruption works with a headset and, if it can, with the phone speaker; the eval list passes |
 | 5 | Hardening: minutes counter on the Dashboard, caps, fallbacks to the Deepgram path, docs, removal of dead code | — | restart-safe, documented, merged |
 
-## Phase 1 in detail (starts now)
+## Phase 1 in detail (done locally 2026-11-08, not pushed)
 
 1. `admin_panel/voice_live/provider.py` — neutral event types and the adapter protocol, from Gemini's real
    messages (spec §3). `fake.py` — a scripted provider that replays those sequences.
@@ -36,3 +36,12 @@ provider key is never printed, logged or committed.
 - A provider event arriving after the page left (cancel everything in `finally`).
 - Two turns racing on the per-chat lock (the bridge returns "busy" instead of queueing).
 - Frames arriving faster than they play (bound the playback queue; drop on `interrupted`).
+
+## Status
+
+- Phase 1 is built and verified against the fake provider: server (`admin_panel/voice_live/`, `WS /api/voice/live`,
+  `GET /api/voice/live/status`) and page (`useLiveConversation`, `pcmPlayer`, `useVoiceConversation`, the "Voice: Live"
+  option, shown only when the server has a live provider). A real Chromium run with a synthetic microphone: listening,
+  the model's filler, "GOAT is working: <tool>", the answer spoken, small talk, tap-to-interrupt.
+- Turn it on in a dev environment with `VOICE_LIVE_PROVIDER=fake`. Nothing is on by default.
+- Next: phase 0 (Laris listens to both playgrounds, answers the questions, provides a Gemini key), then phase 2.
