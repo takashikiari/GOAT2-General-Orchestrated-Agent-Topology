@@ -41,6 +41,9 @@ async def _send_screenshot(chat_id: str, path: Path) -> None:
         log.warning("browse_page failed to send screenshot: %s", exc)
 
 
+_SETTLE_MS = 3000  # best-effort wait for network quiet after DOMContentLoaded
+
+
 def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
     """Build the browse_page tool."""
 
@@ -56,11 +59,19 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                await page.goto(url, timeout=WEB_TIMEOUT * 1000, wait_until="networkidle")
-                await page.screenshot(path=str(screenshot_path), full_page=True)
-                text = await page.inner_text("body")
-                await browser.close()
+                try:
+                    page = await browser.new_page()
+                    # "networkidle" never arrives on pages with analytics/polling (2026-11-08: Deepgram docs timed out
+                    # after 30 s). Wait for the DOM, then give JS a short, best-effort chance to settle.
+                    await page.goto(url, timeout=WEB_TIMEOUT * 1000, wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=_SETTLE_MS)
+                    except Exception:  # noqa: BLE001 - still busy after the settle window: use what has rendered
+                        log.debug("browse_page url=%s: network not idle after %d ms, continuing", url, _SETTLE_MS)
+                    await page.screenshot(path=str(screenshot_path), full_page=True)
+                    text = await page.inner_text("body")
+                finally:
+                    await browser.close()
             if chat_id:
                 await _send_screenshot(chat_id, screenshot_path)
             truncated = text[:max_chars]
