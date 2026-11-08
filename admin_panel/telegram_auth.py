@@ -20,7 +20,7 @@ from admin_panel.auth_config import AUTH_MAX_AGE_SECONDS, AUTH_WRITE_MAX_AGE_SEC
 from config import settings
 from config.admin_chat import load_admin_chat_id
 
-__all__ = ["verify_init_data", "require_admin_auth", "require_admin_write_auth"]
+__all__ = ["verify_init_data", "require_admin_auth", "require_admin_write_auth", "authorize_write"]
 
 
 def verify_init_data(init_data: str, bot_token: str, max_age_seconds: int) -> dict | None:
@@ -99,3 +99,9 @@ async def require_admin_write_auth(
     """FastAPI dependency for routes that act (chat): same checks, but initData must be fresher
     (AUTH_WRITE_MAX_AGE_SECONDS), because these routes can make GOAT run tools."""
     return _authorize(x_telegram_init_data, AUTH_WRITE_MAX_AGE_SECONDS)
+
+
+def authorize_write(init_data: str | None) -> dict:
+    """The write-route check (same freshness limit as require_admin_write_auth) for a caller that has the initData
+    string but no header to read it from, such as the voice WebSocket's first message. Raises HTTPException(401)."""
+    return _authorize(init_data, AUTH_WRITE_MAX_AGE_SECONDS)

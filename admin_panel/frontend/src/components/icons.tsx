@@ -91,3 +91,38 @@ export function AgentsIcon({ className = '' }: IconProps) {
     </svg>
   )
 }
+
+export function HeadsetIcon({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${base} ${className}`} aria-hidden="true">
+      <path d="M4 14v-2a8 8 0 0 1 16 0v2" strokeLinecap="round" />
+      <rect x="3" y="14" width="4" height="6" rx="1.5" />
+      <rect x="17" y="14" width="4" height="6" rx="1.5" />
+    </svg>
+  )
+}
+
+export function MicOffIcon({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${base} ${className}`} aria-hidden="true">
+      <path d="M9 9v2a3 3 0 0 0 5.1 2.1M15 10V6a3 3 0 0 0-5.7-1.3M5 11a7 7 0 0 0 11.2 5.6M19 11a7 7 0 0 1-.6 2.8M12 18v3M9 21h6M3 3l18 18" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function EndCallIcon({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${base} ${className}`} aria-hidden="true">
+      <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function SpeakerIcon({ className = '' }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`${base} ${className}`} aria-hidden="true">
+      <path d="M4 9v6h4l5 4V5L8 9H4z" strokeLinejoin="round" />
+      <path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" strokeLinecap="round" />
+    </svg>
+  )
+}

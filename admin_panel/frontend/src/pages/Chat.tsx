@@ -2,9 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { KeyboardEvent, MouseEvent, RefObject } from 'react'
 import { ApiError, apiGet, apiPost, apiPostForm } from '../api/client'
 import { Banner } from '../components/Banner'
-import { MicIcon } from '../components/icons'
+import { EndCallIcon, HeadsetIcon, MicIcon, MicOffIcon, SpeakerIcon } from '../components/icons'
 import { VOICE_MAX_MS, useVoiceRecorder } from '../hooks/useVoiceRecorder'
 import type { VoiceClip } from '../hooks/useVoiceRecorder'
+import { useConversation } from '../voice/useConversation'
+import type { Phase } from '../voice/useConversation'
 import { usePolling } from '../hooks/usePolling'
 
 type ChatState = { chat_id: string | null; busy: boolean; external_busy: boolean; active_turn_id: string | null }
@@ -203,6 +205,58 @@ type LocalTurn = {
   baseline?: number
 }
 
+const OVERLAY = 'absolute inset-0 flex w-full items-center gap-2.5 rounded-xl border bg-surface px-3 text-left text-sm'
+const CLAMP2 = '[display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden break-words'
+
+/** The state of a voice conversation, laid over the message box (same size, so nothing moves). */
+function ConversationOverlay({
+  phase, muted, interim, onInterrupt,
+}: { phase: Phase; muted: boolean; interim: string; onInterrupt: () => void }) {
+  if (phase === 'speaking') {
+    return (
+      <button
+        type="button"
+        aria-label="Interrupt GOAT"
+        data-testid="conversation-overlay"
+        onMouseDown={keepFocus}
+        onClick={onInterrupt}
+        className={`${OVERLAY} border-accent/50 text-zinc-100`}
+      >
+        <SpeakerIcon className="h-4 w-4 shrink-0 animate-pulse-live text-accent" />
+        <span className="min-w-0 truncate">Speaking — tap to interrupt</span>
+      </button>
+    )
+  }
+  let body: React.ReactNode
+  if (phase === 'connecting' || phase === 'thinking') {
+    body = (
+      <>
+        <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-zinc-500 border-t-transparent" />
+        <span>{phase === 'connecting' ? 'Connecting…' : 'GOAT is thinking…'}</span>
+      </>
+    )
+  } else if (muted) {
+    body = (
+      <>
+        <MicOffIcon className="h-4 w-4 shrink-0 text-warn" />
+        <span className="text-zinc-400">Muted</span>
+      </>
+    )
+  } else {
+    body = (
+      <>
+        <span className="h-2.5 w-2.5 shrink-0 animate-pulse-live rounded-full bg-accent-green" />
+        <span className={`min-w-0 ${interim ? `${CLAMP2} text-zinc-100` : 'truncate text-zinc-400'}`}>{interim || 'Listening…'}</span>
+      </>
+    )
+  }
+  return (
+    <div role="status" aria-live="polite" data-testid="conversation-overlay" className={`${OVERLAY} border-edge`}>
+      {body}
+    </div>
+  )
+}
+
 export function Chat() {
   const [text, setText] = useState('')
   const [sendError, setSendError] = useState<string | null>(null)
@@ -350,23 +404,34 @@ export function Chat() {
     toBottom()
   }, [toBottom])
 
+  /** Send one message to GOAT (typed, or said in a voice conversation). Returns the id of the turn it started. */
+  const sendText = useCallback(
+    async (message: string): Promise<string | null> => {
+      setSendError(null)
+      setNotice(null)
+      stick.current = true
+      setAtBottom(true)
+      try {
+        const { turn_id } = await apiPost<{ turn_id: string }>('/api/chat', { text: message })
+        const baseline = transcript.filter((e) => e.role === 'user' && e.content === message).length
+        setTurns((prev) => [...prev, { id: turn_id, text: message, status: 'queued', reply: null, events: [], baseline }])
+        return turn_id
+      } catch (err) {
+        setSendError(describeError(err))
+        return null
+      }
+    },
+    [transcript],
+  )
+
   const send = useCallback(async () => {
     const message = text.trim()
     if (!message) return
-    setSendError(null)
-    setNotice(null)
-    stick.current = true
-    setAtBottom(true)
-    try {
-      const { turn_id } = await apiPost<{ turn_id: string }>('/api/chat', { text: message })
-      const baseline = transcript.filter((e) => e.role === 'user' && e.content === message).length
-      setTurns((prev) => [...prev, { id: turn_id, text: message, status: 'queued', reply: null, events: [], baseline }])
+    if (await sendText(message)) {
       setText('')
       textareaRef.current?.focus()
-    } catch (err) {
-      setSendError(describeError(err))
     }
-  }, [text, transcript])
+  }, [text, sendText])
 
   // PROTOTYPE: the server answers a stub (text is empty) until a speech-to-text provider is connected.
   const sendVoice = useCallback(async (clip: VoiceClip) => {
@@ -393,7 +458,10 @@ export function Chat() {
   }, [])
   const voice = useVoiceRecorder(sendVoice)
   const recording = voice.state === 'recording'
-  const problem = sendError ?? voice.error
+  const conversation = useConversation({ turns, submit: sendText })
+  const inConversation = conversation.active
+  const problem = sendError ?? voice.error ?? conversation.error
+  const shownNotice = notice ?? conversation.notice
 
   const stop = useCallback(async () => {
     const target = turns.find((t) => t.status === 'running') ?? turns.find((t) => t.status === 'queued')
@@ -409,6 +477,9 @@ export function Chat() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void send()
+    } else if (e.key === 'Escape' && inConversation) {
+      e.preventDefault()
+      conversation.end()
     } else if (e.key === 'Escape' && hasActive) {
       e.preventDefault()
       void stop()
@@ -434,6 +505,30 @@ export function Chat() {
         {chatId && (
           <span className="hidden shrink-0 text-zinc-600 sm:inline">· one conversation with Telegram (chat {chatId})</span>
         )}
+        <button
+          type="button"
+          title="Who reads GOAT's replies aloud in a conversation: Deepgram's Romanian voice, or this device's own voice"
+          onMouseDown={keepFocus}
+          onClick={() => conversation.setVoiceKind(conversation.voiceKind === 'deepgram' ? 'browser' : 'deepgram')}
+          className="ml-auto h-7 shrink-0 rounded-full px-2 text-[11px] text-zinc-500 active:bg-surface2"
+        >
+          {conversation.voiceKind === 'deepgram' ? 'Voice: Deepgram' : 'Voice: browser'}
+        </button>
+        <button
+          type="button"
+          aria-label={inConversation ? 'End voice conversation' : 'Start voice conversation'}
+          aria-pressed={inConversation}
+          title={inConversation ? 'End the voice conversation' : 'Talk with GOAT: it listens, answers and speaks'}
+          disabled={!chatId || voice.state !== 'idle'}
+          onMouseDown={keepFocus}
+          onClick={inConversation ? conversation.end : conversation.start}
+          className={`flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-[11px] transition-colors disabled:opacity-40 ${
+            inConversation ? 'border-accent bg-accent/15 text-accent' : 'border-edge text-zinc-400 active:bg-surface2'
+          }`}
+        >
+          <HeadsetIcon className="h-3.5 w-3.5" />
+          {inConversation ? `On · ${clock(conversation.elapsedMs)}` : 'Conversation'}
+        </button>
       </div>
 
       <div className="relative min-h-0 flex-1">
@@ -482,10 +577,10 @@ export function Chat() {
       </div>
 
       <div className="relative shrink-0">
-        {(problem || notice) && (
+        {(problem || shownNotice) && (
           <div className="absolute bottom-full left-0 right-0 z-10 mb-2 overflow-hidden rounded-lg bg-base shadow-card [&>div]:mb-0">
             {problem && <Banner kind="error" message={problem} />}
-            {notice && !problem && <Banner kind="info" message={notice} />}
+            {shownNotice && !problem && <Banner kind="info" message={shownNotice} />}
           </div>
         )}
         <div className="flex items-end gap-2">
@@ -495,13 +590,21 @@ export function Chat() {
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}
-              readOnly={voice.state !== 'idle'}
+              readOnly={voice.state !== 'idle' || inConversation}
               rows={2}
               placeholder="Message GOAT — Enter sends, Shift+Enter new line"
               aria-label="Message GOAT"
               className="min-h-[44px] w-full resize-none overflow-y-hidden rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
             />
-            {voice.state !== 'idle' && (
+            {inConversation && (
+              <ConversationOverlay
+                phase={conversation.phase}
+                muted={conversation.muted}
+                interim={conversation.interim}
+                onInterrupt={conversation.interrupt}
+              />
+            )}
+            {!inConversation && voice.state !== 'idle' && (
               <div
                 role="status"
                 aria-live="polite"
@@ -527,41 +630,70 @@ export function Chat() {
               </div>
             )}
           </div>
-          <button
-            type="button"
-            aria-label={recording ? 'Stop recording' : 'Record voice message'}
-            title={recording ? 'Stop recording' : 'Record a voice message'}
-            disabled={voice.state === 'sending'}
-            onMouseDown={keepFocus}
-            onClick={voice.toggle}
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-colors disabled:opacity-40 ${
-              recording ? 'animate-pulse-live border-danger bg-danger text-base' : 'border-edge text-zinc-300 active:bg-surface2'
-            }`}
-          >
-            <MicIcon className="h-5 w-5" />
-          </button>
-          <button
-            type="button"
-            aria-label="Stop"
-            title="Stop (Esc)"
-            disabled={!hasActive}
-            onMouseDown={keepFocus}
-            onClick={() => void stop()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-opacity active:bg-surface2 disabled:opacity-30"
-          >
-            <StopGlyph />
-          </button>
-          <button
-            type="button"
-            aria-label="Send"
-            title="Send (Enter)"
-            disabled={!text.trim() || !chatId}
-            onMouseDown={keepFocus}
-            onClick={() => void send()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-base transition-opacity disabled:opacity-40"
-          >
-            <SendGlyph />
-          </button>
+          {inConversation ? (
+            <button
+              type="button"
+              aria-label={conversation.muted ? 'Unmute microphone' : 'Mute microphone'}
+              aria-pressed={conversation.muted}
+              onMouseDown={keepFocus}
+              onClick={conversation.toggleMute}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-colors ${
+                conversation.muted ? 'border-warn/50 text-warn' : 'border-edge text-zinc-300 active:bg-surface2'
+              }`}
+            >
+              {conversation.muted ? <MicOffIcon className="h-5 w-5" /> : <MicIcon className="h-5 w-5" />}
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label={recording ? 'Stop recording' : 'Record voice message'}
+              title={recording ? 'Stop recording' : 'Record a voice message'}
+              disabled={voice.state === 'sending'}
+              onMouseDown={keepFocus}
+              onClick={voice.toggle}
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-colors disabled:opacity-40 ${
+                recording ? 'animate-pulse-live border-danger bg-danger text-base' : 'border-edge text-zinc-300 active:bg-surface2'
+              }`}
+            >
+              <MicIcon className="h-5 w-5" />
+            </button>
+          )}
+          {/* One slot: End during a voice conversation; else Stop while a response is in progress; else Send (Enter still queues). */}
+          {inConversation ? (
+            <button
+              type="button"
+              aria-label="End conversation"
+              title="End the voice conversation (Esc)"
+              onMouseDown={keepFocus}
+              onClick={conversation.end}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-danger text-base active:opacity-80"
+            >
+              <EndCallIcon className="h-5 w-5" />
+            </button>
+          ) : hasActive ? (
+            <button
+              type="button"
+              aria-label="Stop"
+              title="Stop (Esc)"
+              onMouseDown={keepFocus}
+              onClick={() => void stop()}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger active:bg-surface2"
+            >
+              <StopGlyph />
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label="Send"
+              title="Send (Enter)"
+              disabled={!text.trim() || !chatId}
+              onMouseDown={keepFocus}
+              onClick={() => void send()}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-base transition-opacity disabled:opacity-40"
+            >
+              <SendGlyph />
+            </button>
+          )}
         </div>
       </div>
     </div>
