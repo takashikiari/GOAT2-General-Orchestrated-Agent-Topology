@@ -162,6 +162,9 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
             preview = result[:_RESULT_HEAD] + "..." + result[-_RESULT_TAIL:]
         else:
             preview = result[:_RESULT_HEAD] + "..."
+        # one line per call: a multi-line result (a .gitignore, a log) must not put a blank line inside the evidence,
+        # which is how the reply is told apart from it ("[Tool calls]\n<summary>\n\n<reply>")
+        preview = " ⏎ ".join(preview.replace("\r", "").split("\n"))
         lines.append(f"called {name}({args}) → {preview}")
     return "\n".join(lines)
 

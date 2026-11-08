@@ -81,3 +81,18 @@ def test_a_reply_that_is_not_a_digest_reply_stays_in_the_chat():
 def test_entries_without_content_do_not_break_it():
     chat, agent = coord_feed.split_conversation([{"role": "user"}, {"role": "assistant", "content": None}])
     assert len(chat) == 2 and agent == []
+
+
+def test_split_tools_old_replies_with_blank_lines_inside_the_evidence():
+    # stored before the summary was made one-line: a .gitignore preview had blank lines in it
+    stored = ("[Tool calls]\ncalled repo_git({\"op\":\"show\"}) → # Virtual env\nvenv/\n\n# Logs\nlogs/\n"
+              "called shell_run({}) → ok\n\nAm verificat repo-ul.\n\nTotul e în regulă.")
+    tools, reply = coord_feed.split_tools(stored)
+    assert reply == "Am verificat repo-ul.\n\nTotul e în regulă."
+    assert tools.startswith("called repo_git") and tools.endswith("called shell_run({}) → ok")
+
+
+def test_split_tools_one_line_evidence_and_no_evidence():
+    assert coord_feed.split_tools("[Tool calls]\ncalled x({}) → a ⏎ b\n\nbună\n\nziua") == ("called x({}) → a ⏎ b", "bună\n\nziua")
+    assert coord_feed.split_tools("doar un răspuns") == (None, "doar un răspuns")
+    assert coord_feed.split_tools("[Tool calls]\ncalled x({}) → a") == ("called x({}) → a", "")
