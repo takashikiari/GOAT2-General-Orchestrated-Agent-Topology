@@ -1,6 +1,7 @@
 """admin_panel.routes.voice — receives a recorded voice message from the chat page.
 
-PROTOTYPE. This validates the upload and answers an explicit stub; no speech-to-text provider is connected yet.
+Validates the upload, then transcribes it with Deepgram (pre-recorded API) when ``DEEPGRAM_API_KEY`` is configured on the
+server; without a key it answers an explicit stub (``stub: true``, empty ``text``) so the page can say so.
 Auth is the same Telegram initData check as the other routes that act (``require_admin_write_auth``).
 
 The body is read by hand, AFTER auth and a size check, instead of declaring ``UploadFile`` parameters: FastAPI
@@ -12,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.datastructures import UploadFile
 
+from admin_panel import deepgram, voice_config
 from admin_panel.telegram_auth import require_admin_write_auth
 
 router = APIRouter()
@@ -73,15 +75,25 @@ async def voice(request: Request) -> dict:
     if not _looks_like_audio(data[:16]):
         raise HTTPException(status_code=422, detail="the file does not look like audio")
 
-    # TODO(voice-provider): this is where the speech-to-text provider goes (Groq or Deepgram, not decided yet).
-    # Send `data` (content type `content_type`) to it from here, keep its API key server-side, never log the audio,
-    # and return the transcript in `text`. The chat page already puts a non-empty `text` into the message box
-    # for review; while `text` is empty it shows that the upload arrived but nothing was transcribed.
+    if voice_config.api_key() is None:
+        # no provider configured on this server: say so instead of pretending (the page shows a notice)
+        return {
+            "ok": True,
+            "stub": True,
+            "duration_ms": duration_ms,
+            "bytes": len(data),
+            "content_type": content_type,
+            "text": "",
+        }
+    try:
+        text = await deepgram.transcribe(data, content_type)
+    except deepgram.DeepgramError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     return {
         "ok": True,
-        "stub": True,
+        "stub": False,
         "duration_ms": duration_ms,
         "bytes": len(data),
         "content_type": content_type,
-        "text": "",
+        "text": text,
     }
