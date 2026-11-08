@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from telegram import MenuButtonWebApp, WebAppInfo
 
+from admin_panel import tunnel_state
 from admin_panel.admin_config import ADMIN_HOST, ADMIN_PORT
 from admin_panel.tunnel_config import TUNNEL_ENABLED, TUNNEL_TIMEOUT_SECONDS
 from config.admin_chat import load_admin_chat_id
@@ -44,11 +45,14 @@ async def start(application: "Application") -> None:
     cloudflared's own periodic log lines exceed it, blocking the tunnel.
     """
     if not TUNNEL_ENABLED:
+        tunnel_state.set_state("off", detail="tunnel disabled in config/admin_panel.toml")
         return
     admin_chat_id = load_admin_chat_id()
     if not admin_chat_id:
         log.warning("tunnel enabled but no admin_chat_id configured in goat2.toml — skipping")
+        tunnel_state.set_state("off", detail="no admin_chat_id configured")
         return
+    tunnel_state.set_state("starting")
     try:
         process = await asyncio.create_subprocess_exec(
             "cloudflared", "tunnel", "--url", f"http://{ADMIN_HOST}:{ADMIN_PORT}",
@@ -56,6 +60,7 @@ async def start(application: "Application") -> None:
         )
     except OSError as exc:
         log.warning("cloudflared not available, tunnel disabled: %s", exc)
+        tunnel_state.set_state("unavailable", detail="cloudflared could not be started (is it in the bot's PATH?)")
         return
 
     assert process.stderr is not None
@@ -72,9 +77,11 @@ async def start(application: "Application") -> None:
                     "cloudflared did not report a tunnel URL within %ds (%s)",
                     TUNNEL_TIMEOUT_SECONDS, exc,
                 )
+                tunnel_state.set_state("down", detail=f"cloudflared reported no tunnel URL within {TUNNEL_TIMEOUT_SECONDS}s")
                 return
             if not raw:
                 log.warning("cloudflared exited%s", "" if url_found else " before reporting a tunnel URL")
+                tunnel_state.set_state("down", detail="cloudflared exited")
                 return
             if url_found:
                 continue  # keep draining so the pipe never fills
@@ -83,6 +90,7 @@ async def start(application: "Application") -> None:
                 continue
             url_found = True
             log.info("admin panel tunnel ready: %s", url)
+            tunnel_state.set_state("ready", url=url)
             try:
                 await application.bot.set_chat_menu_button(
                     chat_id=int(admin_chat_id),
@@ -91,6 +99,9 @@ async def start(application: "Application") -> None:
             except Exception as exc:  # noqa: BLE001 — menu button update is best-effort
                 log.warning("failed to update chat menu button: %s", exc)
     finally:
+        if tunnel_state.get_state()["status"] in ("starting", "ready"):
+            # the tunnel is going away (cancelled or ended): its URL no longer works, so do not keep showing it
+            tunnel_state.set_state("down", detail="tunnel stopped")
         if process.returncode is None:
             try:
                 process.kill()

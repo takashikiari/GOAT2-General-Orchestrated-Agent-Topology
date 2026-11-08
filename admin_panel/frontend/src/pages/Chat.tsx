@@ -47,6 +47,28 @@ function useFillViewportHeight(ref: RefObject<HTMLElement>) {
   }, [ref])
 }
 
+/** Fallback for the height of the 2-row message box when it cannot be measured (tests). */
+const INPUT_BASE_PX = 58
+
+/**
+ * Let the message box grow with what is typed, up to twice its resting (2-row) height, then scroll inside it.
+ * Back to the resting height when it is emptied (after sending).
+ */
+function useAutosize(ref: RefObject<HTMLTextAreaElement>, value: string) {
+  const base = useRef(0)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (!base.current) base.current = el.offsetHeight || INPUT_BASE_PX
+    el.style.height = 'auto'
+    const border = el.offsetHeight - el.clientHeight
+    const natural = el.scrollHeight + border
+    const max = base.current * 2
+    el.style.height = `${Math.min(Math.max(natural, base.current), max)}px`
+    el.style.overflowY = natural > max ? 'auto' : 'hidden'
+  }, [ref, value])
+}
+
 /** Buttons must not take focus from the message box: on a phone that closes the keyboard and the page jumps. */
 const keepFocus = (e: MouseEvent) => e.preventDefault()
 
@@ -175,6 +197,7 @@ export function Chat() {
   const stick = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
   useFillViewportHeight(rootRef)
+  useAutosize(textareaRef, text)
 
   const state = usePolling<ChatState>(() => apiGet('/api/chat/state'), 2000, [])
   const chatId = state.data?.chat_id ?? null
@@ -288,14 +311,17 @@ export function Chat() {
   useLayoutEffect(() => {
     if (stick.current) toBottom()
   }, [contentKey, toBottom])
-  // The list can change height without new data (a tool row opened, a live turn swapped for its stored copy).
+  // The list can change height without new data (a tool row opened, a live turn swapped for its stored copy), and its
+  // visible part shrinks when the message box grows or the phone keyboard opens: stay pinned in all of those cases.
   useEffect(() => {
     const content = contentRef.current
-    if (!content || typeof ResizeObserver === 'undefined') return
+    const scroller = scrollerRef.current
+    if (!content || !scroller || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
       if (stick.current) toBottom()
     })
     observer.observe(content)
+    observer.observe(scroller)
     return () => observer.disconnect()
   }, [toBottom])
   const jumpToLatest = useCallback(() => {
@@ -422,7 +448,7 @@ export function Chat() {
             rows={2}
             placeholder="Message GOAT — Enter to send, Shift+Enter for a new line, Esc to stop"
             aria-label="Message GOAT"
-            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
+            className="min-h-[44px] min-w-0 flex-1 resize-none overflow-y-hidden rounded-xl border border-edge bg-surface px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
           />
           <button
             type="button"

@@ -281,4 +281,78 @@ describe('Chat', () => {
       await waitFor(() => expect(state.scrollTop).toBe(1200))
     })
   })
+
+  it('the message box grows with the text, up to double its height, and shrinks back when emptied', async () => {
+    mockGet([])
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    const box = screen.getByLabelText('Message GOAT') as HTMLTextAreaElement
+    let natural = 20
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => natural })
+    const type = (value: string) => fireEvent.change(box, { target: { value } })
+    type('a')
+    expect(box.style.height).toBe('58px') // never below its resting two-row height
+    natural = 90
+    type('a\nb\nc\nd')
+    expect(box.style.height).toBe('90px') // follows the text
+    expect(box.style.overflowY).toBe('hidden')
+    natural = 400
+    type('a\n'.repeat(20))
+    expect(box.style.height).toBe('116px') // at most double
+    expect(box.style.overflowY).toBe('auto') // beyond that it scrolls inside
+    natural = 20
+    type('')
+    expect(box.style.height).toBe('58px')
+    expect(box.style.overflowY).toBe('hidden')
+  })
+
+  it('the box goes back to its resting height after a message is sent', async () => {
+    mockGet([view('queued', [])])
+    vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't1' })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    const box = screen.getByLabelText('Message GOAT') as HTMLTextAreaElement
+    let natural = 300
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => natural })
+    fireEvent.change(box, { target: { value: 'multe\nrânduri\nde\ntext\nlung' } })
+    expect(box.style.height).toBe('116px')
+    natural = 20
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(box.style.height).toBe('58px'))
+    expect(box).toHaveValue('')
+  })
+
+  it('stays pinned when the visible list shrinks (the box grew or the keyboard opened), but not for a reader higher up', async () => {
+    const observed: Element[] = []
+    const callbacks: (() => void)[] = []
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          callbacks.push(cb)
+        }
+        observe(el: Element) {
+          observed.push(el)
+        }
+        disconnect() {}
+      },
+    )
+    mockGet([])
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    const scroller = screen.getByTestId('chat-transcript')
+    expect(observed).toContain(scroller) // the list itself is watched, not only its content
+    let top = 600
+    const writes: number[] = []
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 400 })
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v; writes.push(v) } })
+    callbacks.forEach((cb) => cb()) // the list got smaller while pinned
+    expect(writes[writes.length - 1]).toBe(1000)
+    top = 100
+    fireEvent.scroll(scroller) // the user is reading higher up
+    writes.length = 0
+    callbacks.forEach((cb) => cb())
+    expect(writes).toEqual([])
+  })
 })
