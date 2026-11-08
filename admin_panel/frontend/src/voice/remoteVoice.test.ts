@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FIRST_AUDIO_MS, createRemoteVoice, remoteVoiceAvailable } from './remoteVoice'
+import { FIRST_AUDIO_MS, VOICE_GAIN, createRemoteVoice, remoteVoiceAvailable } from './remoteVoice'
 
 /** WebSocket stand-in: the test plays the server. */
 class FakeSocket {
@@ -75,6 +75,19 @@ class FakeContext {
     const s = new FakeSource()
     this.sources.push(s)
     return s
+  }
+  compressors: { threshold: { value: number }; ratio: { value: number }; connect: ReturnType<typeof vi.fn> }[] = []
+  gains: { gain: { value: number }; connect: ReturnType<typeof vi.fn> }[] = []
+  createDynamicsCompressor() {
+    const param = () => ({ value: 0 })
+    const c = { threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(), connect: vi.fn() }
+    this.compressors.push(c)
+    return c
+  }
+  createGain() {
+    const g = { gain: { value: 1 }, connect: vi.fn() }
+    this.gains.push(g)
+    return g
   }
 }
 
@@ -228,5 +241,25 @@ describe('remote voice (Deepgram, streamed through the panel)', () => {
     expect(remoteVoiceAvailable()).toBe(true)
     delete (window as unknown as { webkitAudioContext?: unknown }).webkitAudioContext
     expect(remoteVoiceAvailable()).toBe(false)
+  })
+
+  it('plays the voice louder: compressor, then make-up gain, then the speakers, one chain for every reply', async () => {
+    const voice = make()
+    voice.speak('unu')
+    socket().open()
+    socket().json({ type: 'ready', sample_rate: 24000 })
+    socket().pcm(new Array(2400).fill(1000))
+    voice.speak('doi')
+    socket().open()
+    socket().json({ type: 'ready', sample_rate: 24000 })
+    socket().pcm(new Array(2400).fill(1000))
+    const c = ctx()
+    expect(c.compressors).toHaveLength(1)
+    expect(c.gains).toHaveLength(1)
+    expect(VOICE_GAIN).toBeGreaterThan(1)
+    expect(c.gains[0].gain.value).toBe(VOICE_GAIN)
+    expect(c.compressors[0].connect).toHaveBeenCalledWith(c.gains[0])
+    expect(c.gains[0].connect).toHaveBeenCalledWith(c.destination)
+    for (const s of c.sources) expect(s.connect).toHaveBeenCalledWith(c.compressors[0])
   })
 })

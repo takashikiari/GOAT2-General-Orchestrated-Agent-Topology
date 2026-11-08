@@ -3,35 +3,24 @@ import { describeMicError } from '../hooks/useVoiceRecorder'
 import { getInitData } from '../telegram/initData'
 import { startPcmCapture } from './pcmCapture'
 import type { PcmCapture } from './pcmCapture'
+import { END_OF_TURN_MS, MIC_CONSTRAINTS, SERVER_ERRORS, socketUrl } from './streamConfig'
+
+export { END_OF_TURN_MS } from './streamConfig'
 
 export type StreamState = 'idle' | 'connecting' | 'listening'
 type Handlers = {
-  /** One finished utterance (a pause in speech), as text. Not called while paused. */
+  /** What was said up to END_OF_TURN_MS of silence, as text. Not called while paused. */
   onUtterance: (text: string) => void
   /** Something was heard (speech started or words came in): used to reset the silence timer. */
   onActivity?: () => void
 }
 
-/** What the server's error codes mean to the person using the page. */
-const SERVER_ERRORS: Record<string, string> = {
-  unauthorized: 'Session expired — reopen the panel from the Telegram menu button.',
-  not_configured: 'Voice conversation is not set up on the server yet (the Deepgram key is missing).',
-  upstream_auth: 'The speech recognition service rejected the server key.',
-  upstream: 'The speech recognition service is not reachable right now.',
-  time_limit: 'The conversation reached its 30 minute limit.',
-  frame_too_large: 'The audio could not be sent (frame too large).',
-}
-
-function socketUrl(): string {
-  const url = new URL('/api/voice/stream', window.location.href)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  return url.toString()
-}
-
 /**
  * The microphone streamed to the server's live speech-to-text (Deepgram, via our WebSocket proxy) and turned into
- * utterances. Pausing stops the audio (and drops anything half-heard): the conversation does this while GOAT thinks
- * and speaks so it never listens to itself.
+ * utterances. Pausing releases the microphone (and drops anything half-heard): the conversation does this while GOAT
+ * thinks and speaks, so it never listens to itself, and so the phone leaves its call audio mode (an open microphone with
+ * echo cancellation plays everything at the quiet call volume, 2026-11-08). The socket stays open meanwhile (the server
+ * keeps Deepgram alive), and the microphone is opened again on resume.
  */
 export function useVoiceStream(handlers: Handlers) {
   const [state, setState] = useState<StreamState>('idle')
@@ -41,16 +30,28 @@ export function useVoiceStream(handlers: Handlers) {
   const media = useRef<MediaStream | null>(null)
   const capture = useRef<PcmCapture | null>(null)
   const finals = useRef<string[]>([])
+  const turnTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const paused = useRef(false)
+  const opening = useRef(false)
   const closing = useRef(false)
   const handlersRef = useRef(handlers)
   handlersRef.current = handlers
 
-  const cleanup = useCallback(() => {
+  const clearTurnTimer = useCallback(() => {
+    if (turnTimer.current !== null) clearTimeout(turnTimer.current)
+    turnTimer.current = null
+  }, [])
+
+  const releaseMic = useCallback(() => {
     capture.current?.stop()
     capture.current = null
     media.current?.getTracks().forEach((t) => t.stop())
     media.current = null
+  }, [])
+
+  const cleanup = useCallback(() => {
+    clearTurnTimer()
+    releaseMic()
     const sock = socket.current
     socket.current = null
     if (sock && sock.readyState <= 1) {
@@ -63,7 +64,7 @@ export function useVoiceStream(handlers: Handlers) {
     }
     finals.current = []
     setInterim('')
-  }, [])
+  }, [clearTurnTimer, releaseMic])
 
   const stop = useCallback(() => {
     closing.current = true
@@ -82,20 +83,81 @@ export function useVoiceStream(handlers: Handlers) {
   )
 
   const flush = useCallback(() => {
+    clearTurnTimer()
     const text = finals.current.join(' ').trim()
     finals.current = []
     setInterim('')
     if (text && !paused.current) handlersRef.current.onUtterance(text)
-  }, [])
+  }, [clearTurnTimer])
 
-  const setPaused = useCallback((p: boolean) => {
-    paused.current = p
-    capture.current?.setPaused(p)
-    if (p) {
-      finals.current = []
-      setInterim('')
-    }
-  }, [])
+  /** Something was heard: the turn ends END_OF_TURN_MS after the last of it, if words were finalised by then. */
+  const armTurnTimer = useCallback(() => {
+    clearTurnTimer()
+    turnTimer.current = setTimeout(() => {
+      turnTimer.current = null
+      if (finals.current.length) flush()
+    }, END_OF_TURN_MS)
+  }, [clearTurnTimer, flush])
+
+  /** The microphone (again) and its PCM capture into the open socket; false (after reporting it) when that failed. */
+  const openMic = useCallback(
+    async (sock: WebSocket, existing?: MediaStream): Promise<boolean> => {
+      if (opening.current || capture.current) return true
+      opening.current = true
+      try {
+        let stream = existing ?? media.current
+        if (!stream) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
+          } catch (err) {
+            fail(describeMicError(err))
+            return false
+          }
+        }
+        if (closing.current || paused.current || socket.current !== sock) {
+          stream.getTracks().forEach((t) => t.stop()) // paused or ended while the microphone was opening
+          if (media.current === stream) media.current = null
+          return !closing.current
+        }
+        media.current = stream
+        try {
+          const cap = await startPcmCapture(stream, (pcm) => {
+            if (sock.readyState === 1 && !paused.current) sock.send(pcm)
+          })
+          if (closing.current || paused.current || socket.current !== sock) {
+            cap.stop()
+            if (paused.current && !closing.current) releaseMic()
+            return !closing.current
+          }
+          capture.current = cap
+          return true
+        } catch (err) {
+          fail(describeMicError(err))
+          return false
+        }
+      } finally {
+        opening.current = false
+      }
+    },
+    [fail, releaseMic],
+  )
+
+  const setPaused = useCallback(
+    (p: boolean) => {
+      const was = paused.current
+      paused.current = p
+      if (p) {
+        clearTurnTimer()
+        finals.current = []
+        setInterim('')
+        releaseMic()
+      } else if (was) {
+        const sock = socket.current
+        if (sock && sock.readyState === 1 && !closing.current) void openMic(sock)
+      }
+    },
+    [clearTurnTimer, openMic, releaseMic],
+  )
 
   const start = useCallback(async () => {
     setError(null)
@@ -108,9 +170,7 @@ export function useVoiceStream(handlers: Handlers) {
     setState('connecting')
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      })
+      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
     } catch (err) {
       fail(describeMicError(err))
       return
@@ -140,23 +200,17 @@ export function useVoiceStream(handlers: Handlers) {
       }
       switch (msg.type) {
         case 'ready':
-          try {
-            const cap = await startPcmCapture(stream, (pcm) => {
-              if (sock.readyState === 1 && !paused.current) sock.send(pcm)
-            })
-            if (closing.current) {
-              cap.stop()
-              return
-            }
-            cap.setPaused(paused.current)
-            capture.current = cap
+          if (paused.current) {
+            releaseMic() // paused before the server was ready: the microphone opens on resume
             setState('listening')
-          } catch (err) {
-            fail(describeMicError(err))
+          } else if (await openMic(sock, stream)) {
+            if (!closing.current) setState('listening')
           }
           return
         case 'speech_started':
-          if (!paused.current) handlersRef.current.onActivity?.()
+          if (paused.current) return
+          handlersRef.current.onActivity?.()
+          if (finals.current.length) armTurnTimer()
           return
         case 'transcript': {
           if (paused.current) return
@@ -165,21 +219,22 @@ export function useVoiceStream(handlers: Handlers) {
           if (msg.final) {
             if (text) finals.current.push(text)
             setInterim(finals.current.join(' '))
-            if (msg.speech_final) flush()
           } else if (text) {
             setInterim([...finals.current, text].join(' '))
           }
+          // a pause (speech_final, utterance_end) is not the end of the turn: only END_OF_TURN_MS of silence is
+          if (text || finals.current.length) armTurnTimer()
           return
         }
         case 'utterance_end':
-          flush()
+          if (!paused.current && finals.current.length) armTurnTimer()
           return
         case 'error':
           fail(SERVER_ERRORS[msg.code ?? ''] ?? msg.message ?? 'The voice service reported an error.')
           return
       }
     }
-  }, [fail, flush])
+  }, [armTurnTimer, fail, openMic, releaseMic])
 
   useEffect(
     () => () => {
