@@ -16,7 +16,7 @@ vi.mock('./pcmCapture', () => ({
 }))
 vi.mock('../telegram/initData', () => ({ getInitData: () => 'signed-init-data' }))
 
-import { useVoiceStream } from './useVoiceStream'
+import { END_OF_TURN_MS, useVoiceStream } from './useVoiceStream'
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -50,7 +50,10 @@ beforeEach(() => {
   cap.fail = false
   vi.stubGlobal('WebSocket', FakeWebSocket)
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 describe('useVoiceStream', () => {
   it('asks for the microphone, opens the socket on this page, authenticates, then listens on "ready"', async () => {
@@ -69,40 +72,80 @@ describe('useVoiceStream', () => {
     expect(cap.captures).toHaveLength(1)
   })
 
-  it('sends the audio frames, and none while paused', async () => {
-    installFakeMedia()
+  it('sends the audio frames; pausing releases the microphone and resuming opens it again', async () => {
+    const media = installFakeMedia()
     const { result } = await started()
     const frame = new Int16Array(4000).buffer
+    const binary = () => sock().sent.filter((m) => typeof m !== 'string')
     act(() => cap.captures[0].onFrame(frame))
-    expect(sock().sent.filter((m) => typeof m !== 'string')).toHaveLength(1)
+    expect(binary()).toHaveLength(1)
     act(() => result.current.setPaused(true))
-    expect(cap.captures[0].paused).toBe(true)
+    // GOAT thinks and speaks with the microphone closed: an open one keeps the phone in its quiet call audio mode
+    expect(cap.captures[0].stopped).toBe(true)
+    expect(media.track.stop).toHaveBeenCalled()
     act(() => cap.captures[0].onFrame(frame))
-    expect(sock().sent.filter((m) => typeof m !== 'string')).toHaveLength(1)
-    act(() => result.current.setPaused(false))
-    act(() => cap.captures[0].onFrame(frame))
-    expect(sock().sent.filter((m) => typeof m !== 'string')).toHaveLength(2)
+    expect(binary()).toHaveLength(1)
+    expect(sock().readyState).toBe(1) // the conversation goes on: the socket stays open
+    await act(async () => { result.current.setPaused(false) })
+    expect(media.getUserMedia).toHaveBeenCalledTimes(2)
+    expect(cap.captures).toHaveLength(2)
+    act(() => cap.captures[1].onFrame(frame))
+    expect(binary()).toHaveLength(2)
+    expect(result.current.state).toBe('listening')
   })
 
-  it('shows what is being said and hands over an utterance when the speaker pauses', async () => {
+  it('a pause while the microphone is reopening keeps it closed', async () => {
+    installFakeMedia()
+    const { result } = await started()
+    act(() => result.current.setPaused(true))
+    await act(async () => {
+      result.current.setPaused(false)
+      result.current.setPaused(true)
+    })
+    expect(cap.captures.slice(1).every((c) => c.stopped)).toBe(true)
+  })
+
+  it('shows what is being said and hands it over only after END_OF_TURN_MS of silence, not at a short pause', async () => {
     installFakeMedia()
     const { result, handlers } = await started()
+    vi.useFakeTimers()
     await act(async () => { await sock().push({ type: 'transcript', text: 'salut ce', final: false, speech_final: false }) })
     expect(result.current.interim).toBe('salut ce')
     await act(async () => { await sock().push({ type: 'transcript', text: 'salut, ce faci?', final: true, speech_final: true }) })
+    expect(handlers.onUtterance).not.toHaveBeenCalled() // Deepgram's 400 ms pause is not the end of the turn
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS - 1) })
+    expect(handlers.onUtterance).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(1) })
     expect(handlers.onUtterance).toHaveBeenCalledWith('salut, ce faci?')
     expect(result.current.interim).toBe('')
     expect(handlers.onActivity).toHaveBeenCalled()
   })
 
-  it('joins final pieces until the end of the utterance', async () => {
+  it('a pause to think, then more words: still one message', async () => {
     installFakeMedia()
     const { handlers } = await started()
-    await act(async () => { await sock().push({ type: 'transcript', text: 'verifică logurile', final: true, speech_final: false }) })
-    await act(async () => { await sock().push({ type: 'transcript', text: 'din ultima oră.', final: true, speech_final: false }) })
-    expect(handlers.onUtterance).not.toHaveBeenCalled()
+    vi.useFakeTimers()
+    await act(async () => { await sock().push({ type: 'transcript', text: 'verifică logurile', final: true, speech_final: true }) })
     await act(async () => { await sock().push({ type: 'utterance_end' }) })
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS - 500) })
+    await act(async () => { await sock().push({ type: 'speech_started' }) })
+    await act(async () => { await sock().push({ type: 'transcript', text: 'din ultima', final: false }) })
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS - 500) })
+    await act(async () => { await sock().push({ type: 'transcript', text: 'din ultima oră.', final: true, speech_final: true }) })
+    expect(handlers.onUtterance).not.toHaveBeenCalled()
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS) })
+    expect(handlers.onUtterance).toHaveBeenCalledTimes(1)
     expect(handlers.onUtterance).toHaveBeenCalledWith('verifică logurile din ultima oră.')
+  })
+
+  it('a sound with no words after it does not hold the message back for ever', async () => {
+    installFakeMedia()
+    const { handlers } = await started()
+    vi.useFakeTimers()
+    await act(async () => { await sock().push({ type: 'transcript', text: 'gata', final: true, speech_final: true }) })
+    await act(async () => { await sock().push({ type: 'speech_started' }) }) // a cough
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS) })
+    expect(handlers.onUtterance).toHaveBeenCalledWith('gata')
   })
 
   it('hears nothing while paused (GOAT thinking or speaking) and drops what was half heard', async () => {
@@ -111,8 +154,10 @@ describe('useVoiceStream', () => {
     await act(async () => { await sock().push({ type: 'transcript', text: 'jumătate', final: true, speech_final: false }) })
     act(() => result.current.setPaused(true))
     expect(result.current.interim).toBe('')
+    vi.useFakeTimers()
     await act(async () => { await sock().push({ type: 'transcript', text: 'ecou', final: true, speech_final: true }) })
     await act(async () => { await sock().push({ type: 'utterance_end' }) })
+    act(() => { vi.advanceTimersByTime(END_OF_TURN_MS * 2) })
     expect(handlers.onUtterance).not.toHaveBeenCalled()
   })
 

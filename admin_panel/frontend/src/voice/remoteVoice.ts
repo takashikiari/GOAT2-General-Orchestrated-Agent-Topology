@@ -10,6 +10,11 @@ import { getInitData } from '../telegram/initData'
 export const FIRST_AUDIO_MS = 15_000
 /** Played this long before the first chunk, so the next ones arrive in time. */
 const LEAD_S = 0.12
+/**
+ * Make-up gain after a gentle compressor: the voice is already near full scale at its peaks (-1.5 dBFS) but about
+ * -16 dBFS on average, so squeezing the peaks lets the whole of it play louder without clipping (2026-11-08).
+ */
+export const VOICE_GAIN = 2.0
 
 /** ``ended``: it was read (or cancelled, or broke off part-way). ``unavailable``: no sound at all, so use another voice. */
 export type RemoteSpeaking = { done: Promise<'ended' | 'unavailable'>; cancel: () => void }
@@ -36,12 +41,34 @@ function socketUrl(): string {
  */
 export function createRemoteVoice(openSocket: () => WebSocket = () => new WebSocket(socketUrl())): RemoteVoice {
   let ctx: AudioContext | null = null
+  let output: AudioNode | null = null
   const context = (): AudioContext => {
     if (!ctx) {
       const Ctor = audioContextCtor()!
       ctx = new Ctor()
+      output = null
     }
     return ctx
+  }
+  /** Where the voice goes: compressor → make-up gain → speakers (straight to the speakers if those are missing). */
+  const voiceOutput = (c: AudioContext): AudioNode => {
+    if (output) return output
+    try {
+      const compressor = c.createDynamicsCompressor()
+      compressor.threshold.value = -24
+      compressor.knee.value = 12
+      compressor.ratio.value = 4
+      compressor.attack.value = 0.003
+      compressor.release.value = 0.15
+      const gain = c.createGain()
+      gain.gain.value = VOICE_GAIN
+      compressor.connect(gain)
+      gain.connect(c.destination)
+      output = compressor
+    } catch {
+      output = c.destination
+    }
+    return output
   }
 
   return {
@@ -57,6 +84,7 @@ export function createRemoteVoice(openSocket: () => WebSocket = () => new WebSoc
     close() {
       const c = ctx
       ctx = null
+      output = null
       void c?.close().catch(() => {})
     },
 
@@ -120,7 +148,7 @@ export function createRemoteVoice(openSocket: () => WebSocket = () => new WebSoc
         chunk.copyToChannel(audio, 0)
         const source = c.createBufferSource()
         source.buffer = chunk
-        source.connect(c.destination)
+        source.connect(voiceOutput(c))
         nextTime = Math.max(nextTime, c.currentTime + (heard ? 0 : LEAD_S))
         source.onended = () => {
           playing.delete(source)
