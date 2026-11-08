@@ -29,7 +29,9 @@ working fallback.
 the first versions (open question §7); phone calls / SIP; changes to `orchestrator/`.
 
 **Anti-goals (would be a failure even if it technically works):** the voice model answering factual questions about
-GOAT's system from its own imagination; two diverging conversation histories; a flat voice that is merely faster.
+GOAT's system from its own imagination; facts, decisions or preferences said aloud that never reach GOAT (the prompt
+sends them through `ask_goat`; pure small talk handled by the voice model alone is not recorded); a flat voice that is
+merely faster.
 
 ## 3. Architecture
 
@@ -48,8 +50,9 @@ GOAT's knowledge, tools or actions through `ask_goat`, say what GOAT found in yo
 text is in the chat), never invent facts about the system.
 
 **One turn.** Person speaks → the provider detects the end of the turn (its own VAD, not our 2.5 s timer) → the model
-answers or calls `ask_goat` → the server submits the verbatim transcript as a normal chat turn (so it shows in the Chat
-page and Telegram like any message) → while it runs the model may speak a short filler, the page shows the tool chips
+answers or calls `ask_goat` → the server submits the model's `request` argument (it has the whole conversation; the provider's transcript can lag
+the call or cover only the last fragment) as a normal chat turn, so it shows in the Chat page and Telegram like any
+message, while the page's bubble shows what the provider heard → while it runs the model may speak a short filler, the page shows the tool chips
 → the reply goes back as the tool result → the model speaks it. A second `ask_goat` during a running turn gets
 "busy" back immediately (GOAT is one conversation, one turn at a time).
 
@@ -58,15 +61,18 @@ message (`voice_ws.authenticate`), key only on the server, tool calls executed n
 trips), caps and logs in one place, provider swappable. The extra hop costs ~100 ms; direct browser connections with
 ephemeral tokens stay a later optimisation if the tunnel proves slow.
 
-**Browser ↔ server (`WS /api/voice/live`).** Page → server: `auth`, binary PCM16 16 kHz mono frames, `close`.
-Server → page: `ready {in_rate, out_rate}`, binary PCM16 24 kHz, `state {listening|thinking|speaking}`,
-`user_text {text, final}`, `assistant_text {text}`, `tool {name, status}`, `interrupted` (drop queued audio),
-`error {code}`, `time_limit`.
+**Browser ↔ server (`WS /api/voice/live`).** Page → server: `auth`, binary PCM16 16 kHz mono frames, `interrupt`
+(a tap on the overlay: the server cancels the model's current response), `close`. Server → page: `ready {in_rate,
+out_rate}`, binary PCM16 24 kHz, `state {listening|thinking|speaking}`, `user_text {text, final}`,
+`assistant_text {text}`, `tool {name, status}`, `interrupted` (drop queued audio), `error {code}`, `time_limit`.
 
-**Provider adapter** (the only provider-specific code, ≤ 260 lines each): `connect(config)`, `send_audio(pcm)`,
-`send_tool_result(call_id, text)`, `close()`, and an async stream of neutral events (`audio`, `user_text`,
-`assistant_text`, `tool_call`, `interrupted`, `turn_complete`, `error`). Adapters: `fake` (tests and browser checks),
-`gemini`, `openai`.
+**Provider adapter** (the only provider-specific code, ≤ 260 lines each): `connect(config, history)`,
+`send_audio(pcm)`, `send_tool_result(call_id, text, scheduling)`, `interrupt()`, `close()`, and an async stream of
+neutral events modelled on what Gemini Live really sends (`serverContent` audio parts, `inputTranscription`,
+`outputTranscription`, `interrupted`, `turnComplete`, `toolCall`, `goAway{timeLeft}`,
+`sessionResumptionUpdate{handle}`, `usageMetadata`; a tool-call cancellation is handled defensively): `audio`,
+`user_text`, `assistant_text`, `tool_call`, `tool_cancel`, `interrupted`, `turn_complete`, `go_away`, `resumption`,
+`usage`, `error`. Adapters: `fake` (it replays those sequences, in tests and browser checks), `gemini`, `openai`.
 
 **What changes**
 
@@ -97,9 +103,13 @@ socket) was considered: it fixes the walkie-talkie turn-taking but is still text
 
 1. Server proxy with an adapter interface (above).
 2. One tool, `ask_goat`; the voice model never calls GOAT's own tools.
-3. Half-duplex first (the server does not forward microphone audio while the model speaks); barge-in with echo
-   cancellation is its own phase because it can fail on phones.
-4. The verbatim transcript, not the model's paraphrase, is what GOAT receives.
+3. Phase 1-3 are half-duplex with **tap to interrupt**: the server does not forward microphone audio while the model
+   speaks (no echo), and one tap cuts the model off and reopens the microphone. Talking over the model by voice
+   (barge-in with echo cancellation) is its own phase because it can fail on phones.
+4. GOAT receives the model's `request` argument (not the transcript); the session is **seeded with the recent chat
+   history** at connect so follow-ups ("ce ai zis mai devreme?") work. If the person interrupts while `ask_goat` runs,
+   the GOAT turn is not cancelled (it may be doing something real): its result goes back with `SILENT` scheduling so
+   the model can use it later; normal results use `WHEN_IDLE` so the model never talks over the person.
 5. Session caps: 15 min with resumption, 90 s of silence ends it, a hard daily-minutes counter is shown on the Dashboard.
 
 ## 6. Risks
@@ -115,6 +125,10 @@ socket) was considered: it fixes the walkie-talkie turn-taking but is still text
   actions keep their existing confirmations.
 
 ## 7. Open questions for Laris
+
+0. **Listen first (ten minutes, no code):** talk Romanian with both models in their own playgrounds, Google AI Studio
+   "Stream" with `gemini-3.8-live` and OpenAI's Realtime playground with `gpt-realtime-2`, and say which one sounds
+   real and emotional. It may also settle question 1.
 
 1. "Vocea lui reală": a natural, expressive voice for GOAT (assumed), or **Laris's own cloned voice**? Cloning needs a
    consent recording; I found it documented only for OpenAI; it is not part of the first phases.
