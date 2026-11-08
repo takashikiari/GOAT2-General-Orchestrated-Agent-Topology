@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 __all__ = [
     "api_key", "http_listen_url", "ws_listen_url", "ws_speak_url", "tts_enabled", "MODEL", "LANGUAGE", "TTS_MODEL",
     "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
+    "live_provider", "live_voice", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
 ]
 
 # Nova-3 supports Romanian ("ro"); Flux (the conversational turn-taking model) does not.
@@ -24,6 +25,8 @@ TTS_MAX_CHARS = 1000               # one reply (the page already cuts it to abou
 MAX_SPEAK_SECONDS = 90             # hard cap on one spoken reply, whatever Deepgram does
 KEEPALIVE_SECONDS = 4.0            # Deepgram closes a stream after 10 s without audio or a KeepAlive
 MAX_STREAM_SECONDS = 30 * 60       # hard cap on one streaming session, whatever the page does
+LIVE_IDLE_SECONDS = 90             # the speech-to-speech conversation ends after this long without a word from either side
+LIVE_MAX_SECONDS = 15 * 60         # and after this long in all (the providers' audio sessions have a limit of their own)
 
 
 def api_key() -> str | None:
@@ -61,3 +64,13 @@ def ws_speak_url() -> str:
 def tts_enabled() -> bool:
     """Deepgram voice-back is on when there is a key, unless ``DEEPGRAM_TTS=off`` (the page then uses the browser voice)."""
     return api_key() is not None and os.environ.get("DEEPGRAM_TTS", "on").strip().lower() not in ("off", "0", "false", "no")
+
+
+def live_provider() -> str | None:
+    """Which speech-to-speech adapter the live voice uses (``VOICE_LIVE_PROVIDER``: fake | gemini | openai); None = off."""
+    return os.environ.get("VOICE_LIVE_PROVIDER", "").strip().lower() or None
+
+
+def live_voice() -> str | None:
+    """The provider's name for the voice to speak with (``VOICE_LIVE_VOICE``); None = the provider's default."""
+    return os.environ.get("VOICE_LIVE_VOICE", "").strip() or None

@@ -103,13 +103,15 @@ socket) was considered: it fixes the walkie-talkie turn-taking but is still text
 
 1. Server proxy with an adapter interface (above).
 2. One tool, `ask_goat`; the voice model never calls GOAT's own tools.
-3. Phase 1-3 are half-duplex with **tap to interrupt**: the server does not forward microphone audio while the model
-   speaks (no echo), and one tap cuts the model off and reopens the microphone. Talking over the model by voice
+3. Phase 1-3 are half-duplex with **tap to interrupt**: the page does not send microphone audio while it is playing
+   the model's voice (it is the only one that knows what is still playing, so there is no echo), and one tap cuts the
+   model off and reopens the microphone. Talking over the model by voice
    (barge-in with echo cancellation) is its own phase because it can fail on phones.
 4. GOAT receives the model's `request` argument (not the transcript); the session is **seeded with the recent chat
-   history** at connect so follow-ups ("ce ai zis mai devreme?") work. If the person interrupts while `ask_goat` runs,
-   the GOAT turn is not cancelled (it may be doing something real): its result goes back with `SILENT` scheduling so
-   the model can use it later; normal results use `WHEN_IDLE` so the model never talks over the person.
+   history** at connect so follow-ups ("ce ai zis mai devreme?") work. The GOAT turn is never cancelled
+   from the voice side (it may be doing something real). Normal results go back with `WHEN_IDLE` scheduling so the model
+   never talks over the person; if the provider withdraws the call (`toolCallCancellation`) the result goes back
+   `SILENT`, so the model knows it without saying it.
 5. Session caps: 15 min with resumption, 90 s of silence ends it, a hard daily-minutes counter is shown on the Dashboard.
 
 ## 6. Risks
