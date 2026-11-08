@@ -44,4 +44,10 @@ provider key is never printed, logged or committed.
   option, shown only when the server has a live provider). A real Chromium run with a synthetic microphone: listening,
   the model's filler, "GOAT is working: <tool>", the answer spoken, small talk, tap-to-interrupt.
 - Turn it on in a dev environment with `VOICE_LIVE_PROVIDER=fake`. Nothing is on by default.
-- Next: phase 0 (Laris listens to both playgrounds, answers the questions, provides a Gemini key), then phase 2.
+- Phase 0 decisions (via GOAT, 2026-11-08): natural voice, not cloned; Gemini primary; a Gemini key is in lenovo `.env`.
+  Still open: which paid/free tier the key is on (the free tier trains on the data), so only synthetic test audio has
+  been sent to Google so far; Laris's own voice goes there only after he confirms.
+- Phase 2 is built and verified: the Gemini 3.8 Live adapter through the whole panel in Chromium (synthetic Romanian
+  speech, fake GOAT): heard, filler, `ask_goat`, result spoken. Turn it on with `VOICE_LIVE_PROVIDER=gemini` + `GEMINI_API_KEY`.
+- Next: Laris listens to the voice samples and picks a voice (`VOICE_LIVE_VOICE`), a real test on his phone, then
+  phase 4 (what a phone allows) and phase 5 (session resumption on goAway, minutes counter, cleanup).

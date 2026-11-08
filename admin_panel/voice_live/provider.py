@@ -93,6 +93,7 @@ class LiveConfig:
     system_prompt: str
     tools: tuple[dict, ...]  # neutral declarations: {"name", "description", "parameters"}
     voice: str | None = None
+    language: str = "ro-RO"
     in_rate: int = 16000
     out_rate: int = 24000
 
@@ -108,6 +109,10 @@ class Provider(Protocol):
         """``scheduling``: ``WHEN_IDLE`` (say it when the model is free) or ``SILENT`` (know it, do not say it now)."""
 
     async def interrupt(self) -> None: ...
+
+    async def set_mic(self, on: bool) -> None:
+        """The page's microphone opened or closed (a provider that wants an end-of-stream marker when audio pauses, like
+        Gemini's ``audioStreamEnd``, sends it here)."""
 
     def events(self) -> AsyncIterator[Event]: ...
 

@@ -123,5 +123,8 @@ def test_live_status_needs_auth_and_says_whether_the_live_voice_exists(client, m
     assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}
     monkeypatch.setenv("VOICE_LIVE_PROVIDER", "fake")
     assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True}
-    monkeypatch.setenv("VOICE_LIVE_PROVIDER", "gemini")  # named, but its adapter is not built yet
-    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}
+    monkeypatch.setenv("VOICE_LIVE_PROVIDER", "gemini")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}  # no key
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True}

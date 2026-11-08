@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 __all__ = [
     "api_key", "http_listen_url", "ws_listen_url", "ws_speak_url", "tts_enabled", "MODEL", "LANGUAGE", "TTS_MODEL",
     "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
-    "live_provider", "live_voice", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
+    "live_provider", "live_voice", "gemini_key", "gemini_live_model", "gemini_live_url", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
 ]
 
 # Nova-3 supports Romanian ("ro"); Flux (the conversational turn-taking model) does not.
@@ -74,3 +74,19 @@ def live_provider() -> str | None:
 def live_voice() -> str | None:
     """The provider's name for the voice to speak with (``VOICE_LIVE_VOICE``); None = the provider's default."""
     return os.environ.get("VOICE_LIVE_VOICE", "").strip() or None
+
+
+def gemini_key() -> str | None:
+    """The Gemini API key (``GEMINI_API_KEY``, from GOAT's ``.env``): server only, never sent to the page, never logged."""
+    return os.environ.get("GEMINI_API_KEY", "").strip() or None
+
+
+def gemini_live_model() -> str:
+    return os.environ.get("GEMINI_LIVE_MODEL", "").strip() or "gemini-3.8-live"
+
+
+def gemini_live_url() -> str:
+    """The Live API WebSocket (overridable, which is how the tests point the adapter at a local fake)."""
+    return os.environ.get("GEMINI_LIVE_URL", "").strip() or (
+        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+    )

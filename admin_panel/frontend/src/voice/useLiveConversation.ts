@@ -10,6 +10,9 @@ import { MIC_CONSTRAINTS, SERVER_ERRORS } from './streamConfig'
 export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
 
 /** Server codes that are the normal end of a conversation, not a failure. */
+/** An ``interrupted`` this soon after our own tap is the answer to that tap: the page already cleared, newer audio is not stale. */
+export const TAP_WINDOW_MS = 1500
+
 const NOTICES: Record<string, string> = {
   idle: 'Conversation ended after a stretch of silence.',
   time_limit: 'The conversation reached its time limit.',
@@ -52,14 +55,24 @@ export function useLiveConversation() {
   const readyRef = useRef(false)
   const mutedRef = useRef(false)
   const playingRef = useRef(false)
+  const lastTap = useRef(0)
+  const micOn = useRef(false) // what the server was last told about the microphone
+
+  /** Tell the server the microphone opened or closed (the provider may need an end-of-stream marker). */
+  const signalMic = useCallback((on: boolean) => {
+    micOn.current = on
+    const sock = socket.current
+    if (sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'mic', on }))
+  }, [])
 
   const releaseMic = useCallback(() => {
     micGen.current++
+    if (media.current) signalMic(false)
     capture.current?.stop()
     capture.current = null
     media.current?.getTracks().forEach((t) => t.stop())
     media.current = null
-  }, [])
+  }, [signalMic])
 
   const finish = useCallback(
     (outcome: { error?: string; notice?: string } = {}) => {
@@ -99,12 +112,15 @@ export function useLiveConversation() {
           if (sock && sock.readyState === 1) sock.send(pcm)
         })
         if (gen !== micGen.current) cap.stop()
-        else capture.current = cap
+        else {
+          capture.current = cap
+          signalMic(true)
+        }
       } catch (err) {
         finish({ error: describeMicError(err) })
       }
     },
-    [finish],
+    [finish, signalMic],
   )
 
   /** Open the microphone again (it is released while the model speaks) unless it is muted, playing, or already open. */
@@ -131,7 +147,10 @@ export function useLiveConversation() {
       playingRef.current = value
       setPlaying(value)
       if (value) releaseMic()
-      else void openMic()
+      else {
+        setInterim('') // what was heard belongs to the turn that has just been answered
+        void openMic()
+      }
     },
     [openMic, releaseMic],
   )
@@ -153,11 +172,14 @@ export function useLiveConversation() {
         player.current?.setRate(Number(msg.out_rate) || 24000)
         readyRef.current = true
         setReady(true)
+        if (micOn.current) signalMic(true) // the microphone was opened before the socket was ready
         void openMic()
       } else if (msg.type === 'state') setServerState(String(msg.state))
       else if (msg.type === 'user_text') setInterim(String(msg.text ?? ''))
       else if (msg.type === 'tool') setActivity(msg.status === 'running' ? String(msg.name ?? '') : null)
-      else if (msg.type === 'interrupted') player.current?.clear()
+      else if (msg.type === 'interrupted') {
+        if (Date.now() - lastTap.current >= TAP_WINDOW_MS) player.current?.clear()
+      }
       else if (msg.type === 'notice' && msg.code === 'go_away') setNotice('The voice service will disconnect soon.')
       else if (msg.type === 'error') {
         const code = String(msg.code ?? '')
@@ -165,7 +187,7 @@ export function useLiveConversation() {
         else finish({ error: ERRORS[code] ?? String(msg.message ?? 'The live voice reported an error.') })
       }
     },
-    [finish, openMic],
+    [finish, openMic, signalMic],
   )
 
   const start = useCallback(async () => {
@@ -211,6 +233,7 @@ export function useLiveConversation() {
 
   const interrupt = useCallback(() => {
     const sock = socket.current
+    lastTap.current = Date.now()
     if (sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'interrupt' }))
     player.current?.clear()
   }, [])

@@ -47,11 +47,15 @@ def test_without_valid_auth_nothing_is_opened(env):
     assert env.made == []
 
 
-def test_not_configured_without_a_provider_or_for_one_that_is_not_built_yet(env):
+def test_not_configured_without_a_provider_an_unknown_one_or_gemini_without_its_key(env):
     env.monkeypatch.delenv("VOICE_LIVE_PROVIDER")
     with _live(env) as s:
         assert _read(s)["code"] == "not_configured"
+    env.monkeypatch.setenv("VOICE_LIVE_PROVIDER", "nonsense")
+    with _live(env) as s:
+        assert _read(s)["code"] == "not_configured"
     env.monkeypatch.setenv("VOICE_LIVE_PROVIDER", "gemini")
+    env.monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with _live(env) as s:
         assert _read(s)["code"] == "not_configured"
 

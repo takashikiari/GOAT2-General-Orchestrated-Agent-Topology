@@ -35,11 +35,12 @@ class FakeProvider:
         self.audio_in = 0
         self.tool_results: list[tuple[str, str, str, str]] = []
         self.interrupts = 0
+        self.mic_events: list[bool] = []
         self.closed = False
         self._heard = 0
         self._utterances = 0
         self._queue: asyncio.Queue[Event | None] = asyncio.Queue()
-        self._speech: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task] = set()
 
     async def connect(self, config: LiveConfig, history: list[HistoryItem]) -> None:
         self.config, self.history = config, list(history)
@@ -60,9 +61,11 @@ class FakeProvider:
 
     async def interrupt(self) -> None:
         self.interrupts += 1
-        if self._speech is not None and not self._speech.done():
-            self._speech.cancel()
+        self._cancel_all()  # what the model was about to say or do is gone, a tool call included
         self._queue.put_nowait(Interrupted())
+
+    async def set_mic(self, on: bool) -> None:
+        self.mic_events.append(on)
 
     async def events(self) -> AsyncIterator[Event]:
         while True:
@@ -73,14 +76,19 @@ class FakeProvider:
 
     async def close(self) -> None:
         self.closed = True
-        if self._speech is not None and not self._speech.done():
-            self._speech.cancel()
+        self._cancel_all()
         self._queue.put_nowait(None)
 
     # ── scripted behaviour ────────────────────────────────────────────────────
 
     def _start(self, coro) -> None:
-        self._speech = asyncio.ensure_future(coro)
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def _cancel_all(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
 
     async def _hear(self, kind: str, text: str) -> None:
         words = text.split()

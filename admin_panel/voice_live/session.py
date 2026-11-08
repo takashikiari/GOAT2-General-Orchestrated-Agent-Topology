@@ -8,7 +8,8 @@ Messages to the page (JSON text frames, plus binary PCM16 frames of the model's 
   {"type": "notice", "code"}                 the provider will close soon (``go_away``)
   {"type": "error", "code", "message"}       then the socket closes
 From the page: binary PCM16 frames at ``in_rate`` (the page itself stops sending while it plays the model's voice, so
-the model never hears itself), {"type": "interrupt"} (a tap: cut the model off) and {"type": "close"}.
+the model never hears itself), {"type": "mic", "on": bool} (the microphone opened or closed), {"type": "interrupt"}
+(a tap: cut the model off) and {"type": "close"}.
 """
 from __future__ import annotations
 
@@ -144,6 +145,8 @@ class _Run:
                     return
                 if kind == "interrupt":
                     await self.provider.interrupt()
+                elif kind == "mic":
+                    await self.provider.set_mic(bool(control.get("on")))
 
     async def watchdog(self, idle_seconds: float, max_seconds: float) -> None:
         started = time.monotonic()

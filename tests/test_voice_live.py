@@ -135,3 +135,29 @@ def test_the_provider_going_away_is_passed_on_and_an_error_ends_the_session(env)
         s.send_bytes(FRAME)
         err = _until(s, lambda m: m["type"] == "error")[-1]
         assert err["code"] == "upstream"
+
+
+def test_a_tap_is_answered_before_anything_that_comes_after_it(env):
+    """``interrupted`` must reach the page before the next utterance's events, or the page would cut off newer speech."""
+    with _live(env) as s:
+        _until(s, lambda m: m["type"] == "state")
+        s.send_bytes(FRAME)
+        s.send_bytes(FRAME)  # the first utterance: the model says its filler
+        _until(s, lambda m: m["type"] == "audio")
+        s.send_json({"type": "interrupt"})
+        s.send_bytes(FRAME)
+        s.send_bytes(FRAME)  # the second utterance, right behind the tap
+        seen = _until(s, lambda m: m["type"] == "assistant_text" and m["text"].startswith("Cu plăcere"))
+    kinds = _types(seen)
+    assert "interrupted" in kinds
+    assert kinds.index("interrupted") < kinds.index("user_text")
+
+
+def test_the_pages_microphone_signal_reaches_the_provider(env):
+    with _live(env) as s:
+        _until(s, lambda m: m["type"] == "state")
+        s.send_json({"type": "mic", "on": True})
+        s.send_json({"type": "mic", "on": False})
+        s.send_json({"type": "interrupt"})  # a round trip: once this is seen, the mic messages before it were handled
+        _until(s, lambda m: m["type"] == "interrupted")
+    assert env.made[0].mic_events == [True, False]

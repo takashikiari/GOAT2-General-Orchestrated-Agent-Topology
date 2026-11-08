@@ -40,7 +40,7 @@ vi.mock('./pcmPlayer', () => ({
   },
 }))
 
-import { useLiveConversation } from './useLiveConversation'
+import { TAP_WINDOW_MS, useLiveConversation } from './useLiveConversation'
 
 class FakeSocket {
   static last: FakeSocket
@@ -82,7 +82,10 @@ beforeEach(() => {
   media = installFakeMedia()
   vi.stubGlobal('WebSocket', FakeSocket)
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 describe('useLiveConversation', () => {
   it('asks for the microphone, opens the socket with the Telegram session, and listens once the server is ready', async () => {
@@ -129,6 +132,42 @@ describe('useLiveConversation', () => {
     expect(media.getUserMedia.mock.calls.length).toBe(before + 1)
     expect(capture.started).toBe(2)
     expect(hook.result.current.phase).toBe('listening')
+  })
+
+  it('tells the server when the microphone is open or closed', async () => {
+    const hook = await started()
+    const mic = () => FakeSocket.last.sent.filter((m) => typeof m === 'string').map((m) => JSON.parse(m as string)).filter((m) => m.type === 'mic').map((m) => m.on)
+    expect(mic()).toEqual([true]) // opened before the socket was ready, told once it was
+    act(() => playerState.onPlaying?.(true)) // the model's voice plays: the microphone is released
+    expect(mic()).toEqual([true, false])
+    act(() => playerState.onPlaying?.(false))
+    await flush()
+    expect(mic()).toEqual([true, false, true])
+    act(() => hook.result.current.toggleMute())
+    expect(mic()).toEqual([true, false, true, false])
+  })
+
+  it('an interrupted that answers our own tap does not cut off the audio that came after it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const hook = await started()
+    act(() => hook.result.current.interrupt()) // the tap clears by itself
+    expect(playerState.cleared).toBe(1)
+    act(() => FakeSocket.last.bytes(new ArrayBuffer(960))) // newer speech
+    act(() => FakeSocket.last.json({ type: 'interrupted' })) // the late answer to the tap
+    expect(playerState.cleared).toBe(1) // not cleared again
+    vi.setSystemTime(Date.now() + TAP_WINDOW_MS + 10)
+    act(() => FakeSocket.last.json({ type: 'interrupted' })) // a real cut-off later
+    expect(playerState.cleared).toBe(2)
+  })
+
+  it('forgets the words that were heard once the answer to them has been spoken', async () => {
+    const hook = await started()
+    act(() => FakeSocket.last.json({ type: 'user_text', text: 'verifică logurile', final: true }))
+    expect(hook.result.current.interim).toBe('verifică logurile')
+    act(() => playerState.onPlaying?.(true))
+    expect(hook.result.current.interim).toBe('verifică logurile') // still shown while the answer plays
+    act(() => playerState.onPlaying?.(false))
+    expect(hook.result.current.interim).toBe('')
   })
 
   it('a tap cuts the model off, tells the server, and listens again', async () => {
