@@ -540,28 +540,31 @@ export function Chat() {
           >
             <MicIcon className="h-5 w-5" />
           </button>
-          <button
-            type="button"
-            aria-label="Stop"
-            title="Stop (Esc)"
-            disabled={!hasActive}
-            onMouseDown={keepFocus}
-            onClick={() => void stop()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-opacity active:bg-surface2 disabled:opacity-30"
-          >
-            <StopGlyph />
-          </button>
-          <button
-            type="button"
-            aria-label="Send"
-            title="Send (Enter)"
-            disabled={!text.trim() || !chatId}
-            onMouseDown={keepFocus}
-            onClick={() => void send()}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-base transition-opacity disabled:opacity-40"
-          >
-            <SendGlyph />
-          </button>
+          {/* One slot: while a response is in progress it holds Stop, otherwise Send (Enter still queues a message). */}
+          {hasActive ? (
+            <button
+              type="button"
+              aria-label="Stop"
+              title="Stop (Esc)"
+              onMouseDown={keepFocus}
+              onClick={() => void stop()}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger active:bg-surface2"
+            >
+              <StopGlyph />
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-label="Send"
+              title="Send (Enter)"
+              disabled={!text.trim() || !chatId}
+              onMouseDown={keepFocus}
+              onClick={() => void send()}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-base transition-opacity disabled:opacity-40"
+            >
+              <SendGlyph />
+            </button>
+          )}
         </div>
       </div>
     </div>

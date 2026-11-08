@@ -179,25 +179,49 @@ describe('Chat', () => {
     expect(screen.getAllByText('ce faci?')).toHaveLength(1)
   })
 
-  it('keeps Stop and Send in place all the time: Stop is just disabled while nothing runs', async () => {
-    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])])
+  it('Stop takes the place of Send while a response is in progress (same slot), and Send comes back after', async () => {
+    mockGet([
+      view('running', [{ seq: 1, ts: 1, type: 'started' }]),
+      view('done', [{ seq: 2, ts: 2, type: 'reply', text: 'gata' }], 'gata'),
+    ])
     vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't1' })
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument() // not shown when nothing runs
+    const send = screen.getByRole('button', { name: 'Send' })
+    const slot = send.previousElementSibling
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    fireEvent.click(send)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument()
+    expect(stop.previousElementSibling).toBe(slot) // exactly where Send was
+    expect(stop).toBeEnabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument(), { timeout: 3000 })
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+  })
+
+  it('Enter still queues a message while a response is in progress', async () => {
+    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])], { ...IDLE, busy: true, active_turn_id: 't1' })
+    const post = vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't2' })
+    render(<Chat />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
+    const box = screen.getByLabelText('Message GOAT')
+    fireEvent.change(box, { target: { value: 'următorul mesaj' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/chat', { text: 'următorul mesaj' }))
   })
 
   it('the buttons do not take focus from the message box (the phone keyboard would close and the page jump)', async () => {
-    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])], { ...IDLE, busy: true, active_turn_id: 't1' })
-    render(<Chat />)
+    mockGet([])
+    const { unmount } = render(<Chat />)
     await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'x' } })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
     expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Send' }))).toBe(false)
+    unmount()
+    vi.restoreAllMocks()
+    mockGet([view('running', [{ seq: 1, ts: 1, type: 'started' }])], { ...IDLE, busy: true, active_turn_id: 't1' })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled())
     expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Stop' }))).toBe(false)
   })
 
