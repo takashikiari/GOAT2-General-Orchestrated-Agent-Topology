@@ -30,6 +30,11 @@ const view = (status: string, events: unknown[], reply: string | null = null, te
 
 afterEach(() => vi.restoreAllMocks())
 
+const HISTORY_WITH_NEW_MESSAGE = {
+  ...HISTORY,
+  timeline: [...HISTORY.timeline, { tier: 'L2', timestamp: 4, role: 'user', content: 'ce faci?' }],
+}
+
 describe('Chat', () => {
   it('shows the Telegram conversation (user and assistant messages only) and folds the tool summary', async () => {
     mockGet([])
@@ -136,5 +141,41 @@ describe('Chat', () => {
     render(<Chat />)
     await waitFor(() => expect(screen.getByText('mesaj de pe alt device')).toBeInTheDocument())
     expect(screen.getByText('Stop')).toBeInTheDocument()
+  })
+
+  it('shows a stopped tool as stopped, not running', async () => {
+    mockGet([view('cancelled', [
+      { seq: 1, ts: 1, type: 'started' },
+      { seq: 2, ts: 2, type: 'tool_start', id: 'b', name: 'shell_run', args: '{"cmd": "sleep 60"}' },
+      { seq: 3, ts: 3, type: 'cancelled' },
+    ])])
+    vi.spyOn(client, 'apiPost').mockResolvedValue({ turn_id: 't1' })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
+    fireEvent.click(screen.getByText('Send'))
+    await waitFor(() => expect(screen.getByText('Stopped.')).toBeInTheDocument())
+    expect(screen.getByTestId('tool-row')).toHaveTextContent('stopped')
+    expect(screen.getByTestId('tool-row')).not.toHaveTextContent('running')
+  })
+
+  it('shows the user message once when the stored conversation already holds it mid-turn', async () => {
+    let posted = false
+    vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) => {
+      if (path.startsWith('/api/chat/state')) return IDLE as never
+      if (path.startsWith('/api/conversations/')) return (posted ? HISTORY_WITH_NEW_MESSAGE : HISTORY) as never
+      return view('running', [{ seq: 1, ts: 1, type: 'started' }]) as never
+    })
+    vi.spyOn(client, 'apiPost').mockImplementation(async () => {
+      posted = true
+      return { turn_id: 't1' } as never
+    })
+    render(<Chat />)
+    await waitFor(() => expect(screen.getByText('salut din telegram')).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'ce faci?' } })
+    fireEvent.click(screen.getByText('Send'))
+    await waitFor(() => expect(screen.getByTestId('live-turn')).toBeInTheDocument())
+    await new Promise((r) => setTimeout(r, 2600)) // let the 2 s history poll pick the stored message up
+    expect(screen.getAllByText('ce faci?')).toHaveLength(1)
   })
 })

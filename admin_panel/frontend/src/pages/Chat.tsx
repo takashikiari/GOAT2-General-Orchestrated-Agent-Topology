@@ -57,16 +57,27 @@ function Bubble({ role, children }: { role: 'user' | 'assistant'; children: Reac
   )
 }
 
-function ToolRow({ name, args, end }: { name: string; args: string; end?: Extract<TurnEvent, { type: 'tool_end' }> }) {
-  const state = !end ? 'running' : end.ok ? 'ok' : 'failed'
-  const mark = state === 'running' ? '…' : state === 'ok' ? '✓' : '✗'
-  const color = state === 'failed' ? 'text-danger' : state === 'ok' ? 'text-accent-green' : 'text-warn'
+function ToolRow({
+  name,
+  args,
+  end,
+  stopped,
+}: {
+  name: string
+  args: string
+  end?: Extract<TurnEvent, { type: 'tool_end' }>
+  stopped: boolean
+}) {
+  const state = end ? (end.ok ? 'ok' : 'failed') : stopped ? 'stopped' : 'running'
+  const mark = { running: '…', ok: '✓', failed: '✗', stopped: '–' }[state]
+  const color = { running: 'text-warn', ok: 'text-accent-green', failed: 'text-danger', stopped: 'text-zinc-500' }[state]
   return (
     <details className="rounded-lg border border-edge bg-surface px-2.5 py-1.5 text-xs text-zinc-400" data-testid="tool-row">
       <summary className="cursor-pointer select-none">
         <span className={color}>{mark}</span> <span className="font-medium text-zinc-300">{name}</span>
         {end && <span className="text-zinc-500"> · {end.chars} chars</span>}
-        {!end && <span className="animate-pulse-live text-zinc-500"> · running</span>}
+        {!end && stopped && <span className="text-zinc-500"> · stopped</span>}
+        {!end && !stopped && <span className="animate-pulse-live text-zinc-500"> · running</span>}
       </summary>
       <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words text-zinc-500">{args}</pre>
       {end && <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words text-zinc-300">{end.preview}</pre>}
@@ -84,7 +95,9 @@ function LiveTurn({ turn }: { turn: LocalTurn }) {
       <Bubble role="user">{turn.text}</Bubble>
       {waiting && <p className="text-xs text-zinc-500">Waiting for the current turn to finish…</p>}
       {turn.events.map((e) =>
-        e.type === 'tool_start' ? <ToolRow key={e.seq} name={e.name} args={e.args} end={ends.get(e.id)} /> : null,
+        e.type === 'tool_start' ? (
+          <ToolRow key={e.seq} name={e.name} args={e.args} end={ends.get(e.id)} stopped={isTerminal(turn.status)} />
+        ) : null,
       )}
       {turn.status === 'running' && turn.events.length <= 1 && <p className="animate-pulse-live text-xs text-zinc-500">GOAT is thinking…</p>}
       {turn.reply && <Bubble role="assistant">{turn.reply}</Bubble>}
@@ -94,7 +107,16 @@ function LiveTurn({ turn }: { turn: LocalTurn }) {
   )
 }
 
-type LocalTurn = { id: string; text: string; status: TurnStatus; reply: string | null; events: TurnEvent[]; doneAt?: number }
+type LocalTurn = {
+  id: string
+  text: string
+  status: TurnStatus
+  reply: string | null
+  events: TurnEvent[]
+  doneAt?: number
+  /** How many stored user messages already had this text when it was sent (so an older identical one is not hidden). */
+  baseline?: number
+}
 
 export function Chat() {
   const [text, setText] = useState('')
@@ -172,6 +194,17 @@ export function Chat() {
     [history.data],
   )
 
+  // The stored conversation can already hold the user's message while its turn is still running: show it once.
+  const hiddenUserEntries = useMemo(() => {
+    const hidden = new Set<number>()
+    for (const t of turns) {
+      if (!t.text || t.baseline === undefined || t.status === 'done') continue
+      const same = transcript.flatMap((e, i) => (e.role === 'user' && e.content === t.text ? [i] : []))
+      if (same.length > t.baseline) hidden.add(same[same.length - 1])
+    }
+    return hidden
+  }, [turns, transcript])
+
   // Once a finished turn shows up in the stored conversation, drop its live copy (no duplicate bubbles).
   const statusKey = turns.map((t) => `${t.id}:${t.status}`).join(',')
   useEffect(() => {
@@ -197,12 +230,13 @@ export function Chat() {
     setSendError(null)
     try {
       const { turn_id } = await apiPost<{ turn_id: string }>('/api/chat', { text: message })
-      setTurns((prev) => [...prev, { id: turn_id, text: message, status: 'queued', reply: null, events: [] }])
+      const baseline = transcript.filter((e) => e.role === 'user' && e.content === message).length
+      setTurns((prev) => [...prev, { id: turn_id, text: message, status: 'queued', reply: null, events: [], baseline }])
       setText('')
     } catch (err) {
       setSendError(describeError(err))
     }
-  }, [text])
+  }, [text, transcript])
 
   const stop = useCallback(async () => {
     const target = turns.find((t) => t.status === 'running') ?? turns.find((t) => t.status === 'queued')
@@ -241,6 +275,7 @@ export function Chat() {
       <div className="flex-1 space-y-3 rounded-xl border border-edge bg-surface p-3" data-testid="chat-transcript">
         {!chatId && !state.error && <p className="py-10 text-center text-zinc-400">Loading…</p>}
         {transcript.map((e, i) => {
+          if (hiddenUserEntries.has(i)) return null
           const { tools, text: body } = e.role === 'assistant' ? splitToolSummary(e.content) : { tools: null, text: e.content }
           return (
             <div key={`${e.timestamp}-${i}`} className="space-y-1.5">
