@@ -15,6 +15,7 @@ from starlette.datastructures import UploadFile
 
 from admin_panel import deepgram, voice_config
 from admin_panel.voice_live import providers
+from admin_panel.voice_live.usage import usage_store
 from admin_panel.telegram_auth import require_admin_write_auth
 
 router = APIRouter()
@@ -102,5 +103,23 @@ async def voice(request: Request) -> dict:
 
 @router.get("/api/voice/live/status")
 async def live_status() -> dict:
-    """Whether the speech-to-speech conversation can be started on this server (the page offers "Live" only then)."""
-    return {"available": providers.is_available(voice_config.live_provider())}
+    """Whether the speech-to-speech conversation can be started on this server (the page offers "Live" only then), and
+    whether today's minutes are used up (the page then talks with the Deepgram voice instead)."""
+    return {
+        "available": providers.is_available(voice_config.live_provider()),
+        "limit_reached": usage_store().left_seconds(voice_config.live_daily_minutes()) <= 0,
+    }
+
+
+@router.get("/api/voice/live/usage")
+async def live_usage() -> dict:
+    """Today's live voice minutes for the Dashboard."""
+    seconds, sessions = usage_store().today()
+    limit = voice_config.live_daily_minutes()
+    return {
+        "provider": voice_config.live_provider(),
+        "today_minutes": round(seconds / 60, 1),
+        "limit_minutes": limit,
+        "sessions_today": sessions,
+        "limit_reached": seconds >= limit * 60,
+    }

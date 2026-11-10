@@ -7,12 +7,14 @@ how the tests point the code at a local fake.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from urllib.parse import urlencode
 
 __all__ = [
     "api_key", "http_listen_url", "ws_listen_url", "ws_speak_url", "tts_enabled", "MODEL", "LANGUAGE", "TTS_MODEL",
     "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
     "live_provider", "live_voice", "gemini_key", "gemini_live_model", "gemini_live_url", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
+    "live_daily_minutes", "live_usage_file", "LIVE_DAILY_MINUTES_DEFAULT",
 ]
 
 # Nova-3 supports Romanian ("ro"); Flux (the conversational turn-taking model) does not.
@@ -26,7 +28,8 @@ MAX_SPEAK_SECONDS = 90             # hard cap on one spoken reply, whatever Deep
 KEEPALIVE_SECONDS = 4.0            # Deepgram closes a stream after 10 s without audio or a KeepAlive
 MAX_STREAM_SECONDS = 30 * 60       # hard cap on one streaming session, whatever the page does
 LIVE_IDLE_SECONDS = 90             # the speech-to-speech conversation ends after this long without a word from either side
-LIVE_MAX_SECONDS = 15 * 60         # and after this long in all (the providers' audio sessions have a limit of their own)
+LIVE_MAX_SECONDS = 15 * 60         # and after this long in all (the provider's connection is resumed on goAway meanwhile)
+LIVE_DAILY_MINUTES_DEFAULT = 60    # minutes the live voice may talk in one day (it is billed by the minute)
 
 
 def api_key() -> str | None:
@@ -90,3 +93,17 @@ def gemini_live_url() -> str:
     return os.environ.get("GEMINI_LIVE_URL", "").strip() or (
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     )
+
+
+def live_daily_minutes() -> int:
+    """The live voice's daily cap in minutes (``VOICE_LIVE_DAILY_MINUTES``; anything that is not a positive whole number
+    means the default)."""
+    raw = os.environ.get("VOICE_LIVE_DAILY_MINUTES", "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else LIVE_DAILY_MINUTES_DEFAULT
+
+
+def live_usage_file() -> Path:
+    """Where the live voice's minutes are counted (``VOICE_LIVE_USAGE_FILE``); not under ``~/.cache``, which a nightly job
+    clears on this machine."""
+    raw = os.environ.get("VOICE_LIVE_USAGE_FILE", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".local" / "state" / "goat2" / "voice_live_usage.json"

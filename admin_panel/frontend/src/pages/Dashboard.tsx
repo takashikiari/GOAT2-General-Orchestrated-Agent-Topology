@@ -96,12 +96,44 @@ function TunnelCard() {
   )
 }
 
+type LiveUsage = {
+  provider: string | null
+  today_minutes: number
+  limit_minutes: number
+  sessions_today: number
+  limit_reached: boolean
+}
+
+/** The live voice's minutes today against its daily cap (it is billed by the minute); hidden when there is no live voice. */
+function LiveVoiceCard() {
+  const { data } = usePolling<LiveUsage>(() => apiGet('/api/voice/live/usage'), 30000, [])
+  if (!data || !data.provider || typeof data.today_minutes !== 'number' || typeof data.limit_minutes !== 'number') return null
+  const share = data.limit_minutes > 0 ? Math.min(1, data.today_minutes / data.limit_minutes) : 1
+  return (
+    <Card title={`Live voice minutes (${data.provider})`}>
+      <p>
+        Today: {data.today_minutes.toFixed(1)} / {data.limit_minutes} min · {data.sessions_today}{' '}
+        {data.sessions_today === 1 ? 'conversation' : 'conversations'}
+      </p>
+      <div className="h-2 overflow-hidden rounded-full bg-surface2" role="progressbar" aria-valuenow={Math.round(share * 100)}>
+        <div className={`h-full ${data.limit_reached ? 'bg-danger' : share > 0.8 ? 'bg-warn' : 'bg-accent-green'}`} style={{ width: `${share * 100}%` }} />
+      </div>
+      {data.limit_reached ? (
+        <p className="text-xs text-danger">Daily limit reached: until tomorrow, voice conversations use the Deepgram voice.</p>
+      ) : (
+        <p className="text-xs text-zinc-600">The cap is VOICE_LIVE_DAILY_MINUTES in GOAT's .env.</p>
+      )}
+    </Card>
+  )
+}
+
 export function Dashboard() {
   const { data, error, loading } = usePolling<MetricsReport>(() => apiGet('/api/metrics'), 15000, [])
 
   return (
     <div className="space-y-4">
       <TunnelCard />
+      <LiveVoiceCard />
       {error ? (
         <Banner kind="error" message={error} />
       ) : loading && !data ? (
