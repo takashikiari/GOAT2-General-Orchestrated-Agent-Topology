@@ -13,7 +13,7 @@ provider key is never printed, logged or committed.
 | 2 | Gemini 3.8 Live adapter, session resumption, real Romanian check | Gemini key | a Chromium run with a synthetic microphone gets a spoken Romanian answer; **two audio samples sent to Laris** (small talk with emotion, an answer that went through GOAT) |
 | 3 | OpenAI gpt-realtime-2 adapter, A/B on the same script | OpenAI key | Laris has heard both and chosen |
 | 4 | Barge-in by voice (full duplex) with echo cancellation, filler tuning, "must call ask_goat" eval list | phone test; ee1c5e's notes from #41 on echo and the pause | interruption works with a headset and, if it can, with the phone speaker; the eval list passes |
-| 5 | Hardening: minutes counter on the Dashboard, caps, fallbacks to the Deepgram path, docs, removal of dead code | — | restart-safe, documented, merged |
+| 5 | Hardening: session resumption on goAway, minutes counter on the Dashboard, caps, fallbacks to the Deepgram path, docs, removal of dead code | — | restart-safe, documented, merged |
 
 ## Phase 1 in detail (done locally 2026-11-08, not pushed)
 
@@ -49,5 +49,21 @@ provider key is never printed, logged or committed.
   been sent to Google so far; Laris's own voice goes there only after he confirms.
 - Phase 2 is built and verified: the Gemini 3.8 Live adapter through the whole panel in Chromium (synthetic Romanian
   speech, fake GOAT): heard, filler, `ask_goat`, result spoken. Turn it on with `VOICE_LIVE_PROVIDER=gemini` + `GEMINI_API_KEY`.
+- Phase 5 is built and tested (branch `feat/voice-live-phase5`, 2026-11-10, not merged yet):
+  - **Session resumption:** the Gemini setup asks for `sessionResumption` handles and a sliding context window; the
+    session keeps the last resumable handle and, on `goAway`, `provider.resume(handle)` opens a new connection and swaps
+    it in, without the page noticing. With no handle, or if resuming fails, the page gets the `go_away` notice as before.
+    The fake provider sends handles and closes after `goAway` unless resumed, so both paths are tested.
+  - **Minutes:** a conversation counts from the moment the provider is connected; `VOICE_LIVE_DAILY_MINUTES` (default 60)
+    is a hard daily cap (`daily_limit`: no new conversation, a running one ends). The count lives in
+    `VOICE_LIVE_USAGE_FILE` (default `~/.local/state/goat2/voice_live_usage.json`) and survives restarts; the Dashboard
+    has a "Live voice minutes" card (`GET /api/voice/live/usage`); `/api/voice/live/status` adds `limit_reached`.
+    The existing caps are kept and tested: 90 s of silence, 15 min per conversation, 64 KiB per audio frame.
+  - **Fallback:** when the live voice fails (not set up, unreachable, the day's minutes used up, the connection
+    dropped), the page carries the conversation on at once with the Deepgram voice and says why; a microphone error
+    does not trigger it (it would fail the same way). Live is tried again when the page reopens or Live is chosen again.
+  - **Cleanup:** the provider's token count (`Usage`), received and dropped until now, is logged with the time talked.
 - Next: Laris listens to the voice samples and picks a voice (`VOICE_LIVE_VOICE`), a real test on his phone, then
-  phase 4 (what a phone allows) and phase 5 (session resumption on goAway, minutes counter, cleanup).
+  phase 4 (what a phone allows). Known from the #41 phone test: reopening the microphone after every reply makes
+  Telegram ask for the microphone permission each time, and the live hook does the same (it releases the microphone
+  while the model speaks); phase 4 has to settle this.

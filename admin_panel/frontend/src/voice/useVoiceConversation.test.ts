@@ -13,7 +13,7 @@ vi.mock('./useLiveConversation', () => ({ useLiveConversation: () => live.value 
 import { useVoiceConversation } from './useVoiceConversation'
 
 const base = (over: Record<string, unknown> = {}) => ({
-  active: false, phase: 'listening', muted: false, interim: '', error: null, notice: null, elapsedMs: 0,
+  active: false, phase: 'listening', muted: false, interim: '', error: null, notice: null, elapsedMs: 0, providerDown: false,
   start: vi.fn(), end: vi.fn(), toggleMute: vi.fn(), interrupt: vi.fn(), ...over,
 })
 const args = { turns: [], submit: async () => null }
@@ -75,5 +75,47 @@ describe('useVoiceConversation', () => {
     act(() => result.current.cycleVoice())
     expect(classic.setVoiceKind).not.toHaveBeenCalled()
     expect(result.current.active).toBe(true)
+  })
+
+  it('when the live voice fails, the conversation carries on with the Deepgram voice and says why', async () => {
+    vi.spyOn(client, 'apiGet').mockResolvedValue({ available: true, limit_reached: false } as never)
+    window.localStorage.setItem('goat.voice', 'live')
+    const { result, rerender } = renderHook(() => useVoiceConversation(args))
+    await flush()
+    expect(result.current.voiceMode).toBe('live')
+    live.value = { ...(live.value as object), providerDown: true, error: 'The live voice service is not reachable right now.' }
+    rerender()
+    await flush()
+    expect(result.current.voiceMode).toBe('deepgram')
+    expect((classic.value as { start: ReturnType<typeof vi.fn> }).start).toHaveBeenCalledTimes(1)
+    expect(result.current.notice).toMatch(/not reachable.*Deepgram voice/)
+    expect(result.current.error).toBeNull() // the classic conversation's own error, not the live one
+    expect(window.localStorage.getItem('goat.voice')).toBe('live') // tried again next time the page opens
+    act(() => result.current.cycleVoice()) // deepgram → browser → live: choosing Live again retries it
+    ;(classic.value as { voiceKind: string }).voiceKind = 'browser' // what the real hook does after setVoiceKind
+    rerender()
+    act(() => result.current.cycleVoice())
+    expect(result.current.voiceMode).toBe('live') // and the old failure does not send it straight back to Deepgram
+    expect((classic.value as { start: ReturnType<typeof vi.fn> }).start).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fall back on its own when a conversation is already running in the classic voice', async () => {
+    vi.spyOn(client, 'apiGet').mockResolvedValue({ available: true } as never)
+    window.localStorage.setItem('goat.voice', 'live')
+    classic.value = { ...(classic.value as object), active: true }
+    live.value = { ...(live.value as object), providerDown: true }
+    renderHook(() => useVoiceConversation(args))
+    await flush()
+    expect((classic.value as { start: ReturnType<typeof vi.fn> }).start).not.toHaveBeenCalled()
+  })
+
+  it('once the day\'s live minutes are used up, the Deepgram voice is used and Live is not offered', async () => {
+    vi.spyOn(client, 'apiGet').mockResolvedValue({ available: true, limit_reached: true } as never)
+    window.localStorage.setItem('goat.voice', 'live')
+    const { result } = renderHook(() => useVoiceConversation(args))
+    await flush()
+    expect(result.current.voiceMode).toBe('deepgram')
+    act(() => result.current.cycleVoice())
+    expect(classic.setVoiceKind).toHaveBeenLastCalledWith('browser')
   })
 })

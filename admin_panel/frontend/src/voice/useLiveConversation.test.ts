@@ -216,11 +216,12 @@ describe('useLiveConversation', () => {
     act(() => FakeSocket.last.json({ type: 'error', code: 'idle', message: 'x' }))
     expect(quiet.result.current.active).toBe(false)
     expect(quiet.result.current.notice).toMatch(/silence/)
-    expect(quiet.result.current.error).toBeNull()
+    expect([quiet.result.current.error, quiet.result.current.providerDown]).toEqual([null, false]) // nothing to fall back from
     const broken = await started()
     act(() => FakeSocket.last.json({ type: 'error', code: 'not_configured', message: 'x' }))
     expect(broken.result.current.active).toBe(false)
     expect(broken.result.current.error).toMatch(/not set up/)
+    expect(broken.result.current.providerDown).toBe(true)
   })
 
   it('a denied microphone ends it at once, without opening a socket', async () => {
@@ -230,6 +231,7 @@ describe('useLiveConversation', () => {
     await act(async () => { await hook.result.current.start() })
     expect(hook.result.current.active).toBe(false)
     expect(hook.result.current.error).toMatch(/permission denied/i)
+    expect(hook.result.current.providerDown).toBe(false) // the microphone, not the live voice: Deepgram would fail too
     expect(FakeSocket.last).toBe(sockets)
   })
 
@@ -238,6 +240,7 @@ describe('useLiveConversation', () => {
     act(() => FakeSocket.last.onclose?.())
     expect(hook.result.current.active).toBe(false)
     expect(hook.result.current.error).toMatch(/closed/)
+    expect(hook.result.current.providerDown).toBe(true)
   })
 
   it('a go-away notice from the server is shown but does not end the conversation', async () => {

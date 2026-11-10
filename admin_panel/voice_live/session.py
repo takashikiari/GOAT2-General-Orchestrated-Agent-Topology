@@ -6,7 +6,7 @@ Messages to the page (JSON text frames, plus binary PCM16 frames of the model's 
   {"type": "tool", "name", "status": "running"|"done"|"failed"}
   {"type": "interrupted"}                    drop whatever is queued for playback
   {"type": "notice", "code"}                 the provider will close soon and the session could not be resumed (``go_away``)
-  {"type": "error", "code", "message"}       then the socket closes
+  {"type": "error", "code", "message"}       then the socket closes (``daily_limit``: today's minutes are used up)
 From the page: binary PCM16 frames at ``in_rate`` (the page itself stops sending while it plays the model's voice, so
 the model never hears itself), {"type": "mic", "on": bool} (the microphone opened or closed), {"type": "interrupt"}
 (a tap: cut the model off) and {"type": "close"}.
@@ -22,7 +22,7 @@ from admin_panel.voice_live.bridge import GoatBridge
 from admin_panel.voice_live.usage import LiveUsage
 from admin_panel.voice_live.provider import (
     Audio, AssistantText, GoAway, HistoryItem, Interrupted, LiveConfig, Provider, ProviderError, Resumption, ToolCall,
-    ToolCancel, TurnComplete, UserText,
+    ToolCancel, TurnComplete, Usage, UserText,
 )
 from utils.logging.setup import get_logger
 
@@ -52,6 +52,7 @@ class _Run:
         self.last_activity = time.monotonic()
         self.reason = "closed"
         self.handle: str | None = None  # the provider's latest resumption handle
+        self.tokens = 0  # the provider's own count for the session so far (logged at the end, next to the time talked)
         self.counted_at = time.monotonic()  # minutes talked are counted from here
 
     def touch(self) -> None:
@@ -111,6 +112,8 @@ class _Run:
                 await self.settle()
             elif isinstance(event, Resumption):
                 self.handle = event.handle
+            elif isinstance(event, Usage):
+                self.tokens = max(self.tokens, event.total_tokens)
             elif isinstance(event, GoAway):
                 if not await self.resume():
                     await self.ws.send_json({"type": "notice", "code": "go_away", "seconds": event.seconds})
@@ -203,7 +206,7 @@ async def run_session(ws, provider: Provider, bridge: GoatBridge, config: LiveCo
     of today's minutes; the time talked is added to ``usage``). Returns why it ended."""
     run = _Run(ws, provider, bridge)
     await provider.connect(config, history)
-    run.counted_at = time.monotonic()  # billed from the moment the provider is connected
+    run.counted_at = connected = time.monotonic()  # billed from the moment the provider is connected
     if usage is not None:
         usage.add(0, session=True)
     tasks: list[asyncio.Task] = []
@@ -225,6 +228,7 @@ async def run_session(ws, provider: Provider, bridge: GoatBridge, config: LiveCo
             task.cancel()
         await asyncio.gather(*tasks, *run.running, return_exceptions=True)
         run.count(usage)
+        log.info("voice_live: %.0f s talked, %d provider tokens (%s)", time.monotonic() - connected, run.tokens, run.reason)
         try:
             await provider.close()
         except Exception:  # noqa: BLE001
