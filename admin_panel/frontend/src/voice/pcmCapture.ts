@@ -2,7 +2,40 @@
 export type PcmCapture = {
   /** While paused nothing is sent (used while GOAT thinks and speaks, so it never hears itself). */
   setPaused: (paused: boolean) => void
+  /** Change the microphone gain while capturing (a value set at start through ``opts.gain``; kept in range). */
+  setGain: (gain: number) => void
   stop: () => void
+}
+
+/** The microphone gain the page may apply in software (Laris found his voice too quiet in the live voice, 2026-11-10;
+ * the browser's own auto gain control does not raise it enough). 1 = untouched. */
+export const MIN_GAIN = 1
+export const MAX_GAIN = 2.5
+
+export function clampGain(gain: number): number {
+  return Number.isFinite(gain) ? Math.min(MAX_GAIN, Math.max(MIN_GAIN, gain)) : 1
+}
+
+/**
+ * The microphone's way into the capture. At gain 1 the source is used as it is (the Deepgram path does not ask for a
+ * gain). Above 1: source → gain → limiter. The limiter is a DynamicsCompressor set hard (threshold -3 dBFS, no knee,
+ * ratio 20, 2 ms attack): it leaves normal speech alone and flattens only the peaks the gain would push past full
+ * scale, so a louder voice does not distort (the 16-bit conversion clamps whatever is left).
+ */
+export function buildInputChain(ctx: AudioContext, source: AudioNode, gain: number): { output: AudioNode; setGain: (g: number) => void } {
+  const start = clampGain(gain)
+  if (start === 1) return { output: source, setGain: () => {} }
+  const amp = ctx.createGain()
+  amp.gain.value = start
+  const limiter = ctx.createDynamicsCompressor()
+  limiter.threshold.value = -3
+  limiter.knee.value = 0
+  limiter.ratio.value = 20
+  limiter.attack.value = 0.002
+  limiter.release.value = 0.1
+  source.connect(amp)
+  amp.connect(limiter)
+  return { output: limiter, setGain: (g: number) => { amp.gain.value = clampGain(g) } }
 }
 
 export const TARGET_RATE = 16000
@@ -47,7 +80,11 @@ function merge(chunks: Float32Array[], total: number): Float32Array {
   return out
 }
 
-export async function startPcmCapture(stream: MediaStream, onFrame: (pcm: ArrayBuffer) => void): Promise<PcmCapture> {
+export async function startPcmCapture(
+  stream: MediaStream,
+  onFrame: (pcm: ArrayBuffer) => void,
+  opts: { gain?: number } = {},
+): Promise<PcmCapture> {
   let ctx: AudioContext
   try {
     ctx = new AudioContext({ sampleRate: TARGET_RATE })
@@ -55,6 +92,7 @@ export async function startPcmCapture(stream: MediaStream, onFrame: (pcm: ArrayB
     ctx = new AudioContext() // a browser that will not run at 16 kHz: we resample ourselves
   }
   const source = ctx.createMediaStreamSource(stream)
+  const input = buildInputChain(ctx, source, opts.gain ?? 1)
   const need = Math.round((FRAME_SAMPLES * ctx.sampleRate) / TARGET_RATE)
   let paused = false
   let chunks: Float32Array[] = []
@@ -83,7 +121,7 @@ export async function startPcmCapture(stream: MediaStream, onFrame: (pcm: ArrayB
     node.port.onmessage = (e: MessageEvent<Float32Array>) => push(e.data)
     const silent = ctx.createGain() // keeps the node in the audio graph without playing anything
     silent.gain.value = 0
-    source.connect(node)
+    input.output.connect(node)
     node.connect(silent)
     silent.connect(ctx.destination)
     disconnect = () => {
@@ -96,7 +134,7 @@ export async function startPcmCapture(stream: MediaStream, onFrame: (pcm: ArrayB
     node.onaudioprocess = (e) => push(new Float32Array(e.inputBuffer.getChannelData(0)))
     const silent = ctx.createGain()
     silent.gain.value = 0
-    source.connect(node)
+    input.output.connect(node)
     node.connect(silent)
     silent.connect(ctx.destination)
     disconnect = () => {
@@ -108,6 +146,7 @@ export async function startPcmCapture(stream: MediaStream, onFrame: (pcm: ArrayB
   if (ctx.state === 'suspended') await ctx.resume()
 
   return {
+    setGain: input.setGain,
     setPaused: (p) => {
       paused = p
       if (p) {

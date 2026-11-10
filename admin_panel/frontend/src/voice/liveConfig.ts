@@ -24,3 +24,7 @@ export function liveSocketUrl(): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   return url.toString()
 }
+
+/** Software gain on the microphone in the live voice (Laris's voice came through too quiet, 2026-11-10): +5 dB, the
+ * middle of the 1.5-2.0 range asked for; the limiter in ``pcmCapture`` keeps louder speech from distorting. */
+export const LIVE_MIC_GAIN = 1.8

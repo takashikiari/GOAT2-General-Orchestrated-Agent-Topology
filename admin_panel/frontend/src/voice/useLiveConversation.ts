@@ -5,10 +5,10 @@ import { startPcmCapture } from './pcmCapture'
 import type { PcmCapture } from './pcmCapture'
 import { createPcmPlayer, pcmPlayerAvailable } from './pcmPlayer'
 import type { PcmPlayer } from './pcmPlayer'
-import { ERRORS, NOTICES, PROVIDER_DOWN, TAP_WINDOW_MS, liveSocketUrl } from './liveConfig'
+import { ERRORS, LIVE_MIC_GAIN, NOTICES, PROVIDER_DOWN, TAP_WINDOW_MS, liveSocketUrl } from './liveConfig'
 import { MIC_CONSTRAINTS } from './streamConfig'
 
-export { TAP_WINDOW_MS } from './liveConfig'
+export { LIVE_MIC_GAIN, TAP_WINDOW_MS } from './liveConfig'
 
 export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
 
@@ -107,7 +107,7 @@ export function useLiveConversation() {
         const cap = await startPcmCapture(stream, (pcm) => {
           const sock = socket.current
           if (sending.current && sock && sock.readyState === 1) sock.send(pcm)
-        })
+        }, { gain: LIVE_MIC_GAIN })
         if (gen !== micGen.current) cap.stop()
         else {
           capture.current = cap

@@ -6,13 +6,14 @@ const capture = vi.hoisted(() => ({
   started: 0,
   stops: 0,
   paused: false,
+  gain: 0,
   onFrame: null as null | ((pcm: ArrayBuffer) => void),
   fail: null as null | Error,
 }))
 vi.mock('./pcmCapture', () => ({
-  startPcmCapture: async (_stream: unknown, onFrame: (pcm: ArrayBuffer) => void) => {
+  startPcmCapture: async (_stream: unknown, onFrame: (pcm: ArrayBuffer) => void, opts?: { gain?: number }) => {
     if (capture.fail) throw capture.fail
-    capture.started++
+    Object.assign(capture, { started: capture.started + 1, gain: opts?.gain ?? 1 })
     capture.onFrame = onFrame
     return { setPaused: (p: boolean) => { capture.paused = p }, stop: () => { capture.stops++ } }
   },
@@ -41,7 +42,7 @@ vi.mock('./pcmPlayer', () => ({
   },
 }))
 
-import { TAP_WINDOW_MS, useLiveConversation } from './useLiveConversation'
+import { LIVE_MIC_GAIN, TAP_WINDOW_MS, useLiveConversation } from './useLiveConversation'
 
 class FakeSocket {
   static last: FakeSocket
@@ -132,7 +133,7 @@ describe('useLiveConversation', () => {
     capture.onFrame?.(new ArrayBuffer(8000))
     expect([frames(), capture.paused, hook.result.current.phase]).toEqual([before + 1, false, 'listening'])
     // never closed and never asked for again: no new permission prompt after a reply
-    expect([media.getUserMedia.mock.calls.length, capture.started, capture.stops]).toEqual([1, 1, 0])
+    expect([media.getUserMedia.mock.calls.length, capture.started, capture.stops, capture.gain]).toEqual([1, 1, 0, LIVE_MIC_GAIN])
     expect(media.track.stop).not.toHaveBeenCalled()
   })
 
@@ -229,8 +230,7 @@ describe('useLiveConversation', () => {
     const hook = renderHook(() => useLiveConversation())
     const sockets = FakeSocket.last
     await act(async () => { await hook.result.current.start() })
-    expect(hook.result.current.active).toBe(false)
-    expect(hook.result.current.error).toMatch(/permission denied/i)
+    expect([hook.result.current.active, /permission denied/i.test(hook.result.current.error ?? '')]).toEqual([false, true])
     expect(hook.result.current.providerDown).toBe(false) // the microphone, not the live voice: Deepgram would fail too
     expect(FakeSocket.last).toBe(sockets)
   })
