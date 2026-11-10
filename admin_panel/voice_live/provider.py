@@ -103,6 +103,10 @@ class Provider(Protocol):
 
     async def connect(self, config: LiveConfig, history: list[HistoryItem]) -> None: ...
 
+    async def resume(self, handle: str) -> None:
+        """Carry the conversation on in a new connection, from a ``Resumption`` handle (after ``GoAway``); events keep
+        coming from ``events()``. If it cannot, it raises and the conversation ends with a ``ProviderError``."""
+
     async def send_audio(self, pcm: bytes) -> None: ...
 
     async def send_tool_result(self, call_id: str, name: str, result: str, scheduling: str) -> None:

@@ -120,11 +120,11 @@ def test_a_body_without_a_length_is_refused(client):
 def test_live_status_needs_auth_and_says_whether_the_live_voice_exists(client, monkeypatch):
     assert client.get("/api/voice/live/status").status_code == 401
     monkeypatch.delenv("VOICE_LIVE_PROVIDER", raising=False)
-    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False, "limit_reached": False}
     monkeypatch.setenv("VOICE_LIVE_PROVIDER", "fake")
-    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True}
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True, "limit_reached": False}
     monkeypatch.setenv("VOICE_LIVE_PROVIDER", "gemini")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False}  # no key
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": False, "limit_reached": False}  # no key
     monkeypatch.setenv("GEMINI_API_KEY", "k")
-    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True}
+    assert client.get("/api/voice/live/status", headers=_headers()).json() == {"available": True, "limit_reached": False}

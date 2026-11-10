@@ -110,4 +110,30 @@ describe('Dashboard', () => {
       expect(screen.queryByText(/Cloudflare tunnel/)).not.toBeInTheDocument()
     })
   })
+
+  it('shows the live voice minutes of the day against the cap, and says when the cap is reached', async () => {
+    const usage = { provider: 'gemini', today_minutes: 12.34, limit_minutes: 60, sessions_today: 3, limit_reached: false }
+    const spy = vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) =>
+      (path === '/api/voice/live/usage' ? usage : {}) as never,
+    )
+    const { unmount } = render(<Dashboard />)
+    await waitFor(() => expect(screen.getByText(/Today: 12.3 \/ 60 min · 3 conversations/)).toBeInTheDocument())
+    expect(screen.getByText(/Live voice minutes \(gemini\)/)).toBeInTheDocument()
+    expect(spy).toHaveBeenCalledWith('/api/voice/live/usage')
+    unmount()
+
+    Object.assign(usage, { today_minutes: 60, sessions_today: 1, limit_reached: true })
+    render(<Dashboard />)
+    await waitFor(() => expect(screen.getByText(/Daily limit reached/)).toBeInTheDocument())
+    expect(screen.getByText(/1 conversation$/)).toBeInTheDocument()
+  })
+
+  it('has no live voice card when the server has no live voice', async () => {
+    vi.spyOn(client, 'apiGet').mockImplementation(async (path: string) =>
+      (path === '/api/voice/live/usage' ? { provider: null, today_minutes: 0, limit_minutes: 60, sessions_today: 0, limit_reached: false } : {}) as never,
+    )
+    render(<Dashboard />)
+    await act(async () => {})
+    expect(screen.queryByText(/Live voice minutes/)).toBeNull()
+  })
 })

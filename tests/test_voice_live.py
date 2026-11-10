@@ -117,7 +117,7 @@ def test_the_conversation_still_starts_when_the_history_cannot_be_read(env):
 
 
 def test_the_provider_going_away_is_passed_on_and_an_error_ends_the_session(env):
-    env.monkeypatch.setitem(providers.PROVIDERS, "fake", env.make(script=(("chat", "salut"),), go_away_after=1))
+    env.monkeypatch.setitem(providers.PROVIDERS, "fake", env.make(script=(("chat", "salut"),), go_away_after=1, resumable=False))
     with _live(env) as s:
         _until(s, lambda m: m["type"] == "state")
         s.send_bytes(FRAME)

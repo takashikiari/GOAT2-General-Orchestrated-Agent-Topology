@@ -5,30 +5,12 @@ import { startPcmCapture } from './pcmCapture'
 import type { PcmCapture } from './pcmCapture'
 import { createPcmPlayer, pcmPlayerAvailable } from './pcmPlayer'
 import type { PcmPlayer } from './pcmPlayer'
-import { MIC_CONSTRAINTS, SERVER_ERRORS } from './streamConfig'
+import { ERRORS, NOTICES, PROVIDER_DOWN, TAP_WINDOW_MS, liveSocketUrl } from './liveConfig'
+import { MIC_CONSTRAINTS } from './streamConfig'
+
+export { TAP_WINDOW_MS } from './liveConfig'
 
 export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
-
-/** Server codes that are the normal end of a conversation, not a failure. */
-/** An ``interrupted`` this soon after our own tap is the answer to that tap: the page already cleared, newer audio is not stale. */
-export const TAP_WINDOW_MS = 1500
-
-const NOTICES: Record<string, string> = {
-  idle: 'Conversation ended after a stretch of silence.',
-  time_limit: 'The conversation reached its time limit.',
-}
-const ERRORS: Record<string, string> = {
-  ...SERVER_ERRORS,
-  not_configured: 'The live voice is not set up on the server yet.',
-  chat_unavailable: "GOAT's chat is not available right now.",
-  upstream: 'The live voice service is not reachable right now.',
-}
-
-function liveSocketUrl(): string {
-  const url = new URL('/api/voice/live', window.location.href)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  return url.toString()
-}
 
 /**
  * The speech-to-speech conversation: the microphone streams to the server's live voice model, its voice comes back and
@@ -45,6 +27,7 @@ export function useLiveConversation() {
   const [activity, setActivity] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [providerDown, setProviderDown] = useState(false) // the last conversation ended because the live voice failed
   const [elapsedMs, setElapsedMs] = useState(0)
   const socket = useRef<WebSocket | null>(null)
   const player = useRef<PcmPlayer | null>(null)
@@ -75,7 +58,7 @@ export function useLiveConversation() {
   }, [signalMic])
 
   const finish = useCallback(
-    (outcome: { error?: string; notice?: string } = {}) => {
+    (outcome: { error?: string; notice?: string; providerDown?: boolean } = {}) => {
       if (!activeRef.current) return
       activeRef.current = false
       readyRef.current = false
@@ -100,6 +83,7 @@ export function useLiveConversation() {
       setActivity(null)
       if (outcome.error) setError(outcome.error)
       if (outcome.notice) setNotice(outcome.notice)
+      if (outcome.providerDown) setProviderDown(true)
     },
     [releaseMic],
   )
@@ -184,7 +168,7 @@ export function useLiveConversation() {
       else if (msg.type === 'error') {
         const code = String(msg.code ?? '')
         if (NOTICES[code]) finish({ notice: NOTICES[code] })
-        else finish({ error: ERRORS[code] ?? String(msg.message ?? 'The live voice reported an error.') })
+        else finish({ error: ERRORS[code] ?? String(msg.message ?? 'The live voice reported an error.'), providerDown: PROVIDER_DOWN.has(code) })
       }
     },
     [finish, openMic, signalMic],
@@ -194,6 +178,7 @@ export function useLiveConversation() {
     if (activeRef.current) return
     setError(null)
     setNotice(null)
+    setProviderDown(false)
     if (!navigator.mediaDevices?.getUserMedia || typeof WebSocket === 'undefined' || !pcmPlayerAvailable()) {
       setError('This browser cannot hold a live voice conversation.')
       return
@@ -226,8 +211,8 @@ export function useLiveConversation() {
     socket.current = sock
     sock.onopen = () => sock.send(JSON.stringify({ type: 'auth', initData: getInitData() }))
     sock.onmessage = onMessage
-    sock.onerror = () => finish({ error: 'The live voice connection failed.' })
-    sock.onclose = () => finish({ error: 'The live voice connection closed.' })
+    sock.onerror = () => finish({ error: 'The live voice connection failed.', providerDown: true })
+    sock.onclose = () => finish({ error: 'The live voice connection closed.', providerDown: true })
     await beginCapture(stream, gen)
   }, [beginCapture, finish, onMessage, onPlaying])
 
@@ -257,5 +242,5 @@ export function useLiveConversation() {
   useEffect(() => () => finish(), [finish])
 
   const phase: LivePhase = !ready ? 'connecting' : playing ? 'speaking' : serverState === 'thinking' ? 'thinking' : 'listening'
-  return { active, phase, muted, interim, activity, error, notice, elapsedMs, start, end: () => finish(), toggleMute, interrupt }
+  return { active, phase, muted, interim, activity, error, notice, providerDown, elapsedMs, start, end: () => finish(), toggleMute, interrupt }
 }

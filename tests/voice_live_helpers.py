@@ -21,6 +21,7 @@ import admin_panel.voice_live.session as session_module
 from admin_panel.server import create_app
 from admin_panel.voice_live import providers
 from admin_panel.voice_live.fake import FakeProvider
+from admin_panel.voice_live.usage import usage_store
 from orchestrator import turn_events
 from orchestrator.chat_service import ChatService
 
@@ -80,7 +81,12 @@ def env(monkeypatch):
     monkeypatch.setitem(providers.PROVIDERS, "fake", make())
     with TestClient(create_app(registry)) as client:
         yield SimpleNamespace(client=client, registry=registry, asked=asked, run=state, made=providers_made,
-                              monkeypatch=monkeypatch, make=make, service=service)
+                              monkeypatch=monkeypatch, make=make, service=service, usage=usage_store)
+
+
+def _headers() -> dict:
+    """The header the panel's HTTP routes authenticate with."""
+    return {"X-Telegram-Init-Data": _init_data()}
 
 
 @contextlib.contextmanager

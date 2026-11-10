@@ -11,6 +11,7 @@ from fastapi import APIRouter, WebSocket
 from admin_panel import voice_config
 from admin_panel.voice_live import providers, session
 from admin_panel.voice_live.bridge import GoatBridge, recent_history
+from admin_panel.voice_live.usage import usage_store
 from admin_panel.voice_ws import authenticate, send_error
 from utils.logging.setup import get_logger
 
@@ -27,6 +28,11 @@ async def voice_live(ws: WebSocket) -> None:
     await ws.accept()
     if not await authenticate(ws, AUTH_TIMEOUT_SECONDS):
         return
+    usage = usage_store()
+    left = usage.left_seconds(voice_config.live_daily_minutes())
+    if left <= 0:
+        await send_error(ws, "daily_limit", "today's live voice minutes are used up")
+        return
     provider = providers.make_provider(voice_config.live_provider())
     if provider is None:
         await send_error(ws, "not_configured", "the live voice is not set up on this server")
@@ -41,6 +47,7 @@ async def voice_live(ws: WebSocket) -> None:
         reason = await session.run_session(
             ws, provider, GoatBridge(service), session.default_config(voice_config.live_voice()), history,
             idle_seconds=voice_config.LIVE_IDLE_SECONDS, max_seconds=voice_config.LIVE_MAX_SECONDS,
+            usage=usage, left_seconds=left,
         )
         log.info("voice_live: ended (%s)", reason)
     except Exception as exc:  # noqa: BLE001 - tell the page, never leave it hanging
