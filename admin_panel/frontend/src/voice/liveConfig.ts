@@ -24,3 +24,18 @@ export function liveSocketUrl(): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   return url.toString()
 }
+
+/** Software gain on the microphone in the live voice (Laris's voice came through too quiet, 2026-11-10): +5 dB, the
+ * middle of the 1.5-2.0 range asked for; the limiter in ``pcmCapture`` keeps louder speech from distorting. */
+export const LIVE_MIC_GAIN = 1.8
+
+/**
+ * The live voice's microphone, without the browser's call processing (echo cancellation, noise suppression, auto gain).
+ * With that processing on, an open microphone puts a phone in its call audio mode: GOAT's voice plays at call volume,
+ * possibly through the earpiece, so Laris had to hold the phone to his ear (2026-11-10). The live voice does not need
+ * echo cancellation: the page sends nothing while the model's voice plays. LIVE_MIC_GAIN makes up for the missing
+ * auto gain.
+ */
+export const LIVE_MIC_CONSTRAINTS: MediaStreamConstraints = {
+  audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+}
