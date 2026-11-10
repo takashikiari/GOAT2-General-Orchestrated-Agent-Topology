@@ -5,10 +5,9 @@ import { startPcmCapture } from './pcmCapture'
 import type { PcmCapture } from './pcmCapture'
 import { createPcmPlayer, pcmPlayerAvailable } from './pcmPlayer'
 import type { PcmPlayer } from './pcmPlayer'
-import { ERRORS, LIVE_MIC_GAIN, NOTICES, PROVIDER_DOWN, TAP_WINDOW_MS, liveSocketUrl } from './liveConfig'
-import { MIC_CONSTRAINTS } from './streamConfig'
+import { ERRORS, LIVE_MIC_CONSTRAINTS, LIVE_MIC_GAIN, NOTICES, PROVIDER_DOWN, TAP_WINDOW_MS, liveSocketUrl } from './liveConfig'
 
-export { LIVE_MIC_GAIN, TAP_WINDOW_MS } from './liveConfig'
+export { LIVE_MIC_CONSTRAINTS, LIVE_MIC_GAIN, TAP_WINDOW_MS } from './liveConfig'
 
 export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
 
@@ -17,7 +16,8 @@ export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
  * plays. Half-duplex: while the model's voice plays (or the microphone is muted) nothing is sent, so the model never
  * hears itself, and a tap on the overlay cuts the model off and listens again. The microphone itself is opened once
  * and kept for the whole conversation: reopening it after every reply made Telegram ask for the permission every time
- * (Laris, 2026-11-10). The cost: a phone may keep its call audio mode (quieter playback) while the microphone is open.
+ * (Laris, 2026-11-10). It is opened without call processing (``LIVE_MIC_CONSTRAINTS``), so the phone does not switch to
+ * its quiet call audio mode while it is open.
  */
 export function useLiveConversation() {
   const [active, setActive] = useState(false)
@@ -186,7 +186,7 @@ export function useLiveConversation() {
     const gen = ++micGen.current
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS) // asked now, so a refusal shows at once
+      stream = await navigator.mediaDevices.getUserMedia(LIVE_MIC_CONSTRAINTS) // asked now, so a refusal shows at once
     } catch (err) {
       finish({ error: describeMicError(err) })
       return

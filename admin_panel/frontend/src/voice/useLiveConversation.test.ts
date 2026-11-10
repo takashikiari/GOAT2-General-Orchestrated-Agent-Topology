@@ -42,7 +42,7 @@ vi.mock('./pcmPlayer', () => ({
   },
 }))
 
-import { LIVE_MIC_GAIN, TAP_WINDOW_MS, useLiveConversation } from './useLiveConversation'
+import { LIVE_MIC_CONSTRAINTS, LIVE_MIC_GAIN, TAP_WINDOW_MS, useLiveConversation } from './useLiveConversation'
 
 class FakeSocket {
   static last: FakeSocket
@@ -93,7 +93,7 @@ describe('useLiveConversation', () => {
   it('asks for the microphone, opens the socket with the Telegram session, and listens once the server is ready', async () => {
     const hook = renderHook(() => useLiveConversation())
     await act(async () => { await hook.result.current.start() })
-    expect(media.getUserMedia).toHaveBeenCalledTimes(1)
+    expect(media.getUserMedia.mock.calls).toEqual([[LIVE_MIC_CONSTRAINTS]]) // once, without call processing
     expect(playerState.primed).toBe(1)
     expect(FakeSocket.last.url).toMatch(/^wss?:\/\/.*\/api\/voice\/live$/)
     expect(hook.result.current.phase).toBe('connecting')
