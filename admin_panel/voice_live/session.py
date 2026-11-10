@@ -5,7 +5,7 @@ Messages to the page (JSON text frames, plus binary PCM16 frames of the model's 
   {"type": "user_text", "text", "final"}     {"type": "assistant_text", "text"}
   {"type": "tool", "name", "status": "running"|"done"|"failed"}
   {"type": "interrupted"}                    drop whatever is queued for playback
-  {"type": "notice", "code"}                 the provider will close soon (``go_away``)
+  {"type": "notice", "code"}                 the provider will close soon and the session could not be resumed (``go_away``)
   {"type": "error", "code", "message"}       then the socket closes
 From the page: binary PCM16 frames at ``in_rate`` (the page itself stops sending while it plays the model's voice, so
 the model never hears itself), {"type": "mic", "on": bool} (the microphone opened or closed), {"type": "interrupt"}
@@ -20,8 +20,8 @@ import time
 from admin_panel.voice_live import prompt
 from admin_panel.voice_live.bridge import GoatBridge
 from admin_panel.voice_live.provider import (
-    Audio, AssistantText, GoAway, HistoryItem, Interrupted, LiveConfig, Provider, ProviderError, ToolCall, ToolCancel,
-    TurnComplete, UserText,
+    Audio, AssistantText, GoAway, HistoryItem, Interrupted, LiveConfig, Provider, ProviderError, Resumption, ToolCall,
+    ToolCancel, TurnComplete, UserText,
 )
 from utils.logging.setup import get_logger
 
@@ -49,6 +49,7 @@ class _Run:
         self._settling: asyncio.Future | None = None
         self.last_activity = time.monotonic()
         self.reason = "closed"
+        self.handle: str | None = None  # the provider's latest resumption handle
 
     def touch(self) -> None:
         self.last_activity = time.monotonic()
@@ -105,14 +106,30 @@ class _Run:
             elif isinstance(event, TurnComplete):
                 self.speaking = False
                 await self.settle()
+            elif isinstance(event, Resumption):
+                self.handle = event.handle
             elif isinstance(event, GoAway):
-                await self.ws.send_json({"type": "notice", "code": "go_away", "seconds": event.seconds})
+                if not await self.resume():
+                    await self.ws.send_json({"type": "notice", "code": "go_away", "seconds": event.seconds})
             elif isinstance(event, ProviderError):
                 log.warning("voice_live: provider error %s", event.code)
                 self.reason = "provider_error"
                 await self.ws.send_json({"type": "error", "code": "upstream", "message": event.message})
                 return
         self.reason = "provider_closed"
+
+    async def resume(self) -> bool:
+        """The provider will close this connection: carry on in a new one, unseen by the page. False if it could not."""
+        if not self.handle:
+            log.info("voice_live: go_away without a resumption handle")
+            return False
+        try:
+            await self.provider.resume(self.handle)
+        except Exception as exc:  # noqa: BLE001 - the old connection runs out; the page is told
+            log.warning("voice_live: resume failed: %s", type(exc).__name__)
+            return False
+        log.info("voice_live: resumed in a new connection")
+        return True
 
     def _tool_done(self, task: asyncio.Task) -> None:
         self.running.discard(task)

@@ -46,15 +46,28 @@ class GeminiProvider:
 
     async def connect(self, config: LiveConfig, history: list[HistoryItem]) -> None:
         self._config = config
-        self._ws = await websockets.connect(f"{self._url}?key={self._key}", open_timeout=10, max_size=2**23)
-        await self._ws.send(json.dumps(self._setup(config)))
-        first = json.loads(await asyncio.wait_for(self._ws.recv(), _SETUP_TIMEOUT))
-        if "setupComplete" not in first:
-            raise RuntimeError("the live voice service refused the session setup")
+        self._ws = await self._open(config, None)
         if history:
             turns = [{"role": item.role, "parts": [{"text": item.text}]} for item in history]
             await self._send({"clientContent": {"turns": turns, "turnComplete": False}})  # context only, no reply
-        self._reader = asyncio.create_task(self._read())
+        self._reader = asyncio.create_task(self._read(self._ws))
+
+    async def resume(self, handle: str) -> None:
+        """Carry the session on in a new connection (Google keeps the conversation behind ``handle``). If the new one
+        cannot be opened this raises and the current connection stays as it is."""
+        new = await self._open(self._config, handle)
+        old, old_reader = self._ws, self._reader
+        self._ws = new  # from here on everything goes to, and comes from, the new connection
+        self._reader = asyncio.create_task(self._read(new))
+        self._responding = self._discarding = False
+        if old is not None:
+            try:
+                await old.close()  # its reader ends quietly: it is no longer the current connection
+            except Exception:  # noqa: BLE001
+                pass
+        if old_reader is not None:
+            old_reader.cancel()
+            await asyncio.gather(old_reader, return_exceptions=True)
 
     async def send_audio(self, pcm: bytes) -> None:
         rate = self._config.in_rate if self._config else 16000
@@ -94,7 +107,20 @@ class GeminiProvider:
 
     # ── internals ─────────────────────────────────────────────────────────────
 
-    def _setup(self, config: LiveConfig) -> dict:
+    async def _open(self, config: LiveConfig, handle: str | None):
+        """A connection with the session set up (``handle``: continue that session); raises if it is refused."""
+        ws = await websockets.connect(f"{self._url}?key={self._key}", open_timeout=10, max_size=2**23)
+        try:
+            await ws.send(json.dumps(self._setup(config, handle)))
+            first = json.loads(await asyncio.wait_for(ws.recv(), _SETUP_TIMEOUT))
+            if "setupComplete" not in first:
+                raise RuntimeError("the live voice service refused the session setup")
+        except BaseException:
+            await ws.close()
+            raise
+        return ws
+
+    def _setup(self, config: LiveConfig, handle: str | None = None) -> dict:
         tools = [{"functionDeclarations": [{**tool, "behavior": "NON_BLOCKING"} for tool in config.tools]}]
         speech = {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": config.voice or DEFAULT_VOICE}}, "languageCode": config.language}
         return {"setup": {
@@ -104,16 +130,20 @@ class GeminiProvider:
             "tools": tools,
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
+            # a handle now and then, so the conversation can outlive one connection (about ten minutes each)
+            "sessionResumption": {"handle": handle} if handle else {},
+            # older turns are compressed instead of the audio session ending at its 15 minute limit
+            "contextWindowCompression": {"slidingWindow": {}},
         }}
 
     async def _send(self, message: dict) -> None:
         if self._ws is not None and not self._closing:
             await self._ws.send(json.dumps(message))
 
-    async def _read(self) -> None:
+    async def _read(self, ws) -> None:
         reason = "the live voice connection closed"
         try:
-            async for raw in self._ws:
+            async for raw in ws:
                 try:
                     message = json.loads(raw)
                 except ValueError:
@@ -126,7 +156,7 @@ class GeminiProvider:
             reason = re.sub(r"key=[^&\s]+", "key=<key>", f"the live voice connection closed ({exc.rcvd.code if exc.rcvd else 'no code'})")
         except Exception as exc:  # noqa: BLE001
             log.warning("voice_live gemini: reader failed: %s", type(exc).__name__)
-        if not self._closing:
+        if not self._closing and ws is self._ws:  # a connection replaced by resume() ends quietly
             self._queue.put_nowait(ProviderError("closed", reason))
 
     def _events_for(self, message: dict) -> list[Event]:
@@ -164,9 +194,9 @@ class GeminiProvider:
             events.append(ToolCancel(tuple(str(i) for i in cancelled)))
         if "goAway" in message:
             events.append(GoAway(seconds=_seconds((message["goAway"] or {}).get("timeLeft"))))
-        handle = (message.get("sessionResumptionUpdate") or {}).get("newHandle")
-        if handle:
-            events.append(Resumption(str(handle)))
+        update = message.get("sessionResumptionUpdate") or {}
+        if update.get("newHandle") and update.get("resumable", True) is not False:
+            events.append(Resumption(str(update["newHandle"])))
         total = (message.get("usageMetadata") or {}).get("totalTokenCount")
         if total:
             events.append(Usage(int(total)))

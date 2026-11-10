@@ -2,8 +2,9 @@
 
 It "hears" an utterance every ``trigger_bytes`` of microphone audio, in the order of ``script``. A ``("tool", text)``
 utterance makes it say a short filler and call ``ask_goat``; a ``("chat", text)`` utterance is answered directly.
-The audio it speaks is a tone. Events follow Gemini Live's real sequences: transcript, ``toolCall``, audio,
-``turnComplete``, ``interrupted``, ``goAway``.
+The audio it speaks is a tone. Events follow Gemini Live's real sequences: transcript, ``sessionResumptionUpdate``,
+``toolCall``, audio, ``turnComplete``, ``interrupted``, ``goAway``; like Gemini, a connection told ``goAway`` closes
+``close_after_go_away`` seconds later unless it was resumed.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ import math
 from typing import AsyncIterator
 
 from admin_panel.voice_live.provider import (
-    Audio, AssistantText, Event, GoAway, HistoryItem, Interrupted, LiveConfig, ToolCall, TurnComplete, UserText,
+    Audio, AssistantText, Event, GoAway, HistoryItem, Interrupted, LiveConfig, ProviderError, Resumption, ToolCall,
+    TurnComplete, UserText,
 )
 
 __all__ = ["FakeProvider", "DEFAULT_SCRIPT"]
@@ -24,12 +26,17 @@ _FRAME_MS = 20
 
 class FakeProvider:
     def __init__(self, script=DEFAULT_SCRIPT, *, trigger_bytes: int = 48_000, pace: float = 1.0,
-                 tone_seconds: float = 0.8, go_away_after: int | None = None) -> None:
+                 tone_seconds: float = 0.8, go_away_after: int | None = None, resumable: bool = True,
+                 close_after_go_away: float | None = None) -> None:
         self.script = list(script)
         self.trigger_bytes = trigger_bytes
         self.pace = pace  # 1.0 = frames leave at real time, 0.0 = as fast as possible (tests)
         self.tone_seconds = tone_seconds
         self.go_away_after = go_away_after  # send GoAway after this many utterances
+        self.resumable = resumable  # send a resumption handle with every utterance
+        self.close_after_go_away = close_after_go_away  # None: the connection never closes by itself
+        self.resumed: list[str] = []
+        self._closing: asyncio.Task | None = None
         self.config: LiveConfig | None = None
         self.history: list[HistoryItem] = []
         self.audio_in = 0
@@ -44,6 +51,12 @@ class FakeProvider:
 
     async def connect(self, config: LiveConfig, history: list[HistoryItem]) -> None:
         self.config, self.history = config, list(history)
+
+    async def resume(self, handle: str) -> None:
+        self.resumed.append(handle)
+        if self._closing is not None:
+            self._closing.cancel()  # the new connection is not the one that was told to go away
+            self._closing = None
 
     async def send_audio(self, pcm: bytes) -> None:
         self.audio_in += len(pcm)
@@ -94,13 +107,21 @@ class FakeProvider:
         words = text.split()
         self._queue.put_nowait(UserText(" ".join(words[:2]), final=False))
         self._queue.put_nowait(UserText(text, final=True))
-        if self.go_away_after is not None and self._utterances >= self.go_away_after:
+        if self.resumable:
+            self._queue.put_nowait(Resumption(f"h-{self._utterances}"))
+        if self.go_away_after is not None and self._utterances == self.go_away_after:
             self._queue.put_nowait(GoAway(seconds=5.0))
+            if self.close_after_go_away is not None:
+                self._closing = asyncio.ensure_future(self._close_soon(self.close_after_go_away))
         if kind == "tool":
             await self._say("O secundă, verific.")
             self._queue.put_nowait(ToolCall(id=f"call-{self._utterances}", name="ask_goat", args={"request": text}))
         else:
             await self._say(f"Cu plăcere. Ai spus: {text}")
+
+    async def _close_soon(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        self._queue.put_nowait(ProviderError("closed", "the live voice connection closed"))
 
     async def _say(self, text: str) -> None:
         self._queue.put_nowait(AssistantText(text))
