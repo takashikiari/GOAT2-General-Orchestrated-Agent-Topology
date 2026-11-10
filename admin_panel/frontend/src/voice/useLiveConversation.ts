@@ -14,8 +14,10 @@ export type LivePhase = 'connecting' | 'listening' | 'thinking' | 'speaking'
 
 /**
  * The speech-to-speech conversation: the microphone streams to the server's live voice model, its voice comes back and
- * plays. Half-duplex: the microphone is released while the model's voice plays (it never hears itself, and phones leave
- * their quiet call audio mode), and a tap on the overlay cuts the model off and listens again.
+ * plays. Half-duplex: while the model's voice plays (or the microphone is muted) nothing is sent, so the model never
+ * hears itself, and a tap on the overlay cuts the model off and listens again. The microphone itself is opened once
+ * and kept for the whole conversation: reopening it after every reply made Telegram ask for the permission every time
+ * (Laris, 2026-11-10). The cost: a phone may keep its call audio mode (quieter playback) while the microphone is open.
  */
 export function useLiveConversation() {
   const [active, setActive] = useState(false)
@@ -33,13 +35,14 @@ export function useLiveConversation() {
   const player = useRef<PcmPlayer | null>(null)
   const media = useRef<MediaStream | null>(null)
   const capture = useRef<PcmCapture | null>(null)
-  const micGen = useRef(0) // a newer mic request (or a release) makes an older, still pending one stale
+  const micGen = useRef(0) // a release makes a still pending microphone request stale
   const activeRef = useRef(false)
   const readyRef = useRef(false)
   const mutedRef = useRef(false)
   const playingRef = useRef(false)
   const lastTap = useRef(0)
   const micOn = useRef(false) // what the server was last told about the microphone
+  const sending = useRef(false) // the microphone's audio goes to the server right now
 
   /** Tell the server the microphone opened or closed (the provider may need an end-of-stream marker). */
   const signalMic = useCallback((on: boolean) => {
@@ -48,9 +51,19 @@ export function useLiveConversation() {
     if (sock && sock.readyState === 1) sock.send(JSON.stringify({ type: 'mic', on }))
   }, [])
 
+  /** Send the microphone's audio only when the server is ready, the microphone is not muted and no voice plays. */
+  const updateSending = useCallback(() => {
+    const on = activeRef.current && readyRef.current && !mutedRef.current && !playingRef.current && !!capture.current
+    sending.current = on
+    capture.current?.setPaused(!on)
+    if (on !== micOn.current) signalMic(on)
+  }, [signalMic])
+
+  /** The end of the conversation: the only time the microphone is closed. */
   const releaseMic = useCallback(() => {
     micGen.current++
-    if (media.current) signalMic(false)
+    sending.current = false
+    if (media.current && micOn.current) signalMic(false)
     capture.current?.stop()
     capture.current = null
     media.current?.getTracks().forEach((t) => t.stop())
@@ -93,50 +106,28 @@ export function useLiveConversation() {
       try {
         const cap = await startPcmCapture(stream, (pcm) => {
           const sock = socket.current
-          if (sock && sock.readyState === 1) sock.send(pcm)
+          if (sending.current && sock && sock.readyState === 1) sock.send(pcm)
         })
         if (gen !== micGen.current) cap.stop()
         else {
           capture.current = cap
-          signalMic(true)
+          updateSending()
         }
       } catch (err) {
         finish({ error: describeMicError(err) })
       }
     },
-    [finish, signalMic],
+    [finish, updateSending],
   )
-
-  /** Open the microphone again (it is released while the model speaks) unless it is muted, playing, or already open. */
-  const openMic = useCallback(async () => {
-    if (media.current || !activeRef.current || !readyRef.current || mutedRef.current || playingRef.current) return
-    const gen = ++micGen.current
-    let stream: MediaStream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS)
-    } catch (err) {
-      finish({ error: describeMicError(err) })
-      return
-    }
-    if (gen !== micGen.current || !activeRef.current || playingRef.current || mutedRef.current) {
-      stream.getTracks().forEach((t) => t.stop())
-      return
-    }
-    media.current = stream
-    await beginCapture(stream, gen)
-  }, [beginCapture, finish])
 
   const onPlaying = useCallback(
     (value: boolean) => {
       playingRef.current = value
       setPlaying(value)
-      if (value) releaseMic()
-      else {
-        setInterim('') // what was heard belongs to the turn that has just been answered
-        void openMic()
-      }
+      if (!value) setInterim('') // what was heard belongs to the turn that has just been answered
+      updateSending() // the microphone stays open; only what is sent changes
     },
-    [openMic, releaseMic],
+    [updateSending],
   )
 
   const onMessage = useCallback(
@@ -156,8 +147,7 @@ export function useLiveConversation() {
         player.current?.setRate(Number(msg.out_rate) || 24000)
         readyRef.current = true
         setReady(true)
-        if (micOn.current) signalMic(true) // the microphone was opened before the socket was ready
-        void openMic()
+        updateSending() // the microphone was opened before the socket was ready
       } else if (msg.type === 'state') setServerState(String(msg.state))
       else if (msg.type === 'user_text') setInterim(String(msg.text ?? ''))
       else if (msg.type === 'tool') setActivity(msg.status === 'running' ? String(msg.name ?? '') : null)
@@ -171,7 +161,7 @@ export function useLiveConversation() {
         else finish({ error: ERRORS[code] ?? String(msg.message ?? 'The live voice reported an error.'), providerDown: PROVIDER_DOWN.has(code) })
       }
     },
-    [finish, openMic, signalMic],
+    [finish, updateSending],
   )
 
   const start = useCallback(async () => {
@@ -227,9 +217,8 @@ export function useLiveConversation() {
     const next = !mutedRef.current
     mutedRef.current = next
     setMuted(next)
-    if (next) releaseMic()
-    else void openMic()
-  }, [openMic, releaseMic])
+    updateSending()
+  }, [updateSending])
 
   useEffect(() => {
     if (!active) return
