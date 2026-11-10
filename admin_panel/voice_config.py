@@ -15,6 +15,7 @@ __all__ = [
     "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
     "live_provider", "live_voice", "gemini_key", "gemini_live_model", "gemini_live_url", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
     "live_daily_minutes", "live_usage_file", "LIVE_DAILY_MINUTES_DEFAULT",
+    "openai_key", "openai_realtime_model", "openai_realtime_url",
 ]
 
 # Nova-3 supports Romanian ("ro"); Flux (the conversational turn-taking model) does not.
@@ -107,3 +108,17 @@ def live_usage_file() -> Path:
     clears on this machine."""
     raw = os.environ.get("VOICE_LIVE_USAGE_FILE", "").strip()
     return Path(raw).expanduser() if raw else Path.home() / ".local" / "state" / "goat2" / "voice_live_usage.json"
+
+
+def openai_key() -> str | None:
+    """The OpenAI API key (``OPENAI_API_KEY``, from GOAT's ``.env``): server only, never sent to the page, never logged."""
+    return os.environ.get("OPENAI_API_KEY", "").strip() or None
+
+
+def openai_realtime_model() -> str:
+    return os.environ.get("OPENAI_REALTIME_MODEL", "").strip() or "gpt-realtime-2"
+
+
+def openai_realtime_url() -> str:
+    """The Realtime WebSocket, without the ``?model=`` (overridable, which is how the tests point the adapter at a fake)."""
+    return os.environ.get("OPENAI_REALTIME_URL", "").strip() or "wss://api.openai.com/v1/realtime"
