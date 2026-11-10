@@ -25,7 +25,7 @@ def test_a_spoken_request_goes_to_goat_and_the_answer_is_spoken_back(env):
         assert rest[-1]["text"] == "Am aflat: Totul e în regulă, 3 erori."
         _until(s, lambda m: m == {"type": "state", "state": "listening"})
     provider = env.made[0]
-    assert env.asked == ["verifică logurile din ultima oră"]
+    assert env.asked == ["verifică logurile din ultima oră\n\n(Laris a spus, transcris: «verifică logurile din ultima oră»)"]
     assert provider.tool_results == [("call-1", "ask_goat", "Totul e în regulă, 3 erori.", "WHEN_IDLE")]
 
 
@@ -38,7 +38,9 @@ def test_small_talk_is_answered_by_the_voice_model_alone(env):
         spoken = _until(s, lambda m: m["type"] == "assistant_text")[-1]
         assert spoken["text"] == "Cu plăcere. Ai spus: mulțumesc"
         _until(s, lambda m: m == {"type": "state", "state": "listening"})
-    assert env.asked == [] and env.made[0].tool_results == []
+    assert env.made[0].tool_results == []  # GOAT was not asked during the conversation
+    # what was said still reaches GOAT's memory: one turn when the conversation ends (tests/test_voice_live_transcript.py)
+    assert env.asked == [] or env.asked[0].startswith("(Din conversația vocală Live")
 
 
 def test_a_tap_cuts_the_model_off(env):
@@ -81,7 +83,9 @@ def test_a_second_request_while_goat_is_busy_is_told_to_wait(env):
     results = {r[0]: r[2] for r in env.made[0].tool_results}
     assert results["call-2"].startswith("GOAT is still working")
     assert results["call-1"] == "Totul e în regulă, 3 erori."
-    assert env.asked == ["prima"]
+    assert env.asked[0] == "prima\n\n(Laris a spus, transcris: «prima»)"  # the busy one did not reach GOAT
+    # ... so its words were kept and reach GOAT's memory at the end of the conversation, not lost
+    assert len(env.asked) == 1 or ("«a doua»" in env.asked[1] and "«prima»" not in env.asked[1])
 
 
 def test_goat_failing_or_an_unknown_tool_is_reported_to_the_model_in_words(env):

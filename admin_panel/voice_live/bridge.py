@@ -28,23 +28,40 @@ class GoatBridge:
         self._poll, self._timeout, self._max_reply = poll_seconds, timeout_seconds, max_reply_chars
         self.busy = False  # one request at a time per voice session: GOAT is one conversation, one turn at a time
 
-    async def ask(self, request: str, on_event: Callable[[dict], Awaitable[None]]) -> str:
-        """GOAT's answer as text (or a plain sentence saying why there is none). ``on_event`` gets tool progress."""
+    async def ask(self, request: str, on_event: Callable[[dict], Awaitable[None]],
+                  on_refused: Callable[[], None] | None = None) -> str:
+        """GOAT's answer as text (or a plain sentence saying why there is none). ``on_event`` gets tool progress;
+        ``on_refused`` is called when the request never reached GOAT."""
+        refused = on_refused or (lambda: None)
         if self.busy:
+            refused()
             return "GOAT is still working on the previous request. Wait for that answer first."
         try:
             turn = self._service.submit(request)
         except ValueError:
+            refused()
             return "The request was empty or too long."
         except ChatBusy:
+            refused()
             return "GOAT has too many messages waiting. Try again in a moment."
         except ChatUnavailable:
+            refused()
             return "GOAT's chat is not available right now."
         self.busy = True
         try:
             return await self._wait(turn.id, on_event)
         finally:
             self.busy = False
+
+    def note(self, text: str) -> bool:
+        """Leave ``text`` with GOAT as a normal chat turn without waiting for the answer (the conversation is over).
+        False (logged) if the chat would not take it."""
+        try:
+            self._service.submit(text)
+            return True
+        except (ValueError, ChatBusy, ChatUnavailable) as exc:
+            log.warning("voice_live: the end-of-conversation transcript was not sent (%s)", type(exc).__name__)
+            return False
 
     async def _wait(self, turn_id: str, on_event: Callable[[dict], Awaitable[None]]) -> str:
         seen = 0

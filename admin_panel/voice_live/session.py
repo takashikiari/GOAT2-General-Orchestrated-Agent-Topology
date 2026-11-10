@@ -19,6 +19,7 @@ import time
 
 from admin_panel.voice_live import prompt
 from admin_panel.voice_live.bridge import GoatBridge
+from admin_panel.voice_live.transcript import Heard
 from admin_panel.voice_live.usage import LiveUsage
 from admin_panel.voice_live.provider import (
     Audio, AssistantText, GoAway, HistoryItem, Interrupted, LiveConfig, Provider, ProviderError, Resumption, ToolCall,
@@ -52,6 +53,7 @@ class _Run:
         self.last_activity = time.monotonic()
         self.reason = "closed"
         self.handle: str | None = None  # the provider's latest resumption handle
+        self.heard = Heard()  # Laris's own words, so none of them is lost (admin_panel.voice_live.transcript)
         self.tokens = 0  # the provider's own count for the session so far (logged at the end, next to the time talked)
         self.counted_at = time.monotonic()  # minutes talked are counted from here
 
@@ -66,11 +68,11 @@ class _Run:
     async def settle(self) -> None:
         await self.set_state("speaking" if self.speaking else "thinking" if self.running else "listening")
 
-    async def tool(self, call: ToolCall) -> None:
+    async def tool(self, call: ToolCall, request: str, words: list[str]) -> None:
         try:
             if call.name == "ask_goat":
-                request = str(call.args.get("request", "")).strip()
-                result = await self.bridge.ask(request, self.ws.send_json)
+                result = await self.bridge.ask(self.heard.with_words(request, words), self.ws.send_json,
+                                               on_refused=lambda: self.heard.restore(words))
             else:
                 result = "Unknown tool."
         except asyncio.CancelledError:
@@ -91,13 +93,17 @@ class _Run:
                 await self.ws.send_bytes(event.pcm)
             elif isinstance(event, UserText):
                 self.touch()
+                if event.final:
+                    self.heard.add(event.text)
                 await self.ws.send_json({"type": "user_text", "text": event.text, "final": event.final})
             elif isinstance(event, AssistantText):
                 self.touch()
                 await self.ws.send_json({"type": "assistant_text", "text": event.text})
             elif isinstance(event, ToolCall):
                 self.touch()
-                task = asyncio.create_task(self.tool(event))
+                # the words heard so far go with the request, verbatim (taken now, so later words wait for the next one)
+                words = self.heard.take() if event.name == "ask_goat" else []
+                task = asyncio.create_task(self.tool(event, str(event.args.get("request", "")).strip(), words))
                 self.running.add(task)
                 task.add_done_callback(self._tool_done)
                 await self.settle()
@@ -228,6 +234,9 @@ async def run_session(ws, provider: Provider, bridge: GoatBridge, config: LiveCo
             task.cancel()
         await asyncio.gather(*tasks, *run.running, return_exceptions=True)
         run.count(usage)
+        note = run.heard.end_note()
+        if note:
+            bridge.note(note)  # what never reached GOAT (small talk) goes to its memory as one chat turn
         log.info("voice_live: %.0f s talked, %d provider tokens (%s)", time.monotonic() - connected, run.tokens, run.reason)
         try:
             await provider.close()

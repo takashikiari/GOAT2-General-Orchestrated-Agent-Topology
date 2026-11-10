@@ -5,6 +5,7 @@ import { installFakeMedia } from '../test/fakeMedia'
 const capture = vi.hoisted(() => ({
   started: 0,
   stops: 0,
+  paused: false,
   onFrame: null as null | ((pcm: ArrayBuffer) => void),
   fail: null as null | Error,
 }))
@@ -13,7 +14,7 @@ vi.mock('./pcmCapture', () => ({
     if (capture.fail) throw capture.fail
     capture.started++
     capture.onFrame = onFrame
-    return { setPaused: vi.fn(), stop: () => { capture.stops++ } }
+    return { setPaused: (p: boolean) => { capture.paused = p }, stop: () => { capture.stops++ } }
   },
 }))
 
@@ -77,7 +78,7 @@ async function started() {
 }
 
 beforeEach(() => {
-  Object.assign(capture, { started: 0, stops: 0, onFrame: null, fail: null })
+  Object.assign(capture, { started: 0, stops: 0, paused: false, onFrame: null, fail: null })
   Object.assign(playerState, { available: true, onPlaying: null, pushed: [], rate: 0, primed: 0, cleared: 0, closed: 0 })
   media = installFakeMedia()
   vi.stubGlobal('WebSocket', FakeSocket)
@@ -118,27 +119,28 @@ describe('useLiveConversation', () => {
     expect(hook.result.current.activity).toBeNull()
   })
 
-  it('plays the model\'s voice and releases the microphone meanwhile, then takes it back', async () => {
+  it('keeps one microphone open the whole conversation and sends nothing while the model\'s voice plays', async () => {
     const hook = await started()
-    const before = media.getUserMedia.mock.calls.length
+    const frames = () => FakeSocket.last.sent.filter((m) => m instanceof ArrayBuffer).length
     act(() => FakeSocket.last.bytes(new ArrayBuffer(960)))
-    expect(playerState.pushed.length).toBe(1)
     act(() => playerState.onPlaying?.(true))
-    expect(hook.result.current.phase).toBe('speaking')
-    expect(capture.stops).toBe(1)
-    expect(media.track.stop).toHaveBeenCalled()
+    expect([playerState.pushed.length, hook.result.current.phase, capture.paused]).toEqual([1, 'speaking', true])
+    const before = frames()
+    capture.onFrame?.(new ArrayBuffer(8000)) // even a frame already on its way is not sent
+    expect(frames()).toBe(before)
     act(() => playerState.onPlaying?.(false))
-    await flush()
-    expect(media.getUserMedia.mock.calls.length).toBe(before + 1)
-    expect(capture.started).toBe(2)
-    expect(hook.result.current.phase).toBe('listening')
+    capture.onFrame?.(new ArrayBuffer(8000))
+    expect([frames(), capture.paused, hook.result.current.phase]).toEqual([before + 1, false, 'listening'])
+    // never closed and never asked for again: no new permission prompt after a reply
+    expect([media.getUserMedia.mock.calls.length, capture.started, capture.stops]).toEqual([1, 1, 0])
+    expect(media.track.stop).not.toHaveBeenCalled()
   })
 
   it('tells the server when the microphone is open or closed', async () => {
     const hook = await started()
     const mic = () => FakeSocket.last.sent.filter((m) => typeof m === 'string').map((m) => JSON.parse(m as string)).filter((m) => m.type === 'mic').map((m) => m.on)
     expect(mic()).toEqual([true]) // opened before the socket was ready, told once it was
-    act(() => playerState.onPlaying?.(true)) // the model's voice plays: the microphone is released
+    act(() => playerState.onPlaying?.(true)) // the model's voice plays: nothing is sent
     expect(mic()).toEqual([true, false])
     act(() => playerState.onPlaying?.(false))
     await flush()
@@ -178,7 +180,7 @@ describe('useLiveConversation', () => {
     expect(sentTypes()).toContain('interrupt')
     expect(playerState.cleared).toBe(1)
     expect(hook.result.current.phase).toBe('listening')
-    expect(capture.started).toBe(2)
+    expect([capture.started, capture.paused]).toEqual([1, false]) // the same microphone, sending again
   })
 
   it('the server cutting the model off (interrupted) clears what was queued', async () => {
@@ -187,18 +189,16 @@ describe('useLiveConversation', () => {
     expect(playerState.cleared).toBe(1)
   })
 
-  it('mute releases the microphone and keeps it released after the voice stops, until it is unmuted', async () => {
+  it('mute stops sending and keeps it stopped after the voice stops, until it is unmuted', async () => {
     const hook = await started()
     act(() => hook.result.current.toggleMute())
     expect(hook.result.current.muted).toBe(true)
-    expect(capture.stops).toBe(1)
+    expect([capture.paused, capture.stops]).toEqual([true, 0])
     act(() => playerState.onPlaying?.(true))
     act(() => playerState.onPlaying?.(false))
-    await flush()
-    expect(capture.started).toBe(1) // not reopened while muted
+    expect(capture.paused).toBe(true) // still muted
     act(() => hook.result.current.toggleMute())
-    await flush()
-    expect(capture.started).toBe(2)
+    expect([capture.paused, capture.started, media.getUserMedia.mock.calls.length]).toEqual([false, 1, 1])
   })
 
   it('end tells the server, closes everything and releases the microphone', async () => {
