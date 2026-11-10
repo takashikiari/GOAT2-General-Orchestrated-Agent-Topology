@@ -53,21 +53,30 @@ class GeminiProvider:
         self._reader = asyncio.create_task(self._read(self._ws))
 
     async def resume(self, handle: str) -> None:
-        """Carry the session on in a new connection (Google keeps the conversation behind ``handle``). If the new one
-        cannot be opened this raises and the current connection stays as it is."""
-        new = await self._open(self._config, handle)
+        """Carry the session on in a new connection (Google keeps the conversation behind ``handle``). Google refuses a
+        second connection to a session that still has one ("already connected to an existing client", 1008, checked
+        against the real API 2026-11-10), so the old one is closed first; audio sent during the swap (well under a
+        second) is dropped. If the new one cannot be opened the session is over: a ``ProviderError`` ends it, and this
+        raises."""
         old, old_reader = self._ws, self._reader
-        self._ws = new  # from here on everything goes to, and comes from, the new connection
-        self._reader = asyncio.create_task(self._read(new))
-        self._responding = self._discarding = False
-        if old is not None:
-            try:
-                await old.close()  # its reader ends quietly: it is no longer the current connection
-            except Exception:  # noqa: BLE001
-                pass
+        self._ws, self._reader = None, None  # the old reader ends quietly: it is no longer the current connection
         if old_reader is not None:
             old_reader.cancel()
             await asyncio.gather(old_reader, return_exceptions=True)
+        if old is not None:
+            try:
+                await old.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            new = await self._open(self._config, handle)
+        except BaseException:
+            if not self._closing:
+                self._queue.put_nowait(ProviderError("closed", "the live voice could not be resumed"))
+            raise
+        self._ws = new
+        self._reader = asyncio.create_task(self._read(new))
+        self._responding = self._discarding = False
 
     async def send_audio(self, pcm: bytes) -> None:
         rate = self._config.in_rate if self._config else 16000

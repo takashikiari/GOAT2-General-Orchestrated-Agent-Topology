@@ -67,18 +67,33 @@ async def test_resume_reconnects_with_the_handle_and_the_conversation_goes_on_in
 
 
 @pytest.mark.asyncio
-async def test_a_resume_the_service_refuses_raises_and_leaves_the_old_connection_in_place(monkeypatch):
-    monkeypatch.setattr(gemini, "_SETUP_TIMEOUT", 0.3)
-    async with live(answer_setup=True) as (fake, provider):
+async def test_the_old_connection_is_closed_before_the_new_one_opens():
+    """Google refuses a second connection to a session that still has one (1008, seen on the real API)."""
+    async with live() as (fake, provider):
         await provider.connect(CONFIG, [])
         first = fake.ws
-        fake.answer_setup = False  # the next setup gets no setupComplete
+        opened_while_first_was_open = []
+        original = provider._open
 
+        async def watching_open(config, handle):
+            opened_while_first_was_open.append(first.state.name == "OPEN")
+            return await original(config, handle)
+
+        provider._open = watching_open
+        await provider.resume("h-1")
+    assert opened_while_first_was_open == [False]
+
+
+@pytest.mark.asyncio
+async def test_a_resume_the_service_refuses_ends_the_session_with_an_error(monkeypatch):
+    monkeypatch.setattr(gemini, "_SETUP_TIMEOUT", 0.3)
+    async with live() as (fake, provider):
+        await provider.connect(CONFIG, [])
+        fake.answer_setup = False  # the next setup gets no setupComplete
         with pytest.raises(Exception):
             await provider.resume("h-bad")
-        fake.ws = first
-        await fake.push({"serverContent": {"inputTranscription": {"text": "tot aici"}}})
-        assert await take(provider, 1) == [UserText("tot aici", final=False)]
+        events = await take(provider, 1)
+    assert isinstance(events[0], ProviderError) and "resumed" in events[0].message
 
 
 @pytest.mark.asyncio

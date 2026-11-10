@@ -131,7 +131,7 @@ class _Run:
             return False
         try:
             await self.provider.resume(self.handle)
-        except Exception as exc:  # noqa: BLE001 - the old connection runs out; the page is told
+        except Exception as exc:  # noqa: BLE001 - the page is told; the provider's error then ends the session
             log.warning("voice_live: resume failed: %s", type(exc).__name__)
             return False
         log.info("voice_live: resumed in a new connection")

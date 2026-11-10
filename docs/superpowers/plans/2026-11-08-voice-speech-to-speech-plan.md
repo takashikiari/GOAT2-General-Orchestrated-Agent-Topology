@@ -54,6 +54,10 @@ provider key is never printed, logged or committed.
     session keeps the last resumable handle and, on `goAway`, `provider.resume(handle)` opens a new connection and swaps
     it in, without the page noticing. With no handle, or if resuming fails, the page gets the `go_away` notice as before.
     The fake provider sends handles and closes after `goAway` unless resumed, so both paths are tested.
+    Checked against the real API (text only, 2026-11-10): the new setup fields are accepted, a resumable handle
+    arrives, and the resumed connection remembers the earlier turn. Google refuses a second connection while the first
+    is still open (1008 "already connected to an existing client"), so the old one is closed first; the audio of that
+    swap (well under a second) is dropped, and a refused resume ends the conversation (the page falls back to Deepgram).
   - **Minutes:** a conversation counts from the moment the provider is connected; `VOICE_LIVE_DAILY_MINUTES` (default 60)
     is a hard daily cap (`daily_limit`: no new conversation, a running one ends). The count lives in
     `VOICE_LIVE_USAGE_FILE` (default `~/.local/state/goat2/voice_live_usage.json`) and survives restarts; the Dashboard

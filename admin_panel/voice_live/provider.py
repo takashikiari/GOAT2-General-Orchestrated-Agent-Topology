@@ -105,7 +105,7 @@ class Provider(Protocol):
 
     async def resume(self, handle: str) -> None:
         """Carry the conversation on in a new connection, from a ``Resumption`` handle (after ``GoAway``); events keep
-        coming from ``events()``. Raises if it cannot, and the current connection is left as it is."""
+        coming from ``events()``. If it cannot, it raises and the conversation ends with a ``ProviderError``."""
 
     async def send_audio(self, pcm: bytes) -> None: ...
 
