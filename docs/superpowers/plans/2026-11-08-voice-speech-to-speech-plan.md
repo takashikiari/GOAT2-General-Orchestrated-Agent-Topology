@@ -67,6 +67,13 @@ provider key is never printed, logged or committed.
     dropped), the page carries the conversation on at once with the Deepgram voice and says why; a microphone error
     does not trigger it (it would fail the same way). Live is tried again when the page reopens or Live is chosen again.
   - **Cleanup:** the provider's token count (`Usage`), received and dropped until now, is logged with the time talked.
+- Phase 3 is built (branch `feat/voice-live-openai`, 2026-11-10, local): the OpenAI Realtime adapter
+  (`admin_panel/voice_live/openai.py`, GA interface checked against developers.openai.com; the differences from Gemini
+  are in its docstring: 24 kHz input only, so the page's 16 kHz is resampled; a result is spoken only after
+  `function_call_output` + `response.create`; no goAway / resumption, sessions last 60 min) and
+  `scripts/voice_live_ab.py` (the same Romanian lines to both providers, WAVs + results.json in
+  `~/goat2-eval/voice_ab/`). The A/B is **blocked until `OPENAI_API_KEY` is in `.env`**; the Gemini half already runs
+  (5/5 `ask_goat` decisions right, first sound 1.1-1.6 s after the end of the line).
 - Next: Laris listens to the voice samples and picks a voice (`VOICE_LIVE_VOICE`), a real test on his phone, then
   phase 4 (what a phone allows). Known from the #41 phone test: reopening the microphone after every reply makes
   Telegram ask for the microphone permission each time, and the live hook does the same (it releases the microphone
