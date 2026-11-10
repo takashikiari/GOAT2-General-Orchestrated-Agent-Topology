@@ -62,7 +62,13 @@ MODEL_NAME: str = os.environ.get(
 )
 BASE_URL: str = os.environ.get("BASE_URL", "https://api.deepseek.com")
 TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.5"))
-MAX_TOKENS: int = int(os.environ.get("MAX_TOKENS", "2048"))
+# 2026-08-25: confirmed root cause of the "empty reply after synthesis"
+# incidents - a live occurrence logged finish_reason=length on an EMPTY
+# completion. deepseek-v4-flash is a reasoning model; its internal
+# reasoning tokens count against the same max_tokens budget as the final
+# answer, so a tight cap can exhaust the budget on reasoning alone before
+# any visible content is written. Raised from 2048 to give real headroom.
+MAX_TOKENS: int = int(os.environ.get("MAX_TOKENS", "4096"))
 TIMEOUT_SECONDS: float = float(os.environ.get("TIMEOUT_SECONDS", "30.0"))
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 

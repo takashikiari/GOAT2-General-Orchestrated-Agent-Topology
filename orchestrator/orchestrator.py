@@ -475,9 +475,37 @@ class Orchestrator:
             collector.start_stage("llm")
             _t_first_start = time.time()
             response = await self._llm.chat.completions.create(**kw)
-            _t_first = time.time() - _t_first_start
+            _llm_calls = 1
             choice = first_choice(response)
             content = choice.message.content or ""
+            # Observed 2026-08-25: the very first call, no tools involved at
+            # all, can come back with empty content AND no tool_calls - not
+            # a "nothing to say" case (one occurrence was the user asking to
+            # start planning). A single retry (2026-08-25, first attempt at
+            # this fix) was NOT enough - confirmed the same request failed
+            # twice in a row (tokens_prompt_api=7348, well under any context
+            # limit, so not a size issue). Two retries with a short pause
+            # between attempts, and finish_reason logged every time, so if
+            # it still fails the log has real diagnostic data (provider-side
+            # issue vs something in our own prompt) instead of just "empty".
+            _attempt = 1
+            while not content and not choice.message.tool_calls and _attempt <= 2:
+                log.warning(
+                    "empty completion chat=%s attempt=%d finish_reason=%s, retrying",
+                    chat_id, _attempt, getattr(choice, "finish_reason", None),
+                )
+                await asyncio.sleep(1.5)
+                response = await self._llm.chat.completions.create(**kw)
+                _llm_calls += 1
+                choice = first_choice(response)
+                content = choice.message.content or ""
+                _attempt += 1
+            if not content and not choice.message.tool_calls:
+                log.warning(
+                    "empty completion chat=%s persisted after %d attempts, finish_reason=%s",
+                    chat_id, _attempt, getattr(choice, "finish_reason", None),
+                )
+            _t_first = time.time() - _t_first_start
             log.debug(
                 "LLM response chat=%s tool_calls=%s content_hex=%s",
                 chat_id,
@@ -488,7 +516,6 @@ class Orchestrator:
             _usage_prompt = (getattr(_u, "prompt_tokens", 0) or 0)
             _usage_completion = (getattr(_u, "completion_tokens", 0) or 0)
             _usage_total = (getattr(_u, "total_tokens", 0) or 0)
-            _llm_calls = 1
             _t_tool_rounds = 0.0
             tool_summary = ""
             stored_contents: list[str] = []
@@ -777,8 +804,41 @@ class Orchestrator:
                     _round_total += getattr(_ru, "total_tokens", 0) or 0
                 current = first_choice(r)
                 if not current.message.tool_calls:
-                    # Natural termination — the model chose to answer with text.
+                    # Natural termination — the model chose to answer with text
+                    # (or, on a bad turn, produced nothing at all). 2026-08-25:
+                    # this path, NOT orchestrator.run()'s first-call path, is
+                    # where most real "empty reply" incidents actually
+                    # originated (tool_summary_present=True in almost every
+                    # logged occurrence that day) - the first-call retry added
+                    # earlier never covered this branch. Same retry pattern
+                    # applied here now.
                     reply = current.message.content or ""
+                    finish_reason = getattr(current, "finish_reason", None)
+                    _retry_n = 1
+                    while not reply and _retry_n <= 2:
+                        log.warning(
+                            "tool_round empty natural-terminate chat=%s attempt=%d finish_reason=%s, retrying",
+                            chat_id, _retry_n, finish_reason,
+                        )
+                        await asyncio.sleep(1.5)
+                        r2 = await self._llm.chat.completions.create(
+                            model=settings.MODEL_NAME, messages=loop_msgs,
+                            temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                        )
+                        _round_calls += 1
+                        _ru2 = getattr(r2, "usage", None)
+                        if _ru2 is not None:
+                            _round_prompt += getattr(_ru2, "prompt_tokens", 0) or 0
+                            _round_completion += getattr(_ru2, "completion_tokens", 0) or 0
+                            _round_total += getattr(_ru2, "total_tokens", 0) or 0
+                        reply = first_choice(r2).message.content or ""
+                        finish_reason = getattr(first_choice(r2), "finish_reason", None)
+                        _retry_n += 1
+                    if not reply:
+                        log.warning(
+                            "tool_round natural-terminate persisted empty chat=%s finish_reason=%s",
+                            chat_id, finish_reason,
+                        )
                     log.debug("tool_round natural-terminate chat=%s iters=%d",
                               chat_id, iteration + 1)
                     break
@@ -795,10 +855,32 @@ class Orchestrator:
                     _round_completion += getattr(_ru, "completion_tokens", 0) or 0
                     _round_total += getattr(_ru, "total_tokens", 0) or 0
                 reply = first_choice(r).message.content or ""
+                finish_reason = getattr(first_choice(r), "finish_reason", None)
+                _retry_n = 1
+                while not reply and _retry_n <= 2:
+                    log.warning(
+                        "tool_round cap-forced synthesis empty chat=%s attempt=%d finish_reason=%s, retrying",
+                        chat_id, _retry_n, finish_reason,
+                    )
+                    await asyncio.sleep(1.5)
+                    r = await self._llm.chat.completions.create(
+                        model=settings.MODEL_NAME, messages=loop_msgs,
+                        temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS,
+                    )
+                    _round_calls += 1
+                    _ru = getattr(r, "usage", None)
+                    if _ru is not None:
+                        _round_prompt += getattr(_ru, "prompt_tokens", 0) or 0
+                        _round_completion += getattr(_ru, "completion_tokens", 0) or 0
+                        _round_total += getattr(_ru, "total_tokens", 0) or 0
+                    reply = first_choice(r).message.content or ""
+                    finish_reason = getattr(first_choice(r), "finish_reason", None)
+                    _retry_n += 1
                 log.warning(
-                    "tool_round cap-forced synthesis chat=%s iters=%d reason=%s output_chars=%d",
+                    "tool_round cap-forced synthesis chat=%s iters=%d reason=%s output_chars=%d%s",
                     chat_id, iteration + 1, "size" if size_cap_hit else "iterations",
                     _round_output_chars,
+                    "" if reply else f" (still empty, finish_reason={finish_reason})",
                 )
                 break
         _t_rounds = time.time() - _t_rounds_start
