@@ -41,25 +41,29 @@ REM Installed BEFORE the checks: ChromaDB is a required check and comes from req
 pip install -q -r setup\requirements.txt
 pip install -q -r requirements.txt
 
-REM ── Pre-flight checks ──────────────────────────────────────────────────────
-python setup\checks.py
-if errorlevel 1 (
-    echo.
-    echo   Fix the issues above and run run.bat again.
-    echo.
-    pause
-    exit /b 1
-)
-
-REM ── First-run wizard ───────────────────────────────────────────────────────
+REM ── Setup wizard: FIRST, on the first run or with --reconfigure ───────────
 set RUN_WIZARD=0
 if not exist "goat2.toml" set RUN_WIZARD=1
 if not exist ".env" set RUN_WIZARD=1
-if !RUN_WIZARD!==1 (
+if "%~1"=="--reconfigure" (
+    python setup\wizard.py --reconfigure
+    if errorlevel 1 exit /b 1
+) else if !RUN_WIZARD!==1 (
     echo.
     echo   First run detected - launching setup wizard...
     echo.
     python setup\wizard.py
+    if errorlevel 1 exit /b 1
+)
+
+REM ── Pre-flight checks (Redis and ChromaDB still there?) ────────────────────
+python setup\checks.py
+if errorlevel 1 (
+    echo.
+    echo   Fix the issues above (or run run.bat --reconfigure), then run run.bat again.
+    echo.
+    pause
+    exit /b 1
 )
 
 REM ── Update check ──────────────────────────────────────────────────────────

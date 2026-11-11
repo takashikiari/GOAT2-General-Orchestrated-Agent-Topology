@@ -8,7 +8,14 @@ cd GOAT2-General-Orchestrated-Agent-Topology
 ./run.sh          # Windows: run.bat
 ```
 
-The first launch detects a missing `goat2.toml` or `.env` and starts the interactive setup wizard automatically. The wizard guides you through provider selection, API keys, and optional services, then writes `goat2.toml` and `.env`. See [README.md § Setup](README.md#setup) for the full wizard reference.
+The first launch detects a missing `goat2.toml` or `.env` and starts the interactive setup wizard automatically, before any other check (`./run.sh --reconfigure` runs it again, with your current values as defaults). No file needs editing by hand; every step is checked as you go and can be retried:
+
+1. **AI provider** — step-by-step instructions to get a key; the key is tested live and can be re-entered.
+2. **Telegram** — how to create the bot with @BotFather; the token is tested (getMe); your chat id.
+3. **Services** — Redis (required): the command that starts it on your machine, its address, a real PING with retry; ChromaDB (required): embedded, so only its data folders are checked; Letta (optional).
+4. **Files** — `.env` (readable by you only, previous one kept as `.env.backup`), the Redis address and ChromaDB folders in `config/memory.toml` (previous one kept as `memory.toml.backup`), `goat2.toml`; then a summary.
+
+Stopping at any step writes nothing.
 
 ---
 

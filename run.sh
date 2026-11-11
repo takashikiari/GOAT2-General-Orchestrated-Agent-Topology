@@ -41,20 +41,23 @@ source .venv/bin/activate
 pip install -q -r setup/requirements.txt
 pip install -q -r requirements.txt
 
-# ── Pre-flight checks ─────────────────────────────────────────────────────────
-if ! python3 setup/checks.py; then
-    echo ""
-    echo "  Fix the issues above and run ./run.sh again."
-    echo ""
-    exit 1
-fi
-
-# ── First-run wizard ──────────────────────────────────────────────────────────
-if [ ! -f "goat2.toml" ] || [ ! -f ".env" ]; then
+# ── Setup wizard: FIRST, on the first run or with --reconfigure ──────────────
+# It checks every service as a step (with retry), so it runs before the gate below.
+if [ "${1:-}" = "--reconfigure" ]; then
+    python3 setup/wizard.py --reconfigure || exit 1
+elif [ ! -f "goat2.toml" ] || [ ! -f ".env" ]; then
     echo ""
     echo "  First run detected — launching setup wizard..."
     echo ""
-    python3 setup/wizard.py
+    python3 setup/wizard.py || exit 1
+fi
+
+# ── Pre-flight checks (Redis and ChromaDB still there?) ───────────────────────
+if ! python3 setup/checks.py; then
+    echo ""
+    echo "  Fix the issues above (or run ./run.sh --reconfigure), then run ./run.sh again."
+    echo ""
+    exit 1
 fi
 
 # ── Update check (non-blocking, skips on failure) ─────────────────────────────

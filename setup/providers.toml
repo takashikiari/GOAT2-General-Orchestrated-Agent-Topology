@@ -6,6 +6,7 @@
 #   base_url       written to .env as BASE_URL for the default provider; GOAT picks the provider from it
 #   fast_model     written to .env as MODEL_NAME for the default provider: GOAT itself and the fast roles
 #                  (researcher, critic, summarizer, tool_caller, memory)
+#   key_steps      shown by the wizard, step by step, before it asks for the key
 #   strong_model   written as GOAT_AGENT_PLANNER_MODEL and GOAT_AGENT_CODER_MODEL (the roles that plan and write code)
 # tests/test_setup_env_contract.py checks these against config/settings.py.
 
@@ -18,6 +19,10 @@ strong_model  = "deepseek-v4-flash"   # no stronger DeepSeek model confirmed yet
 env_key       = "GOAT_DEEPSEEK_API_KEY"
 base_url      = "https://api.deepseek.com"
 docs_url      = "https://platform.deepseek.com"
+key_steps     = ["Open https://platform.deepseek.com and sign in (or create an account)",
+                 "Top up a few dollars of credit (Billing): a key with no credit is refused",
+                 "Open 'API keys' and click 'Create new API key'",
+                 "Copy the key (it starts with sk-) and paste it here"]
 notes         = "Best price/quality ratio. Recommended default."
 recommended   = true
 
@@ -30,6 +35,10 @@ strong_model  = "gpt-4o"
 env_key       = "GOAT_OPENAI_API_KEY"
 base_url      = "https://api.openai.com/v1"
 docs_url      = "https://platform.openai.com/api-keys"
+key_steps     = ["Open https://platform.openai.com/api-keys and sign in",
+                 "Make sure the account has credit (Settings > Billing)",
+                 "Click 'Create new secret key' and give it a name",
+                 "Copy the key (it starts with sk-) and paste it here: it is shown only once"]
 notes         = "Industry standard. Get key at platform.openai.com"
 recommended   = false
 
@@ -42,5 +51,8 @@ strong_model  = "llama-3.3-70b-versatile"   # the only model listed
 env_key       = "GOAT_GROQ_API_KEY"
 base_url      = "https://api.groq.com/openai/v1"
 docs_url      = "https://console.groq.com"
+key_steps     = ["Open https://console.groq.com and sign in (free tier available)",
+                 "Open 'API Keys' and click 'Create API Key'",
+                 "Copy the key (it starts with gsk_) and paste it here"]
 notes         = "Very fast inference. Free tier available."
 recommended   = false
