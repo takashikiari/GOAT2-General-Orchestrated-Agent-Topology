@@ -203,7 +203,7 @@ def run(reconfigure: bool = False) -> None:
     console.print()
     console.print("[bold]Generating configuration files...[/bold]")
 
-    _write_env(telegram_token, api_keys)
+    _write_env(telegram_token, api_keys, provider_map.get(default_provider))
     _write_goat_toml(
         default_provider=default_provider,
         selected_providers=selected_provider_ids,
@@ -227,31 +227,15 @@ def run(reconfigure: bool = False) -> None:
 
 # ── file writers ──────────────────────────────────────────────────────────────
 
-def _write_env(telegram_token: str, api_keys: dict[str, str]) -> None:
-    env_path = ROOT / ".env"
-    if env_path.exists():
-        backup = ROOT / ".env.backup"
-        shutil.copy(env_path, backup)
-        console.print(f"  [dim]Backed up existing .env → .env.backup[/dim]")
+def _write_env(telegram_token: str, api_keys: dict[str, str], default_provider: dict | None) -> None:
+    """The .env in the names GOAT reads (setup/env_writer.py): token, GOAT_* keys, BASE_URL + MODEL_NAME."""
+    from setup.env_writer import build_env, write_env_file
 
     template = (SETUP_DIR / "templates" / ".env.example").read_text()
-    lines = template.splitlines(keepends=True)
-
-    def _set(lines: list[str], key: str, value: str) -> list[str]:
-        for i, line in enumerate(lines):
-            if line.startswith(f"{key}="):
-                lines[i] = f"{key}={value}\n"
-                return lines
-        lines.append(f"{key}={value}\n")
-        return lines
-
-    if telegram_token:
-        lines = _set(lines, "TELEGRAM_TOKEN", telegram_token)
-    for env_key, value in api_keys.items():
-        lines = _set(lines, env_key, value)
-
-    env_path.write_text("".join(lines))
-    console.print(f"  [green]✓[/green] .env written")
+    # private (0600), and so is the backup of a previous .env
+    if write_env_file(ROOT / ".env", build_env(template, telegram_token, api_keys, default_provider)):
+        console.print(f"  [dim]Backed up existing .env → .env.backup[/dim]")
+    console.print(f"  [green]✓[/green] .env written (readable by you only)")
 
 
 def _write_goat_toml(

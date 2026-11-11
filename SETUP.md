@@ -47,23 +47,23 @@ playwright install chromium
 
 ## Environment variables
 
-All read by `config/settings.py` at import time. Nothing else reads `os.environ` directly.
+The core settings, read by `config/settings.py` at import time (the voice and live-voice settings are in `.env.example`). `tests/test_setup_md_contract.py` checks this table against the code.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `<PROVIDER>_API_KEY` | **Yes** | — | API key for the chosen provider — e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`. Ollama needs no key. |
+| `GOAT_{PROVIDER}_API_KEY` | **Yes** | — | API key for the chosen provider: `GOAT_DEEPSEEK_API_KEY`, `GOAT_OPENAI_API_KEY` or `GOAT_GROQ_API_KEY`. GOAT runs with these three providers only (DeepSeek, OpenAI, Groq); it picks the provider from `BASE_URL`. |
 | `TELEGRAM_BOT_TOKEN` | **Yes** | — | Bot token from @BotFather |
 | `MODEL_NAME` | No | `deepseek-v4-flash` | Model identifier passed to the API |
 | `BASE_URL` | No | `https://api.deepseek.com` | OpenAI-compatible provider base URL |
 | `TEMPERATURE` | No | `0.5` | Sampling temperature (0–2) |
-| `MAX_TOKENS` | No | `2048` | Max tokens per LLM response |
+| `MAX_TOKENS` | No | `4096` | Max tokens per LLM response (reasoning models spend part of it on reasoning) |
 | `TIMEOUT_SECONDS` | No | `30.0` | HTTP timeout for LLM calls |
 | `GOAT_LOG_DIR` | No | `/tmp/goat2/logs` | Directory for the rotating log file |
 
 The setup wizard writes these automatically to `.env`. Minimum `.env` for DeepSeek (the recommended default):
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...
+export GOAT_DEEPSEEK_API_KEY=sk-...
 export TELEGRAM_BOT_TOKEN=123456:ABC...
 ```
 
