@@ -73,6 +73,11 @@ class MemoryLayers:
         # Background tasks (auto_promote) tracked for clean shutdown drain.
         self._pending_bg: set[asyncio.Task] = set()
 
+    @property
+    def reranks(self) -> bool:
+        """Whether L3 results are scored by the cross-encoder (their blended_score is then comparable across turns)."""
+        return self._reranker is not None
+
     async def get_identity_and_facts(self) -> dict[str, str]:
         """L0 + L1: identity and critical facts. L0 always loads; L1 degrades to ``{}``.
 
