@@ -43,6 +43,8 @@ from orchestrator.tool_loop_config import (
 )
 from orchestrator import turn_events
 from orchestrator.tools import ToolDefinition
+from orchestrator import tool_gate
+from memory.budget import estimate_tokens
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
 
@@ -436,13 +438,18 @@ class Orchestrator:
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
+            # How good the prefetch is, and whether search_memory is offered at all (orchestrator.tool_gate)
+            l3_block = next((b for b in context_blocks if b.startswith("[Context recuperat din istoric]")), "")
+            quality = tool_gate.measure(l3_results, l3_used, estimate_tokens(l3_block), getattr(layers, "reranks", False))
+            gate = tool_gate.decide(quality, tool_gate.CONFIG)
+            tool_gate.log_line(chat_id, quality, gate, tool_gate.CONFIG)
             if on_context_assembled is not None:
                 on_context_assembled(InjectedBlocks(context_blocks, l3_provenance))
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
             guidance_texts: list[str] = []
-            if self._has_search_memory():
+            if self._has_search_memory() and not gate["hidden"]:
                 guidance_texts.append(_SEARCH_MEMORY_GUIDANCE)
             if self._has_store_memory():
                 guidance_texts.append(_STORE_MEMORY_GUIDANCE)
@@ -457,6 +464,8 @@ class Orchestrator:
                 {"role": "user", "content": intent},
             ]
             all_tools = self._all_tools()
+            if gate["hidden"]:  # a good prefetch: the fallback is not offered this turn
+                all_tools = [t for t in all_tools if t.name != tool_gate.GATED_TOOL]
             kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
                             temperature=settings.TEMPERATURE, max_tokens=settings.MAX_TOKENS)
             tool_schemas: list[dict] = []

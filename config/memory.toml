@@ -247,3 +247,16 @@ weight = 0.2
 # of silently returning a wrong-decade window.
 [temporal_route]
 max_years_in_past = 1
+
+# Memory tools are a fallback; the prefetch does the work (Laris via GOAT, 2026-11-11). Every turn logs one line
+# "prefetch_quality ... top=<best rerank score> top3=... used=... would_hide=... why=..." (orchestrator/tool_gate.py).
+# search_memory is left out of a turn when the prefetch is good: best rerank score (sigmoid of the cross-encoder
+# logit) >= search_memory_min_top_score and at least one L3 entry used. 0.5 is the cross-encoder's own boundary
+# (logit 0); on 45 replayed real turns the best score had median 0.138 and 14/45 turns were >= 0.5. Separate from
+# [context_assembler] blended_min_score, which filters retrieval results. It always stays offered when there are no
+# results, none was used, or the reranker did not run.
+# enabled = false: measure only (the decision is logged as would_hide, the tool is never hidden) until the
+# threshold is confirmed on the live distribution.
+[tool_gate]
+enabled = false
+search_memory_min_top_score = 0.5
