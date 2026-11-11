@@ -1,24 +1,30 @@
-"""setup.wizard — interactive first-run configuration wizard.
+"""setup.wizard — interactive setup: from a fresh clone to a running bot, without editing any file by hand.
 
-Guides a non-developer through selecting providers, entering API keys,
-configuring optional services, and generating goat2.toml + .env.
+It runs FIRST (run.sh starts it on the first run and on --reconfigure, before any service check) and turns every check
+into a step that can be fixed and retried instead of an exit:
+  1. the AI provider: step-by-step instructions, the key tested live (re-enter it until it works)
+  2. Telegram: the bot token tested with getMe, the admin chat id
+  3. services: Redis (required; start command for this machine, address, real PING, retry), ChromaDB (required;
+     embedded, so only the package and its data folders), Letta (optional)
+  4. the files: .env (0600, with a backup), config/memory.toml (the addresses, with a backup), goat2.toml
+  5. a summary of what was written, then ./run.sh
+The checks themselves live in modules without third-party imports (service_steps, live_checks, memory_toml,
+env_writer, wizard_files), which is what the tests exercise.
 
 Usage:
     python3 setup/wizard.py
-    python3 setup/wizard.py --reconfigure   # run again on existing setup
+    python3 setup/wizard.py --reconfigure   # run again; every current value is the default
 """
 from __future__ import annotations
 
-import os
-import re
 import sys
-import shutil
+import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
-SETUP_DIR = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
+SETUP_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
 
-# ── dependency guard ──────────────────────────────────────────────────────────
 _MISSING = []
 try:
     import questionary
@@ -27,287 +33,168 @@ except ImportError:
 try:
     from rich.console import Console
     from rich.panel import Panel
-    from rich.text import Text
 except ImportError:
     _MISSING.append("rich")
-
 if _MISSING:
-    print(f"\nSetup wizard needs extra packages. Run this first:\n")
-    print(f"  pip install -r setup/requirements.txt\n")
+    print("\nSetup wizard needs extra packages. Run this first:\n\n  pip install -r setup/requirements.txt\n")
     sys.exit(1)
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib  # type: ignore[no-redef]
-    except ImportError:
-        print("Python 3.11+ required. Please upgrade Python.")
-        sys.exit(1)
+from setup import live_checks, memory_toml  # noqa: E402
+from setup.checks import check_git, check_pip, check_python_version  # noqa: E402
+from setup.env_writer import TOKEN_KEY, build_env, read_env, write_env_file  # noqa: E402
+from setup.service_steps import chroma_check, redis_ping, redis_start_commands  # noqa: E402
+from setup.wizard_files import TEMPLATE as GOAT_TEMPLATE, build_goat_toml, write_goat_toml  # noqa: E402
 
 console = Console()
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-def _load_toml(path: Path) -> dict:
-    with open(path, "rb") as f:
+def _load(name: str) -> dict:
+    with open(SETUP_DIR / name, "rb") as f:
         return tomllib.load(f)
 
 
-def _write_toml_value(lines: list[str], key: str, value: str) -> list[str]:
-    """Replace a key = value line in a TOML lines list."""
-    pattern = re.compile(rf'^{re.escape(key)}\s*=')
-    for i, line in enumerate(lines):
-        if pattern.match(line.strip()):
-            lines[i] = f'{key} = "{value}"\n'
-            return lines
-    return lines
+def _steps(title: str, lines: list[str]) -> None:
+    body = "\n".join(f"[bold]{i}.[/bold] {line}" for i, line in enumerate(lines, 1))
+    console.print(Panel(body, title=title, expand=False))
 
 
-def _section_replace(content: str, section: str, key: str, value: str) -> str:
-    """Replace key under [section] in TOML content string."""
-    in_section = False
-    result = []
-    for line in content.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_section = stripped == f"[{section}]"
-        if in_section and re.match(rf'^{re.escape(key)}\s*=', stripped):
-            indent = len(line) - len(line.lstrip())
-            result.append(" " * indent + f'{key} = "{value}"\n')
-            continue
-        result.append(line)
-    return "".join(result)
+def _ask(question):
+    """A questionary answer; Ctrl-C ends the wizard without writing anything."""
+    answer = question.ask()
+    if answer is None:
+        console.print("\n[yellow]Setup cancelled — nothing was written.[/yellow]")
+        sys.exit(1)
+    return answer
 
 
-# ── main wizard ───────────────────────────────────────────────────────────────
+def _until_ok(check, describe_fix: str, retry_label: str = "Retry") -> None:
+    """Run ``check`` until it passes; on failure say what is wrong and offer to retry (or stop)."""
+    while True:
+        result = check()
+        if result.ok:
+            console.print(f"  [green]✓[/green] {result.message}")
+            return
+        console.print(f"  [red]✗[/red] {result.message}\n    [yellow]→ {result.fix or describe_fix}[/yellow]")
+        if _ask(questionary.select("  What now?", choices=[retry_label, "Stop the setup"])) != retry_label:
+            console.print("[yellow]Setup stopped — nothing was written.[/yellow]")
+            sys.exit(1)
+
+
+def _secret_until_ok(prompt: str, current: str, check) -> str:
+    """Ask for a key/token and test it live; re-enter until it works (or keep it anyway). Empty = keep ``current``."""
+    while True:
+        hint = "  (Enter keeps the current one)" if current else ""
+        value = _ask(questionary.password(prompt + hint)).strip() or current
+        result = check(value)
+        if result.ok:
+            console.print(f"  [green]✓[/green] {result.message}")
+            return value
+        console.print(f"  [red]✗[/red] {result.message}\n    [yellow]→ {result.fix}[/yellow]")
+        choice = _ask(questionary.select("  What now?", choices=["Re-enter it", "Keep it anyway (test it later)"]))
+        if choice != "Re-enter it":
+            return value
+
+
+def _basics() -> None:
+    for result in (check_python_version(), check_git(), check_pip()):
+        if not result.ok:  # cannot be fixed from inside the wizard
+            console.print(f"[red]✗ {result.name}: {result.message}[/red]\n  → {result.fix_hint}")
+            sys.exit(1)
+    console.print("  [green]✓[/green] Python, git and pip are fine\n")
+
+
+def _provider(providers: list[dict], current: dict) -> tuple[dict, dict[str, str]]:
+    console.print("[bold]Step 1 of 4 — AI provider[/bold]  [dim](the model that thinks for GOAT)[/dim]")
+    by_id = {p["id"]: p for p in providers}
+    choices = [questionary.Choice(f"{p['name']} — {p['notes']}", value=p["id"]) for p in providers]
+    default_id = next((p["id"] for p in providers if current.get("BASE_URL", "").startswith(p["base_url"])),
+                      next(p["id"] for p in providers if p.get("recommended")))
+    chosen = by_id[_ask(questionary.select("  Which provider?", choices=choices, default=default_id))]
+    _steps(f"How to get a {chosen['name']} key", chosen["key_steps"])
+    key = _secret_until_ok(f"  {chosen['name']} API key", current.get(chosen["env_key"], ""),
+                           lambda k: live_checks.check_api_key(chosen["base_url"], k))
+    return chosen, {chosen["env_key"]: key}
+
+
+def _telegram(current: dict, goat_toml: dict) -> tuple[str, str]:
+    console.print("\n[bold]Step 2 of 4 — Telegram[/bold]  [dim](where you talk to GOAT)[/dim]")
+    _steps("How to create the bot (about a minute)", [
+        "In Telegram, open @BotFather and send /newbot",
+        "Give it a name, then a username ending in 'bot'",
+        "BotFather answers with a token like 123456:ABC-... — copy it and paste it here"])
+    token = _secret_until_ok("  Bot token", current.get(TOKEN_KEY, ""), live_checks.check_telegram_token)
+    _steps("Your chat id (so only you can use the bot)", [
+        "In Telegram, open @userinfobot and send it any message",
+        "It answers with your Id (a number) — paste it here"])
+    old = str(goat_toml.get("interface", {}).get("telegram", {}).get("admin_chat_id", ""))
+    chat_id = _ask(questionary.text("  Your Telegram chat id", default=old,
+                                    validate=lambda v: v.strip().lstrip("-").isdigit() or "Only digits")).strip()
+    return token, chat_id
+
+
+def _services(services: list[dict]) -> tuple[dict[str, str], list[str]]:
+    console.print("\n[bold]Step 3 of 4 — Services[/bold]  [dim](GOAT's memory)[/dim]")
+    now = memory_toml.read_values()
+    _steps("Redis (required) — GOAT's short-term memory. Start it with ONE of these, in another terminal:",
+           redis_start_commands())
+    values = dict(now)
+
+    def ask_redis():
+        values["redis_url"] = _ask(questionary.text("  Redis address", default=values["redis_url"])).strip()
+        return redis_ping(values["redis_url"])
+    _until_ok(ask_redis, "Start Redis, then retry", retry_label="Retry (you can change the address)")
+
+    console.print("  [dim]ChromaDB (required) is GOAT's long-term memory. It runs inside GOAT: nothing to start, "
+                  "only the folders where it keeps its data.[/dim]")
+
+    def ask_chroma():
+        values["chroma_path"] = _ask(questionary.text("  Long-term memory folder", default=values["chroma_path"])).strip()
+        values["chroma_chunks_path"] = _ask(questionary.text("  Its index folder", default=values["chroma_chunks_path"])).strip()
+        return chroma_check(*(ROOT / values[k] for k in ("chroma_path", "chroma_chunks_path")))
+    _until_ok(ask_chroma, "Choose folders you can write to", retry_label="Retry (you can change the folders)")
+
+    optional = [s for s in services if not s.get("required", False)]
+    picked = _ask(questionary.checkbox("  Optional services you have running", choices=[
+        questionary.Choice(f"{s['name']} — {s['description']}", value=s["id"]) for s in optional])) if optional else []
+    return {k: v for k, v in values.items() if v != now[k]}, picked
+
 
 def run(reconfigure: bool = False) -> None:
-    console.print(Panel(
-        Text.from_markup(
-            "[bold cyan]GOAT 2.0 — Setup Wizard[/bold cyan]\n"
-            "[dim]Answer a few questions and you'll be ready to go.[/dim]"
-        ),
-        expand=False,
-    ))
-    console.print()
+    console.print(Panel("[bold cyan]GOAT 2.0 — Setup[/bold cyan]\n[dim]A few questions, each one checked as you go. "
+                        "Nothing is written until the end.[/dim]", expand=False))
+    _basics()
+    providers, services = _load("providers.toml")["providers"], _load("services.toml")["services"]
+    current = read_env(ROOT / ".env") if reconfigure and (ROOT / ".env").exists() else {}
+    goat_path = ROOT / "goat2.toml"
+    goat_toml = tomllib.loads(goat_path.read_text()) if reconfigure and goat_path.exists() else {}
 
-    # ── pre-flight checks ─────────────────────────────────────────────────────
-    console.print("[bold]Checking your system...[/bold]")
-    from setup.checks import run_all, print_results
-    results = run_all()
-    ok = print_results(results)
-    console.print()
-    if not ok:
-        console.print("[red]Some required checks failed. Fix the issues above and run the wizard again.[/red]")
-        sys.exit(1)
+    chosen, keys = _provider(providers, current)
+    token, chat_id = _telegram(current, goat_toml)
+    memory_changes, optional = _services(services)
 
-    # ── load provider list ────────────────────────────────────────────────────
-    providers_data = _load_toml(SETUP_DIR / "providers.toml")
-    services_data  = _load_toml(SETUP_DIR / "services.toml")
-    all_providers  = providers_data["providers"]
-    all_services   = services_data["services"]
-
-    # ── step 1: select providers ──────────────────────────────────────────────
-    console.print("[bold]Step 1 of 4 — LLM Providers[/bold]")
-    console.print("[dim]Select which AI providers you want to use.[/dim]\n")
-
-    provider_choices = [
-        questionary.Choice(
-            title=f"{p['name']}  [dim]{p['notes']}[/dim]",
-            value=p["id"],
-            checked=p.get("recommended", False),
-        )
-        for p in all_providers
-    ]
-
-    selected_provider_ids: list[str] = questionary.checkbox(
-        "Which providers?  (Space to select, Enter to confirm)",
-        choices=provider_choices,
-        instruction="(at least one required)",
-    ).ask()
-
-    if not selected_provider_ids:
-        console.print("[red]At least one provider is required.[/red]")
-        sys.exit(1)
-
-    # ── step 2: API keys ──────────────────────────────────────────────────────
-    console.print()
-    console.print("[bold]Step 2 of 4 — API Keys[/bold]")
-    console.print("[dim]Enter your API key for each selected provider. Keys are saved to .env[/dim]\n")
-
-    provider_map = {p["id"]: p for p in all_providers}
-    api_keys: dict[str, str] = {}
-    default_provider = selected_provider_ids[0]
-
-    for pid in selected_provider_ids:
-        p = provider_map[pid]
-        if not p.get("env_key"):
-            console.print(f"  [green]✓[/green] {p['name']} — no API key needed")
-            continue
-        key = questionary.password(
-            f"  {p['name']} API key  ({p['docs_url']})",
-        ).ask()
-        if key and key.strip():
-            api_keys[p["env_key"]] = key.strip()
-        else:
-            console.print(f"  [yellow]⚠ Skipped {p['name']} — you can add the key to .env later[/yellow]")
-
-    if len(selected_provider_ids) > 1:
-        console.print()
-        default_provider = questionary.select(
-            "  Which provider should be the default?",
-            choices=selected_provider_ids,
-        ).ask()
-
-    # ── step 3: services ──────────────────────────────────────────────────────
-    console.print()
-    console.print("[bold]Step 3 of 4 — Services[/bold]")
-    console.print("[dim]Optional services extend GOAT's memory and functionality.[/dim]\n")
-
-    non_required_services = [s for s in all_services if not s.get("required", False)]
-    service_choices = [
-        questionary.Choice(
-            title=f"{s['name']}  [dim]{s['description']}[/dim]",
-            value=s["id"],
-            checked=s.get("recommended", False),
-        )
-        for s in non_required_services
-    ]
-
-    selected_service_ids: list[str] = questionary.checkbox(
-        "Which optional services do you have running?  (uncheck if not installed)",
-        choices=service_choices,
-    ).ask() or []
-
-    # ── step 4: telegram ──────────────────────────────────────────────────────
-    console.print()
-    console.print("[bold]Step 4 of 4 — Telegram[/bold]")
-    console.print("[dim]GOAT communicates through a Telegram bot.[/dim]\n")
-    console.print("  [dim]Create a bot at[/dim] [link=https://t.me/BotFather]t.me/BotFather[/link] [dim]— takes ~1 minute.[/dim]")
-    console.print()
-
-    telegram_token = questionary.password(
-        "  Telegram bot token  (from @BotFather)",
-    ).ask() or ""
-
-    console.print()
-    console.print("  [dim]Find your chat ID by messaging[/dim] [link=https://t.me/userinfobot]@userinfobot[/link] [dim]on Telegram.[/dim]")
-    admin_chat_id = questionary.text(
-        "  Your Telegram chat ID  (for admin notifications, optional)",
-        default="",
-    ).ask() or ""
-
-    # ── generate files ────────────────────────────────────────────────────────
-    console.print()
-    console.print("[bold]Generating configuration files...[/bold]")
-
-    _write_env(telegram_token, api_keys, provider_map.get(default_provider))
-    _write_goat_toml(
-        default_provider=default_provider,
-        selected_providers=selected_provider_ids,
-        all_providers=all_providers,
-        selected_services=selected_service_ids,
-        all_services=all_services,
-        admin_chat_id=admin_chat_id,
-    )
-
-    console.print()
-    console.print(Panel(
-        Text.from_markup(
-            "[bold green]Setup complete![/bold green]\n\n"
-            "  [dim]Your config:[/dim]  [cyan]goat2.toml[/cyan]\n"
-            "  [dim]Your keys:[/dim]   [cyan].env[/cyan]  [dim](never commit this file)[/dim]\n\n"
-            "  Run [bold cyan]./run.sh[/bold cyan] to start GOAT."
-        ),
-        expand=False,
-    ))
-
-
-# ── file writers ──────────────────────────────────────────────────────────────
-
-def _write_env(telegram_token: str, api_keys: dict[str, str], default_provider: dict | None) -> None:
-    """The .env in the names GOAT reads (setup/env_writer.py): token, GOAT_* keys, BASE_URL + MODEL_NAME."""
-    from setup.env_writer import build_env, write_env_file
-
+    console.print("\n[bold]Step 4 of 4 — Writing the configuration[/bold]")
+    written = []
     template = (SETUP_DIR / "templates" / ".env.example").read_text()
-    # private (0600), and so is the backup of a previous .env
-    if write_env_file(ROOT / ".env", build_env(template, telegram_token, api_keys, default_provider)):
-        console.print(f"  [dim]Backed up existing .env → .env.backup[/dim]")
-    console.print(f"  [green]✓[/green] .env written (readable by you only)")
+    env_backup = write_env_file(ROOT / ".env", build_env(template, token, keys, chosen))
+    written.append((".env", "Telegram token, API key, BASE_URL / MODEL_NAME (readable by you only)", env_backup))
+    if memory_changes:
+        backup = memory_toml.write_values(memory_changes)
+        written.append(("config/memory.toml", ", ".join(f"{k} = {v}" for k, v in memory_changes.items()), backup))
+    goat_text = build_goat_toml(GOAT_TEMPLATE.read_text(), chosen["id"], [chosen["id"]], providers, optional,
+                                services, chat_id)
+    written.append(("goat2.toml", f"provider {chosen['id']}, admin chat {chat_id}", write_goat_toml(ROOT, goat_text)))
 
+    lines = [f"[green]✓[/green] [cyan]{name}[/cyan] — {what}" + (f"  [dim](previous kept as {b.name})[/dim]" if b else "")
+             for name, what, b in written]
+    lines += ["", f"Provider [bold]{chosen['name']}[/bold], model [bold]{chosen['fast_model']}[/bold] "
+              f"(planner/coder: {chosen['strong_model']})", "", "Next: [bold]./run.sh[/bold]  "
+              "(Windows: run.bat) — then send your bot a message on Telegram."]
+    console.print(Panel("\n".join(lines), title="Done", expand=False))
 
-def _write_goat_toml(
-    default_provider: str,
-    selected_providers: list[str],
-    all_providers: list[dict],
-    selected_services: list[str],
-    all_services: list[dict],
-    admin_chat_id: str,
-) -> None:
-    toml_path = ROOT / "goat2.toml"
-    if toml_path.exists():
-        backup = ROOT / "goat2.toml.backup"
-        shutil.copy(toml_path, backup)
-        console.print(f"  [dim]Backed up existing goat2.toml → goat2.toml.backup[/dim]")
-
-    template = (SETUP_DIR / "templates" / "goat2.default.toml").read_text()
-
-    # Set default provider
-    template = _section_replace(template, "providers", "default", default_provider)
-
-    # Enable/disable providers
-    provider_map = {p["id"]: p for p in all_providers}
-    for pid, p in provider_map.items():
-        enabled = "true" if pid in selected_providers else "false"
-        section = f"providers.{pid}"
-        # Replace enabled = ... under the right section
-        in_section = False
-        lines = template.splitlines(keepends=True)
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("["):
-                in_section = stripped == f"[{section}]"
-            if in_section and re.match(r'^enabled\s*=', stripped):
-                lines[i] = f"enabled = {enabled}\n"
-                break
-        template = "".join(lines)
-
-    # Enable/disable services
-    service_map = {s["id"]: s for s in all_services}
-    for sid in service_map:
-        if sid == "telegram" or service_map[sid].get("required", False):
-            continue  # required services stay enabled; only optional ones (Letta) follow the checkbox
-        enabled = "true" if sid in selected_services else "false"
-        section = f"services.{sid}"
-        in_section = False
-        lines = template.splitlines(keepends=True)
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("["):
-                in_section = stripped == f"[{section}]"
-            if in_section and re.match(r'^enabled\s*=', stripped):
-                lines[i] = f"enabled = {enabled}\n"
-                break
-        template = "".join(lines)
-
-    # Set admin_chat_id
-    if admin_chat_id:
-        template = _section_replace(template, "interface.telegram", "admin_chat_id", admin_chat_id)
-
-    toml_path.write_text(template)
-    console.print(f"  [green]✓[/green] goat2.toml written")
-
-
-# ── entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     reconfigure = "--reconfigure" in sys.argv
-    existing = (ROOT / "goat2.toml").exists() and (ROOT / ".env").exists()
-
-    if existing and not reconfigure:
+    if (ROOT / "goat2.toml").exists() and (ROOT / ".env").exists() and not reconfigure:
         console.print("[yellow]Setup already complete.[/yellow] Run with --reconfigure to redo it.")
         sys.exit(0)
-
     run(reconfigure=reconfigure)
