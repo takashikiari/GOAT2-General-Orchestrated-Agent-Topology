@@ -100,6 +100,26 @@ def test_a_whole_setup_with_a_wrong_key_and_redis_not_started_yet(tmp_path, monk
     assert (tmp_path / "chroma_data").is_dir() and (tmp_path / "chroma_chunks").is_dir()
 
 
+def test_reconfigure_says_which_keys_of_other_providers_stay_only_in_the_backup(tmp_path, monkeypatch, capsys):
+    (tmp_path / "config").mkdir()
+    shutil.copy(ROOT / "config" / "memory.toml", tmp_path / "config" / "memory.toml")
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=1:old\nGOAT_DEEPSEEK_API_KEY=sk-ds\nGOAT_OPENAI_API_KEY=sk-old\n")
+    monkeypatch.setattr(wizard, "ROOT", tmp_path)
+    monkeypatch.setattr(memory_toml, "MEMORY_TOML", tmp_path / "config" / "memory.toml")
+    monkeypatch.setattr(live_checks, "check_api_key", lambda url, key: Outcome(True, "ok"))
+    monkeypatch.setattr(live_checks, "check_telegram_token", lambda t: Outcome(True, "ok"))
+    monkeypatch.setattr(wizard, "redis_ping", lambda url: Outcome(True, "Redis answers"))
+    monkeypatch.setattr(wizard, "questionary", _Q([
+        ("select", "openai"), ("password", ""), ("password", ""), ("text", "7"),  # Enter keeps the current values
+        ("text", "redis://localhost:6379/0"), ("text", "./chroma_data"), ("text", "./chroma_chunks"), ("checkbox", [])]))
+    wizard.run(reconfigure=True)
+    env = (tmp_path / ".env").read_text()
+    assert "GOAT_OPENAI_API_KEY=sk-old" in env and "TELEGRAM_BOT_TOKEN=1:old" in env  # kept by pressing Enter
+    assert "GOAT_DEEPSEEK_API_KEY=sk-ds" not in env and "sk-ds" in (tmp_path / ".env.backup").read_text()
+    out = capsys.readouterr().out
+    assert "only in .env.backup" in out and "GOAT_DEEPSEEK_API_KEY" in out and "OpenAI" in out
+
+
 def test_stopping_at_a_failed_step_writes_nothing(tmp_path, monkeypatch):
     (tmp_path / "config").mkdir()
     shutil.copy(ROOT / "config" / "memory.toml", tmp_path / "config" / "memory.toml")

@@ -175,8 +175,11 @@ def run(reconfigure: bool = False) -> None:
     console.print("\n[bold]Step 4 of 4 — Writing the configuration[/bold]")
     written = []
     template = (SETUP_DIR / "templates" / ".env.example").read_text()
+    previous = read_env(ROOT / ".env") if (ROOT / ".env").exists() else {}
     env_backup = write_env_file(ROOT / ".env", build_env(template, token, keys, chosen))
     written.append((".env", "Telegram token, API key, BASE_URL / MODEL_NAME (readable by you only)", env_backup))
+    # .env is rebuilt from the template: keys of other providers are not carried over (they stay in the backup)
+    dropped = sorted(k for k in previous if k.endswith("_API_KEY") and k.startswith("GOAT_") and k not in keys)
     if memory_changes:
         backup = memory_toml.write_values(memory_changes)
         written.append(("config/memory.toml", ", ".join(f"{k} = {v}" for k, v in memory_changes.items()), backup))
@@ -186,6 +189,8 @@ def run(reconfigure: bool = False) -> None:
 
     lines = [f"[green]✓[/green] [cyan]{name}[/cyan] — {what}" + (f"  [dim](previous kept as {b.name})[/dim]" if b else "")
              for name, what, b in written]
+    if dropped:
+        lines.append(f"  [yellow]![/yellow] not kept in .env (only in .env.backup): {', '.join(dropped)}")
     lines += ["", f"Provider [bold]{chosen['name']}[/bold], model [bold]{chosen['fast_model']}[/bold] "
               f"(planner/coder: {chosen['strong_model']})", "", "Next: [bold]./run.sh[/bold]  "
               "(Windows: run.bat) — then send your bot a message on Telegram."]
