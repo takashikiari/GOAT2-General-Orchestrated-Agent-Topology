@@ -8,9 +8,12 @@ token and no key. No third-party imports here, so the contract test runs without
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-__all__ = ["TOKEN_KEY", "build_env", "read_env"]
+__all__ = ["TOKEN_KEY", "SECRET_MODE", "build_env", "read_env", "write_env_file"]
+
+SECRET_MODE = 0o600  # .env holds the bot token and API keys: readable and writable by its owner only
 
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 
@@ -50,3 +53,28 @@ def read_env(path: Path) -> dict[str, str]:
             if value.strip():
                 out[key.strip()] = value.strip()
     return out
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` with SECRET_MODE, also when the file already existed with wider permissions
+    (O_CREAT's mode only applies to a new file, so the mode is set on the open descriptor as well)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_MODE)
+    try:
+        os.fchmod(fd, SECRET_MODE)
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as f:  # closes fd; writes everything
+        f.write(text)
+
+
+def write_env_file(path: Path, text: str) -> Path | None:
+    """Write the .env privately. An existing one is first copied to ``.env.backup``, privately too (a plain copy would
+    keep the old file's permissions). Returns the backup's path, or None when there was nothing to back up."""
+    path = Path(path)
+    backup = None
+    if path.exists():
+        backup = path.with_name(path.name + ".backup")
+        _write_private(backup, path.read_text(encoding="utf-8"))  # never briefly readable by others
+    _write_private(path, text)
+    return backup

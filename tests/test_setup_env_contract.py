@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from config.settings import Provider, _infer_provider
-from setup.env_writer import build_env, read_env
+from setup.env_writer import SECRET_MODE, build_env, read_env, write_env_file
 
 ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = tomllib.loads((ROOT / "setup" / "providers.toml").read_text())["providers"]
@@ -65,3 +65,15 @@ def test_a_value_already_in_the_template_is_replaced_not_duplicated():
     out = build_env("TELEGRAM_BOT_TOKEN=\nGOAT_OPENAI_API_KEY=\n", "t", {"GOAT_OPENAI_API_KEY": "k"}, None)
     assert out.count("TELEGRAM_BOT_TOKEN=") == 1 and "TELEGRAM_BOT_TOKEN=t\n" in out and "GOAT_OPENAI_API_KEY=k\n" in out
     assert "BASE_URL" not in out  # no default provider chosen: GOAT's own defaults stay
+
+
+def test_the_env_and_its_backup_are_readable_by_their_owner_only(tmp_path):
+    env = tmp_path / ".env"
+    assert write_env_file(env, "TELEGRAM_BOT_TOKEN=a\n") is None  # nothing to back up yet
+    assert env.stat().st_mode & 0o077 == 0
+    env.chmod(0o644)  # an old .env that anyone on the machine could read
+    backup = write_env_file(env, "TELEGRAM_BOT_TOKEN=b\n")
+    assert backup == tmp_path / ".env.backup" and backup.read_text() == "TELEGRAM_BOT_TOKEN=a\n"
+    for f in (env, backup):
+        assert f.stat().st_mode & 0o777 == SECRET_MODE, oct(f.stat().st_mode)
+    assert env.read_text() == "TELEGRAM_BOT_TOKEN=b\n"

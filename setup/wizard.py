@@ -229,17 +229,13 @@ def run(reconfigure: bool = False) -> None:
 
 def _write_env(telegram_token: str, api_keys: dict[str, str], default_provider: dict | None) -> None:
     """The .env in the names GOAT reads (setup/env_writer.py): token, GOAT_* keys, BASE_URL + MODEL_NAME."""
-    from setup.env_writer import build_env
-
-    env_path = ROOT / ".env"
-    if env_path.exists():
-        backup = ROOT / ".env.backup"
-        shutil.copy(env_path, backup)
-        console.print(f"  [dim]Backed up existing .env → .env.backup[/dim]")
+    from setup.env_writer import build_env, write_env_file
 
     template = (SETUP_DIR / "templates" / ".env.example").read_text()
-    env_path.write_text(build_env(template, telegram_token, api_keys, default_provider))
-    console.print(f"  [green]✓[/green] .env written")
+    # private (0600), and so is the backup of a previous .env
+    if write_env_file(ROOT / ".env", build_env(template, telegram_token, api_keys, default_provider)):
+        console.print(f"  [dim]Backed up existing .env → .env.backup[/dim]")
+    console.print(f"  [green]✓[/green] .env written (readable by you only)")
 
 
 def _write_goat_toml(
