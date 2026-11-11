@@ -12,8 +12,23 @@ from __future__ import annotations
 import shutil
 import socket
 import sys
+import tomllib
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlparse
+
+_MEMORY_TOML = Path(__file__).resolve().parent.parent / "config" / "memory.toml"
+DEFAULT_REDIS_URL = "redis://localhost:6379/0"
+
+
+def redis_url_from_config(path: Path = _MEMORY_TOML) -> str:
+    """The Redis address GOAT uses: [working] storage_url in config/memory.toml (read as a file: this script runs on
+    its own, before GOAT's packages can be imported)."""
+    try:
+        with open(path, "rb") as f:
+            return str(tomllib.load(f).get("working", {}).get("storage_url") or DEFAULT_REDIS_URL)
+    except (OSError, tomllib.TOMLDecodeError):
+        return DEFAULT_REDIS_URL
 
 
 @dataclass
@@ -59,7 +74,9 @@ def check_pip() -> CheckResult:
     )
 
 
-def check_redis(url: str = "redis://localhost:6379/0") -> CheckResult:
+def check_redis(url: str | None = None) -> CheckResult:
+    """Required: GOAT's session memory, and the check that a message is not handled twice, live in Redis."""
+    url = url or redis_url_from_config()
     parsed = urlparse(url)
     host = parsed.hostname or "localhost"
     port = parsed.port or 6379
@@ -70,19 +87,21 @@ def check_redis(url: str = "redis://localhost:6379/0") -> CheckResult:
             name="Redis",
             ok=True,
             message=f"reachable at {host}:{port}",
-            required=False,
+            required=True,
         )
     except OSError:
         return CheckResult(
             name="Redis",
             ok=False,
             message=f"not reachable at {host}:{port}",
-            required=False,
-            fix_hint="Install Redis: https://redis.io/docs/getting-started/ — or set services.redis.enabled = false in goat2.toml",
+            required=True,
+            fix_hint="Install and start Redis (Mac: brew install redis && brew services start redis; Linux: "
+                     "sudo apt install redis-server) — or point [working] storage_url in config/memory.toml at yours",
         )
 
 
 def check_chroma() -> CheckResult:
+    """Required: GOAT's long-term memory. Embedded (no server); comes with requirements.txt."""
     try:
         import importlib.util
         ok = importlib.util.find_spec("chromadb") is not None
@@ -90,11 +109,12 @@ def check_chroma() -> CheckResult:
             name="ChromaDB",
             ok=ok,
             message="chromadb installed" if ok else "chromadb not installed",
-            required=False,
-            fix_hint="pip install chromadb — or set services.chroma.enabled = false in goat2.toml",
+            required=True,
+            fix_hint="pip install -r requirements.txt",
         )
     except Exception:
-        return CheckResult("ChromaDB", False, "chromadb check failed", required=False)
+        return CheckResult("ChromaDB", False, "chromadb check failed", required=True,
+                           fix_hint="pip install -r requirements.txt")
 
 
 def check_disk_space(min_mb: int = 500) -> CheckResult:
@@ -114,7 +134,7 @@ def check_disk_space(min_mb: int = 500) -> CheckResult:
         return CheckResult("Disk space", True, "check skipped", required=False)
 
 
-def run_all(redis_url: str = "redis://localhost:6379/0") -> list[CheckResult]:
+def run_all(redis_url: str | None = None) -> list[CheckResult]:
     """Run all checks and return results."""
     return [
         check_python_version(),
