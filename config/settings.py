@@ -33,10 +33,12 @@ except ImportError:
 
 _AGENTS_TOML = Path(__file__).parent / "agents.toml"
 
+# The model GOAT uses when neither MODEL_NAME nor config/agents.toml names one. The provider is never assumed: it is
+# inferred from BASE_URL (whose default is DeepSeek's), so every role follows what the setup wizard wrote to .env.
+_DEFAULT_MODEL = "deepseek-v4-flash"
+
 _AGENTS_DEFAULTS: dict = {
     "defaults": {
-        "model":        "deepseek-v4-flash",
-        "provider":     "deepseek",
         "temperature":  0.4,
         "tool_calling": True,
     },
@@ -58,7 +60,7 @@ _agents_cfg: dict = _load_agents_toml()
 
 MODEL_NAME: str = os.environ.get(
     "MODEL_NAME",
-    _agents_cfg.get("defaults", {}).get("model", "deepseek-chat"),
+    _agents_cfg.get("defaults", {}).get("model") or _DEFAULT_MODEL,
 )
 BASE_URL: str = os.environ.get("BASE_URL", "https://api.deepseek.com")
 TEMPERATURE: float = float(os.environ.get("TEMPERATURE", "0.5"))
@@ -146,10 +148,9 @@ class Settings:
     def agents(self) -> dict[str, ModelSpec]:
         """Return a ModelSpec for every registered agent role."""
         toml_defaults = _agents_cfg.get("defaults", _AGENTS_DEFAULTS["defaults"])
-        default_provider = _provider_from_str(
-            toml_defaults.get("provider", "deepseek"),
-            _infer_provider(BASE_URL),
-        )
+        inferred = _infer_provider(BASE_URL)
+        default_provider = _provider_from_str(toml_defaults["provider"], inferred) if toml_defaults.get("provider") \
+            else inferred  # no provider in agents.toml: the one BASE_URL points at
 
         result: dict[str, ModelSpec] = {}
         for role in _AGENT_ROLES:

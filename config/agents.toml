@@ -1,57 +1,46 @@
-# Agent model and behaviour configuration.
+# Agent behaviour configuration (temperature, tool calling, tool rounds).
 # Non-secret — safe to commit. API keys go in .env.
 #
+# No provider or model here: every role uses the provider BASE_URL points at and the model in MODEL_NAME, both
+# written to .env by the setup wizard (setup/providers.toml: fast_model -> MODEL_NAME, strong_model -> planner and
+# coder through GOAT_AGENT_PLANNER_MODEL / GOAT_AGENT_CODER_MODEL). To pin one role, set
+# GOAT_AGENT_{ROLE}_MODEL / GOAT_AGENT_{ROLE}_PROVIDER in .env (or add model/provider to that role's section).
+#
 # Precedence (highest → lowest):
-#   GOAT_AGENT_{ROLE}_* env var  >  [role] section  >  [defaults]
+#   GOAT_AGENT_{ROLE}_* env var  >  [role] section  >  [defaults]  >  MODEL_NAME / BASE_URL
 #
 # Supported providers: openai | deepseek | groq
 
 [defaults]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.4
 tool_calling    = true
 max_tool_rounds = 6
 
 [planner]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure reasoning — no tools
 
 [researcher]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.4
 max_tool_rounds = 8   # may chain several web searches
 
 [coder]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 6   # file ops + validate_syntax rounds
 
 [critic]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure analysis — no tools
 
 [summarizer]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 0   # pure synthesis — no tools
 
 [tool_caller]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.1
 tool_calling    = true
 max_tool_rounds = 6
 
 [memory]
-model           = "deepseek-v4-flash"
-provider        = "deepseek"
 temperature     = 0.2
 max_tool_rounds = 4   # memory reads/writes only
