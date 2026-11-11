@@ -36,8 +36,10 @@ if not exist ".venv\" (
 
 call .venv\Scripts\activate.bat
 
-REM ── Setup wizard dependencies ──────────────────────────────────────────────
+REM ── Setup wizard + main dependencies ───────────────────────────────────────
+REM Installed BEFORE the checks: ChromaDB is a required check and comes from requirements.txt.
 pip install -q -r setup\requirements.txt
+pip install -q -r requirements.txt
 
 REM ── Pre-flight checks ──────────────────────────────────────────────────────
 python setup\checks.py
@@ -59,9 +61,6 @@ if !RUN_WIZARD!==1 (
     echo.
     python setup\wizard.py
 )
-
-REM ── Install main dependencies ──────────────────────────────────────────────
-pip install -q -r requirements.txt
 
 REM ── Update check ──────────────────────────────────────────────────────────
 python setup\updater.py --check 2>nul

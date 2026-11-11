@@ -14,12 +14,12 @@ The first launch detects a missing `goat2.toml` or `.env` and starts the interac
 
 ## Prerequisites
 
-| Requirement | Minimum version | Notes |
-|-------------|----------------|-------|
-| Python | 3.11 | `tomllib` is stdlib from 3.11 |
-| Redis | any recent | L2 — current conversation + L2.5 activation state |
-| ChromaDB | any recent | L3 — long-term episodic memory (all past conversations) |
-| Letta server | — | L1 — permanent facts, preferences, and knowledge; if unreachable, L1 degrades to `{}` but the bot still runs |
+| Requirement | Minimum version | Required | Notes |
+|-------------|----------------|----------|-------|
+| Python | 3.11 | **Yes** | `tomllib` is stdlib from 3.11 |
+| Redis | any recent | **Yes** | L2 — current conversation + L2.5 activation state. GOAT does not answer without it; `./run.sh` stops at the pre-flight check until it is reachable at `[working] storage_url` |
+| ChromaDB | any recent | **Yes** | L3 — long-term episodic memory (all past conversations). Embedded, no server: installed with `requirements.txt` (which `./run.sh` installs before the checks) |
+| Letta server | — | No (the only optional service) | L1 — permanent facts, preferences, and knowledge; if unreachable, L1 degrades to `{}` but the bot still runs |
 
 > **Important — no env vars for service URLs.**
 > Redis and Letta connection details are read exclusively from `config/memory.toml`
@@ -60,7 +60,7 @@ The core settings, read by `config/settings.py` at import time (the voice and li
 | `TIMEOUT_SECONDS` | No | `30.0` | HTTP timeout for LLM calls |
 | `GOAT_LOG_DIR` | No | `/tmp/goat2/logs` | Directory for the rotating log file |
 
-The setup wizard writes these automatically to `.env`. Minimum `.env` for DeepSeek (the recommended default):
+The setup wizard writes these automatically to `.env`: the token, the key, `BASE_URL` and `MODEL_NAME` (the provider's fast model) and `GOAT_AGENT_PLANNER_MODEL` / `GOAT_AGENT_CODER_MODEL` (its strong model). `config/agents.toml` pins no provider or model, so every role follows them. Minimum `.env` for DeepSeek (the recommended default):
 
 ```bash
 export GOAT_DEEPSEEK_API_KEY=sk-...
@@ -71,7 +71,7 @@ export TELEGRAM_BOT_TOKEN=123456:ABC...
 
 ## Services
 
-**Redis** — must be reachable before the bot starts. Edit `config/memory.toml` to point at your instance:
+**Redis** (required) — must be reachable before the bot starts; the pre-flight check (`setup/checks.py`) tests the address below and stops `./run.sh` until it answers. Edit `config/memory.toml` to point at your instance:
 
 ```toml
 [working]
@@ -84,7 +84,9 @@ Start a local instance with:
 redis-server
 ```
 
-**Letta** — required for L1 permanent memory (facts, preferences, knowledge promoted across sessions) and the optional L0 identity override (`set_identity` tool). L0 always loads from `[identity] base_prompt` in `memory.toml` as a fallback; if a Letta identity override is set it takes precedence. Edit `config/memory.toml` to point at your instance:
+**ChromaDB** (required) — embedded: no server to start; it comes with `pip install -r requirements.txt` and stores its data in `chroma_data/` and `chroma_chunks/`.
+
+**Letta** (optional) — used for L1 permanent memory (facts, preferences, knowledge promoted across sessions) and the optional L0 identity override (`set_identity` tool). L0 always loads from `[identity] base_prompt` in `memory.toml` as a fallback; if a Letta identity override is set it takes precedence. Edit `config/memory.toml` to point at your instance:
 
 ```toml
 [permanent]

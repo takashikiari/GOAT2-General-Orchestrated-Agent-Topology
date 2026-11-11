@@ -277,8 +277,8 @@ def _write_goat_toml(
     # Enable/disable services
     service_map = {s["id"]: s for s in all_services}
     for sid in service_map:
-        if sid == "telegram":
-            continue
+        if sid == "telegram" or service_map[sid].get("required", False):
+            continue  # required services stay enabled; only optional ones (Letta) follow the checkbox
         enabled = "true" if sid in selected_services else "false"
         section = f"services.{sid}"
         in_section = False

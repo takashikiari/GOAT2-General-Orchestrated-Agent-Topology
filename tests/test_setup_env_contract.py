@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from config.settings import Provider, _infer_provider
-from setup.env_writer import SECRET_MODE, build_env, read_env, write_env_file
+from setup.env_writer import SECRET_MODE, STRONG_ROLES, build_env, read_env, write_env_file
 
 ROOT = Path(__file__).resolve().parent.parent
 PROVIDERS = tomllib.loads((ROOT / "setup" / "providers.toml").read_text())["providers"]
@@ -28,7 +28,7 @@ def test_the_wizard_offers_only_providers_goat_can_run_with_the_key_name_goat_re
     for p in PROVIDERS:
         assert p["env_key"] == f"GOAT_{p['id'].upper()}_API_KEY"
         assert _infer_provider(p["base_url"]) == Provider(p["id"])  # GOAT picks the provider from BASE_URL
-        assert p["default_model"]
+        assert p["fast_model"] and p["strong_model"]
 
 
 def test_the_env_template_uses_the_names_goat_reads_and_keeps_redis_optional():
@@ -42,23 +42,29 @@ def test_the_env_template_uses_the_names_goat_reads_and_keeps_redis_optional():
 def _what_goat_reads(env_file: Path) -> dict:
     """config.settings in a fresh process, with exactly the variables of ``env_file``."""
     env = {k: v for k, v in os.environ.items()
-           if not (k.endswith("_API_KEY") or k in ("TELEGRAM_BOT_TOKEN", "BASE_URL", "MODEL_NAME"))}
+           if not (k.endswith("_API_KEY") or k.startswith("GOAT_AGENT_") or k in ("TELEGRAM_BOT_TOKEN", "BASE_URL", "MODEL_NAME"))}
     env.update(read_env(env_file))
     code = ("import json; from config import settings as s; "
             "p = s._infer_provider(s.BASE_URL); "
+            "roles = {r: [m.provider.value, m.model_id] for r, m in s.Settings().agents.items()}; "
             "print(json.dumps({'token': s.TELEGRAM_BOT_TOKEN, 'provider': p.value, 'key': s.get_api_key(p), "
-            "'model': s.MODEL_NAME}))")
+            "'model': s.MODEL_NAME, 'roles': roles}))")
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, check=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 @pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p["id"])
-def test_a_bot_set_up_by_the_wizard_gets_its_token_key_provider_and_model(provider, tmp_path):
+def test_a_bot_set_up_by_the_wizard_gets_its_token_key_provider_and_model_for_every_role(provider, tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text(build_env(TEMPLATE, "123:telegram-token", {provider["env_key"]: f"key-{provider['id']}"}, provider))
     read = _what_goat_reads(env_file)
+    roles = read.pop("roles")
     assert read == {"token": "123:telegram-token", "provider": provider["id"], "key": f"key-{provider['id']}",
-                    "model": provider["default_model"]}
+                    "model": provider["fast_model"]}
+    # every DAG role follows the chosen provider: an OpenAI-only user needs no DeepSeek key for the sub-agents
+    for role, (prov, model) in roles.items():
+        tier = "strong_model" if role in STRONG_ROLES else "fast_model"
+        assert (prov, model) == (provider["id"], provider[tier]), role
 
 
 def test_a_value_already_in_the_template_is_replaced_not_duplicated():

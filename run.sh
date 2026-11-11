@@ -35,8 +35,11 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-# ── Setup wizard dependencies ─────────────────────────────────────────────────
+# ── Setup wizard + main dependencies ──────────────────────────────────────────
+# Installed BEFORE the checks: ChromaDB is a required check and comes from requirements.txt, so on a fresh
+# machine checking first would stop the very first run.
 pip install -q -r setup/requirements.txt
+pip install -q -r requirements.txt
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 if ! python3 setup/checks.py; then
@@ -53,9 +56,6 @@ if [ ! -f "goat2.toml" ] || [ ! -f ".env" ]; then
     echo ""
     python3 setup/wizard.py
 fi
-
-# ── Install main dependencies ─────────────────────────────────────────────────
-pip install -q -r requirements.txt
 
 # ── Update check (non-blocking, skips on failure) ─────────────────────────────
 python3 setup/updater.py --check 2>/dev/null || true

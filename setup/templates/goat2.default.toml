@@ -47,8 +47,8 @@ enabled = false
 model   = "gemini-2.0-flash"
 
 # ── Services ──────────────────────────────────────────────────────────────────
-# Disable any service you don't have installed.
-# GOAT starts without them but with reduced functionality.
+# Redis and ChromaDB are required (the pre-flight checks stop until they are there); Letta is optional.
+# The addresses GOAT uses are in config/memory.toml ([working] storage_url, [permanent] letta_url).
 
 [services.redis]
 enabled = true
