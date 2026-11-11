@@ -17,6 +17,7 @@ max_age_seconds = 86400
 # changes the panel's security posture from "loopback only" to "internet
 # reachable, gated by Telegram initData auth" (see
 # docs/superpowers/specs/2026-08-13-admin-panel-miniapp-tunnel-design.md).
+# Per machine: ADMIN_PANEL_TUNNEL=true in that machine's .env turns it on (and =false off) without editing this file.
 enabled = false
 # Seconds to wait for cloudflared to print the assigned URL before giving up.
 timeout_seconds = 15
