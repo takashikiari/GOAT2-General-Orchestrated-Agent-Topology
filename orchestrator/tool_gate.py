@@ -42,7 +42,8 @@ class GateConfig:
 class Quality:
     top: float | None  # best rerank score among the original (non wave-2) results; None: no results
     top3: float  # sum of the best three
-    found: int  # results the prefetch returned
+    found: int  # original results the prefetch returned (the ones with a score of their own)
+    wave2: int  # wave-2 neighbours added after them (their score is copied from their seed)
     used: int  # entries that made it into the prompt
     tokens: int  # their tokens
     reranked: bool  # the cross-encoder ran, so the scores mean something
@@ -58,10 +59,11 @@ CONFIG = load(_cfg)
 
 
 def measure(results: list[dict], used: int, tokens: int, reranked: bool) -> Quality:
-    scores = sorted((float(r.get("blended_score") or 0.0) for r in results
-                     if "wave2" not in (r.get("mechanisms") or [])), reverse=True)
-    return Quality(top=scores[0] if scores else None, top3=sum(scores[:3]), found=len(results), used=int(used or 0),
-                   tokens=int(tokens or 0), reranked=bool(reranked))
+    originals = [r for r in results if "wave2" not in (r.get("mechanisms") or [])]
+    scores = sorted((float(r.get("blended_score") or 0.0) for r in originals), reverse=True)
+    return Quality(top=scores[0] if scores else None, top3=sum(scores[:3]), found=len(originals),
+                   wave2=len(results) - len(originals), used=int(used or 0), tokens=int(tokens or 0),
+                   reranked=bool(reranked))
 
 
 def decide(q: Quality, cfg: GateConfig) -> dict:
@@ -81,7 +83,7 @@ def decide(q: Quality, cfg: GateConfig) -> dict:
 
 def log_line(chat_id: str, q: Quality, d: dict, cfg: GateConfig) -> None:
     top = "none" if q.top is None else f"{q.top:.3f}"
-    log.info("prefetch_quality chat=%s top=%s top3=%.3f found=%d used=%d l3_tokens=%d reranked=%d gate=%s "
-             "min_top=%g would_hide=%d hidden=%d why=%s", chat_id, top, q.top3, q.found, q.used, q.tokens,
+    log.info("prefetch_quality chat=%s top=%s top3=%.3f found=%d wave2=%d used=%d l3_tokens=%d reranked=%d gate=%s "
+             "min_top=%g would_hide=%d hidden=%d why=%s", chat_id, top, q.top3, q.found, q.wave2, q.used, q.tokens,
              int(q.reranked), "on" if cfg.enabled else "off", cfg.min_top_score, int(d["would_hide"]),
              int(d["hidden"]), d["why"])

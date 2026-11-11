@@ -24,7 +24,7 @@ OFF = GateConfig(enabled=False, min_top_score=0.5)
 
 def test_quality_is_the_top_rerank_score_the_top_three_and_the_counts_wave2_neighbours_aside():
     q = measure([_r(0.3), _r(0.9), _r(0.95, wave2=True), _r(0.6)], used=3, tokens=420, reranked=True)
-    assert (q.top, round(q.top3, 2), q.found, q.used, q.tokens, q.reranked) == (0.9, 1.8, 4, 3, 420, True)
+    assert (q.top, round(q.top3, 2), q.found, q.wave2, q.used, q.tokens, q.reranked) == (0.9, 1.8, 3, 1, 3, 420, True)
     empty = measure([], used=0, tokens=0, reranked=True)
     assert (empty.top, empty.found) == (None, 0)
 
@@ -58,7 +58,7 @@ def test_one_log_line_per_turn_with_the_numbers_and_the_decision(caplog):
     with caplog.at_level(logging.INFO, logger="orchestrator.tool_gate"):
         tool_gate.log_line("42", q, decide(q, OFF), OFF)
     [line] = [r.getMessage() for r in caplog.records if r.name == "orchestrator.tool_gate"]
-    assert line == ("prefetch_quality chat=42 top=0.981 top3=2.879 found=3 used=3 l3_tokens=900 reranked=1 "
+    assert line == ("prefetch_quality chat=42 top=0.981 top3=2.879 found=3 wave2=0 used=3 l3_tokens=900 reranked=1 "
                     "gate=off min_top=0.5 would_hide=1 hidden=0 why=top>=0.5")
 
 
