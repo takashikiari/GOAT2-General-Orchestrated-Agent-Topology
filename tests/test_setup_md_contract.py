@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from config.settings import Provider
@@ -56,3 +57,41 @@ def test_the_documented_defaults_are_goats_real_defaults():
     real = json.loads(out.stdout.strip().splitlines()[-1])
     for name, value in real.items():
         assert table[name] == str(value), f"SETUP.md says {name} defaults to {table[name]!r}, the code uses {value!r}"
+
+
+SERVICES = tomllib.loads((ROOT / "setup" / "services.toml").read_text())["services"]
+AGENTS = tomllib.loads((ROOT / "config" / "agents.toml").read_text())
+
+
+def test_redis_and_chromadb_are_required_and_letta_is_the_only_optional_service():
+    required = {s["id"]: s["required"] for s in SERVICES}
+    assert required["redis"] is True and required["chroma"] is True and required["letta"] is False
+    assert [s["id"] for s in SERVICES if not s["required"]] == ["letta"]
+    # no env_key that nothing reads (the Redis/Letta addresses come from config/memory.toml)
+    assert {s.get("env_key") for s in SERVICES} - {None} == {"TELEGRAM_BOT_TOKEN"}
+
+
+def test_the_pre_flight_checks_require_redis_at_goats_real_address_and_chromadb():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("setup_checks", ROOT / "setup" / "checks.py")  # as run.sh runs it
+    checks = importlib.util.module_from_spec(spec)
+    sys.modules["setup_checks"] = checks  # dataclasses look their module up there
+    spec.loader.exec_module(checks)
+    assert checks.redis_url_from_config() == tomllib.loads((ROOT / "config" / "memory.toml").read_text())["working"]["storage_url"]
+    down = checks.check_redis("redis://127.0.0.1:1/0")  # nothing listens on port 1
+    assert (down.ok, down.required) == (False, True) and "enabled = false" not in down.fix_hint
+    assert checks.check_chroma().required is True
+    assert checks.print_results([down]) is False  # a required failure stops run.sh
+
+
+def test_no_role_in_agents_toml_pins_a_provider_or_model_and_goat_still_defaults_to_today():
+    for section, cfg in AGENTS.items():
+        assert "provider" not in cfg and "model" not in cfg, section
+    clean = {k: v for k, v in os.environ.items()
+             if not (k.startswith("GOAT_AGENT_") or k in ("MODEL_NAME", "BASE_URL"))}
+    code = ("import json; from config import settings as s; "
+            "print(json.dumps([s.MODEL_NAME, sorted({(m.provider.value, m.model_id) for m in s.Settings().agents.values()})]))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=clean, capture_output=True, text=True, check=True)
+    model, roles = json.loads(out.stdout.strip().splitlines()[-1])
+    # nothing set (like the live .env today): the same model and provider as before, for GOAT and every role
+    assert model == "deepseek-v4-flash" and roles == [["deepseek", "deepseek-v4-flash"]]
