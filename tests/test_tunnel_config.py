@@ -18,3 +18,14 @@ def test_load_reads_toml_override(tmp_path, monkeypatch):
     cfg = mod._load().get("tunnel", {})
     assert cfg["enabled"] is True
     assert cfg["timeout_seconds"] == 30
+
+
+def test_the_machines_env_switch_overrides_the_committed_file_both_ways():
+    from admin_panel.tunnel_config import resolve_enabled
+    assert resolve_enabled({"enabled": False}, {"ADMIN_PANEL_TUNNEL": "true"}) is True  # this machine opens it
+    assert resolve_enabled({"enabled": True}, {"ADMIN_PANEL_TUNNEL": "off"}) is False
+    assert resolve_enabled({"enabled": True}, {"ADMIN_PANEL_TUNNEL": " YES "}) is True
+    # missing or unclear: the file decides, and without a file the panel stays loopback-only
+    assert resolve_enabled({"enabled": True}, {}) is True
+    assert resolve_enabled({"enabled": False}, {"ADMIN_PANEL_TUNNEL": "maybe"}) is False
+    assert resolve_enabled({}, {}) is False
