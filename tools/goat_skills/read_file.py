@@ -34,13 +34,28 @@ _DESCRIPTION = (
     "Read a file from the host filesystem and return its text contents. Use "
     "this for config, logs, source, notes — anything GOAT needs to inspect "
     f"locally. Output is truncated to max_chars (default {_DEF_MAX_CHARS}, "
-    f"max {_MAX_MAX_CHARS}); files larger than {_HARD_BYTE_CAP // 1_000_000} MB "
+    f"max {_MAX_MAX_CHARS}); for a big file read it in parts with start_line / end_line "
+    "(1-based, inclusive; the reply says which lines it holds and how many the file has). "
+    f"Files larger than {_HARD_BYTE_CAP // 1_000_000} MB "
     "are refused. Binary files are detected and refused. Relative paths resolve "
     "against the bot's working directory. GOAT-only — NOT available to DAG agents."
 )
 
 
-def _read(path: Path, max_chars: int) -> str:
+def _slice(text: str, start: int | None, end: int | None) -> str:
+    """Lines start..end (1-based, inclusive) with a header saying which ones; the whole text when neither is given."""
+    if start is None and end is None:
+        return text
+    lines = text.splitlines(keepends=True)
+    total = len(lines)
+    first = max(1, start or 1)
+    last = min(total, end or total)
+    if first > total or first > last:
+        return f"ERROR: lines {start}-{end} are outside the file, which has {total} lines"
+    return f"[lines {first}-{last} of {total}]\n" + "".join(lines[first - 1:last])
+
+
+def _read(path: Path, max_chars: int, start: int | None = None, end: int | None = None) -> str:
     """Synchronous read, executed in a worker thread. Returns the content or an
     error string; never raises to the handler."""
     try:
@@ -60,7 +75,7 @@ def _read(path: Path, max_chars: int) -> str:
     if b"\x00" in raw[:8192]:
         return f"ERROR: binary file (null bytes detected), not text: {path}"
     # errors='replace' so a stray bad byte never fails the whole read.
-    text = raw.decode("utf-8", errors="replace")
+    text = _slice(raw.decode("utf-8", errors="replace"), start, end)
     if len(text) > max_chars:
         omitted = len(text) - max_chars
         log.debug("read_file truncated path=%s chars=%d omitted=%d", path, max_chars, omitted)
@@ -71,13 +86,19 @@ def _read(path: Path, max_chars: int) -> str:
 def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
     """Return the read_file ToolDefinition (no registry deps needed)."""
 
-    async def handler(path: str, max_chars: int = _DEF_MAX_CHARS, chat_id: str = "") -> str:
+    async def handler(path: str, max_chars: int = _DEF_MAX_CHARS, start_line: int | None = None,
+                      end_line: int | None = None, chat_id: str = "") -> str:
         if not isinstance(path, str) or not path.strip():
             return "ERROR: empty path"
         mc = max(_MIN_MAX_CHARS, min(int(max_chars), _MAX_MAX_CHARS))
+        try:
+            start = int(start_line) if start_line not in (None, "") else None
+            end = int(end_line) if end_line not in (None, "") else None
+        except (TypeError, ValueError):
+            return "ERROR: start_line and end_line must be whole numbers"
         p = Path(path).expanduser()
-        log.info("read_file path=%s max_chars=%d", str(p)[:_PATH_PREVIEW], mc)
-        content = await asyncio.to_thread(_read, p, mc)
+        log.info("read_file path=%s max_chars=%d lines=%s-%s", str(p)[:_PATH_PREVIEW], mc, start, end)
+        content = await asyncio.to_thread(_read, p, mc, start, end)
         return content
 
     return [ToolDefinition(
@@ -94,6 +115,14 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                     "type": "integer",
                     "description": f"Max chars to return, clamped to [{_MIN_MAX_CHARS}, {_MAX_MAX_CHARS}]. Default: {_DEF_MAX_CHARS}.",
                     "default": _DEF_MAX_CHARS,
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "First line to return (1-based, inclusive). Use with end_line to read a big file in parts.",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Last line to return (1-based, inclusive). Default: the end of the file.",
                 },
             },
             "required": ["path"],

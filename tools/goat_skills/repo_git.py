@@ -46,13 +46,16 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                 "Permise: log, show, diff, status, branch (listare), grep, blame, ls-files, ls-tree, rev-parse, "
                 "shortlog, describe, rev-list, cat-file, remote -v, tag (listare), reflog. Fără commit/push/checkout, "
                 "fără operatori de shell (&&, ;, |), fără ghilimele — comenzile refuzate întorc 'REFUZAT: motiv'. "
+                "git grep NU are --include: filtrezi pe fișiere cu pathspec după '--', ex. 'grep -n cache_hit -- *.py' "
+                "sau 'grep -n cache_hit -- memory/'. Conținutul unui fișier: 'show HEAD:memory/layers.py'. "
                 "repo = numele din repo_list sau doar ultimul segment dacă e unic (ex. 'petvoyageuk')."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string", "description": "ex. 'laris:petvoyageuk' sau 'lenovo:workspace/goat2'"},
-                    "command": {"type": "string", "description": "ex. 'log --oneline -10', 'show HEAD~1 --stat'"},
+                    "command": {"type": "string", "description": "ex. 'log --oneline -10', 'show HEAD~1 --stat', "
+                                "'grep -n cache_hit -- *.py', 'show HEAD:memory/layers.py'"},
                 },
                 "required": ["repo", "command"],
             },

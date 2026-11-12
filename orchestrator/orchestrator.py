@@ -31,6 +31,8 @@ from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from memory.l3_attribution import InjectedBlocks
 from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
+from orchestrator.dsml_recovery import answer_without_tools
+from orchestrator.tool_args import argument_error
 from orchestrator.llm_response import first_choice
 from orchestrator.prefetch import run_prefetch_and_save
 from orchestrator.tool_loop_config import (
@@ -960,6 +962,7 @@ class Orchestrator:
         _round_output_chars = 0
         _t_start = time.time()
         reply = ""
+        synth_msgs: list = list(api_msgs or [])
 
         for iteration in range(max_iterations):
             invocations = _DSML_INVOKE.findall(content)
@@ -985,8 +988,12 @@ class Orchestrator:
                         args[param_name] = val
                 handler = next((t for t in tools if t.name == name), None)
                 args_json = json.dumps(args)
+                bad_args = argument_error(handler, args) if handler is not None else None
                 if handler is None:
                     result = json.dumps({"error": f"unknown tool: {name}"})
+                elif bad_args:  # invented parameter names: tell the model the real ones instead of a TypeError
+                    log.warning("DSML tool %s bad arguments: %s", name, bad_args)
+                    result = json.dumps({"error": bad_args})
                 else:
                     try:
                         args["chat_id"] = chat_id
@@ -1055,10 +1062,10 @@ class Orchestrator:
         if "DSML" in reply:
             log.warning("DSML markup survived the round cap chat=%s; stripping before reply", chat_id)
             reply = strip_dsml(reply, chat_id)
-            if not reply:
-                reply = (
-                    "I gathered some information but couldn't put together a clean answer "
-                    "yet — ask me to continue and I'll pick up where I left off."
+            if not reply:  # only tool markup was left: ask once more for an answer, no tools (orchestrator.dsml_recovery)
+                reply = await answer_without_tools(
+                    self._llm, settings.MODEL_NAME, synth_msgs, calls_and_results, chat_id,
+                    settings.TEMPERATURE, settings.MAX_TOKENS,
                 )
 
         round_usage = {
@@ -1091,6 +1098,10 @@ class Orchestrator:
             return json.dumps({"error": f"unknown tool: {tc.function.name}"})
         try:
             args = json.loads(tc.function.arguments)
+            bad_args = argument_error(handler, args) if isinstance(args, dict) else None
+            if bad_args:
+                log.warning("Tool %s bad arguments: %s", tc.function.name, bad_args)
+                return json.dumps({"error": bad_args})
             args["chat_id"] = chat_id
             result = str(await handler.handler(**args))
         except Exception as exc:
