@@ -47,7 +47,8 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
                 "shortlog, describe, rev-list, cat-file, remote -v, tag (listare), reflog. Fără commit/push/checkout, "
                 "fără operatori de shell (&&, ;, |), fără ghilimele — comenzile refuzate întorc 'REFUZAT: motiv'. "
                 "git grep NU are --include: filtrezi pe fișiere cu pathspec după '--', ex. 'grep -n cache_hit -- *.py' "
-                "sau 'grep -n cache_hit -- memory/'. Conținutul unui fișier: 'show HEAD:memory/layers.py'. "
+                "sau 'grep -n cache_hit -- memory/' (*.py prinde și subfolderele). Mai multe pattern-uri (SAU) "
+                "cu -e, nu cu \\|: 'grep -n -e clear_cache -e invalidate_cache -- *.py'. Conținutul unui fișier: 'show HEAD:memory/layers.py'. "
                 "repo = numele din repo_list sau doar ultimul segment dacă e unic (ex. 'petvoyageuk')."
             ),
             parameters={

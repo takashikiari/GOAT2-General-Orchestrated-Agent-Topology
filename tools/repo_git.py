@@ -37,13 +37,24 @@ GIT_SAFE = ["--no-pager", "-c", "core.pager=cat", "-c", "color.ui=never", "-c", 
 _cache: dict = {"at": 0.0, "repos": {}}
 
 
+def _shell_chars_reason(cmd: str) -> str:
+    """Refusal text naming the forbidden characters found, plus how to write an OR without '|'."""
+    found = sorted(set(SHELL_CHARS.findall(cmd)), key=cmd.index)
+    shown = " ".join({"\n": "\\n", "\r": "\\r"}.get(c, c) for c in found)
+    reason = (f"caracter interzis: {shown} — fără operatori de shell, ghilimele sau $, "
+              "o singură comandă git simplă (argumentele se despart doar prin spații)")
+    if "|" in found:
+        reason += "; pentru SAU folosește -e A -e B (ex. 'grep -n -e clear_cache -e invalidate_cache -- *.py')"
+    return reason
+
+
 def validate(command: str) -> list[str]:
     """Argument list for a single read-only git command, or ValueError saying why it is refused."""
     cmd = (command or "").strip()
     if not cmd:
         raise ValueError("comandă goală")
     if SHELL_CHARS.search(cmd):
-        raise ValueError("fără operatori de shell, ghilimele sau $ — o singură comandă git simplă")
+        raise ValueError(_shell_chars_reason(cmd))
     args = cmd.split()
     if args[0] == "git":
         args = args[1:]
