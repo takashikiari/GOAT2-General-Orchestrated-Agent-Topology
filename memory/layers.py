@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import time
 
-from memory.activation import Activation, ActivationStore
+from memory.activation import DEFAULT_LANE, Activation, ActivationStore
 from memory.auto_promote import schedule_auto_promote
 from memory.budget import enforce_result_limit
 from memory.config import (
@@ -401,21 +401,21 @@ class MemoryLayers:
 
     # --- L2.5 activation layer (per-chat thread state) -----------------------
 
-    async def get_activation(self, chat_id: str) -> Activation | None:
-        """L2.5: retrieve the chat's thread activation, or ``None`` if absent."""
-        return await self._activation.get(chat_id)
+    async def get_activation(self, chat_id: str, lane: str = DEFAULT_LANE) -> Activation | None:
+        """L2.5: retrieve the lane's thread activation on this chat, or ``None`` if absent."""
+        return await self._activation.get(chat_id, lane)
 
-    async def set_activation(self, chat_id: str, activation: Activation) -> bool:
-        """L2.5: compare-and-set the chat's thread activation under the cleanup TTL.
+    async def set_activation(self, chat_id: str, activation: Activation, lane: str = DEFAULT_LANE) -> bool:
+        """L2.5: compare-and-set the lane's thread activation under the cleanup TTL.
 
-        Returns ``False`` (write rejected as stale) if a currently-stored
+        Returns ``False`` (write rejected as stale) if the lane's currently-stored
         activation is newer — see ``ActivationStore.set``.
         """
-        return await self._activation.set(chat_id, activation)
+        return await self._activation.set(chat_id, activation, lane)
 
-    async def clear_activation(self, chat_id: str) -> None:
-        """L2.5: drop the chat's thread activation (no-op if absent)."""
-        await self._activation.clear(chat_id)
+    async def clear_activation(self, chat_id: str, lane: str = DEFAULT_LANE) -> None:
+        """L2.5: drop one lane's thread activation (no-op if absent; other lanes untouched)."""
+        await self._activation.clear(chat_id, lane)
 
     async def embed_query(self, query: str) -> list[float] | None:
         """Embed ``query`` via the episodic tier's own embedding function.

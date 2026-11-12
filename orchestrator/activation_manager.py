@@ -3,7 +3,7 @@ import time
 import uuid
 
 from memory.activation import (
-    Activation, archive_current_topic, trim_recent, update_centroid_weighted,
+    DEFAULT_LANE, Activation, archive_current_topic, trim_recent, update_centroid_weighted,
 )
 from memory.config import TOPIC_ARCHIVE_MAX
 from utils.logging.setup import get_logger
@@ -17,8 +17,13 @@ async def update_activation(
     topic_return_id: str | None = None,
     forced_topic_id: str | None = None,
     turn_start: float | None = None,
+    lane: str = DEFAULT_LANE,
 ):
     """Persist this turn's activation update, guarded against write races.
+
+    ``lane`` selects which population's thread state on this chat is written
+    (human / channel / dag — see ``memory.activation.LANES``); ``activation``
+    must be that same lane's, as read by ``orchestrator.run()``.
 
     ``turn_start`` is the ORIGIN wall-clock of the turn that produced this
     update (``orchestrator.run()``'s ``start``, captured before any I/O) —
@@ -38,10 +43,10 @@ async def update_activation(
         activation.recent_queries = trim_recent(activation.recent_queries, intent)
         activation.turn_count += 1
         activation.ts = now
-        await layers.set_activation(chat_id, activation)
+        await layers.set_activation(chat_id, activation, lane=lane)
         log.info(
-            "activation updated chat=%s state=warm topic=%s turn=%d",
-            chat_id, activation.topic_id, activation.turn_count,
+            "activation updated chat=%s lane=%s state=warm topic=%s turn=%d",
+            chat_id, lane, activation.topic_id, activation.turn_count,
         )
         return activation
 
@@ -79,9 +84,9 @@ async def update_activation(
         turn_count=new_turn_count,
         archived_topics=archived,
     )
-    await layers.set_activation(chat_id, new_act)
+    await layers.set_activation(chat_id, new_act, lane=lane)
     log.info(
-        "activation updated chat=%s state=%s topic=%s turn=%d",
-        chat_id, turn_state, topic_id, new_turn_count,
+        "activation updated chat=%s lane=%s state=%s topic=%s turn=%d",
+        chat_id, lane, turn_state, topic_id, new_turn_count,
     )
     return new_act

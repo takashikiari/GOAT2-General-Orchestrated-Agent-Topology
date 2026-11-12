@@ -22,9 +22,11 @@ from orchestrator.activation_manager import update_activation
 class _FakeLayers:
     def __init__(self) -> None:
         self.set_calls: list[tuple[str, object]] = []
+        self.set_lanes: list[str] = []
 
-    async def set_activation(self, chat_id, activation) -> None:
+    async def set_activation(self, chat_id, activation, lane="human") -> None:
         self.set_calls.append((chat_id, activation))
+        self.set_lanes.append(lane)
 
 
 def test_turn_start_becomes_ts_on_cold_write():

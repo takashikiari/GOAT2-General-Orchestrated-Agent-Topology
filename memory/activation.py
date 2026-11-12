@@ -8,9 +8,12 @@ both drop); an on-thread (enriching) write refreshes the activation in place,
 synchronously before the next turn reads it. Time never resets it — only
 attenuates, via the recency term re-scored on warm serve (``rescore_recency``).
 
-Storage is a single JSON blob per chat under ``activation:{chat_id}`` (Redis,
-reusing the working-memory client), with a long cleanup TTL — **not a reset**:
-expiry just means "re-derive cold next time"; topic continuity is semantic.
+Storage is one JSON blob per chat AND lane (Redis, reusing the working-memory
+client): ``activation:{chat_id}`` for the human conversation (the original key,
+read as-is — no migration) and ``activation:{chat_id}:{lane}`` for the other
+populations that run on the same chat (agent-coord digests, DAG completions),
+so they never move the human thread's centroid. Each key has its own cleanup
+TTL — **not a reset**: expiry just means "re-derive cold next time".
 
 Pure functions (``cosine``, ``lexical_overlap``, ``classify_turn``,
 ``classify_write``, ``rescore_recency``) take plain values and are unit-testable
@@ -47,8 +50,14 @@ log = get_logger(__name__)
 # Redis key namespace — distinct from SessionCache's ``cache:`` and working
 # memory's ``goat2:working:`` so the activation never collides with either.
 _ACTIVATION_PREFIX = "activation"
+# Closed set of populations that keep separate thread state on one chat_id. "human" keeps the
+# original un-suffixed key; anything outside this set is a programming error, never a silent fallback.
+LANES: tuple[str, ...] = ("human", "channel", "dag")
+DEFAULT_LANE = "human"
 
 __all__ = [
+    "LANES",
+    "DEFAULT_LANE",
     "Activation",
     "ActivationStore",
     "cosine",
@@ -164,66 +173,74 @@ return 1
 
 
 class ActivationStore:
-    """Redis-backed per-chat activation store (one blob per chat).
+    """Redis-backed activation store: one blob per (chat, lane).
 
     Reuses the working-memory Redis client (shared pool) and the long cleanup
-    TTL. ``get`` returns ``None`` on absence/expiry/corrupt JSON (never raises);
-    ``set`` atomically compare-and-sets a JSON blob under ``activation:{chat_id}``
-    — see ``_CAS_SET_SCRIPT``.
+    TTL, applied per key — each lane expires on its own. ``get`` returns
+    ``None`` on absence/expiry/corrupt JSON (never raises); ``set`` atomically
+    compare-and-sets the lane's JSON blob — see ``_CAS_SET_SCRIPT``. The
+    ordering guarantee is therefore per lane: a newer channel write never
+    rejects an older human one.
     """
 
     def __init__(self, working_memory: "WorkingMemory", ttl_seconds: int = ACTIVATION_TTL_SECONDS) -> None:
         self._working = working_memory
         self._ttl = ttl_seconds
 
-    def _key(self, chat_id: str) -> str:
-        """Build the Redis key: ``activation:{chat_id}``."""
-        return f"{_ACTIVATION_PREFIX}:{chat_id}"
+    def _key(self, chat_id: str, lane: str = DEFAULT_LANE) -> str:
+        """Redis key: ``activation:{chat_id}`` for the human lane (the original key), else
+        ``activation:{chat_id}:{lane}``. A lane outside ``LANES`` raises ValueError."""
+        if lane not in LANES:
+            raise ValueError(f"unknown activation lane {lane!r}; expected one of {LANES}")
+        base = f"{_ACTIVATION_PREFIX}:{chat_id}"
+        return base if lane == DEFAULT_LANE else f"{base}:{lane}"
 
-    async def get(self, chat_id: str) -> Activation | None:
-        """Retrieve the chat's activation, or ``None`` if absent/expired/corrupt."""
-        data = await self._working._get_client().get(self._key(chat_id))
+    async def get(self, chat_id: str, lane: str = DEFAULT_LANE) -> Activation | None:
+        """Retrieve the lane's activation, or ``None`` if absent/expired/corrupt."""
+        key = self._key(chat_id, lane)
+        data = await self._working._get_client().get(key)
         if data is None:
-            log.debug("ActivationStore MISS chat=%s", chat_id)
+            log.debug("ActivationStore MISS chat=%s lane=%s", chat_id, lane)
             return None
         try:
             value = json.loads(data)
         except json.JSONDecodeError:
-            log.warning("ActivationStore corrupt at %s, treating as miss", chat_id)
+            log.warning("ActivationStore corrupt at %s, treating as miss", key)
             return None
         if not isinstance(value, dict):
-            log.warning("ActivationStore non-dict at %s, treating as miss", chat_id)
+            log.warning("ActivationStore non-dict at %s, treating as miss", key)
             return None
-        log.debug("ActivationStore HIT chat=%s", chat_id)
+        log.debug("ActivationStore HIT chat=%s lane=%s", chat_id, lane)
         return Activation.from_dict(value)
 
-    async def set(self, chat_id: str, activation: Activation) -> bool:
-        """Compare-and-set ``activation`` under the cleanup TTL.
+    async def set(self, chat_id: str, activation: Activation, lane: str = DEFAULT_LANE) -> bool:
+        """Compare-and-set ``activation`` on the lane's key under the cleanup TTL.
 
         Atomically (single Redis EVAL, see ``_CAS_SET_SCRIPT``) rejects the
-        write if a currently-stored activation has a strictly newer ``ts``
-        than the one being written — an older (turn-origin-wise) write can
-        never clobber a newer one, even if it finishes later. Returns
+        write if the lane's currently-stored activation has a strictly newer
+        ``ts`` than the one being written — an older (turn-origin-wise) write
+        can never clobber a newer one, even if it finishes later. Returns
         ``True`` if the write was applied, ``False`` if rejected as stale.
         """
+        key = self._key(chat_id, lane)
         payload = json.dumps(activation.to_dict())
         client = self._working._get_client()
         applied = await client.eval(
-            _CAS_SET_SCRIPT, 1, self._key(chat_id), payload, str(activation.ts), str(self._ttl),
+            _CAS_SET_SCRIPT, 1, key, payload, str(activation.ts), str(self._ttl),
         )
         if applied:
-            log.debug("ActivationStore SET chat=%s ttl=%ss", chat_id, self._ttl)
+            log.debug("ActivationStore SET chat=%s lane=%s ttl=%ss", chat_id, lane, self._ttl)
         else:
             log.info(
-                "ActivationStore SET REJECTED (stale write) chat=%s ts=%s",
-                chat_id, activation.ts,
+                "ActivationStore SET REJECTED (stale write) chat=%s lane=%s ts=%s",
+                chat_id, lane, activation.ts,
             )
         return bool(applied)
 
-    async def clear(self, chat_id: str) -> None:
-        """Drop the chat's activation (no-op if absent). Logs the removal count."""
-        removed = await self._working._get_client().delete(self._key(chat_id))
-        log.debug("ActivationStore CLEAR chat=%s removed=%s", chat_id, removed)
+    async def clear(self, chat_id: str, lane: str = DEFAULT_LANE) -> None:
+        """Drop ONE lane's activation (no-op if absent); other lanes are untouched."""
+        removed = await self._working._get_client().delete(self._key(chat_id, lane))
+        log.debug("ActivationStore CLEAR chat=%s lane=%s removed=%s", chat_id, lane, removed)
 
 
 # --- pure logic ---------------------------------------------------------------
@@ -305,8 +322,12 @@ def lexical_overlap(query: str, recent_queries: list[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def classify_turn(query: str, activation: Activation | None, query_emb: list[float] | None) -> str:
+def classify_turn(query: str, activation: Activation | None, query_emb: list[float] | None,
+                  lane: str = DEFAULT_LANE) -> str:
     """Classify a turn as ``"cold"``, ``"warm"``, or ``"drift"``.
+
+    ``lane`` only labels the diagnostic log line (``kind=<lane>``); the caller passes the
+    activation of that same lane, so the decision itself never mixes populations.
 
     * ``cold`` — no prior activation, no embedding (degraded), or a CONSENSUS
       shift: cosine(query, centroid) < ``ACTIVATION_DRIFT_COLD`` AND
@@ -335,18 +356,16 @@ def classify_turn(query: str, activation: Activation | None, query_emb: list[flo
             state = "warm"
         else:
             state = "drift"
-    _log_turn(query, state, drift, lex)
+    _log_turn(lane, state, drift, lex)
     return state
 
 
-def _log_turn(query: str, state: str, drift: float | None, lex: float | None) -> None:
-    """Diagnostics only: the measured cosine and whether the turn is a channel digest or a human message,
-    so warm/drift rates can be read separately per population (digests share one long header)."""
-    from memory.temporal_route import CHANNEL_DIGEST_PREFIX
-
-    kind = "digest" if (query or "").lstrip().startswith(CHANNEL_DIGEST_PREFIX) else "human"
+def _log_turn(lane: str, state: str, drift: float | None, lex: float | None) -> None:
+    """Diagnostics only: the measured cosine and the turn's lane (human / channel / dag) as given by
+    the caller, so warm/drift rates can be read per population. Not guessed from the text: channel
+    turns reach here with the digest header already stripped, which made every one log as human."""
     log.info("turn_class state=%s kind=%s cosine=%s lex=%s",
-             state, kind, "-" if drift is None else f"{drift:.3f}", "-" if lex is None else f"{lex:.3f}")
+             state, lane, "-" if drift is None else f"{drift:.3f}", "-" if lex is None else f"{lex:.3f}")
 
 
 def classify_write(content_emb: list[float] | None, centroid: list[float] | None) -> str:

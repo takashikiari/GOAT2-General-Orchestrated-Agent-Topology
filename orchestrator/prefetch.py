@@ -25,6 +25,7 @@ async def run_prefetch_and_save(
     forced_topic_id: str | None = None,
     turn_start: float | None = None,
     precomputed_l3: list[dict] | None = None,
+    lane: str = "human",
 ) -> None:
     """Pre-compute L3 for the next turn and persist into activation (L2.5).
 
@@ -56,7 +57,7 @@ async def run_prefetch_and_save(
             layers, chat_id, intent, query_emb,
             turn_state, activation, l3_results,
             topic_return_id=topic_return_id, forced_topic_id=forced_topic_id,
-            turn_start=turn_start,
+            turn_start=turn_start, lane=lane,
         )
         log.info(
             "prefetch ok chat=%s state=%s hits=%d",

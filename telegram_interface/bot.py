@@ -190,7 +190,10 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
             log.info("dag_complete: lock acquired chat=%s dag=%s; running orchestrator", chat_id, dag_id)
             try:
                 injected: list = []
-                reply = await orchestrator.run(synthetic, chat_id, on_context_assembled=injected.append)
+                # lane="dag": a workflow summary keeps its own thread state and never moves the
+                # human conversation's centroid on this chat.
+                reply = await orchestrator.run(synthetic, chat_id, on_context_assembled=injected.append,
+                                               lane="dag")
                 usage_probe.log_usage(chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("dag completion orchestrator.run() failed chat=%s dag=%s", chat_id, dag_id)
@@ -237,8 +240,9 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         async with _chat_locks[admin_chat_id]:
             try:
                 injected: list = []
+                # lane="channel": agent-coord digests share Laris's chat_id but keep their own thread state.
                 reply = await orchestrator.run(synthetic, admin_chat_id, on_context_assembled=injected.append,
-                                               retrieval_query=retrieval_text(messages))
+                                               retrieval_query=retrieval_text(messages), lane="channel")
                 usage_probe.log_usage(admin_chat_id, injected[-1] if injected else None, reply or "")
             except Exception:
                 log.exception("coord_poller orchestrator.run() failed")
