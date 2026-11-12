@@ -55,7 +55,7 @@ class _TemporalLayers(_FakeLayers):
         self.captured_temporal_center: float | None = None
         self.temporal_search_calls = 0
 
-    async def get_activation(self, chat_id):
+    async def get_activation(self, chat_id, lane="human"):
         return self._activation
 
     async def search_episodic(self, query, limit=5, after=None, before=None,

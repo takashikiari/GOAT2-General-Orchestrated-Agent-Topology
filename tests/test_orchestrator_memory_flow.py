@@ -92,7 +92,7 @@ class _TopicCaptureLayers(_FakeLayers):
         self.archive_calls += 1
         return doc_id or str(__import__("uuid").uuid4())
 
-    async def set_activation(self, chat_id, activation):
+    async def set_activation(self, chat_id, activation, lane="human"):
         self._activation_store = activation
         self.set_activation_calls = getattr(self, "set_activation_calls", 0) + 1
 

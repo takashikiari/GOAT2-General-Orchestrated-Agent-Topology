@@ -9,7 +9,9 @@ import uuid
 from typing import Callable
 
 from config import settings
-from memory.activation import classify_turn, classify_write, find_topic_return, rescore_recency
+from memory.activation import (
+    DEFAULT_LANE, LANES, classify_turn, classify_write, find_topic_return, rescore_recency,
+)
 from memory.aits import (
     calculate_complexity_from_query,
     calculate_confidence_from_query,
@@ -274,6 +276,7 @@ class Orchestrator:
         on_context_assembled: Callable[[list[str]], None] | None = None,
         on_tool_summary: Callable[[str], None] | None = None,
         retrieval_query: str | None = None,
+        lane: str = DEFAULT_LANE,
     ) -> str:
         """Single turn: AITS budget → bounded-time L3 prefetch → assemble → LLM → save.
 
@@ -301,12 +304,20 @@ class Orchestrator:
         whose fixed instruction header dominated the search (2026-11-07: 4 of 8 test turns used 0%
         of the injected L3).
 
+        ``lane`` names the population this turn belongs to on ``chat_id`` — ``"human"`` (default:
+        Telegram, panel chat, voice), ``"channel"`` (agent-coord digests) or ``"dag"`` (workflow
+        completions). Each lane reads and writes its own activation, so a digest or a DAG summary
+        never moves the human thread's centroid. Given explicitly by the caller, never guessed from
+        the text; a value outside ``memory.activation.LANES`` raises ``ValueError`` before any work.
+
         ``on_tool_summary``, if given, is called once with the turn's
         ``tool_summary`` (``""`` when no tools were used) — the same side
         channel for callers that need tool-call evidence, e.g. the
         benchmark's groundedness judge, which otherwise only sees memory
         context and misjudges a correct tool-sourced answer as unsupported.
         """
+        if lane not in LANES:
+            raise ValueError(f"unknown activation lane {lane!r}; expected one of {LANES}")
         layers = self._layers
         analytics = self._analytics
         collector = ObservationCollector(chat_id, intent)
@@ -318,10 +329,10 @@ class Orchestrator:
             #    pre-fetched by the PREVIOUS turn's post-turn daemon — instant, no
             #    ChromaDB/BM25/GLiNER/CrossEncoder this turn.
             activation, query_emb = await asyncio.gather(
-                layers.get_activation(chat_id),
+                layers.get_activation(chat_id, lane=lane),
                 layers.embed_query(query),
             )
-            turn_state = classify_turn(query, activation, query_emb)
+            turn_state = classify_turn(query, activation, query_emb, lane=lane)
             # Pre-compute topic_id and topic_return_id (pure CPU, no I/O) so that
             # _archive_turn and the post-turn prefetch use the same consistent value.
             topic_return_id: str | None = None
@@ -635,7 +646,7 @@ class Orchestrator:
             enriching_refresh = False
             if stored_contents and activation is not None and activation.centroid:
                 write_kind, enriching_refresh = await self._enriching_refresh(
-                    layers, chat_id, stored_contents, activation)
+                    layers, chat_id, stored_contents, activation, lane=lane)
             collector.set_activation(
                 turn_state,
                 thread_break=(turn_state == "cold" and activation is not None),
@@ -659,6 +670,7 @@ class Orchestrator:
                     topic_return_id=topic_return_id, forced_topic_id=current_topic_id,
                     turn_start=start,
                     precomputed_l3=l3_results if turn_state != "warm" else None,
+                    lane=lane,
                 ))
             self._pending_bg.add(_prefetch_bg)
             _prefetch_bg.add_done_callback(self._pending_bg.discard)
@@ -675,7 +687,7 @@ class Orchestrator:
             raise
 
     async def _enriching_refresh(
-        self, layers, chat_id: str, stored_contents: list[str], activation,
+        self, layers, chat_id: str, stored_contents: list[str], activation, lane: str = DEFAULT_LANE,
     ) -> tuple[str, bool]:
         """Fold on-thread (enriching) writes into the activation before returning.
 
@@ -693,8 +705,8 @@ class Orchestrator:
                 fresh = enforce_result_limit(await layers.search_episodic(
                     activation.last_query, limit=PREFETCH_MAX_RESULTS))
                 activation.merged = merge_results([("refresh", fresh)])[:PREFETCH_MAX_RESULTS]
-                await layers.set_activation(chat_id, activation)
-                log.info("enriching refresh chat=%s folded %d chars", chat_id, len(content))
+                await layers.set_activation(chat_id, activation, lane=lane)
+                log.info("enriching refresh chat=%s lane=%s folded %d chars", chat_id, lane, len(content))
                 return "enriching", True
         return "filing", False
 

@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from memory.activation import Activation, ActivationStore
+from memory.activation import LANES, Activation, ActivationStore
 from memory.working import WorkingMemory
 
 
@@ -159,3 +159,52 @@ def test_corrupt_stored_blob_never_blocks_a_write():
     assert applied is True
     assert stored is not None
     assert stored.topic_id == "fresh"
+
+
+# --- lanes (2026-11-12): human / channel / dag keep separate state on one chat_id ---------------
+
+def test_lane_keys_old_key_is_human_and_unknown_lane_raises():
+    store = ActivationStore(WorkingMemory(), ttl_seconds=60)
+    assert store._key("42") == store._key("42", "human") == "activation:42"   # the original key, no migration
+    assert store._key("42", "channel") == "activation:42:channel"
+    assert store._key("42", "dag") == "activation:42:dag"
+    assert set(LANES) == {"human", "channel", "dag"}
+    with pytest.raises(ValueError):
+        store._key("42", "digest")
+
+
+def test_lanes_on_one_chat_never_see_or_clobber_each_other():
+    """Regression for the shared-centroid bug: a channel/DAG write on Laris's chat_id must not touch
+    the human thread — not by overwrite, not via the CAS ordering, not via clear, not via TTL."""
+    chat_id = _chat_id()
+    human = Activation(centroid=[1.0, 0.0], turn_count=3, ts=100.0, topic_id="human-topic")
+    channel = Activation(centroid=[0.0, 1.0], turn_count=9, ts=200.0, topic_id="channel-topic")
+    dag = Activation(centroid=[0.5, 0.5], turn_count=1, ts=300.0, topic_id="dag-topic")
+    human_later_but_older_ts = Activation(centroid=[1.0, 0.0], turn_count=4, ts=150.0, topic_id="human-topic")
+
+    async def run():
+        store = ActivationStore(WorkingMemory(), ttl_seconds=60)
+        client = store._working._get_client()
+        try:
+            await store.set(chat_id, human)                      # old call shape = human lane
+            await store.set(chat_id, channel, lane="channel")
+            await store.set(chat_id, dag, lane="dag")
+            # CAS is per lane: channel ts=200 / dag ts=300 must NOT reject a human write with ts=150
+            applied = await store.set(chat_id, human_later_but_older_ts)
+            got = {lane: await store.get(chat_id, lane=lane) for lane in LANES}
+            ttls = {lane: await client.ttl(store._key(chat_id, lane)) for lane in LANES}
+            await store.clear(chat_id, lane="channel")
+            after_clear = {lane: await store.get(chat_id, lane=lane) for lane in LANES}
+            return applied, got, ttls, after_clear
+        finally:
+            for lane in LANES:
+                await store.clear(chat_id, lane=lane)
+
+    applied, got, ttls, after_clear = asyncio.run(run())
+    assert applied is True
+    assert got["human"].topic_id == "human-topic" and got["human"].turn_count == 4
+    assert got["channel"].topic_id == "channel-topic" and got["channel"].centroid == [0.0, 1.0]
+    assert got["dag"].topic_id == "dag-topic"
+    assert all(0 < t <= 60 for t in ttls.values())           # each lane's key carries its own TTL
+    assert after_clear["channel"] is None                      # clear drops only the lane asked for
+    assert after_clear["human"].turn_count == 4 and after_clear["dag"].topic_id == "dag-topic"

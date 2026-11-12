@@ -95,13 +95,15 @@ class _FakeLayers:
     # L2.5 activation layer — fakes return empty/None so every single-turn test
     # sees a COLD turn (no prior activation, no embedding) and the existing
     # behaviour (search runs, cache_key reported) is preserved.
-    async def get_activation(self, chat_id):
+    async def get_activation(self, chat_id, lane="human"):
+        self.activation_lanes = [*getattr(self, "activation_lanes", []), ("get", lane)]
         return None
 
-    async def set_activation(self, chat_id, activation):
+    async def set_activation(self, chat_id, activation, lane="human"):
         self.set_activation_calls = getattr(self, "set_activation_calls", 0) + 1
+        self.activation_lanes = [*getattr(self, "activation_lanes", []), ("set", lane)]
 
-    async def clear_activation(self, chat_id):
+    async def clear_activation(self, chat_id, lane="human"):
         pass
 
     async def embed_query(self, query):
