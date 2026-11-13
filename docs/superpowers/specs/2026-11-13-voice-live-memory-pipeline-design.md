@@ -1,13 +1,14 @@
 # Voice messages through the orchestrator — design (v3)
 
-**Date:** 2026-11-13 · **Status:** spec v3, awaiting Laris's approval (no code, no push before it) · **Todo:** T30
+**Date:** 2026-11-13 · **Status:** spec v3 (voice decided: Deepgram Flux), awaiting Laris's approval (no code, no push before it) · **Todo:** T30
 **Base:** main `378f99d` · Replaces v1 (option B) and v2 (orchestrator-driven live call).
 
 ## Decisions (Laris, 2026-11-13, via GOAT 09:26)
 
-1. **One fixed voice.** The Romanian Edge/Azure voice Laris has already heard is used everywhere (phone, Telegram,
-   notifications). Gemini Live's audio output is cut completely: Gemini is only the ear. The "give the model the text
-   and let it read it" variant and its fidelity measurement are dropped.
+1. **One fixed voice: Deepgram Flux `flux-ioana-ro`** (Laris, 09:37), on the Deepgram key already in `.env`, with no
+   new key or vendor. It is used everywhere (phone, Telegram, notifications). Azure / Edge are not considered now.
+   Gemini Live's audio output is cut completely: Gemini is only the ear. The "give the model the text and let it read
+   it" variant and its fidelity measurement are dropped.
 2. **Same thread.** Spoken turns go into the existing Telegram conversation, not a separate "voice" thread. Only the
    channel differs (voice vs text). Memory and context come from the orchestrator as for any message; the voice
    layer keeps no memory of its own.
@@ -27,7 +28,8 @@ page: hold/tap mic → record (MediaRecorder, opus/webm) → stop ─┐
                                                                │ POST /api/voice/message (audio, said_at)
 server: transcribe (Gemini = ear) → ChatService.submit(transcript, source="voice_live", said_at, voice=True)
         → Orchestrator.run (same chat, lane human, same lock, tools, memory)            ← page plays the "working" sound
-        → reply text → TTS (the fixed ro-RO voice) → audio/mpeg → page plays it           ← sound stops
+        → reply text → page opens the EXISTING /api/voice/speak/stream (Deepgram Flux, flux-ioana-ro)
+          → PCM 24 kHz streamed → page plays it (existing remoteVoice.ts)                ← sound stops
         → (background, after the audio is sent) memory writes complete
 ```
 
@@ -76,16 +78,26 @@ voice=)`. These are additive keyword arguments with defaults, so every existing 
 - **Telegram copy:** `ChatService` already mirrors panel turns (`chat_service.py:121/132`), so the voice turn
   appears in Telegram as text, in the same conversation.
 
-### 5. The voice: one fixed Romanian voice (`admin_panel/voice_message/tts.py`, new)
+### 5. The voice: Deepgram Flux `flux-ioana-ro`, reusing what is already there (nothing new to build)
 
-- Reply text → audio (mp3) with the chosen ro-RO neural voice.
-- The text is cleaned for speech first: markdown stripped; numbers, dates and times written in words. The existing
-  Deepgram route already does this with `admin_panel/ro_speech.py` (`normalize`, line 163; `number_to_words`, line
-  58), imported by `routes/voice_speak.py:24`. That module is reused as is.
-- Iteration 1 returns the whole clip once synthesized (replies are short, §3). Sentence-by-sentence streaming
-  (speak the first sentence while the rest synthesizes) is a later optimisation.
-- One module, one voice id in config (`[voice_message] tts_voice = "ro-RO-…Neural"`). Telegram voice replies and
-  notifications reuse it later (decision 1: one voice everywhere).
+- **Route:** the existing WebSocket `/api/voice/speak/stream` (`admin_panel/routes/voice_speak.py:53`). The page
+  sends `{"type": "speak", "text": <reply>}`. The route opens Deepgram's streaming TTS (`wss://api.deepgram.com/v2/speak`,
+  `voice_config.py:65`: model `TTS_MODEL`, linear16, 24 kHz) and streams the PCM back. The page already plays it
+  (`frontend/src/voice/remoteVoice.ts:32`). Audio starts with the first chunk, not after the whole clip, so
+  streaming comes for free.
+- **Text cleanup** (markdown, and numbers/dates/times written in words) is already done on that path by
+  `admin_panel/ro_speech.py` (`normalize`, line 163), imported at `voice_speak.py:24`. Reused as is.
+- **Key / switch:** `DEEPGRAM_API_KEY` (present in `.env`) and `voice_config.tts_enabled()` (`voice_config.py:68-70`,
+  on unless `DEEPGRAM_TTS=off`; not set in `.env`, so on). No new key, module or vendor.
+- **The voice id:** `voice_config.TTS_MODEL` = env `DEEPGRAM_TTS_MODEL`, default `flux-ioana-ro`
+  (`voice_config.py:24-25`). **⚠ Conflict with the decision, to settle before code (open question 1):** the live
+  `.env` sets `DEEPGRAM_TTS_MODEL=flux-cosmin-ro`. So the Deepgram voice Laris has actually heard in the panel is
+  **Cosmin (male)**, not Ioana. Using Ioana means changing that one line in `.env` (Laris's file, his OK), or
+  removing it to fall back on the default. Nothing in code changes either way.
+- **Cosmin** (`flux-cosmin-ro`) stays possible through the same one line, with no code change.
+- Telegram voice notes and notifications reuse the same `TTS_MODEL` later (decision 1: one voice everywhere).
+- Text length: the route refuses texts over `voice_config.TTS_MAX_CHARS` (`voice_speak.py:47`). Spoken replies are
+  short (§3); if a reply is longer, the page speaks the part up to the limit and says the rest is in the chat.
 
 ### 6. The "working" sound (frontend)
 
@@ -104,8 +116,8 @@ returns:
 - **The L2 append** (`append_and_save_working_context`, `:626`) runs inside `run()` before it returns. It is one
   Redis read-modify-write under the per-chat lock, so milliseconds, not seconds. It must stay before the next turn
   can start, otherwise the next turn would read L2 without this exchange. So it stays where it is. The voice
-  endpoint starts TTS as soon as `run()` returns, and nothing else memory-related sits between the reply and the
-  audio.
+  page opens the speak stream as soon as the turn's reply arrives, and nothing else memory-related sits between the
+  reply and the audio.
 - This will be measured: the log line `voice_message: timings stt=… turn=… tts=… total=…` per message. If the L2
   write ever shows up in the timings, it moves behind the audio with an explicit ordering guard.
 
@@ -113,8 +125,8 @@ returns:
 
 - `POST /api/voice/message`: multipart (audio, said_at), write-auth like `/api/chat`. It transcribes, submits, and
   returns `{"turn_id", "transcript"}`. The page then polls the existing `/api/chat/turns/{id}`.
-- `GET /api/voice/reply/{turn_id}`: when the turn is done, the TTS audio (`audio/mpeg`) of its reply. It is
-  synthesized on first request and kept in memory for a few minutes.
+- No reply-audio endpoint: once the turn is `done`, the page sends its reply text to the existing
+  `/api/voice/speak/stream` (§5).
 
 ## Removed / unchanged in iteration 1
 
@@ -133,8 +145,7 @@ returns:
   - auth required;
   - size and length limits;
   - `said_at` is clamped;
-  - the returned turn id;
-  - the reply endpoint is 404/409 until the turn is done and returns `audio/mpeg` after.
+  - the returned turn id.
 - **ChatService / run:** `source`, `said_at` and `voice` reach `run()`; the defaults leave every existing caller
   unchanged.
 - **Memory:**
@@ -142,10 +153,10 @@ returns:
   - `_archive_turn` is called with the `voice_live` tag and `timestamp=said_at`;
   - `store_episodic(timestamp=)` sets the metadata and the date prefix, with the default unchanged.
 - **Voice prompt line:** present with `voice=True`, absent by default.
-- **TTS:**
-  - markdown, numbers and dates are cleaned before synthesis;
-  - the configured voice id is used;
-  - a failure returns the text-only reply (the chat still shows it) and an error event.
+- **Voice (existing route, unchanged):**
+  - the page sends the done turn's reply to `/api/voice/speak/stream` exactly once;
+  - a speak error leaves the text reply in the chat and stops the working sound;
+  - the route's existing tests stay green.
 - **Timing:** the log line is written, and no memory call happens between `run()` returning and TTS starting.
 - **Page:**
   - tap to start / tap to send;
@@ -156,27 +167,14 @@ returns:
 
 ## Open questions (for Laris)
 
-1. **Which voice, exactly, and through what?** Nothing in the GOAT2 repo or on this machine uses an Edge/Azure voice
-   today. The only TTS in code is Deepgram (`routes/voice_speak.py`). Laris needs to tell us:
-   - **which voice it is:** `ro-RO-AlinaNeural` (female) or `ro-RO-EmilNeural` (male), or where he heard it, so I
-     can find the id;
-   - **which access path:**
-     - (a) **Azure Speech**: official, needs a key and region, paid beyond the free tier;
-     - (b) **the Edge read-aloud endpoint** (`edge-tts`): the same voices without a key, but an unofficial,
-       unsupported use of Microsoft's browser service that can break or be blocked at any time.
+1. **Ioana or Cosmin?** Laris chose Deepgram Flux `flux-ioana-ro` (09:37); the voice is decided. But the live
+   `.env` has `DEEPGRAM_TTS_MODEL=flux-cosmin-ro`, so the Flux voice he has been hearing in the panel is Cosmin (male),
+   not Ioana (female). Before code, confirm one of:
+   - **Ioana:** change or remove that `.env` line (his file, his OK);
+   - **Cosmin:** keep the `.env` as is.
 
-   - (c) **Deepgram Flux, already in the repo** (found by GOAT): `flux-ioana-ro` (female, the default) or
-     `flux-cosmin-ro` (male), `admin_panel/voice_config.py:24-25`, `wss://api.deepgram.com/v2/speak`, linear16 at
-     24 kHz. `routes/voice_speak.py` already turns text into PCM with it. `DEEPGRAM_API_KEY` is already in `.env`,
-     so no new key or vendor is needed. Caveats:
-     - it is not the Edge/Azure voice Laris named;
-     - on 2026-11-08 he called the old Deepgram turn-by-turn voice "scumpă și slabă calitativ" (that verdict covered
-       STT + TTS + flow, but the voice was part of it).
-
-     So it is only an option if this is in fact the voice he means, or if he is fine with it after hearing it again.
-
-   For a voice heard everywhere, I recommend (a) when the Edge/Azure voice is what he wants, and (c) if he confirms
-   the Flux voice is the one. The decision is his.
+   Either way there is no code change.
+   (Azure / Edge-TTS are out for now, by his choice; they stay noted only as rejected alternatives.)
 2. **Telegram voice notes in iteration 1?** Laris sends a voice note in Telegram, and GOAT answers in text plus a
    voice note in the same voice. It reuses STT, the orchestrator and TTS, about one more handler. Proposed: **next
    iteration**, after the panel flow works.
