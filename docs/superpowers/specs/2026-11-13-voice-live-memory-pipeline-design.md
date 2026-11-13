@@ -1,12 +1,13 @@
 # Voice messages through the orchestrator — design (v3)
 
-**Date:** 2026-11-13 · **Status:** spec v3 (voice decided: Deepgram Flux), awaiting Laris's approval (no code, no push before it) · **Todo:** T30
+**Date:** 2026-11-13 · **Status:** spec v3 (voice decided: Deepgram Flux Cosmin), awaiting Laris's approval (no code, no push before it) · **Todo:** T30
 **Base:** main `378f99d` · Replaces v1 (option B) and v2 (orchestrator-driven live call).
 
 ## Decisions (Laris, 2026-11-13, via GOAT 09:26)
 
-1. **One fixed voice: Deepgram Flux `flux-ioana-ro`** (Laris, 09:37), on the Deepgram key already in `.env`, with no
-   new key or vendor. It is used everywhere (phone, Telegram, notifications). Azure / Edge are not considered now.
+1. **One fixed voice: Deepgram Flux `flux-cosmin-ro`** (Laris: Flux at 09:37, Cosmin confirmed at 09:40). It is the
+   voice already configured in the live `.env` and already heard in the panel, on the existing Deepgram key: no new
+   key, vendor or `.env` change. It is used everywhere (phone, Telegram, notifications). Azure / Edge are not considered now.
    Gemini Live's audio output is cut completely: Gemini is only the ear. The "give the model the text and let it read
    it" variant and its fidelity measurement are dropped.
 2. **Same thread.** Spoken turns go into the existing Telegram conversation, not a separate "voice" thread. Only the
@@ -28,7 +29,7 @@ page: hold/tap mic → record (MediaRecorder, opus/webm) → stop ─┐
                                                                │ POST /api/voice/message (audio, said_at)
 server: transcribe (Gemini = ear) → ChatService.submit(transcript, source="voice_live", said_at, voice=True)
         → Orchestrator.run (same chat, lane human, same lock, tools, memory)            ← page plays the "working" sound
-        → reply text → page opens the EXISTING /api/voice/speak/stream (Deepgram Flux, flux-ioana-ro)
+        → reply text → page opens the EXISTING /api/voice/speak/stream (Deepgram Flux, flux-cosmin-ro)
           → PCM 24 kHz streamed → page plays it (existing remoteVoice.ts)                ← sound stops
         → (background, after the audio is sent) memory writes complete
 ```
@@ -78,7 +79,7 @@ voice=)`. These are additive keyword arguments with defaults, so every existing 
 - **Telegram copy:** `ChatService` already mirrors panel turns (`chat_service.py:121/132`), so the voice turn
   appears in Telegram as text, in the same conversation.
 
-### 5. The voice: Deepgram Flux `flux-ioana-ro`, reusing what is already there (nothing new to build)
+### 5. The voice: Deepgram Flux `flux-cosmin-ro`, reusing what is already there (nothing new to build)
 
 - **Route:** the existing WebSocket `/api/voice/speak/stream` (`admin_panel/routes/voice_speak.py:53`). The page
   sends `{"type": "speak", "text": <reply>}`. The route opens Deepgram's streaming TTS (`wss://api.deepgram.com/v2/speak`,
@@ -89,12 +90,9 @@ voice=)`. These are additive keyword arguments with defaults, so every existing 
   `admin_panel/ro_speech.py` (`normalize`, line 163), imported at `voice_speak.py:24`. Reused as is.
 - **Key / switch:** `DEEPGRAM_API_KEY` (present in `.env`) and `voice_config.tts_enabled()` (`voice_config.py:68-70`,
   on unless `DEEPGRAM_TTS=off`; not set in `.env`, so on). No new key, module or vendor.
-- **The voice id:** `voice_config.TTS_MODEL` = env `DEEPGRAM_TTS_MODEL`, default `flux-ioana-ro`
-  (`voice_config.py:24-25`). **⚠ Conflict with the decision, to settle before code (open question 1):** the live
-  `.env` sets `DEEPGRAM_TTS_MODEL=flux-cosmin-ro`. So the Deepgram voice Laris has actually heard in the panel is
-  **Cosmin (male)**, not Ioana. Using Ioana means changing that one line in `.env` (Laris's file, his OK), or
-  removing it to fall back on the default. Nothing in code changes either way.
-- **Cosmin** (`flux-cosmin-ro`) stays possible through the same one line, with no code change.
+- **The voice id:** `voice_config.TTS_MODEL` = env `DEEPGRAM_TTS_MODEL` (`voice_config.py:24-25`). The live `.env`
+  sets `flux-cosmin-ro`, which is the voice Laris has heard and kept (09:40). Nothing changes, in code or in `.env`.
+  The code default `flux-ioana-ro` only applies on a machine without that line.
 - Telegram voice notes and notifications reuse the same `TTS_MODEL` later (decision 1: one voice everywhere).
 - Text length: the route refuses texts over `voice_config.TTS_MAX_CHARS` (`voice_speak.py:47`). Spoken replies are
   short (§3); if a reply is longer, the page speaks the part up to the limit and says the rest is in the chat.
@@ -167,14 +165,8 @@ returns:
 
 ## Open questions (for Laris)
 
-1. **Ioana or Cosmin?** Laris chose Deepgram Flux `flux-ioana-ro` (09:37); the voice is decided. But the live
-   `.env` has `DEEPGRAM_TTS_MODEL=flux-cosmin-ro`, so the Flux voice he has been hearing in the panel is Cosmin (male),
-   not Ioana (female). Before code, confirm one of:
-   - **Ioana:** change or remove that `.env` line (his file, his OK);
-   - **Cosmin:** keep the `.env` as is.
-
-   Either way there is no code change.
-   (Azure / Edge-TTS are out for now, by his choice; they stay noted only as rejected alternatives.)
+1. ~~Ioana or Cosmin?~~ **Resolved (Laris, 09:40): Cosmin**, `flux-cosmin-ro`, the voice already in the live `.env`.
+   No `.env` change. Azure and Edge-TTS are out for now, by his choice.
 2. **Telegram voice notes in iteration 1?** Laris sends a voice note in Telegram, and GOAT answers in text plus a
    voice note in the same voice. It reuses STT, the orchestrator and TTS, about one more handler. Proposed: **next
    iteration**, after the panel flow works.
