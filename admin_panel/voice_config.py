@@ -14,6 +14,7 @@ __all__ = [
     "api_key", "http_listen_url", "ws_listen_url", "ws_speak_url", "tts_enabled", "MODEL", "LANGUAGE", "TTS_MODEL",
     "TTS_SAMPLE_RATE", "TTS_MAX_CHARS", "KEEPALIVE_SECONDS", "MAX_STREAM_SECONDS", "MAX_SPEAK_SECONDS",
     "live_provider", "live_voice", "gemini_key", "gemini_live_model", "gemini_live_url", "LIVE_IDLE_SECONDS", "LIVE_MAX_SECONDS",
+    "gemini_stt_model", "gemini_rest_url",
     "live_daily_minutes", "live_usage_file", "LIVE_DAILY_MINUTES_DEFAULT",
     "openai_key", "openai_realtime_model", "openai_realtime_url",
 ]
@@ -87,6 +88,17 @@ def gemini_key() -> str | None:
 
 def gemini_live_model() -> str:
     return os.environ.get("GEMINI_LIVE_MODEL", "").strip() or "gemini-3.8-live"
+
+
+def gemini_stt_model() -> str:
+    """The model that transcribes recorded voice messages (``GEMINI_STT_MODEL``). The default is a guess to be
+    confirmed on the real API before this is turned on (spec 2026-11-13, spike item); set the env to override."""
+    return os.environ.get("GEMINI_STT_MODEL", "").strip() or "gemini-2.5-flash"
+
+
+def gemini_rest_url() -> str:
+    """The Gemini REST base (overridable for tests)."""
+    return (os.environ.get("GEMINI_REST_URL", "").strip() or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
 
 
 def gemini_live_url() -> str:

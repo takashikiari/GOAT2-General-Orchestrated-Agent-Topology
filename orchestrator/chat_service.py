@@ -41,9 +41,10 @@ def _cut(text: str, limit: int = _PREVIEW_CHARS) -> str:
 
 
 class Turn:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, run_kwargs: dict | None = None) -> None:
         self.id = uuid.uuid4().hex[:12]
         self.text = text
+        self.run_kwargs = run_kwargs or {}  # e.g. a voice message: source / said_at / voice
         self.status = "queued"
         self.reply: str | None = None
         self.created = time.time()
@@ -69,7 +70,10 @@ class ChatService:
 
     # ── public API (called from the FastAPI routes) ───────────────────────────
 
-    def submit(self, text: str) -> Turn:
+    def submit(self, text: str, *, source: str | None = None, said_at: float | None = None,
+               voice: bool = False) -> Turn:
+        """Start a GOAT turn on ``text``. A voice message passes ``source="voice_live"``, ``said_at`` (when Laris
+        spoke) and ``voice=True`` (reply written to be read aloud); a typed message passes none of them."""
         text = (text or "").strip()
         if not text:
             raise ValueError("empty message")
@@ -80,7 +84,8 @@ class ChatService:
             raise ChatUnavailable("no admin chat configured")
         if sum(t.status in _ACTIVE for t in self._turns.values()) >= self._max_queue:
             raise ChatBusy("too many messages waiting")
-        turn = Turn(text)
+        run_kwargs = {k: v for k, v in (("source", source), ("said_at", said_at), ("voice", voice)) if v}
+        turn = Turn(text, run_kwargs)
         self._turns[turn.id] = turn
         self._prune()
         turn.task = asyncio.create_task(self._run_turn(turn, chat_id))
@@ -122,7 +127,8 @@ class ChatService:
                 injected: list = []
                 token = turn_events.bind(lambda ev: self._on_event(turn, ev))
                 try:
-                    reply = await self._run(turn.text, chat_id, on_context_assembled=injected.append)
+                    reply = await self._run(turn.text, chat_id, on_context_assembled=injected.append,
+                                            **turn.run_kwargs)
                 finally:
                     turn_events.reset(token)
                 self._record_usage(chat_id, injected, reply)

@@ -175,7 +175,7 @@ class MemoryLayers:
 
     async def store_episodic(
         self, chat_id: str, content: str, tags: list[str] | None = None,
-        topic_id: str = "", doc_id: str | None = None,
+        topic_id: str = "", doc_id: str | None = None, timestamp: float | None = None,
     ) -> str:
         """L3: write content to episodic memory — the only L3 write path.
 
@@ -189,8 +189,10 @@ class MemoryLayers:
             topic_id: Topic thread ID; written to metadata when non-empty so
                 future topic-filtered searches can narrow to this thread.
             doc_id: Optional pre-generated doc_id; a new UUID is used if omitted.
+            timestamp: When it was said (epoch seconds); defaults to now. A voice message waits behind the
+                per-chat lock, so its write can come later than the moment Laris spoke.
         """
-        now = time.time()
+        now = time.time() if timestamp is None else float(timestamp)
         metadata: dict = {
             "tags": ",".join(tags or []),
             "timestamp": now,

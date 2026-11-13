@@ -10,8 +10,10 @@ spool a large upload to disk before getting its 401.
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from starlette.datastructures import UploadFile
+from starlette.datastructures import FormData, UploadFile
 
 from admin_panel import deepgram, voice_config
 from admin_panel.voice_live import providers
@@ -20,7 +22,7 @@ from admin_panel.telegram_auth import require_admin_write_auth
 
 router = APIRouter()
 
-__all__ = ["router", "MAX_AUDIO_BYTES", "MIN_DURATION_MS", "MAX_DURATION_MS"]
+__all__ = ["router", "read_clip", "Clip", "MAX_AUDIO_BYTES", "MIN_DURATION_MS", "MAX_DURATION_MS"]
 
 # 60 s of Opus is about 0.5 MB and AAC about 1 MB: 5 MiB leaves plenty of headroom and still bounds the upload.
 MAX_AUDIO_BYTES = 5 * 1024 * 1024
@@ -43,8 +45,16 @@ def _looks_like_audio(head: bytes) -> bool:
     )
 
 
-@router.post("/api/voice", dependencies=[Depends(require_admin_write_auth)])
-async def voice(request: Request) -> dict:
+class Clip(NamedTuple):
+    data: bytes
+    content_type: str
+    duration_ms: int
+    form: FormData
+
+
+async def read_clip(request: Request) -> Clip:
+    """The uploaded recording, validated (size, type, duration, that it looks like audio); raises HTTPException.
+    Shared by ``/api/voice`` (transcript into the text box) and ``/api/voice/message`` (a spoken message to GOAT)."""
     declared = request.headers.get("content-length")
     if declared is None:
         raise HTTPException(status_code=411, detail="Content-Length required")
@@ -76,7 +86,12 @@ async def voice(request: Request) -> dict:
         raise HTTPException(status_code=422, detail="empty audio")
     if not _looks_like_audio(data[:16]):
         raise HTTPException(status_code=422, detail="the file does not look like audio")
+    return Clip(data, content_type, duration_ms, form)
 
+
+@router.post("/api/voice", dependencies=[Depends(require_admin_write_auth)])
+async def voice(request: Request) -> dict:
+    data, content_type, duration_ms, _ = await read_clip(request)
     if voice_config.api_key() is None:
         # no provider configured on this server: say so instead of pretending (the page shows a notice)
         return {
