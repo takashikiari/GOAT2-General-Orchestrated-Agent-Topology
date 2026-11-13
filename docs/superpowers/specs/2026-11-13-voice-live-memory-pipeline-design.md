@@ -165,7 +165,18 @@ returns:
      - (b) **the Edge read-aloud endpoint** (`edge-tts`): the same voices without a key, but an unofficial,
        unsupported use of Microsoft's browser service that can break or be blocked at any time.
 
-   I recommend (a) for something used everywhere.
+   - (c) **Deepgram Flux, already in the repo** (found by GOAT): `flux-ioana-ro` (female, the default) or
+     `flux-cosmin-ro` (male), `admin_panel/voice_config.py:24-25`, `wss://api.deepgram.com/v2/speak`, linear16 at
+     24 kHz. `routes/voice_speak.py` already turns text into PCM with it. `DEEPGRAM_API_KEY` is already in `.env`,
+     so no new key or vendor is needed. Caveats:
+     - it is not the Edge/Azure voice Laris named;
+     - on 2026-11-08 he called the old Deepgram turn-by-turn voice "scumpă și slabă calitativ" (that verdict covered
+       STT + TTS + flow, but the voice was part of it).
+
+     So it is only an option if this is in fact the voice he means, or if he is fine with it after hearing it again.
+
+   For a voice heard everywhere, I recommend (a) when the Edge/Azure voice is what he wants, and (c) if he confirms
+   the Flux voice is the one. The decision is his.
 2. **Telegram voice notes in iteration 1?** Laris sends a voice note in Telegram, and GOAT answers in text plus a
    voice note in the same voice. It reuses STT, the orchestrator and TTS, about one more handler. Proposed: **next
    iteration**, after the panel flow works.
