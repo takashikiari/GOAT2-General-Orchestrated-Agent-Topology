@@ -80,8 +80,8 @@ voice=)`. These are additive keyword arguments with defaults, so every existing 
 
 - Reply text → audio (mp3) with the chosen ro-RO neural voice.
 - The text is cleaned for speech first: markdown stripped; numbers, dates and times written in words. The existing
-  Deepgram route already does this (`routes/voice_speak.py`, `_text_to_speak` and its number helpers), and the
-  helper is reused.
+  Deepgram route already does this with `admin_panel/ro_speech.py` (`normalize`, line 163; `number_to_words`, line
+  58), imported by `routes/voice_speak.py:24`. That module is reused as is.
 - Iteration 1 returns the whole clip once synthesized (replies are short, §3). Sentence-by-sentence streaming
   (speak the first sentence while the rest synthesizes) is a later optimisation.
 - One module, one voice id in config (`[voice_message] tts_voice = "ro-RO-…Neural"`). Telegram voice replies and
