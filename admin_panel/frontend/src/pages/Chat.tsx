@@ -7,6 +7,7 @@ import { VOICE_MAX_MS, useVoiceRecorder } from '../hooks/useVoiceRecorder'
 import type { VoiceClip } from '../hooks/useVoiceRecorder'
 import type { Phase } from '../voice/useConversation'
 import { useVoiceConversation } from '../voice/useVoiceConversation'
+import { useVoiceReply } from '../voice/useVoiceReply'
 import type { VoiceMode } from '../voice/useVoiceConversation'
 import { usePolling } from '../hooks/usePolling'
 
@@ -23,7 +24,8 @@ type TurnEvent =
   | { seq: number; ts: number; type: 'tool_end'; id: string; name: string; chars: number; ok: boolean; preview: string }
   | { seq: number; ts: number; type: 'reply'; text: string }
   | { seq: number; ts: number; type: 'error'; message: string }
-type VoiceResponse = { ok: boolean; stub?: boolean; duration_ms: number; bytes: number; content_type: string; text: string }
+type VoiceMessageResponse = { turn_id: string | null; transcript: string }
+const NOT_UNDERSTOOD = 'N-am înțeles mesajul vocal. Poți să-l repeți?'
 type TurnView = { id: string; text: string; status: TurnStatus; reply: string | null; events: TurnEvent[] }
 
 const POLL_TURN_MS = 700
@@ -435,29 +437,40 @@ export function Chat() {
     }
   }, [text, sendText])
 
-  // PROTOTYPE: the server answers a stub (text is empty) until a speech-to-text provider is connected.
-  const sendVoice = useCallback(async (clip: VoiceClip) => {
-    setSendError(null)
-    setNotice(null)
-    const form = new FormData()
-    form.append('audio', clip.blob, `voice.${audioExtension(clip.mimeType)}`)
-    form.append('duration_ms', String(Math.round(clip.durationMs)))
-    try {
-      const res = await apiPostForm<VoiceResponse>('/api/voice', form)
-      if (res.text) {
-        setText((prev) => (prev.trim() ? `${prev.trim()} ${res.text}` : res.text))
-        textareaRef.current?.focus()
-      } else {
-        const limit = clip.limitReached ? ` Stopped at the ${VOICE_MAX_MS / 1000} s limit.` : ''
-        setNotice(
-          `Voice message received (${(clip.durationMs / 1000).toFixed(1)} s, ${Math.max(1, Math.round(res.bytes / 1024))} KB). ` +
-            `Transcription is not connected yet (prototype).${limit}`,
-        )
+  const reply = useVoiceReply(turns)
+  const sayReply = reply.say
+  const expectReply = reply.expect
+  /** A voice message (Laris, 2026-11-13): the server transcribes it and starts a normal GOAT turn (marked voice_live,
+   * with when he started speaking); the working sound plays until the reply is read aloud with the fixed voice. */
+  const sendVoice = useCallback(
+    async (clip: VoiceClip) => {
+      setSendError(null)
+      setNotice(null)
+      stick.current = true
+      setAtBottom(true)
+      const form = new FormData()
+      form.append('audio', clip.blob, `voice.${audioExtension(clip.mimeType)}`)
+      form.append('duration_ms', String(Math.round(clip.durationMs)))
+      form.append('said_at', String((Date.now() - clip.durationMs) / 1000))
+      try {
+        const res = await apiPostForm<VoiceMessageResponse>('/api/voice/message', form)
+        if (!res.turn_id) {
+          setNotice(NOT_UNDERSTOOD)
+          void sayReply(NOT_UNDERSTOOD)
+          return
+        }
+        const turnId = res.turn_id
+        const said = res.transcript
+        const baseline = transcript.filter((e) => e.role === 'user' && e.content === said).length
+        setTurns((prev) => [...prev, { id: turnId, text: said, status: 'queued', reply: null, events: [], baseline }])
+        expectReply(turnId)
+        if (clip.limitReached) setNotice(`Stopped at the ${VOICE_MAX_MS / 1000} s limit; the message was sent.`)
+      } catch (err) {
+        setSendError(describeError(err))
       }
-    } catch (err) {
-      setSendError(describeError(err))
-    }
-  }, [])
+    },
+    [transcript, sayReply, expectReply],
+  )
   const voice = useVoiceRecorder(sendVoice)
   const recording = voice.state === 'recording'
   const conversation = useVoiceConversation({ turns, submit: sendText })
@@ -654,7 +667,11 @@ export function Chat() {
               title={recording ? 'Stop recording' : 'Record a voice message'}
               disabled={voice.state === 'sending'}
               onMouseDown={keepFocus}
-              onClick={voice.toggle}
+              onClick={() => {
+                reply.prime() // inside the tap: browsers only allow the reply's sound (and the working sound) after one
+                if (!recording) reply.stop() // a new message cuts off the one being read
+                voice.toggle()
+              }}
               className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-colors disabled:opacity-40 ${
                 recording ? 'animate-pulse-live border-danger bg-danger text-base' : 'border-edge text-zinc-300 active:bg-surface2'
               }`}
