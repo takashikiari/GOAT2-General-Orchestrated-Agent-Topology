@@ -31,7 +31,7 @@ describe('Chat voice button', () => {
     expect(screen.queryByTestId('voice-overlay')).not.toBeInTheDocument()
   })
 
-  it('idle → recording (timer, stop button) → sending → idle, and tells that nothing was transcribed yet', async () => {
+  it('idle → recording (timer, stop button) → sending → idle, and says so when nothing was understood', async () => {
     installFakeMedia()
     let answer: (v: unknown) => void = () => {}
     const post = vi.spyOn(client, 'apiPostForm').mockImplementation(() => new Promise((resolve) => { answer = resolve }) as never)
@@ -51,22 +51,25 @@ describe('Chat voice button', () => {
     expect(mic(/Record voice message/)).toBeDisabled()
     expect(post).toHaveBeenCalledTimes(1)
     const [path, form] = post.mock.calls[0] as [string, FormData]
-    expect(path).toBe('/api/voice')
+    expect(path).toBe('/api/voice/message')
     const file = form.get('audio') as File
     expect(file.name).toBe('voice.webm')
     expect(Number(form.get('duration_ms'))).toBeGreaterThanOrEqual(7000)
+    const saidAt = Number(form.get('said_at'))
+    expect(saidAt).toBeGreaterThan(0)
+    expect(saidAt).toBeLessThanOrEqual(Date.now() / 1000 - 7) // when he started speaking, not when he stopped
 
-    await act(async () => { answer({ ok: true, stub: true, duration_ms: 7000, bytes: 2048, content_type: 'audio/webm', text: '' }) })
+    await act(async () => { answer({ turn_id: null, transcript: '' }) })
     await flush()
     expect(screen.queryByTestId('voice-overlay')).not.toBeInTheDocument()
     expect(mic(/Record voice message/)).toBeEnabled()
-    expect(screen.getByText(/Voice message received \(7\.\d s, 2 KB\)\. Transcription is not connected yet \(prototype\)\./)).toBeInTheDocument()
+    expect(screen.getByText('N-am înțeles mesajul vocal. Poți să-l repeți?')).toBeInTheDocument()
     expect(screen.getByLabelText('Message GOAT')).not.toHaveAttribute('readonly')
   })
 
-  it('puts a transcript into the message box for review when the server returns one', async () => {
+  it('sends a voice message straight to GOAT as a turn of the conversation (not into the text box)', async () => {
     installFakeMedia()
-    vi.spyOn(client, 'apiPostForm').mockResolvedValue({ ok: true, duration_ms: 3000, bytes: 4096, content_type: 'audio/webm', text: 'verifică logurile' })
+    vi.spyOn(client, 'apiPostForm').mockResolvedValue({ turn_id: 't1', transcript: 'verifică logurile' })
     await open()
     fireEvent.change(screen.getByLabelText('Message GOAT'), { target: { value: 'te rog' } })
     fireEvent.click(mic(/Record voice message/))
@@ -74,8 +77,8 @@ describe('Chat voice button', () => {
     await advance(2000)
     fireEvent.click(mic(/Stop recording/))
     await flush()
-    expect(screen.getByLabelText('Message GOAT')).toHaveValue('te rog verifică logurile')
-    expect(screen.queryByText(/not connected yet/)).not.toBeInTheDocument()
+    expect(screen.getByText('verifică logurile')).toBeInTheDocument()       // shown as Laris's message in the chat
+    expect(screen.getByLabelText('Message GOAT')).toHaveValue('te rog')     // the typed draft is left alone
   })
 
   it('shows a refused microphone clearly', async () => {
@@ -100,7 +103,7 @@ describe('Chat voice button', () => {
   it('sends mp4 as .m4a where webm cannot be recorded (iOS)', async () => {
     installFakeMedia()
     FakeRecorder.supported = new Set(['audio/mp4'])
-    const post = vi.spyOn(client, 'apiPostForm').mockResolvedValue({ ok: true, stub: true, duration_ms: 2000, bytes: 2048, content_type: 'audio/mp4', text: '' })
+    const post = vi.spyOn(client, 'apiPostForm').mockResolvedValue({ turn_id: null, transcript: '' })
     await open()
     fireEvent.click(mic(/Record voice message/))
     await flush()
@@ -112,7 +115,7 @@ describe('Chat voice button', () => {
 
   it('stops by itself at 60 s and mentions the limit', async () => {
     installFakeMedia()
-    const post = vi.spyOn(client, 'apiPostForm').mockResolvedValue({ ok: true, stub: true, duration_ms: 60000, bytes: 9000, content_type: 'audio/webm', text: '' })
+    const post = vi.spyOn(client, 'apiPostForm').mockResolvedValue({ turn_id: 't1', transcript: 'un mesaj lung' })
     await open()
     fireEvent.click(mic(/Record voice message/))
     await flush()
