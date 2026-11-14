@@ -19,7 +19,18 @@ import logging.handlers
 import os
 from pathlib import Path
 
-_LOG_DIR = Path(os.environ.get("GOAT_LOG_DIR", "/tmp/goat2/logs"))
+
+
+def default_log_dir(environ: "os._Environ[str] | dict[str, str]" = os.environ) -> Path:
+    """Where the log lives when ``GOAT_LOG_DIR`` is not set: ``$XDG_STATE_HOME/goat2/logs``, else
+    ``~/.local/state/goat2/logs``. On disk that survives a reboot: the old default, ``/tmp/goat2/logs``, was
+    emptied by every restart of the machine, taking days of measurements with it (2026-11-14)."""
+    state = (environ.get("XDG_STATE_HOME") or "").strip()
+    base = Path(state) if state else Path.home() / ".local" / "state"
+    return base / "goat2" / "logs"
+
+
+_LOG_DIR = Path(os.environ["GOAT_LOG_DIR"]) if os.environ.get("GOAT_LOG_DIR", "").strip() else default_log_dir()
 _LOG_FILE = _LOG_DIR / "goat2.log"
 _LOG_MAX_BYTES = int(os.environ.get("GOAT_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
 _LOG_BACKUP_COUNT = int(os.environ.get("GOAT_LOG_BACKUP_COUNT", "5"))
