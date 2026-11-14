@@ -4,7 +4,7 @@ IMPORTANT: the os.environ assignment must come before any import that
 calls get_logger(), because utils.logging.setup installs the
 RotatingFileHandler on first import (module-level, not deferred).
 Setting GOAT_LOG_DIR here redirects the file handler to a test-only
-path so the production log (default /tmp/goat2/logs/goat2.log) is
+path so the production log (default ~/.local/state/goat2/logs/goat2.log) is
 never touched by pytest runs.  Test log output is still written to
 /tmp/pytest-goat2/logs/goat2.log for post-run inspection, and pytest's
 own log-capture system remains fully active (warnings/errors appear in

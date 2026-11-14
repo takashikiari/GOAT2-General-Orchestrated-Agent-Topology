@@ -65,7 +65,7 @@ The core settings, read by `config/settings.py` at import time (the voice and li
 | `TEMPERATURE` | No | `0.5` | Sampling temperature (0–2) |
 | `MAX_TOKENS` | No | `4096` | Max tokens per LLM response (reasoning models spend part of it on reasoning) |
 | `TIMEOUT_SECONDS` | No | `30.0` | HTTP timeout for LLM calls |
-| `GOAT_LOG_DIR` | No | `/tmp/goat2/logs` | Directory for the rotating log file |
+| `GOAT_LOG_DIR` | No | `~/.local/state/goat2/logs` (or `$XDG_STATE_HOME/goat2/logs`) | Directory for the rotating log file. On persistent disk, so a reboot does not erase it |
 
 The setup wizard writes these automatically to `.env`: the token, the key, `BASE_URL` and `MODEL_NAME` (the provider's fast model) and `GOAT_AGENT_PLANNER_MODEL` / `GOAT_AGENT_CODER_MODEL` (its strong model). `config/agents.toml` pins no provider or model, so every role follows them. Minimum `.env` for DeepSeek (the recommended default):
 

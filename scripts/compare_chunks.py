@@ -22,9 +22,13 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-# Offline tools must never write into the live bot's /tmp/goat2/logs/goat2.log (their rerank/embedding lines
-# looked like production traffic). Set before any GOAT module configures logging.
+# Offline tools must never write into the live bot's goat2.log (their rerank/embedding lines looked like
+# production traffic). Set before any GOAT module configures logging. The live log is still READ (real queries):
+# its directory is resolved first, the same way utils.logging.setup does, without importing it (that would pin it).
 import os  # noqa: E402
+_state = (os.environ.get("XDG_STATE_HOME") or "").strip()
+_LIVE_LOG_DIR = Path(os.environ.get("GOAT_LOG_DIR", "").strip()
+                     or (Path(_state) if _state else Path.home() / ".local" / "state") / "goat2" / "logs")
 os.environ.setdefault("GOAT_LOG_DIR", str(Path(tempfile.gettempdir()) / "goat2-offline-logs"))
 
 from memory.config import CHUNK_COLLECTION_NAME, EPISODIC_COLLECTION_NAME  # noqa: E402
@@ -38,7 +42,7 @@ L3_BUDGET = 2500
 def real_queries(n: int) -> list[tuple[str, float]]:
     """(text, timestamp) of real user messages, oldest first."""
     seen, out = set(), []
-    for f in sorted(glob.glob("/tmp/goat2/logs/goat2.log*"), reverse=True):
+    for f in sorted(glob.glob(str(_LIVE_LOG_DIR / "goat2.log*")), reverse=True):
         for line in open(f, errors="replace"):
             if "memory.observability" in line and "{" in line:
                 try:
