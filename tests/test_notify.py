@@ -69,3 +69,9 @@ def test_bot_py_sends_through_notify_not_its_own_bot():
     src = pathlib.Path(__file__).resolve().parents[1].joinpath("telegram_interface", "bot.py").read_text()
     assert "Bot(token=" not in src                       # the two copies (DAG, agent-coord reply) are gone
     assert src.count("await notify(") == 2
+
+
+def test_panel_mirror_sends_through_notify_not_its_own_bot():
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1].joinpath("telegram_interface", "panel_mirror.py").read_text()
+    assert "Bot(token=" not in src and "await notify(chat_id, body)" in src
