@@ -26,11 +26,12 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start"]
+__all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start", "is_enabled",
+           "record_turn"]
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
-             "max_cycle_ms": 200, "reinforce": 1.0, "decay": 0.98, "nucleus_items": 10}
+             "max_cycle_ms": 200, "reinforce": 1.0, "decay": 0.98, "nucleus_items": 10, "record_budget_ms": 20}
 _DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"  # memory.temporal_route.CHANNEL_DIGEST_PREFIX (not imported)
 _PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|te anun[țt])|voi (verifica|reveni|face|"
                       r"c[ăa]uta)|te anun[țt]|urmeaz[ăa] s[ăa]|fac (asta )?mai t[âa]rziu|m[ăa] uit (și|si) revin)\b", re.I)
@@ -112,9 +113,11 @@ class Brain:
         self._db.close()
 
     # ── blind write + paths (sync, called under the lock in a thread) ──────────────────────────────────────────────
-    def _ingest(self, chat_id: str, messages: list[dict], budget_ms: float) -> tuple[int, int, list[str]]:
+    def _ingest(self, chat_id: str, messages: list[dict], budget_ms: float,
+                lane: str | None = None) -> tuple[int, int, list[str]]:
         """New messages only (timestamp after this chat's cursor), oldest first, until the row or time budget runs
-        out; links each to the previous event of the same lane. Returns (events, links, touched lanes)."""
+        out; links each to the previous event of the same lane. ``lane`` (the turn's real lane, from the request
+        hook) overrides the guess from the text. Returns (events, links, touched lanes)."""
         db, now, t0 = self._db, time.time(), time.perf_counter()
         row = db.execute("SELECT last_ts FROM cursor WHERE chat_id = ?", (chat_id,)).fetchone()
         cursor = row[0] if row else 0.0
@@ -124,12 +127,14 @@ class Brain:
         for m in fresh[: int(self.cfg["max_events_per_cycle"])]:
             if (time.perf_counter() - t0) * 1000 > budget_ms:
                 break
-            ts, lane, eid = float(m["timestamp"]), lane_of(m), _event_id(chat_id, m)
-            prev = db.execute("SELECT id, role FROM events WHERE chat_id = ? AND lane = ? AND ts < ? ORDER BY ts DESC "
-                              "LIMIT 1", (chat_id, lane, ts)).fetchone()
+            ts, lane_m, eid = float(m["timestamp"]), lane or lane_of(m), _event_id(chat_id, m)
+            # a turn's user message and reply share one timestamp in L2: at equal time the user message comes first
+            prev = db.execute("SELECT id, role FROM events WHERE chat_id = ? AND lane = ? AND id != ? AND (ts < ? OR "
+                              "(ts = ? AND role = 'user' AND ? = 'assistant')) ORDER BY ts DESC, role = 'user' "
+                              "LIMIT 1", (chat_id, lane_m, eid, ts, ts, m["role"])).fetchone()
             inserted = db.execute(
                 "INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (eid, ts, chat_id, lane, m["role"], _clean(m), m.get("l3_id"), m.get("source"), now)).rowcount
+                (eid, ts, chat_id, lane_m, m["role"], _clean(m), m.get("l3_id"), m.get("source"), now)).rowcount
             if inserted and prev:
                 kind = "answered_by" if prev[1] == "user" and m["role"] == "assistant" else "next_turn"
                 db.execute("INSERT INTO paths VALUES (?, ?, ?, ?, ?) ON CONFLICT (src, dst, kind) DO UPDATE SET "
@@ -137,7 +142,7 @@ class Brain:
                            (prev[0], eid, kind, float(self.cfg["reinforce"]), now))
                 links += 1
             events += inserted
-            lanes.add(lane)
+            lanes.add(lane_m)
             db.execute("INSERT INTO cursor VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET last_ts = excluded.last_ts",
                        (chat_id, ts))
         db.commit()
@@ -210,6 +215,30 @@ class Brain:
             row = await asyncio.to_thread(lambda: self._db.execute(
                 "SELECT open_items FROM nucleus WHERE chat_id = ? AND lane = ?", (chat_id, lane)).fetchone())
         return json.loads(row[0]) if row else []
+
+
+_instance: Brain | None = None
+
+
+def is_enabled() -> bool:
+    """The one gate the orchestrator checks before touching the brain: [brain] enabled (false by default)."""
+    return bool(CONFIG.get("enabled"))
+
+
+async def record_turn(chat_id: str, messages: list[dict], lane: str = "human") -> int:
+    """Blind write from the request loop: the turn's exact L2 messages, into the store, right away (same ids as
+    the sleep cycle's L2 read, so they are never stored twice). Bounded by ``record_budget_ms``. The caller runs it
+    as a background task and swallows any error: it can never cost the reply. Returns the events written."""
+    global _instance
+    if not is_enabled():
+        return 0
+    if _instance is None:
+        _instance = Brain(CONFIG)
+    brain = _instance
+    async with brain.lock:
+        events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages,
+                                               float(CONFIG["record_budget_ms"]), lane)
+    return events
 
 
 def start(working, chat_ids: list[str], cfg: dict | None = None) -> asyncio.Task | None:

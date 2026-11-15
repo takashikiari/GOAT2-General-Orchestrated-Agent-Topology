@@ -32,6 +32,7 @@ from memory.result_merger import merge_results
 from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from memory.l3_attribution import InjectedBlocks
+from brain import brain as _brain
 from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
 from orchestrator.dsml_recovery import answer_without_tools
 from orchestrator.tool_args import argument_error
@@ -181,6 +182,16 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
         preview = " ⏎ ".join(preview.replace("\r", "").split("\n"))
         lines.append(f"called {name}({args}) → {preview}")
     return "\n".join(lines)
+
+
+async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
+    """Memory brain v0 blind write (brain/brain.py), as a background task: bounded in time, and any error is logged
+    and swallowed, so the brain can never cost or break the reply. Only called when [brain] enabled."""
+    try:
+        budget_s = max(0.001, float(_brain.CONFIG.get("record_budget_ms", 20)) / 1000)
+        await asyncio.wait_for(_brain.record_turn(chat_id, messages, lane=lane), timeout=budget_s)
+    except Exception as exc:  # noqa: BLE001 - asyncio.TimeoutError included
+        log.warning("brain: record_turn failed chat=%s: %s", chat_id, type(exc).__name__)
 
 
 async def _archive_turn(
@@ -645,11 +656,17 @@ class Orchestrator:
             now = time.time()
             l3_doc_id = str(uuid.uuid4())
             mark = {"source": source} if source else {}
-            await layers.append_and_save_working_context(
-                chat_id,
+            turn_messages = [
                 {"role": "user", "content": intent, "timestamp": said_at or now, "l3_id": l3_doc_id, **mark},
                 {"role": "assistant", "content": saved_reply, "timestamp": now, "l3_id": l3_doc_id, **mark},
-            )
+            ]
+            await layers.append_and_save_working_context(chat_id, *turn_messages)
+            # Memory brain v0: blind write of this turn. Gated: with [brain] enabled = false (the default) nothing
+            # below runs — no task, no store opened, no latency on the normal path.
+            if _brain.is_enabled():
+                brain_task = asyncio.create_task(_brain_record(chat_id, turn_messages, lane))
+                self._pending_bg.add(brain_task)
+                brain_task.add_done_callback(self._pending_bg.discard)
             archive_task = asyncio.create_task(
                 _archive_turn(
                     layers, chat_id, intent, reply,

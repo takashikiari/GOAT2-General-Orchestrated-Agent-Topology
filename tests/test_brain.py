@@ -95,6 +95,13 @@ def test_lanes_stay_apart(tmp_path):
     assert asyncio.run(brain.nucleus("42", "channel")) == []      # a digest is not a short question
 
 
+def test_a_reply_saved_with_the_same_timestamp_is_still_linked_to_its_question(tmp_path):
+    same = [_m("user", "Ce faci?", 50.0), _m("assistant", "Bine, tu?", 50.0), _m("user", "Și eu", 60.0)]
+    brain = _brain(tmp_path)
+    asyncio.run(brain.sleep_once(_Working({"42": same}), ["42"]))
+    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "next_turn"]
+
+
 def test_small_slices_resume_next_cycle(tmp_path):
     many = [_m("user" if i % 2 == 0 else "assistant", f"mesaj {i}", float(i + 1)) for i in range(10)]
     brain = _brain(tmp_path, max_events_per_cycle=4)
