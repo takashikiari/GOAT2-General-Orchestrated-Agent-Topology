@@ -7,7 +7,8 @@ writes to Redis, Chroma or Letta. Its own store is one SQLite file on persistent
   ``max_cycle_ms``): ingest, link the path (user → answered_by → assistant → next_turn → user), reinforce the links
   walked, and fade the rest by the TIME elapsed (half-life ``half_life_hours``), not per cycle. Never a delete.
 - Nucleus (shadow): per chat and lane, the questions still unanswered and what GOAT said it would do ("revin",
-  "o să verific"...), found by cheap rules. Computed and stored, NOT injected into any prompt in v0.
+  "o să verific"...), found by cheap rules. Computed and stored; with [brain] inject it is read back as a
+  short block in GOAT's system prompt (``nucleus`` + brain/inject.py, 2026-11-15).
 """
 from __future__ import annotations
 
@@ -23,12 +24,12 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start", "is_enabled",
-           "record_turn", "get_instance"]
+           "record_turn", "get_instance", "nucleus"]
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
-             "record_slow_ms": 2000}
+             "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600}
 
 def load_config(path: Path | None = None) -> dict:
     """``config/brain.toml`` [brain] over the defaults; a missing file means the defaults (off)."""
@@ -77,6 +78,15 @@ async def record_turn(chat_id: str, messages: list[dict], lane: str = "human") -
     async with brain.lock:
         events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages, None, lane)
     return events
+
+
+async def nucleus(chat_id: str, lane: str = "human") -> list[dict]:
+    """The open items of ``chat_id``/``lane`` as the last sleep cycle stored them, or [] when [brain] is off. The gate
+    comes first, so a disabled brain never creates a store; the read runs on the shared Brain, under its lock, in a
+    thread (Brain.nucleus)."""
+    if not is_enabled():
+        return []
+    return await get_instance().nucleus(chat_id, lane)
 
 
 _sleep: tuple[asyncio.Task, asyncio.Event] | None = None

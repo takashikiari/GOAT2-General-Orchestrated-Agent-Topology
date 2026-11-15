@@ -33,6 +33,7 @@ from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from memory.l3_attribution import InjectedBlocks
 from brain import brain as _brain
+from brain.inject import format_block as format_nucleus_block
 from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
 from orchestrator.dsml_recovery import answer_without_tools
 from orchestrator.tool_args import argument_error
@@ -201,6 +202,24 @@ async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
         log.warning("brain: record_turn slow chat=%s lane=%s events=%d ms=%.0f", chat_id, lane, events, ms)
     else:
         log.debug("brain: record_turn chat=%s lane=%s events=%d ms=%.0f", chat_id, lane, events, ms)
+
+
+async def _brain_nucleus_block(chat_id: str, lane: str) -> str:
+    """The brain's open-items nucleus for this chat and lane as a system-prompt block (brain/inject.py), or "".
+    Only when [brain] enabled and inject. Any error is logged and swallowed: a broken brain never costs the reply."""
+    if not (_brain.is_enabled() and _brain.CONFIG.get("inject")):
+        return ""
+    t0 = time.perf_counter()
+    try:
+        items = await _brain.nucleus(chat_id, lane)
+        block = format_nucleus_block(items, int(_brain.CONFIG.get("inject_max_chars", 600)))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("brain: inject failed chat=%s lane=%s: %s: %s", chat_id, lane, type(exc).__name__, exc)
+        return ""
+    if block:
+        log.info("brain: inject chat=%s lane=%s items=%d chars=%d ms=%.1f", chat_id, lane, block.count("\n"),
+                 len(block), (time.perf_counter() - t0) * 1000)
+    return block
 
 
 async def _archive_turn(
@@ -500,6 +519,9 @@ class Orchestrator:
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
+            nucleus_block = await _brain_nucleus_block(chat_id, lane)  # "" unless [brain] enabled + inject
+            if nucleus_block:
+                system_content += f"\n\n{nucleus_block}"
             guidance_texts: list[str] = []
             if self._has_search_memory() and not gate["hidden"]:
                 guidance_texts.append(_SEARCH_MEMORY_GUIDANCE)
@@ -532,7 +554,8 @@ class Orchestrator:
             # reaches the LLM (set_context_from_blocks only sees the three
             # assemble_blocks blocks, measured BEFORE either of these exist).
             # Does not change kw / api_msgs — same prompt sent either way.
-            collector.add_prompt_extras("\n\n".join(guidance_texts), tool_schemas)
+            collector.add_prompt_extras("\n\n".join(guidance_texts + ([nucleus_block] if nucleus_block else [])),
+                                        tool_schemas)
             collector.end_stage("inject")
             # 5. LLM call + tool round (llm stage — the dominant latency).
             collector.start_stage("llm")
