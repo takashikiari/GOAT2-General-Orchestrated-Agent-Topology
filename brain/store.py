@@ -151,15 +151,17 @@ class Brain:
         self._db.execute("INSERT INTO cycles (started, ms, events, links, open_items) VALUES (?, ?, ?, ?, ?)",
                          (started, ms, events, links, items))
         self._db.commit()
-        return {"ms": round(ms, 1), "events": events, "links": links, "open_items": items}
+        # open_items = items of the lanes refreshed in THIS cycle; nucleus_total = what the whole nucleus holds now
+        total = sum(len(json.loads(r[0])) for r in self._db.execute("SELECT open_items FROM nucleus"))
+        return {"ms": round(ms, 1), "events": events, "links": links, "open_items": items, "nucleus_total": total}
 
     async def sleep_once(self, working, chat_ids: list[str]) -> dict:
         """One sleep cycle: read the chats' L2 messages (read-only), then process them under the store lock."""
         batches = [(c, await working.get_messages(c)) for c in chat_ids]
         async with self.lock:
             result = await asyncio.to_thread(self._cycle, batches)
-        log.info("brain: cycle ms=%.1f events=%d links=%d open_items=%d", result["ms"], result["events"],
-                 result["links"], result["open_items"])
+        log.info("brain: cycle ms=%.1f events=%d links=%d open_items=%d nucleus_total=%d", result["ms"],
+                 result["events"], result["links"], result["open_items"], result["nucleus_total"])
         return result
 
     async def run_forever(self, working, chat_ids: list[str], stop: asyncio.Event) -> None:

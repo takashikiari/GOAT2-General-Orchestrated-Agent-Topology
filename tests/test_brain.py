@@ -206,3 +206,17 @@ def test_the_request_hook_stores_the_whole_turn_even_on_a_slow_store(tmp_path, m
     turn = [_m("user", "Cum stăm?", 500.0), _m("assistant", "Bine.", 500.0)]
     assert asyncio.run(b.record_turn("42", turn, lane="human")) == 2   # both messages of the turn, not one
     b._instance.close()
+
+
+def test_cycle_reports_the_whole_nucleus_next_to_the_refreshed_lanes(tmp_path, caplog):
+    """2026-11-15: a cycle logged open_items=0 while the store still held 3 items (lanes not refreshed that cycle
+    keep theirs). nucleus_total is what the whole nucleus holds after the cycle."""
+    import logging
+    brain = _brain(tmp_path)
+    chat = CHAT + [_m("user", "Și ce facem cu wizard-ul?", 300.0)]
+    first = asyncio.run(brain.sleep_once(_Working({"42": chat}), ["42"]))
+    caplog.set_level(logging.INFO, logger="brain.store")
+    again = asyncio.run(brain.sleep_once(_Working({"42": chat}), ["42"]))     # nothing new: no lane refreshed
+    assert first["open_items"] == first["nucleus_total"] == 2
+    assert again["open_items"] == 0 and again["nucleus_total"] == 2           # the items are still there
+    assert any("open_items=0 nucleus_total=2" in r.getMessage() for r in caplog.records)
