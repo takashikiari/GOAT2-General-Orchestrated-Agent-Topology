@@ -51,8 +51,23 @@ def test_rules():
     assert b.lane_of(_m("user", "salut", 1)) == "human"
     assert b.is_open_question("Cum stăm cu cache-ul?") and b.is_open_question("ce mai faci")
     assert not b.is_open_question("ai dreptate") and not b.is_open_question("Ok, mersi")
-    assert b.is_promise("Verific acum și revin cu cifrele.") and b.is_promise("O să verific logurile.")
+    assert b.is_promise("Verific acum și revin cu cifrele.") and b.is_promise("O să verific logurile mâine.")
     assert not b.is_promise("Gata, am verificat.")
+    assert not b.is_promise("O să verific logurile.")            # a promise needs a when (2026-11-15 tightening)
+
+
+def test_promise_ignores_quotes_and_needs_verb_and_time_in_one_sentence():
+    # a real promise
+    assert b.is_promise("Rulez măsurătorile și revin cu cifrele la 16:20.")
+    # the two live false positives (12:08, 12:21): GOAT quoting the rule's own words
+    assert not b.is_promise("Nucleul are 0 itemi: regulile caută „revin/o să verific”, iar eu scriu la trecut.")
+    assert not b.is_promise("Verb la persoana I sau viitor angajat („revin”, „trimit”) plus termen.")
+    assert not b.is_promise('Am scris "o să verific mâine" ca exemplu de regulă.')
+    # a real promise next to a quote still counts
+    assert b.is_promise("Regula caută „revin”. Eu revin cu raportul mâine.")
+    # verb and time in different sentences do not make a promise
+    assert not b.is_promise("Revin la subiect. Mâine e duminică.")
+    assert not b.is_promise("Am verificat. Revin. Ieri a mers.")
 
 
 def test_blind_write_reads_only_and_ingests_each_message_once(tmp_path):
