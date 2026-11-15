@@ -62,3 +62,10 @@ def test_errors_reach_the_caller(monkeypatch):
     monkeypatch.setattr(n, "_bot", _Down())
     with pytest.raises(RuntimeError):
         asyncio.run(n.notify(42, "x", parse_mode=None))
+
+
+def test_bot_py_sends_through_notify_not_its_own_bot():
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1].joinpath("telegram_interface", "bot.py").read_text()
+    assert "Bot(token=" not in src                       # the two copies (DAG, agent-coord reply) are gone
+    assert src.count("await notify(") == 2

@@ -32,6 +32,7 @@ from orchestrator.orchestrator import Orchestrator
 from registry.registry import ServiceRegistry
 from memory import usage_probe
 from telegram_interface import tg_format
+from telegram_interface.notify import notify
 from telegram_interface.panel_mirror import mirror_panel_turn
 from tools.memory_manager import build_memory_manager_tools
 from tools.identity_tool import build_set_identity_tool
@@ -200,10 +201,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
                 return
             if reply:
                 try:
-                    from telegram import Bot
-                    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-                    await tg_format.send(
-                        lambda t, pm: bot.send_message(chat_id=int(chat_id), text=t, parse_mode=pm), reply)
+                    await notify(chat_id, reply)
                 except Exception as exc:
                     log.warning("dag completion send failed chat=%s: %s", chat_id, exc)
 
@@ -258,10 +256,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
             log.warning("coord_poller: empty reply from orchestrator, falling back to raw digest")
             reply = synthetic
         try:
-            from telegram import Bot
-            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-            await tg_format.send(
-                lambda t, pm: bot.send_message(chat_id=int(admin_chat_id), text=t, parse_mode=pm), reply)
+            await notify(admin_chat_id, reply)
         except Exception as exc:
             log.warning("coord_poller send failed: %s", exc)
 
