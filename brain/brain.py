@@ -124,10 +124,13 @@ class Brain:
         fresh = [m for m in messages if float(m.get("timestamp", 0)) > cursor and m.get("role") in ("user", "assistant")]
         events = links = 0
         lanes: set[str] = set()
+        user_lane = "human"  # an L2 reply has no header of its own: it belongs to the lane of the message it answers
         for m in fresh[: int(self.cfg["max_events_per_cycle"])]:
             if (time.perf_counter() - t0) * 1000 > budget_ms:
                 break
-            ts, lane_m, eid = float(m["timestamp"]), lane or lane_of(m), _event_id(chat_id, m)
+            if m["role"] == "user":
+                user_lane = lane_of(m)
+            ts, lane_m, eid = float(m["timestamp"]), lane or user_lane, _event_id(chat_id, m)
             # a turn's user message and reply share one timestamp in L2: at equal time the user message comes first
             prev = db.execute("SELECT id, role FROM events WHERE chat_id = ? AND lane = ? AND id != ? AND (ts < ? OR "
                               "(ts = ? AND role = 'user' AND ? = 'assistant')) ORDER BY ts DESC, role = 'user' "

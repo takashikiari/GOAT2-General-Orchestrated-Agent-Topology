@@ -102,6 +102,17 @@ def test_a_reply_saved_with_the_same_timestamp_is_still_linked_to_its_question(t
     assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "next_turn"]
 
 
+def test_a_reply_to_a_digest_stays_in_the_channel_lane(tmp_path):
+    chat = [_m("user", "Mesaje noi pe canalul agent-coord, de la x: „verifică logurile”", 10.0),
+            _m("assistant", "Am verificat logurile, totul e ok.", 10.0),
+            _m("user", "Salut GOAT", 20.0), _m("assistant", "Salut!", 20.0)]
+    brain = _brain(tmp_path)
+    asyncio.run(brain.sleep_once(_Working({"42": chat}), ["42"]))
+    assert _rows(tmp_path, "SELECT role, lane FROM events ORDER BY ts, role DESC") == [
+        ("user", "channel"), ("assistant", "channel"), ("user", "human"), ("assistant", "human")]
+    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "answered_by"]
+
+
 def test_small_slices_resume_next_cycle(tmp_path):
     many = [_m("user" if i % 2 == 0 else "assistant", f"mesaj {i}", float(i + 1)) for i in range(10)]
     brain = _brain(tmp_path, max_events_per_cycle=4)
@@ -113,6 +124,8 @@ def test_small_slices_resume_next_cycle(tmp_path):
 def test_off_by_default_and_on_persistent_disk(tmp_path):
     assert b._DEFAULTS["enabled"] is False
     assert b.load_config(tmp_path / "missing.toml")["enabled"] is False
-    assert b.load_config(Path(b._ROOT) / "config" / "brain.toml")["enabled"] is False
+    # config/brain.toml itself is switched on per branch / per decision (enabled = true on feat/brain-v0 since
+    # c594242, by Laris's approval); what must stay off is the code default and a missing file
+    assert isinstance(b.load_config(Path(b._ROOT) / "config" / "brain.toml")["enabled"], bool)
     assert b.start(_Working({}), ["42"], {**b._DEFAULTS, "enabled": False}) is None
     assert not b.load_config(tmp_path / "missing.toml")["db_path"].startswith("/tmp")
