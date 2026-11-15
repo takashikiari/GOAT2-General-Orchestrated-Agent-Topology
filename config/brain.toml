@@ -11,3 +11,5 @@ reinforce = 1.0             # added to a link each time it is walked
 half_life_hours = 24        # links fade by the TIME elapsed: half their weight per 24 h (never deleted)
 nucleus_items = 10          # open items kept per chat and lane
 record_slow_ms = 2000       # the request hook writes the whole turn, never cancelled; slower than this is logged
+inject = true               # the nucleus goes into GOAT's system prompt as one short block (false = prompt as before)
+inject_max_chars = 600      # the whole block, header included, at most this many characters
