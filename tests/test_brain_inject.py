@@ -152,3 +152,40 @@ def test_a_broken_brain_never_costs_the_reply(monkeypatch, tmp_path, baseline, s
     monkeypatch.setattr(b, "record_turn", lambda *a, **kw: asyncio.sleep(0, 0))
     reply, prompt = system_prompt()
     assert reply == "ok" and prompt == baseline
+
+
+# --- the nucleus keeps the promise sentence, skips negations, shows only the newest promise (fix A) ------------
+from brain.store import Brain, promise_sentence  # noqa: E402
+
+
+def test_the_stored_text_is_the_sentence_with_the_promise():
+    reply = "🐐 **Da, partea de cod e livrată.**\n\nMai e un pas: rulez măsurătorile și revin cu cifrele la 16:20."
+    assert promise_sentence(reply) == "Mai e un pas: rulez măsurătorile și revin cu cifrele la 16:20."
+    assert promise_sentence("Gata, am verificat.") is None
+    assert promise_sentence("Regula caută „revin mâine”, eu scriu la trecut.") is None     # quotes still ignored
+
+
+def test_a_negated_verb_is_no_promise():
+    assert promise_sentence("✅ Da, exact așa rămâne — nu trimit nimic până la 15:30.") is None
+    assert promise_sentence("N-o să verific azi, e duminică.") is None
+    assert promise_sentence("Nu mai trimit nimic azi.") is None
+    assert promise_sentence("Nu pot acum, dar revin mâine cu cifrele.") == "Nu pot acum, dar revin mâine cu cifrele."
+
+
+def test_only_the_newest_promise_is_shown_as_open(tmp_path):
+    brain = Brain({**b._DEFAULTS, "enabled": True, "db_path": str(tmp_path / "brain.sqlite")})
+    chat = [{"role": "user", "content": "Cum stăm?", "timestamp": 100.0},
+            {"role": "assistant", "content": "Intro.\n\nVerific logul și revin la 14:00.", "timestamp": 101.0},
+            {"role": "user", "content": "Ok", "timestamp": 200.0},
+            {"role": "assistant", "content": "Am verificat. Rulez testele și revin cu cifrele azi.", "timestamp": 201.0}]
+    try:
+        brain._ingest("42", chat, None, "human")
+        brain._nucleus("42", "human")
+        items = asyncio.run(brain.nucleus("42", "human"))
+    finally:
+        brain.close()
+    assert [(i["kind"], i["text"]) for i in items] == [
+        ("promised", "Rulez testele și revin cu cifrele azi."),
+        ("promised_old", "Verific logul și revin la 14:00.")]
+    block = format_block(items, 600)
+    assert "Rulez testele" in block and "Verific logul" not in block

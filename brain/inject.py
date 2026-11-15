@@ -13,6 +13,7 @@ __all__ = ["HEADER", "format_block"]
 
 HEADER = "[Lucruri deschise în conversație — ce ai promis și întrebări fără răspuns, cele mai noi primele]"
 _KIND = {"promised": "ai promis", "unanswered": "întrebare fără răspuns"}
+_HIDDEN = {"promised_old"}  # an older promise, followed by later replies: kept in the store, never shown as open
 _MARKUP = re.compile(r"\*+|`+|^#+\s*|^>\s*|(?<!\w)_+|_+(?!\w)")  # an _ inside a word (post_init) stays
 _SPACES = re.compile(r"\s+")
 
@@ -37,6 +38,8 @@ def format_block(items: list[dict], max_chars: int) -> str:
     lines: list[str] = []
     used = len(HEADER)
     for it in items or []:
+        if it.get("kind") in _HIDDEN:
+            continue
         gist = _gist(it.get("text", ""))
         if not gist:
             continue

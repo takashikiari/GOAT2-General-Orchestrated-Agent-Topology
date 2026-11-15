@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
 
 from admin_panel.coord_feed import split_tools  # imported once here: inside the loop it ate the first cycle's budget
-from brain.rules import is_open_question, is_promise, lane_of
+from brain.rules import _PROMISE, _QUOTED, _SENTENCES, _WHEN, is_open_question, lane_of
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
@@ -33,6 +34,21 @@ CREATE TABLE IF NOT EXISTS cursor (chat_id TEXT PRIMARY KEY, last_ts REAL NOT NU
 CREATE TABLE IF NOT EXISTS cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, started REAL NOT NULL, ms REAL NOT NULL,
     events INTEGER NOT NULL, links INTEGER NOT NULL, open_items INTEGER NOT NULL);
 """
+
+
+# "nu trimit nimic până la 15:30", "n-o să verific azi": a negation in the two words before the verb is no promise
+_NEGATED = re.compile(r"(?:^|[\s,;:(—-])(?:nu|nici|n-)(?:\s+\S+){0,2}\s*$", re.I)
+
+
+def promise_sentence(text: str) -> str | None:
+    """The sentence of ``text`` that carries a promise (committed future verb + time term, outside quotes, not
+    negated), or None. The nucleus stores THIS, not the reply's opening (2026-11-15: three live items showed only
+    "🐐 Da, partea de cod e livrată…", nothing about what was promised)."""
+    for sentence in _SENTENCES.split(_QUOTED.sub(" ", text or "")):
+        verb = _PROMISE.search(sentence)
+        if verb and _WHEN.search(sentence) and not _NEGATED.search(sentence[:verb.start()]):
+            return sentence.strip()
+    return None
 
 
 def _event_id(chat_id: str, m: dict) -> str:
@@ -112,14 +128,19 @@ class Brain:
         self._db.commit()
 
     def _nucleus(self, chat_id: str, lane: str) -> int:
-        """Open items by rules (an unanswered question; a reply promising to come back), newest first. Shadow."""
+        """Open items by rules (an unanswered question; a reply promising to come back), newest first. Only the
+        newest promise is "promised"; older ones are "promised_old" (a later reply came after them, so they are most
+        likely kept or stale) and are not shown in the prompt block (brain/inject.py)."""
         rows = self._db.execute("SELECT id, ts, role, text FROM events WHERE chat_id = ? AND lane = ? ORDER BY ts DESC "
                                 "LIMIT 200", (chat_id, lane)).fetchall()
-        items, answered = [], False
+        items, answered, promised = [], False, False
         for eid, ts, role, text in rows:  # newest → oldest: a question is open only if nothing answered it after
             if role == "assistant":
-                if is_promise(text):
-                    items.append({"kind": "promised", "event": eid, "ts": ts, "text": text[:240]})
+                sentence = promise_sentence(text)
+                if sentence:
+                    items.append({"kind": "promised_old" if promised else "promised", "event": eid, "ts": ts,
+                                  "text": sentence[:240]})
+                    promised = True
                 answered = True
             elif role == "user" and not answered and is_open_question(text):
                 items.append({"kind": "unanswered", "event": eid, "ts": ts, "text": text[:240]})
