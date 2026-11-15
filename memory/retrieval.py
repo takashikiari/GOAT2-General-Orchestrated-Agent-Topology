@@ -27,6 +27,7 @@ from memory import config as _cfg
 from memory.config import PREFETCH_MAX_RESULTS
 from memory.content_filter import drop_tiny, drop_tiny_groups
 from memory.result_merger import merge_results
+from brain.boost import rerank_boost
 from memory.temporal_route import parse_interval
 from utils.logging.setup import get_logger
 
@@ -120,7 +121,8 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
     merged = merge_results(drop_tiny_groups(all_groups, _cfg.L3_MIN_ALNUM))[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
-    merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)
+    # prefetch feedback (brain/boost.py): docs really used before rank a little higher; off by default
+    merged = _cap_keep_neighbours(await rerank_boost(chat_id, await layers.rerank(query, merged)), _LIMIT)
     times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve drift chat=%s merged=%d temporal=%d prediction=%d",
@@ -171,7 +173,8 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     merged = merge_results(drop_tiny_groups(all_groups, _cfg.L3_MIN_ALNUM))[:_LIMIT * 2]
     merged = await layers.boost_by_entities(query, merged, pre_extracted=entities_dict)
     times["merge_boost"], n_rerank, t1 = _ms(t1), len(merged), time.perf_counter()
-    merged = _cap_keep_neighbours(await layers.rerank(query, merged), _LIMIT)
+    # prefetch feedback (brain/boost.py): docs really used before rank a little higher; off by default
+    merged = _cap_keep_neighbours(await rerank_boost(chat_id, await layers.rerank(query, merged)), _LIMIT)
     times["rerank"], times["total"] = _ms(t1), _ms(t0)
     log.info(
         "retrieve cold chat=%s merged=%d bm25=%d temporal=%d",
