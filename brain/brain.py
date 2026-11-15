@@ -29,7 +29,8 @@ __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
-             "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600}
+             "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "scheduler": False,
+             "scheduler_max_attempts": 3}
 
 def load_config(path: Path | None = None) -> dict:
     """``config/brain.toml`` [brain] over the defaults; a missing file means the defaults (off)."""
@@ -92,9 +93,10 @@ async def nucleus(chat_id: str, lane: str = "human") -> list[dict]:
 _sleep: tuple[asyncio.Task, asyncio.Event] | None = None
 
 
-def start(working, chat_ids: list[str], cfg: dict | None = None) -> asyncio.Task | None:
+def start(working, chat_ids: list[str], cfg: dict | None = None, on_tick=None) -> asyncio.Task | None:
     """The ONE sleep loop of the process, on the shared Brain, or None when [brain] is off. Idempotent: while a
-    loop is running, a second call returns the same task instead of starting another."""
+    loop is running, a second call returns the same task instead of starting another. ``on_tick`` runs after
+    each cycle (Brain.run_forever)."""
     global _sleep
     cfg = cfg or CONFIG
     if not cfg.get("enabled"):
@@ -102,7 +104,7 @@ def start(working, chat_ids: list[str], cfg: dict | None = None) -> asyncio.Task
     if _sleep is not None and not _sleep[0].done():
         return _sleep[0]
     stop = asyncio.Event()
-    task = asyncio.create_task(get_instance(cfg).run_forever(working, [c for c in chat_ids if c], stop))
+    task = asyncio.create_task(get_instance(cfg).run_forever(working, [c for c in chat_ids if c], stop, on_tick))
     _sleep = (task, stop)
     return task
 

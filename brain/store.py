@@ -185,14 +185,21 @@ class Brain:
                  result["events"], result["links"], result["open_items"], result["nucleus_total"])
         return result
 
-    async def run_forever(self, working, chat_ids: list[str], stop: asyncio.Event) -> None:
+    async def run_forever(self, working, chat_ids: list[str], stop: asyncio.Event, on_tick=None) -> None:
         """Cycles until ``stop`` is set. The stop is only seen BETWEEN cycles, so a cycle is never cut mid-write
-        (cancelling an awaited to_thread would release the lock while its SQLite thread keeps writing)."""
+        (cancelling an awaited to_thread would release the lock while its SQLite thread keeps writing).
+        ``on_tick`` (an async callable, e.g. the scheduled messages of brain/scheduler.py) runs after each cycle,
+        on the same tick; its failure is logged and never stops the loop."""
         while not stop.is_set():  # one failed cycle is logged; the loop (and the bot) carry on
             try:
                 await self.sleep_once(working, chat_ids)
             except Exception as exc:  # noqa: BLE001
                 log.warning("brain: cycle failed: %s", exc)
+            if on_tick is not None:
+                try:
+                    await on_tick()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("brain: tick hook failed: %s: %s", type(exc).__name__, exc)
             try:
                 await asyncio.wait_for(stop.wait(), float(self.cfg["interval_seconds"]))
             except asyncio.TimeoutError:
