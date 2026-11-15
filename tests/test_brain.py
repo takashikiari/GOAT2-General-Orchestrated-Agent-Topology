@@ -121,7 +121,22 @@ def test_small_slices_resume_next_cycle(tmp_path):
     assert len(_rows(tmp_path, "SELECT id FROM cycles")) == 4       # every cycle is measured
 
 
-def test_off_by_default_and_on_persistent_disk(tmp_path):
+def test_the_test_suite_never_writes_the_real_store():
+    # conftest.py: whatever config/brain.toml says, pytest runs with the brain off and on a test-only path
+    assert b.CONFIG["enabled"] is False
+    assert b.CONFIG["db_path"].startswith("/tmp/pytest-goat2/")
+
+
+def test_env_overrides(monkeypatch, tmp_path):
+    monkeypatch.setenv("GOAT_BRAIN_ENABLED", "1")
+    monkeypatch.setenv("GOAT_BRAIN_DB", str(tmp_path / "x.sqlite"))
+    cfg = b.load_config(tmp_path / "missing.toml")
+    assert cfg["enabled"] is True and cfg["db_path"] == str(tmp_path / "x.sqlite")
+
+
+def test_off_by_default_and_on_persistent_disk(tmp_path, monkeypatch):
+    monkeypatch.delenv("GOAT_BRAIN_ENABLED", raising=False)
+    monkeypatch.delenv("GOAT_BRAIN_DB", raising=False)
     assert b._DEFAULTS["enabled"] is False
     assert b.load_config(tmp_path / "missing.toml")["enabled"] is False
     # config/brain.toml itself is switched on per branch / per decision (enabled = true on feat/brain-v0 since

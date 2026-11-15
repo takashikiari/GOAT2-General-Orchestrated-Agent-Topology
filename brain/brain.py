@@ -58,6 +58,11 @@ def load_config(path: Path | None = None) -> dict:
     if path.exists():
         with open(path, "rb") as f:
             cfg.update(tomllib.load(f).get("brain", {}))
+    # env overrides (the test suite uses them so pytest never writes into the real store, like GOAT_LOG_DIR)
+    if os.environ.get("GOAT_BRAIN_ENABLED", "").strip():
+        cfg["enabled"] = os.environ["GOAT_BRAIN_ENABLED"].strip().lower() in ("1", "true", "yes", "on")
+    if os.environ.get("GOAT_BRAIN_DB", "").strip():
+        cfg["db_path"] = os.environ["GOAT_BRAIN_DB"].strip()
     if not cfg["db_path"]:
         state = (os.environ.get("XDG_STATE_HOME") or "").strip()
         cfg["db_path"] = str((Path(state) if state else Path.home() / ".local" / "state") / "goat2" / "brain.sqlite")
