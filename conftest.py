@@ -16,5 +16,9 @@ from pathlib import Path
 
 # Redirect before any import that could trigger get_logger().
 os.environ["GOAT_LOG_DIR"] = "/tmp/pytest-goat2/logs"
+# Same for the memory brain (brain/brain.py): off and on a test-only store, whatever config/brain.toml says. With
+# enabled = true on a branch, every orchestrator test otherwise wrote its turns into the real brain.sqlite.
+os.environ["GOAT_BRAIN_ENABLED"] = "0"
+os.environ["GOAT_BRAIN_DB"] = "/tmp/pytest-goat2/brain.sqlite"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

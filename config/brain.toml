@@ -1,0 +1,12 @@
+# Memory brain v0 (brain/brain.py): a skeleton beside the existing L1/L2/L3 memory. It reads L2 only and keeps its
+# own SQLite store. Off until we have seen it run (Laris + GOAT, 2026-11-15).
+[brain]
+enabled = true
+# empty = $XDG_STATE_HOME/goat2/brain.sqlite, else ~/.local/state/goat2/brain.sqlite (persistent disk, like the logs)
+db_path = ""
+interval_seconds = 60       # one sleep cycle per minute
+max_events_per_cycle = 200  # small slices: a cycle never processes more than this ...
+max_cycle_ms = 200          # ... or runs longer than this; the rest waits for the next cycle
+reinforce = 1.0             # added to a link each time it is walked
+half_life_hours = 24        # links fade by the TIME elapsed: half their weight per 24 h (never deleted)
+nucleus_items = 10          # open items kept per chat and lane
