@@ -37,7 +37,7 @@ def turn(monkeypatch):
 
 @pytest.fixture
 def brain_on(monkeypatch, tmp_path):
-    cfg = {**b._DEFAULTS, "enabled": True, "db_path": str(tmp_path / "brain.sqlite"), "record_budget_ms": 2000}
+    cfg = {**b._DEFAULTS, "enabled": True, "db_path": str(tmp_path / "brain.sqlite")}
     monkeypatch.setattr(b, "CONFIG", cfg)
     monkeypatch.setattr(b, "_instance", None)
     yield tmp_path / "brain.sqlite"
@@ -90,7 +90,7 @@ def test_c_brain_failure_never_costs_the_reply(monkeypatch, turn, brain_on):
 
 
 def test_b_a_write_slower_than_the_slice_budget_is_still_stored(monkeypatch, turn, brain_on):
-    # live 2026-11-15: the first write takes ~44 ms; cutting it at record_budget_ms (20) stored nothing
+    # live 2026-11-15: the first write takes ~44 ms; cutting it at 20 ms stored nothing
     real = b.record_turn
 
     async def slow_but_fine(*a, **kw):
@@ -103,15 +103,37 @@ def test_b_a_write_slower_than_the_slice_budget_is_still_stored(monkeypatch, tur
     con.close()
 
 
-def test_c_slow_brain_is_cut_by_its_budget(monkeypatch, turn, brain_on):
-    monkeypatch.setitem(b.CONFIG, "record_timeout_ms", 50)
+def test_c_slow_brain_never_delays_the_reply_and_still_stores(monkeypatch, brain_on, caplog):
+    """A brain slower than record_slow_ms: the reply comes back first, the write is not cancelled (it lands), and the
+    slowness is logged. Cancelling would release the store lock while the SQLite thread keeps writing."""
+    import logging
+    import time
+    monkeypatch.setitem(b.CONFIG, "record_slow_ms", 100)
+    real = b.record_turn
+    finished = {}
 
     async def slow(*a, **kw):
-        await asyncio.sleep(5)
+        await asyncio.sleep(0.4)
+        n = await real(*a, **kw)
+        finished["at"] = time.perf_counter()
+        return n
     monkeypatch.setattr(b, "record_turn", slow)
-    started = asyncio.get_event_loop_policy()  # noqa: F841 - keep the loop policy explicit for clarity
-    import time
-    t0 = time.perf_counter()
-    reply, _ = turn()
+
+    async def fake_retrieve(layers, chat_id, query, state, activation, topic_return_id=None):
+        return [], False, None, {}
+    monkeypatch.setattr(orch_mod, "retrieve", fake_retrieve)
+
+    async def go():
+        o = Orchestrator(_FakeLayers(), _LLMClient(_Completions("Verific și revin.")), _FakePluginManager(), _FakeAnalytics())
+        reply = await o.run("Cum stăm cu cache-ul?", "42")
+        replied = time.perf_counter()
+        await o.drain_background()
+        return reply, replied
+    caplog.set_level(logging.WARNING, logger="orchestrator.orchestrator")
+    reply, replied = asyncio.run(go())
     assert reply == "Verific și revin."
-    assert time.perf_counter() - t0 < 3                     # the 5 s brain never held the turn (or its drain)
+    assert replied < finished["at"]                              # the reply did not wait for the brain
+    con = sqlite3.connect(brain_on)
+    assert con.execute("SELECT count(*) FROM events").fetchone()[0] == 2   # not cancelled: the turn is stored
+    con.close()
+    assert any("record_turn slow" in r.getMessage() for r in caplog.records)

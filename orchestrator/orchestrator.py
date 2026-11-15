@@ -186,14 +186,21 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
 
 async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
     """Memory brain v0 blind write (brain/brain.py), as a background task after the reply: it never delays it.
-    ``record_budget_ms`` slices the write itself; ``record_timeout_ms`` (2 s) only cuts a brain that hangs. The first
-    live run cancelled every write at 20 ms (a cold first call takes ~44 ms, warm ones 10-16 ms) and stored nothing.
-    Any error is logged and swallowed. Only called when [brain] enabled."""
+    The write is NOT cancelled: cancelling an awaited to_thread does not stop the SQLite thread but releases the
+    store lock, so a second write could use the connection at the same time. Live 2026-11-15, a 20 ms cut stored
+    nothing, and in a busy process a write takes 0.4-3.3 s. A write slower than ``record_slow_ms`` is logged;
+    a stuck store fails on SQLite's busy timeout. Any error is logged and swallowed. Only when [brain] enabled."""
+    t0 = time.perf_counter()
     try:
-        timeout_s = max(0.05, float(_brain.CONFIG.get("record_timeout_ms", 2000)) / 1000)
-        await asyncio.wait_for(_brain.record_turn(chat_id, messages, lane=lane), timeout=timeout_s)
-    except Exception as exc:  # noqa: BLE001 - asyncio.TimeoutError included
-        log.warning("brain: record_turn failed chat=%s: %s", chat_id, type(exc).__name__)
+        events = await _brain.record_turn(chat_id, messages, lane=lane)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("brain: record_turn failed chat=%s: %s: %s", chat_id, type(exc).__name__, exc)
+        return
+    ms = (time.perf_counter() - t0) * 1000
+    if ms > float(_brain.CONFIG.get("record_slow_ms", 2000)):
+        log.warning("brain: record_turn slow chat=%s lane=%s events=%d ms=%.0f", chat_id, lane, events, ms)
+    else:
+        log.debug("brain: record_turn chat=%s lane=%s events=%d ms=%.0f", chat_id, lane, events, ms)
 
 
 async def _archive_turn(
