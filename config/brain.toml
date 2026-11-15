@@ -8,5 +8,5 @@ interval_seconds = 60       # one sleep cycle per minute
 max_events_per_cycle = 200  # small slices: a cycle never processes more than this ...
 max_cycle_ms = 200          # ... or runs longer than this; the rest waits for the next cycle
 reinforce = 1.0             # added to a link each time it is walked
-decay = 0.98                # links not walked in a cycle are multiplied by this (never deleted)
+half_life_hours = 24        # links fade by the TIME elapsed: half their weight per 24 h (never deleted)
 nucleus_items = 10          # open items kept per chat and lane

@@ -64,14 +64,45 @@ def test_blind_write_reads_only_and_ingests_each_message_once(tmp_path):
     assert [r[0] for r in _rows(tmp_path, "SELECT role FROM events ORDER BY ts")] == ["user", "assistant", "user", "assistant"]
 
 
-def test_paths_link_the_conversation_and_fade_without_deleting(tmp_path):
-    brain, working = _brain(tmp_path, decay=0.5), _Working({"42": CHAT})
-    asyncio.run(brain.sleep_once(working, ["42"]))
-    kinds = sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths"))
-    assert kinds == ["answered_by", "answered_by", "next_turn"]
-    asyncio.run(brain.sleep_once(working, ["42"]))               # nothing walked → every link fades
+def test_paths_link_the_conversation(tmp_path):
+    brain = _brain(tmp_path)
+    asyncio.run(brain.sleep_once(_Working({"42": CHAT}), ["42"]))
+    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "answered_by", "next_turn"]
+
+
+def test_paths_fade_by_time_not_by_cycle(tmp_path):
+    """Half-life 24 h on the time elapsed: two cycles 5 s apart leave the links practically intact, 24 h halve them,
+    and nothing is ever deleted (GOAT's decision 2026-11-15: decay per cycle was wrong)."""
+    now = [1_000_000.0]
+    brain = b.Brain({**b._DEFAULTS, "db_path": str(tmp_path / "brain.sqlite")}, clock=lambda: now[0])
+    working = _Working({"42": CHAT})
+    asyncio.run(brain.sleep_once(working, ["42"]))                      # links created at weight 1.0
+    for _ in range(2):
+        now[0] += 5
+        asyncio.run(brain.sleep_once(working, ["42"]))
     weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
-    assert len(weights) == 3 and all(0 < w < 1.0 for w in weights)   # weaker, still there
+    assert len(weights) == 3 and all(w > 0.9999 for w in weights)       # 10 s of 24 h: invisible
+    now[0] = 1_000_000.0 + 24 * 3600
+    asyncio.run(brain.sleep_once(working, ["42"]))
+    weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
+    assert len(weights) == 3 and all(abs(w - 0.5) < 1e-9 for w in weights)   # exactly half after 24 h
+    now[0] += 24 * 3600 * 10                                             # ten days of silence
+    asyncio.run(brain.sleep_once(working, ["42"]))
+    weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
+    assert len(weights) == 3 and all(0 < w < 0.001 for w in weights)     # faint, never deleted
+
+
+def test_a_store_made_before_time_fading_gets_the_column(tmp_path):
+    con = sqlite3.connect(tmp_path / "brain.sqlite")
+    con.execute("CREATE TABLE paths (src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL NOT NULL, "
+                "last_reinforced REAL NOT NULL, PRIMARY KEY (src, dst, kind))")
+    con.execute("INSERT INTO paths VALUES ('a', 'b', 'next_turn', 1.0, 0.0)")
+    con.commit()
+    con.close()
+    brain = _brain(tmp_path)
+    asyncio.run(brain.sleep_once(_Working({}), []))
+    cols = {r[1] for r in _rows(tmp_path, "PRAGMA table_info(paths)")}
+    assert "faded_at" in cols and _rows(tmp_path, "SELECT count(*) FROM paths") == [(1,)]
 
 
 def test_nucleus_keeps_open_questions_and_promises(tmp_path):

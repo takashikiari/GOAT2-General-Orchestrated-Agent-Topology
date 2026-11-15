@@ -3,9 +3,9 @@
 writes to Redis, Chroma or Letta. Its own store is one SQLite file on persistent disk. Off by default ([brain] enabled).
 
 - Blind write: every new L2 message becomes an ``events`` row, unfiltered, no judgement, no embedding.
-- Sleep: a background asyncio task, every ``interval_seconds``, in small slices (at most ``max_events_per_cycle``
-  rows or ``max_cycle_ms``): ingest the new messages, link the path (user → answered_by → assistant → next_turn →
-  user), reinforce the links just walked, fade every other link a little. Forgetting = a weaker path, never a delete.
+- Sleep: a background asyncio task, every ``interval_seconds``, in small slices (``max_events_per_cycle`` rows or
+  ``max_cycle_ms``): ingest, link the path (user → answered_by → assistant → next_turn → user), reinforce the links
+  walked, and fade the rest by the TIME elapsed (half-life ``half_life_hours``), not per cycle. Never a delete.
 - Nucleus (shadow): per chat and lane, the questions still unanswered and what GOAT said it would do ("revin",
   "o să verific"...), found by cheap rules. Computed and stored, NOT injected into any prompt in v0.
 """
@@ -31,7 +31,8 @@ __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
-             "max_cycle_ms": 200, "reinforce": 1.0, "decay": 0.98, "nucleus_items": 10, "record_budget_ms": 20}
+             "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
+             "record_budget_ms": 20}
 _DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"  # memory.temporal_route.CHANNEL_DIGEST_PREFIX (not imported)
 _PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|te anun[țt])|voi (verifica|reveni|face|"
                       r"c[ăa]uta)|te anun[țt]|urmeaz[ăa] s[ăa]|fac (asta )?mai t[âa]rziu|m[ăa] uit (și|si) revin)\b", re.I)
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts REAL NOT NULL, chat_i
     role TEXT NOT NULL, text TEXT NOT NULL, l3_id TEXT, source TEXT, ingested_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS events_chat_ts ON events (chat_id, lane, ts);
 CREATE TABLE IF NOT EXISTS paths (src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL NOT NULL,
-    last_reinforced REAL NOT NULL, PRIMARY KEY (src, dst, kind));
+    last_reinforced REAL NOT NULL, faded_at REAL, PRIMARY KEY (src, dst, kind));
 CREATE TABLE IF NOT EXISTS nucleus (chat_id TEXT NOT NULL, lane TEXT NOT NULL, open_items TEXT NOT NULL,
     updated_ts REAL NOT NULL, PRIMARY KEY (chat_id, lane));
 CREATE TABLE IF NOT EXISTS cursor (chat_id TEXT PRIMARY KEY, last_ts REAL NOT NULL);
@@ -107,23 +108,25 @@ def _clean(m: dict) -> str:
 class Brain:
     """The store plus one sleep cycle. All SQLite access is serialised by ``self.lock`` and runs in a thread."""
 
-    def __init__(self, cfg: dict | None = None) -> None:
-        self.cfg = dict(cfg or CONFIG)
-        self.lock = asyncio.Lock()
+    def __init__(self, cfg: dict | None = None, clock=time.time) -> None:
+        self.cfg, self.lock, self._clock = dict(cfg or CONFIG), asyncio.Lock(), clock
         Path(self.cfg["db_path"]).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.cfg["db_path"], check_same_thread=False)
         self._db.executescript(_SCHEMA)
+        if "faded_at" not in {r[1] for r in self._db.execute("PRAGMA table_info(paths)")}:  # a store made before it
+            self._db.execute("ALTER TABLE paths ADD COLUMN faded_at REAL")
+        half_life_s = float(self.cfg["half_life_hours"]) * 3600
+        # weight x 0.5 ** (seconds elapsed / half-life): the same forgetting whether cycles run every 5 s or 5 min
+        self._db.create_function("fade", 1, lambda dt: 0.5 ** (max(0.0, dt or 0.0) / half_life_s), deterministic=True)
 
     def close(self) -> None:
         self._db.close()
 
-    # ── blind write + paths (sync, called under the lock in a thread) ──────────────────────────────────────────────
     def _ingest(self, chat_id: str, messages: list[dict], budget_ms: float,
                 lane: str | None = None) -> tuple[int, int, list[str]]:
-        """New messages only (timestamp after this chat's cursor), oldest first, until the row or time budget runs
-        out; links each to the previous event of the same lane. ``lane`` (the turn's real lane, from the request
-        hook) overrides the guess from the text. Returns (events, links, touched lanes)."""
-        db, now, t0 = self._db, time.time(), time.perf_counter()
+        """Blind write + path links, for messages newer than the chat's cursor, within the row/time budget.
+        ``lane`` (the request hook's real lane) overrides the guess from the text. Returns (events, links, lanes)."""
+        db, now, t0 = self._db, self._clock(), time.perf_counter()
         row = db.execute("SELECT last_ts FROM cursor WHERE chat_id = ?", (chat_id,)).fetchone()
         cursor = row[0] if row else 0.0
         fresh = [m for m in messages if float(m.get("timestamp", 0)) > cursor and m.get("role") in ("user", "assistant")]
@@ -145,9 +148,10 @@ class Brain:
                 (eid, ts, chat_id, lane_m, m["role"], _clean(m), m.get("l3_id"), m.get("source"), now)).rowcount
             if inserted and prev:
                 kind = "answered_by" if prev[1] == "user" and m["role"] == "assistant" else "next_turn"
-                db.execute("INSERT INTO paths VALUES (?, ?, ?, ?, ?) ON CONFLICT (src, dst, kind) DO UPDATE SET "
-                           "weight = weight + excluded.weight, last_reinforced = excluded.last_reinforced",
-                           (prev[0], eid, kind, float(self.cfg["reinforce"]), now))
+                db.execute("INSERT INTO paths VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (src, dst, kind) DO UPDATE SET "
+                           "weight = weight * fade(excluded.faded_at - coalesce(faded_at, last_reinforced)) + "
+                           "excluded.weight, last_reinforced = excluded.last_reinforced, faded_at = excluded.faded_at",
+                           (prev[0], eid, kind, float(self.cfg["reinforce"]), now, now))
                 links += 1
             events += inserted
             lanes.add(lane_m)
@@ -157,13 +161,14 @@ class Brain:
         return events, links, sorted(lanes)
 
     def _fade(self, now: float) -> None:
-        """Every link not walked in this cycle gets a little weaker. Never deleted: forgetting = a fainter path."""
-        self._db.execute("UPDATE paths SET weight = weight * ? WHERE last_reinforced < ?", (float(self.cfg["decay"]), now))
+        """Links get weaker by the time elapsed since they were last faded (half-life ``half_life_hours``); a cycle
+        run seconds after the previous one changes them by almost nothing. Never deleted: forgetting = fainter."""
+        self._db.execute("UPDATE paths SET weight = weight * fade(? - coalesce(faded_at, last_reinforced)), "
+                         "faded_at = ? WHERE coalesce(faded_at, last_reinforced) < ?", (now, now, now))
         self._db.commit()
 
     def _nucleus(self, chat_id: str, lane: str) -> int:
-        """Open items, by rules: a question of Laris's with no reply after it; a reply where GOAT said it would come
-        back or do something. Newest first, at most ``nucleus_items``. Stored only (shadow)."""
+        """Open items by rules (an unanswered question; a reply promising to come back), newest first. Shadow."""
         rows = self._db.execute("SELECT id, ts, role, text FROM events WHERE chat_id = ? AND lane = ? ORDER BY ts DESC "
                                 "LIMIT 200", (chat_id, lane)).fetchall()
         items, answered = [], False
@@ -178,12 +183,12 @@ class Brain:
                 break
         self._db.execute("INSERT INTO nucleus VALUES (?, ?, ?, ?) ON CONFLICT (chat_id, lane) DO UPDATE SET "
                          "open_items = excluded.open_items, updated_ts = excluded.updated_ts",
-                         (chat_id, lane, json.dumps(items, ensure_ascii=False), time.time()))
+                         (chat_id, lane, json.dumps(items, ensure_ascii=False), self._clock()))
         self._db.commit()
         return len(items)
 
     def _cycle(self, batches: list[tuple[str, list[dict]]]) -> dict:
-        started, t0 = time.time(), time.perf_counter()
+        started, t0 = self._clock(), time.perf_counter()
         events = links = items = 0
         for chat_id, messages in batches:
             left = float(self.cfg["max_cycle_ms"]) - (time.perf_counter() - t0) * 1000
@@ -200,7 +205,6 @@ class Brain:
         self._db.commit()
         return {"ms": round(ms, 1), "events": events, "links": links, "open_items": items}
 
-    # ── async surface ──────────────────────────────────────────────────────────────────────────────────────────
     async def sleep_once(self, working, chat_ids: list[str]) -> dict:
         """One sleep cycle: read the chats' L2 messages (read-only), then process them under the store lock."""
         batches = [(c, await working.get_messages(c)) for c in chat_ids]
@@ -211,10 +215,10 @@ class Brain:
         return result
 
     async def run_forever(self, working, chat_ids: list[str]) -> None:
-        while True:
+        while True:  # one failed cycle is logged; the loop (and the bot) carry on
             try:
                 await self.sleep_once(working, chat_ids)
-            except Exception as exc:  # noqa: BLE001 - the brain must never take the bot down
+            except Exception as exc:  # noqa: BLE001
                 log.warning("brain: cycle failed: %s", exc)
             await asyncio.sleep(float(self.cfg["interval_seconds"]))
 
@@ -240,9 +244,7 @@ async def record_turn(chat_id: str, messages: list[dict], lane: str = "human") -
     global _instance
     if not is_enabled():
         return 0
-    if _instance is None:
-        _instance = Brain(CONFIG)
-    brain = _instance
+    brain = _instance = _instance or Brain(CONFIG)
     async with brain.lock:
         events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages,
                                                float(CONFIG["record_budget_ms"]), lane)
@@ -254,5 +256,4 @@ def start(working, chat_ids: list[str], cfg: dict | None = None) -> asyncio.Task
     cfg = cfg or CONFIG
     if not cfg.get("enabled"):
         return None
-    brain = Brain(cfg)
-    return asyncio.create_task(brain.run_forever(working, [c for c in chat_ids if c]))
+    return asyncio.create_task(Brain(cfg).run_forever(working, [c for c in chat_ids if c]))
