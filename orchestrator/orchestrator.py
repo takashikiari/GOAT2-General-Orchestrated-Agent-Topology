@@ -185,11 +185,13 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
 
 
 async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
-    """Memory brain v0 blind write (brain/brain.py), as a background task: bounded in time, and any error is logged
-    and swallowed, so the brain can never cost or break the reply. Only called when [brain] enabled."""
+    """Memory brain v0 blind write (brain/brain.py), as a background task after the reply: it never delays it.
+    ``record_budget_ms`` slices the write itself; ``record_timeout_ms`` (2 s) only cuts a brain that hangs. The first
+    live run cancelled every write at 20 ms (a cold first call takes ~44 ms, warm ones 10-16 ms) and stored nothing.
+    Any error is logged and swallowed. Only called when [brain] enabled."""
     try:
-        budget_s = max(0.001, float(_brain.CONFIG.get("record_budget_ms", 20)) / 1000)
-        await asyncio.wait_for(_brain.record_turn(chat_id, messages, lane=lane), timeout=budget_s)
+        timeout_s = max(0.05, float(_brain.CONFIG.get("record_timeout_ms", 2000)) / 1000)
+        await asyncio.wait_for(_brain.record_turn(chat_id, messages, lane=lane), timeout=timeout_s)
     except Exception as exc:  # noqa: BLE001 - asyncio.TimeoutError included
         log.warning("brain: record_turn failed chat=%s: %s", chat_id, type(exc).__name__)
 
