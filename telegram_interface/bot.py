@@ -474,11 +474,15 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     # the same reason DagManager's on_complete is wired here too.
     from telegram_interface._coord_poller import post_init_hook as _coord_hook
     coord_post_init, coord_post_shutdown = _coord_hook(registry, _on_coord_messages)
+    # memory brain v0: its sleep loop starts with the bot (no-op when [brain] enabled = false)
+    from telegram_interface._brain_sleep import post_init_hook as _brain_hook
+    brain_post_init, brain_post_shutdown = _brain_hook(registry, admin_chat_id)
 
     async def _combined_post_init(application: Application) -> None:
         if post_init:
             await post_init(application)
         await coord_post_init(application)
+        await brain_post_init(application)
 
     async def drain_background(application: Application) -> None:
         """post_shutdown: drain orchestrator + layers background tasks, then
@@ -489,6 +493,7 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         await orchestrator.drain_background()
         await registry.memory_layers.drain_background()
         await coord_post_shutdown(application)
+        await brain_post_shutdown(application)
         if post_shutdown:
             await post_shutdown(application)
 
