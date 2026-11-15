@@ -21,6 +21,7 @@ class _Bot:
 def test_user_text_is_marked_and_the_reply_is_sent_as_is(monkeypatch):
     monkeypatch.setattr(telegram, "Bot", _Bot)
     monkeypatch.setattr("config.settings.TELEGRAM_BOT_TOKEN", "1:t")
+    monkeypatch.setattr("telegram_interface.notify._bot", None)          # notify keeps one Bot per process
     _Bot.sent = []
     asyncio.run(panel_mirror.mirror_panel_turn("1912", "user", "salut"))
     asyncio.run(panel_mirror.mirror_panel_turn("1912", "assistant", "bună"))
