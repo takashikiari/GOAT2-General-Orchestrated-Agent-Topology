@@ -7,8 +7,17 @@ import re
 __all__ = ["lane_of", "is_open_question", "is_promise"]
 
 _DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"  # memory.temporal_route.CHANNEL_DIGEST_PREFIX (not imported)
-_PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|te anun[țt])|voi (verifica|reveni|face|"
-                      r"c[ăa]uta)|te anun[țt]|urmeaz[ăa] s[ăa]|fac (asta )?mai t[âa]rziu|m[ăa] uit (și|si) revin)\b", re.I)
+# a promise = a committed first-person future ("revin", "o să verific", "trimit") AND a time term in the same sentence
+_PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|trimit|te anun[țt])|voi (verifica|reveni|face|"
+                      r"c[ăa]uta|trimite)|te anun[țt]|urmeaz[ăa] s[ăa]|trimit|fac (asta )?mai t[âa]rziu|"
+                      r"m[ăa] uit (și|si) revin)\b", re.I)
+_WHEN = re.compile(r"\b(azi|ast[ăa]zi|m[âa]ine|disear[ăa]|acum|imediat|cur[âa]nd|mai t[âa]rziu|peste \d+\s*(min|minute|"
+                   r"ore|h)\b|la \d{1,2}([:.]\d{2})?|\+\d+\s*h|dup[ăa] (ce|restart|merge|deploy|test)|c[âa]nd (termin|vine|"
+                   r"e gata))", re.I)
+# quoted text is a mention, not a use: „…”, "…", “…”, «…» are dropped before matching (2026-11-15: both live
+# false positives were GOAT quoting the rule's own words, e.g. 'regulile caută „revin/o să verific”')
+_QUOTED = re.compile(r"„[^”]*”|“[^”]*”|\"[^\"\n]*\"|«[^»]*»")
+_SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 _QUESTION_START = re.compile(r"^(ce|cum|c[âa]nd|unde|de ce|cine|care|c[âa]t|c[âa]te|po[țt]i|e[șs]ti|avem)\b", re.I)
 
 
@@ -29,4 +38,7 @@ def is_open_question(text: str) -> bool:
 
 
 def is_promise(text: str) -> bool:
-    return bool(_PROMISE.search(text or ""))
+    """GOAT said it will do something, with a when: a committed future verb and a time term in the SAME sentence,
+    outside quotes (a quoted word is a mention of it, not a promise)."""
+    unquoted = _QUOTED.sub(" ", text or "")
+    return any(_PROMISE.search(s) and _WHEN.search(s) for s in _SENTENCES.split(unquoted))
