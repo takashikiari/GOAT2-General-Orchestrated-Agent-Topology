@@ -32,7 +32,7 @@ __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
-             "record_budget_ms": 20}
+             "record_budget_ms": 20, "record_timeout_ms": 2000}
 _DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"  # memory.temporal_route.CHANNEL_DIGEST_PREFIX (not imported)
 _PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|te anun[țt])|voi (verifica|reveni|face|"
                       r"c[ăa]uta)|te anun[țt]|urmeaz[ăa] s[ăa]|fac (asta )?mai t[âa]rziu|m[ăa] uit (și|si) revin)\b", re.I)

@@ -89,8 +89,22 @@ def test_c_brain_failure_never_costs_the_reply(monkeypatch, turn, brain_on):
     assert len(layers.saved) == 2
 
 
+def test_b_a_write_slower_than_the_slice_budget_is_still_stored(monkeypatch, turn, brain_on):
+    # live 2026-11-15: the first write takes ~44 ms; cutting it at record_budget_ms (20) stored nothing
+    real = b.record_turn
+
+    async def slow_but_fine(*a, **kw):
+        await asyncio.sleep(0.06)
+        return await real(*a, **kw)
+    monkeypatch.setattr(b, "record_turn", slow_but_fine)
+    turn()
+    con = sqlite3.connect(brain_on)
+    assert con.execute("SELECT count(*) FROM events").fetchone()[0] == 2
+    con.close()
+
+
 def test_c_slow_brain_is_cut_by_its_budget(monkeypatch, turn, brain_on):
-    monkeypatch.setitem(b.CONFIG, "record_budget_ms", 5)
+    monkeypatch.setitem(b.CONFIG, "record_timeout_ms", 50)
 
     async def slow(*a, **kw):
         await asyncio.sleep(5)
