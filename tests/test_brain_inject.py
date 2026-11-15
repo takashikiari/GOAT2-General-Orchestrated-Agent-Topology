@@ -40,6 +40,11 @@ def test_one_line_per_item_without_markdown():
     assert "**" not in block and "Detalii" not in block       # first line only, no markdown
 
 
+
+def test_identifiers_keep_their_underscores():
+    block = format_block([{"kind": "promised", "ts": "1", "text": "verificat dacă `post_init` e cablat, _apoi_ revin azi"}], 600)
+    assert block.endswith("verificat dacă post_init e cablat, apoi revin azi")
+
 def test_max_chars_is_never_exceeded():
     many = [{"kind": "promised", "ts": "1794751620", "text": "x" * 200} for _ in range(10)]
     for limit in (len(HEADER) + 60, 300, 600):

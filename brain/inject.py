@@ -13,7 +13,7 @@ __all__ = ["HEADER", "format_block"]
 
 HEADER = "[Lucruri deschise în conversație — ce ai promis și întrebări fără răspuns, cele mai noi primele]"
 _KIND = {"promised": "ai promis", "unanswered": "întrebare fără răspuns"}
-_MARKUP = re.compile(r"[*_`#>]+")
+_MARKUP = re.compile(r"\*+|`+|^#+\s*|^>\s*|(?<!\w)_+|_+(?!\w)")  # an _ inside a word (post_init) stays
 _SPACES = re.compile(r"\s+")
 
 
