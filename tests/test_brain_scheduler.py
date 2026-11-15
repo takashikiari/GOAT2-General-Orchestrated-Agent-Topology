@@ -157,3 +157,48 @@ def test_end_to_end_the_bot_hook_sends_a_due_task_through_notify(monkeypatch, tm
 def test_scheduler_off_means_no_tick(monkeypatch):
     monkeypatch.setattr(b, "CONFIG", {**b._DEFAULTS, "enabled": True, "scheduler": False})
     assert _brain_sleep._scheduler_tick() is None
+
+
+class _L2:
+    def __init__(self, fail=False):
+        self.saved, self.fail = [], fail
+
+    async def append_and_save_working_context(self, chat_id, *messages):
+        if self.fail:
+            raise RuntimeError("redis down")
+        self.saved.extend((chat_id, m) for m in messages)
+
+
+def _tick_with(monkeypatch, tmp_path, layers):
+    monkeypatch.setattr(b, "CONFIG", {**b._DEFAULTS, "enabled": True, "scheduler": True,
+                                      "db_path": str(tmp_path / "brain.sqlite")})
+    monkeypatch.setattr(b, "_instance", None)
+    sent = []
+
+    async def fake_notify(chat_id, text, parse_mode=None):
+        sent.append((chat_id, text))
+    monkeypatch.setattr("telegram_interface.notify.notify", fake_notify)
+    asyncio.run(s.schedule(b.get_instance(), "1912", 0.0, "⏰ 12:20 — măsurătoarea de +24h"))
+    tick = _brain_sleep._scheduler_tick(layers)
+    try:
+        asyncio.run(tick())
+        asyncio.run(tick())                                                # a second tick: nothing due any more
+    finally:
+        b._instance.close()
+    return sent
+
+
+def test_a_sent_scheduled_message_lands_in_the_history_as_goats_own(monkeypatch, tmp_path):
+    l2 = _L2()
+    sent = _tick_with(monkeypatch, tmp_path, l2)
+    assert sent == [("1912", "⏰ 12:20 — măsurătoarea de +24h")]
+    assert len(l2.saved) == 1
+    chat_id, msg = l2.saved[0]
+    assert chat_id == "1912" and msg["role"] == "assistant" and msg["source"] == "scheduled"
+    assert msg["content"] == "⏰ 12:20 — măsurătoarea de +24h" and msg["timestamp"] > 0
+
+
+def test_a_failed_history_write_never_sends_the_message_twice(monkeypatch, tmp_path):
+    sent = _tick_with(monkeypatch, tmp_path, _L2(fail=True))
+    assert len(sent) == 1                                                  # out once, history failure only logged
+    assert _status(tmp_path) == [("⏰ 12:20 — măsurătoarea de +24h", "sent", 1)]
