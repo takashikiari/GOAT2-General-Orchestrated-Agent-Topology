@@ -16,7 +16,9 @@ _WHEN = re.compile(r"\b(azi|ast[ăa]zi|m[âa]ine|disear[ăa]|acum|imediat|cur[â
                    r"e gata))", re.I)
 # quoted text is a mention, not a use: „…”, "…", “…”, «…» are dropped before matching (2026-11-15: both live
 # false positives were GOAT quoting the rule's own words, e.g. 'regulile caută „revin/o să verific”')
-_QUOTED = re.compile(r"„[^”]*”|“[^”]*”|\"[^\"\n]*\"|«[^»]*»")
+# 2026-11-15 evening: mixed quote marks („…" with an ASCII close) slipped through and a rule description became a
+# "promise" in the channel nucleus; any opening mark up to any closing one, on one line
+_QUOTED = re.compile(r"[„“\"«][^„“”\"«»\n]*[”\"»]")
 _SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
 _QUESTION_START = re.compile(r"^(ce|cum|c[âa]nd|unde|de ce|cine|care|c[âa]t|c[âa]te|po[țt]i|e[șs]ti|avem)\b", re.I)
 

@@ -9,6 +9,7 @@ and waits for the cycle in progress (brain.stop_sleep), so no write is ever cut.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 from brain import brain as _brain
@@ -25,14 +26,28 @@ log = get_logger(__name__)
 __all__ = ["post_init_hook"]
 
 
-def _scheduler_tick():
-    """The scheduled messages on the brain's tick, sent through notify(), or None when [brain] scheduler is off."""
+def _scheduler_tick(layers=None):
+    """The scheduled messages on the brain's tick, or None when [brain] scheduler is off. Each one is sent through
+    notify() and then appended to the chat's L2 history as GOAT's own message (source "scheduled"), so the next turn
+    sees that it went out (Laris, 2026-11-15: the 12:20 reminder must be in the conversation when he answers it).
+    The L2 write comes after the send and only logs on failure: the message is out, it must never go out twice."""
     if not _brain.CONFIG.get("scheduler"):
         return None
     from telegram_interface.notify import notify
 
+    async def send(chat_id: str, text: str) -> None:
+        await notify(chat_id, text)
+        if layers is None:
+            return
+        try:
+            await layers.append_and_save_working_context(
+                str(chat_id), {"role": "assistant", "content": text, "timestamp": time.time(), "source": "scheduled"})
+        except Exception as exc:  # noqa: BLE001 - sent already: log, never resend
+            log.warning("brain: scheduled message sent but not saved to history chat=%s: %s: %s", chat_id,
+                        type(exc).__name__, exc)
+
     async def tick() -> None:
-        await _scheduler.run_due(_brain.get_instance(), notify,
+        await _scheduler.run_due(_brain.get_instance(), send,
                                  max_attempts=int(_brain.CONFIG.get("scheduler_max_attempts", 3)))
     return tick
 
@@ -48,7 +63,7 @@ def post_init_hook(registry: "ServiceRegistry", chat_id: str):
             log.warning("brain: no admin chat configured, sleep not started")
             return
         try:
-            tick = _scheduler_tick()
+            tick = _scheduler_tick(getattr(registry, "memory_layers", None))
             if tick is not None:  # a message left half-sent by the previous process goes out again
                 recovered = await _scheduler.recover(_brain.get_instance())
                 log.info("brain: scheduler on, recovered=%d", recovered)

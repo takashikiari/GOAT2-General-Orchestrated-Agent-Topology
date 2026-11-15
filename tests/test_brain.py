@@ -70,6 +70,14 @@ def test_promise_ignores_quotes_and_needs_verb_and_time_in_one_sentence():
     assert not b.is_promise("Am verificat. Revin. Ieri a mers.")
 
 
+def test_mixed_quote_marks_are_still_a_quote():
+    # live 2026-11-15 17:23, channel lane: a rule description quoted with „…" (ASCII close) became a "promise"
+    live = '- `_NEGATED` — negație în cele 2 cuvinte dinaintea verbului; „nu pot acum, dar revin mâine" rămâne promisiune'
+    assert not b.is_promise(live)
+    assert not b.is_promise("Exemplu: “o să verific mâine\" e o regulă.")
+    assert b.is_promise('Regula e „revin mâine". Eu revin cu cifrele la 12:20.')   # the real one next to it counts
+
+
 def test_blind_write_reads_only_and_ingests_each_message_once(tmp_path):
     brain, working = _brain(tmp_path), _Working({"42": CHAT})
     first = asyncio.run(brain.sleep_once(working, ["42"]))
