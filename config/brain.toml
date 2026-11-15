@@ -15,3 +15,4 @@ inject = true               # the nucleus goes into GOAT's system prompt as one 
 inject_max_chars = 600      # the whole block, header included, at most this many characters
 scheduler = true            # scheduled messages (brain/scheduler.py) go out on this same tick, through notify()
 scheduler_max_attempts = 3  # a message that fails this many sends is marked failed (kept in the table)
+usage = true                # record which L3 docs were injected into the prompt (brain/usage.py); read by nothing yet

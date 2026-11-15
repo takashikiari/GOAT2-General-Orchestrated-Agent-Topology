@@ -24,13 +24,13 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start", "is_enabled",
-           "record_turn", "get_instance", "nucleus"]
+           "record_turn", "get_instance", "nucleus", "record_usage"]
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
              "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "scheduler": False,
-             "scheduler_max_attempts": 3}
+             "scheduler_max_attempts": 3, "usage": False}
 
 def load_config(path: Path | None = None) -> dict:
     """``config/brain.toml`` [brain] over the defaults; a missing file means the defaults (off)."""
@@ -88,6 +88,15 @@ async def nucleus(chat_id: str, lane: str = "human") -> list[dict]:
     if not is_enabled():
         return []
     return await get_instance().nucleus(chat_id, lane)
+
+
+async def record_usage(doc_ids: list[str]) -> int:
+    """The L3 docs injected into this turn's prompt, one use each (brain/usage.py), or 0 when [brain] enabled or
+    usage is off. Phase 0 of the prefetch feedback: collected only, nothing reads it yet."""
+    if not (is_enabled() and CONFIG.get("usage")):
+        return 0
+    from brain import usage
+    return await usage.record(get_instance(), doc_ids)
 
 
 _sleep: tuple[asyncio.Task, asyncio.Event] | None = None
