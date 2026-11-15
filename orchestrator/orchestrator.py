@@ -185,7 +185,7 @@ def _compact_tool_summary(calls_and_results: list[tuple[str, str, str]]) -> str:
     return "\n".join(lines)
 
 
-async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
+async def _brain_record(chat_id: str, messages: list[dict], lane: str, used_doc_ids: list[str] = ()) -> None:
     """Memory brain v0 blind write (brain/brain.py), as a background task after the reply: it never delays it.
     The write is NOT cancelled: cancelling an awaited to_thread does not stop the SQLite thread but releases the
     store lock, so a second write could use the connection at the same time. Live 2026-11-15, a 20 ms cut stored
@@ -197,6 +197,12 @@ async def _brain_record(chat_id: str, messages: list[dict], lane: str) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("brain: record_turn failed chat=%s: %s: %s", chat_id, type(exc).__name__, exc)
         return
+    try:  # the L3 docs this turn's prompt carried (brain/usage.py): the "used" signal for the prefetch, collected only
+        used = await _brain.record_usage(list(used_doc_ids))
+        if used:
+            log.debug("brain: usage chat=%s lane=%s docs=%d", chat_id, lane, used)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("brain: record_usage failed chat=%s: %s: %s", chat_id, type(exc).__name__, exc)
     ms = (time.perf_counter() - t0) * 1000
     if ms > float(_brain.CONFIG.get("record_slow_ms", 2000)):
         log.warning("brain: record_turn slow chat=%s lane=%s events=%d ms=%.0f", chat_id, lane, events, ms)
@@ -516,6 +522,9 @@ class Orchestrator:
             tool_gate.log_line(chat_id, quality, gate, tool_gate.CONFIG)
             if on_context_assembled is not None:
                 on_context_assembled(InjectedBlocks(context_blocks, l3_provenance))
+            # the originals actually packed into the prompt (wave-2 neighbours excluded), by L3 doc id
+            _l3_ids = {str((r.get("metadata") or {}).get("message_id")) for r in l3_results}
+            used_doc_ids = [k for k in l3_provenance.get("orig_after", []) if k in _l3_ids]
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
@@ -696,7 +705,7 @@ class Orchestrator:
             # Memory brain v0: blind write of this turn. Gated: with [brain] enabled = false (the default) nothing
             # below runs — no task, no store opened, no latency on the normal path.
             if _brain.is_enabled():
-                brain_task = asyncio.create_task(_brain_record(chat_id, turn_messages, lane))
+                brain_task = asyncio.create_task(_brain_record(chat_id, turn_messages, lane, used_doc_ids))
                 self._pending_bg.add(brain_task)
                 brain_task.add_done_callback(self._pending_bg.discard)
             archive_task = asyncio.create_task(
