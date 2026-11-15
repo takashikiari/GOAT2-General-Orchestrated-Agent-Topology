@@ -4,7 +4,7 @@ injected into the prompt. Collected only: nothing reads it, the prefetch is unch
 - a use is counted once per doc per turn; the count fades with the brain's half-life;
 - off ([brain] enabled or usage false) → nothing written, no store created;
 - orchestrator: the originals packed into the prompt (provenance orig_after, wave-2 excluded, only real L3 ids)
-  land in l3_usage; a failing usage write never costs the reply, and the turn itself is still recorded.
+  land in l3_injected; a failing usage write never costs the reply, and the turn itself is still recorded.
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def brain_on(monkeypatch, tmp_path):
 def _usage(path):
     con = sqlite3.connect(path)
     try:
-        return sorted(r[0] for r in con.execute("SELECT doc_id FROM l3_usage"))
+        return sorted(r[0] for r in con.execute("SELECT doc_id FROM l3_injected"))
     finally:
         con.close()
 
