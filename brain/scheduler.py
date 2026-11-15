@@ -20,7 +20,7 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["SCHEMA", "schedule", "pending", "run_due", "recover"]
+__all__ = ["SCHEMA", "schedule", "pending", "cancel", "run_due", "recover"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scheduled_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL,
@@ -64,6 +64,18 @@ async def pending(brain, chat_id: str | int | None = None) -> list[dict]:
     async with brain.lock:
         return await asyncio.to_thread(_list)
 
+
+async def cancel(brain, chat_id: str | int, task_id: int) -> bool:
+    """Cancel a task of ``chat_id`` that has not gone out yet (status pending → cancelled, kept). False if it is
+    not this chat's, already sent / failed / cancelled, or being sent right now."""
+    def _cancel() -> bool:
+        _ensure(brain._db)
+        n = brain._db.execute("UPDATE scheduled_tasks SET status = 'cancelled' WHERE id = ? AND chat_id = ? AND "
+                              "status = 'pending'", (int(task_id), str(chat_id))).rowcount
+        brain._db.commit()
+        return n == 1
+    async with brain.lock:
+        return await asyncio.to_thread(_cancel)
 
 async def recover(brain) -> int:
     """At start: tasks left ``sending`` by a process that died mid-send go back to ``pending`` (at-least-once)."""

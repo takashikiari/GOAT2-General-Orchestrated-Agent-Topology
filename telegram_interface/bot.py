@@ -37,6 +37,7 @@ from telegram_interface.panel_mirror import mirror_panel_turn
 from tools.memory_manager import build_memory_manager_tools
 from tools.identity_tool import build_set_identity_tool
 from tools.memory_promote import build_promote_memory_tool
+from tools.schedule_tools import build_schedule_tools
 from tools.memory_tools import build_search_memory_tool
 from tools.memory_writer import build_store_memory_tool
 from tools.workflow_tools import build_workflow_tools
@@ -51,6 +52,13 @@ from workflow.runner import WorkflowRunner
 log = get_logger(__name__)
 
 _ERROR_REPLY = "Something went wrong, please try again."
+
+
+def _schedule_tools() -> list:
+    """schedule_message / list_scheduled / cancel_scheduled, only when the brain and its scheduler are on (the
+    messages go out on the brain's tick, telegram_interface/_brain_sleep.py)."""
+    from brain import brain as _brain
+    return build_schedule_tools() if _brain.is_enabled() and _brain.CONFIG.get("scheduler") else []
 
 
 def _current_version() -> str:
@@ -213,7 +221,8 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
         llm_client=registry.llm_client,
         plugin_manager=registry.plugin_manager,
         analytics=registry.memory_analytics,
-        tools=[search_memory, store_memory, promote_memory, set_identity, *manager_tools, *workflow_tools],
+        tools=[search_memory, store_memory, promote_memory, set_identity, *manager_tools, *workflow_tools,
+               *_schedule_tools()],
     )
 
     # The admin panel chat talks to THIS orchestrator, under the same per-chat locks as the handlers below, so
