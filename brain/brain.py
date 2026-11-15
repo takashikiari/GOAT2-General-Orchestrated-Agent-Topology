@@ -32,7 +32,7 @@ __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
-             "record_budget_ms": 20, "record_timeout_ms": 2000}
+             "record_slow_ms": 2000}
 _DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"  # memory.temporal_route.CHANNEL_DIGEST_PREFIX (not imported)
 _PROMISE = re.compile(r"\b(revin|o s[ăa] (verific|fac|caut|revin|v[ăa]d|te anun[țt])|voi (verifica|reveni|face|"
                       r"c[ăa]uta)|te anun[țt]|urmeaz[ăa] s[ăa]|fac (asta )?mai t[âa]rziu|m[ăa] uit (și|si) revin)\b", re.I)
@@ -111,7 +111,7 @@ class Brain:
     def __init__(self, cfg: dict | None = None, clock=time.time) -> None:
         self.cfg, self.lock, self._clock = dict(cfg or CONFIG), asyncio.Lock(), clock
         Path(self.cfg["db_path"]).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self.cfg["db_path"], check_same_thread=False)
+        self._db = sqlite3.connect(self.cfg["db_path"], check_same_thread=False, timeout=5.0)  # busy -> error
         self._db.executescript(_SCHEMA)
         if "faded_at" not in {r[1] for r in self._db.execute("PRAGMA table_info(paths)")}:  # a store made before it
             self._db.execute("ALTER TABLE paths ADD COLUMN faded_at REAL")
@@ -122,7 +122,7 @@ class Brain:
     def close(self) -> None:
         self._db.close()
 
-    def _ingest(self, chat_id: str, messages: list[dict], budget_ms: float,
+    def _ingest(self, chat_id: str, messages: list[dict], budget_ms: float | None,
                 lane: str | None = None) -> tuple[int, int, list[str]]:
         """Blind write + path links, for messages newer than the chat's cursor, within the row/time budget.
         ``lane`` (the request hook's real lane) overrides the guess from the text. Returns (events, links, lanes)."""
@@ -133,8 +133,10 @@ class Brain:
         events = links = 0
         lanes: set[str] = set()
         user_lane = "human"  # an L2 reply has no header of its own: it belongs to the lane of the message it answers
-        for m in fresh[: int(self.cfg["max_events_per_cycle"])]:
-            if (time.perf_counter() - t0) * 1000 > budget_ms:
+        for done, m in enumerate(fresh[: int(self.cfg["max_events_per_cycle"])]):
+            # the budget is checked only after a first message: a busy process once spent it on the first query
+            # and stored nothing, ever (2026-11-15). None = no slicing (the request hook's 2-message turn).
+            if done and budget_ms is not None and (time.perf_counter() - t0) * 1000 > budget_ms:
                 break
             if m["role"] == "user":
                 user_lane = lane_of(m)
@@ -238,16 +240,15 @@ def is_enabled() -> bool:
 
 
 async def record_turn(chat_id: str, messages: list[dict], lane: str = "human") -> int:
-    """Blind write from the request loop: the turn's exact L2 messages, into the store, right away (same ids as
-    the sleep cycle's L2 read, so they are never stored twice). Bounded by ``record_budget_ms``. The caller runs it
-    as a background task and swallows any error: it can never cost the reply. Returns the events written."""
+    """Blind write from the request loop: the turn's exact L2 messages (all of them: it is one turn), into the
+    store, right away (same ids as the sleep cycle's L2 read, so never stored twice). The caller runs it as a
+    background task, never cancels it and swallows any error: it can never cost the reply."""
     global _instance
     if not is_enabled():
         return 0
     brain = _instance = _instance or Brain(CONFIG)
     async with brain.lock:
-        events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages,
-                                               float(CONFIG["record_budget_ms"]), lane)
+        events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages, None, lane)
     return events
 
 

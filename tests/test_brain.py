@@ -175,3 +175,19 @@ def test_off_by_default_and_on_persistent_disk(tmp_path, monkeypatch):
     assert isinstance(b.load_config(Path(b._ROOT) / "config" / "brain.toml")["enabled"], bool)
     assert b.start(_Working({}), ["42"], {**b._DEFAULTS, "enabled": False}) is None
     assert not b.load_config(tmp_path / "missing.toml")["db_path"].startswith("/tmp")
+
+
+def test_an_exhausted_budget_still_makes_progress(tmp_path):
+    """Live 2026-11-15 11:38: in the busy bot process the first SQLite query alone took longer than the 20 ms
+    slice, the loop broke before the first message and returned 0 events with no error, every time."""
+    brain = _brain(tmp_path)
+    events, links, _ = brain._ingest("42", CHAT, 0.0)            # budget already gone before the first row
+    assert events >= 1                                          # at least one message per call, never zero
+
+
+def test_the_request_hook_stores_the_whole_turn_even_on_a_slow_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(b, "CONFIG", {**b._DEFAULTS, "enabled": True, "db_path": str(tmp_path / "brain.sqlite")})
+    monkeypatch.setattr(b, "_instance", None)
+    turn = [_m("user", "Cum stăm?", 500.0), _m("assistant", "Bine.", 500.0)]
+    assert asyncio.run(b.record_turn("42", turn, lane="human")) == 2   # both messages of the turn, not one
+    b._instance.close()

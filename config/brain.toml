@@ -10,5 +10,4 @@ max_cycle_ms = 200          # ... or runs longer than this; the rest waits for t
 reinforce = 1.0             # added to a link each time it is walked
 half_life_hours = 24        # links fade by the TIME elapsed: half their weight per 24 h (never deleted)
 nucleus_items = 10          # open items kept per chat and lane
-record_budget_ms = 20       # the request hook's write is sliced to this (rows stop being processed after it) ...
-record_timeout_ms = 2000    # ... and only a hung brain is cut, after this (the hook runs after the reply anyway)
+record_slow_ms = 2000       # the request hook writes the whole turn, never cancelled; slower than this is logged
