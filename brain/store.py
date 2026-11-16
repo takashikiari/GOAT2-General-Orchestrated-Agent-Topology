@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS nucleus (chat_id TEXT NOT NULL, lane TEXT NOT NULL, o
     updated_ts REAL NOT NULL, PRIMARY KEY (chat_id, lane));
 CREATE TABLE IF NOT EXISTS cursor (chat_id TEXT PRIMARY KEY, last_ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, started REAL NOT NULL, ms REAL NOT NULL,
-    events INTEGER NOT NULL, links INTEGER NOT NULL, open_items INTEGER NOT NULL);
+    events INTEGER NOT NULL, links INTEGER NOT NULL, open_items INTEGER NOT NULL, hook_events INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS hook_pending (id INTEGER PRIMARY KEY CHECK (id = 1), events INTEGER NOT NULL);
 """
 
 
@@ -73,6 +74,9 @@ class Brain:
         self._db.executescript(_SCHEMA)
         if "faded_at" not in {r[1] for r in self._db.execute("PRAGMA table_info(paths)")}:  # a store made before it
             self._db.execute("ALTER TABLE paths ADD COLUMN faded_at REAL")
+        if "hook_events" not in {r[1] for r in self._db.execute("PRAGMA table_info(cycles)")}:  # same: an older store
+            self._db.execute("ALTER TABLE cycles ADD COLUMN hook_events INTEGER NOT NULL DEFAULT 0")
+            self._db.commit()
         half_life_s = float(self.cfg["half_life_hours"]) * 3600
         # weight x 0.5 ** (seconds elapsed / half-life): the same forgetting whether cycles run every 5 s or 5 min
         self._db.create_function("fade", 1, lambda dt: 0.5 ** (max(0.0, dt or 0.0) / half_life_s), deterministic=True)
@@ -152,6 +156,19 @@ class Brain:
         self._db.commit()
         return len(items)
 
+    def _hook_write(self, chat_id: str, messages: list[dict], lane: str) -> tuple[int, int]:
+        """The request hook's write (brain.record_turn): ingest the turn, refresh the nucleus of every lane it wrote
+        right away (the prompt block must not lag a sleep cycle behind the turn), and add the events to the pending
+        hook counter that the next cycle reports as ``hook_events``: a table, so the count survives a restart.
+        Returns (events, nucleus items of the refreshed lanes)."""
+        events, _, lanes = self._ingest(chat_id, messages, None, lane)
+        items = sum(self._nucleus(chat_id, written) for written in lanes)
+        if events:
+            self._db.execute("INSERT INTO hook_pending (id, events) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET "
+                             "events = events + excluded.events", (events,))
+            self._db.commit()
+        return events, items
+
     def _cycle(self, batches: list[tuple[str, list[dict]]]) -> dict:
         started, t0 = self._clock(), time.perf_counter()
         events = links = items = 0
@@ -168,21 +185,28 @@ class Brain:
                 "nucleus n WHERE n.chat_id = e.chat_id AND n.lane = e.lane), 0)").fetchall():
             items += self._nucleus(chat_id, lane)
         self._fade(started)
+        # events = what THIS cycle ingested from L2 (the baseline's meaning, unchanged); hook_events = what the request
+        # hook wrote since the previous cycle (its turns are already in the store, so the cycle's own count is 0)
+        row = self._db.execute("SELECT events FROM hook_pending WHERE id = 1").fetchone()
+        hook_events = int(row[0]) if row else 0
         ms = (time.perf_counter() - t0) * 1000
-        self._db.execute("INSERT INTO cycles (started, ms, events, links, open_items) VALUES (?, ?, ?, ?, ?)",
-                         (started, ms, events, links, items))
+        self._db.execute("INSERT INTO cycles (started, ms, events, links, open_items, hook_events) VALUES "
+                         "(?, ?, ?, ?, ?, ?)", (started, ms, events, links, items, hook_events))
+        self._db.execute("UPDATE hook_pending SET events = 0 WHERE id = 1")
         self._db.commit()
         # open_items = items of the lanes refreshed in THIS cycle; nucleus_total = what the whole nucleus holds now
         total = sum(len(json.loads(r[0])) for r in self._db.execute("SELECT open_items FROM nucleus"))
-        return {"ms": round(ms, 1), "events": events, "links": links, "open_items": items, "nucleus_total": total}
+        return {"ms": round(ms, 1), "events": events, "links": links, "open_items": items, "nucleus_total": total,
+                "hook_events": hook_events}
 
     async def sleep_once(self, working, chat_ids: list[str]) -> dict:
         """One sleep cycle: read the chats' L2 messages (read-only), then process them under the store lock."""
         batches = [(c, await working.get_messages(c)) for c in chat_ids]
         async with self.lock:
             result = await asyncio.to_thread(self._cycle, batches)
-        log.info("brain: cycle ms=%.1f events=%d links=%d open_items=%d nucleus_total=%d", result["ms"],
-                 result["events"], result["links"], result["open_items"], result["nucleus_total"])
+        log.info("brain: cycle ms=%.1f events=%d hook_events=%d links=%d open_items=%d nucleus_total=%d", result["ms"],
+                 result["events"], result["hook_events"], result["links"], result["open_items"],
+                 result["nucleus_total"])
         return result
 
     async def run_forever(self, working, chat_ids: list[str], stop: asyncio.Event, on_tick=None) -> None:

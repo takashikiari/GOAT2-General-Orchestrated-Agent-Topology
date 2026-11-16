@@ -72,13 +72,15 @@ def is_enabled() -> bool:
 
 async def record_turn(chat_id: str, messages: list[dict], lane: str = "human") -> int:
     """Blind write from the request loop: the turn's exact L2 messages (all of them: it is one turn), into the
-    store, right away (same ids as the sleep cycle's L2 read, so never stored twice). The caller runs it as a
-    background task, never cancels it and swallows any error: it can never cost the reply."""
+    store, right away (same ids as the sleep cycle's L2 read, so never stored twice), then refreshes the nucleus of
+    the lanes it wrote and counts the events for the next cycle's hook_events (Brain._hook_write: one thread, under
+    the lock). The caller runs it as a background task, never cancels it and swallows any error: it can never cost
+    the reply."""
     if not is_enabled():
         return 0
     brain = get_instance()
     async with brain.lock:
-        events, _, _ = await asyncio.to_thread(brain._ingest, chat_id, messages, None, lane)
+        events, _ = await asyncio.to_thread(brain._hook_write, chat_id, messages, lane)
     return events
 
 
