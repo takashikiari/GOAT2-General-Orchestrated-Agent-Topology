@@ -31,14 +31,27 @@ def _gist(text: str) -> str:
     return _SPACES.sub(" ", _MARKUP.sub("", first)).strip()
 
 
-def format_block(items: list[dict], max_chars: int) -> str:
+def _too_old(it: dict, now: float, max_hours: float | None) -> bool:
+    """A promise older than ``max_hours`` (T33, Laris 2026-11-16: 24 h) is most likely kept or stale: not shown."""
+    if not max_hours or it.get("kind") != "promised":
+        return False
+    try:
+        return now - float(it.get("ts")) > float(max_hours) * 3600
+    except (TypeError, ValueError):
+        return False
+
+
+def format_block(items: list[dict], max_chars: int, promise_max_hours: float | None = None,
+                 now: float | None = None) -> str:
     """``items`` (newest first, as the store keeps them) as HEADER + one ``- <kind> (<dd.mm HH:MM>): <text>`` line each,
     the whole block at most ``max_chars``. Items that do not fit are left out; the first one is shortened with "…"
-    instead. Nothing fits, or no items → ""."""
+    instead. A promise older than ``promise_max_hours`` is left out (it stays in the store); None = no limit.
+    Nothing fits, or no items → ""."""
     lines: list[str] = []
     used = len(HEADER)
+    now = time.time() if now is None else now
     for it in items or []:
-        if it.get("kind") in _HIDDEN:
+        if it.get("kind") in _HIDDEN or _too_old(it, now, promise_max_hours):
             continue
         gist = _gist(it.get("text", ""))
         if not gist:

@@ -29,7 +29,8 @@ __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
              "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
-             "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "scheduler": False,
+             "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "inject_promise_max_hours": 24,
+             "scheduler": False,
              "scheduler_max_attempts": 3, "usage": False, "prefetch_boost": False,
              "prefetch_boost_weight": 0.05, "prefetch_boost_cap": 3}
 
