@@ -13,6 +13,7 @@ nucleus_items = 10          # open items kept per chat and lane
 record_slow_ms = 2000       # the request hook writes the whole turn, never cancelled; slower than this is logged
 inject = true               # the nucleus goes into GOAT's system prompt as one short block (false = prompt as before)
 inject_max_chars = 600      # the whole block, header included, at most this many characters
+inject_promise_max_hours = 24  # a promise older than this is no longer shown in the block (kept in the store; T33)
 scheduler = true            # scheduled messages (brain/scheduler.py) go out on this same tick, through notify()
 scheduler_max_attempts = 3  # a message that fails this many sends is marked failed (kept in the table)
 usage = true                # record which L3 docs were injected into the prompt (brain/usage.py)

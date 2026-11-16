@@ -218,7 +218,8 @@ async def _brain_nucleus_block(chat_id: str, lane: str) -> str:
     t0 = time.perf_counter()
     try:
         items = await _brain.nucleus(chat_id, lane)
-        block = format_nucleus_block(items, int(_brain.CONFIG.get("inject_max_chars", 600)))
+        block = format_nucleus_block(items, int(_brain.CONFIG.get("inject_max_chars", 600)),
+                                     _brain.CONFIG.get("inject_promise_max_hours"))
     except Exception as exc:  # noqa: BLE001
         log.warning("brain: inject failed chat=%s lane=%s: %s: %s", chat_id, lane, type(exc).__name__, exc)
         return ""
