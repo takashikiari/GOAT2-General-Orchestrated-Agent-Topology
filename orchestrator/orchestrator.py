@@ -46,6 +46,7 @@ from orchestrator.tool_loop_config import (
     TOOL_RESULT_SHORT_THRESHOLD,
     TOOL_RESULT_TAIL_CHARS,
     TOOL_ROUND_MAX_OUTPUT_CHARS,
+    HIDDEN_TOOLS,
 )
 from orchestrator import turn_events
 from orchestrator.tools import ToolDefinition
@@ -315,8 +316,9 @@ class Orchestrator:
         return any(t.name == "store_memory" for t in self._tools)
 
     def _all_tools(self) -> list[ToolDefinition]:
-        """Core tools plus the live plugin tools (re-read each turn)."""
-        return [*self._tools, *self._plugin_manager.tools]
+        """Core tools plus the live plugin tools (re-read each turn), minus the ones hidden from the prompt
+        ([prompt] hidden in config/tools.toml): a hidden tool is neither offered nor callable."""
+        return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in HIDDEN_TOOLS]
 
     def _has_tool(self, name: str) -> bool:
         """True when a tool named ``name`` (core or plugin) is configured."""

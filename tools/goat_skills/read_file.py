@@ -31,14 +31,8 @@ log = get_logger(__name__)
 __all__ = ["build"]
 
 _DESCRIPTION = (
-    "Read a file from the host filesystem and return its text contents. Use "
-    "this for config, logs, source, notes — anything GOAT needs to inspect "
-    f"locally. Output is truncated to max_chars (default {_DEF_MAX_CHARS}, "
-    f"max {_MAX_MAX_CHARS}); for a big file read it in parts with start_line / end_line "
-    "(1-based, inclusive; the reply says which lines it holds and how many the file has). "
-    f"Files larger than {_HARD_BYTE_CAP // 1_000_000} MB "
-    "are refused. Binary files are detected and refused. Relative paths resolve "
-    "against the bot's working directory. GOAT-only — NOT available to DAG agents."
+    "Read a text file from the host. Truncated to max_chars; read a big file in parts with start_line / end_line "
+    f"(1-based). Binary files and files over {_HARD_BYTE_CAP // 1_000_000} MB are refused."
 )
 
 

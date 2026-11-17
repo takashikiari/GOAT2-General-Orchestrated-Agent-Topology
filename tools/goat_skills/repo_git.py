@@ -42,14 +42,10 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         ToolDefinition(
             name="repo_git",
             description=(
-                "Rulează O comandă git DOAR DE CITIRE în orice repo de pe lenovo sau laris (vezi repo_list). "
-                "Permise: log, show, diff, status, branch (listare), grep, blame, ls-files, ls-tree, rev-parse, "
-                "shortlog, describe, rev-list, cat-file, remote -v, tag (listare), reflog. Fără commit/push/checkout, "
-                "fără operatori de shell (&&, ;, |), fără ghilimele — comenzile refuzate întorc 'REFUZAT: motiv'. "
-                "git grep NU are --include: filtrezi pe fișiere cu pathspec după '--', ex. 'grep -n cache_hit -- *.py' "
-                "sau 'grep -n cache_hit -- memory/' (*.py prinde și subfolderele). Mai multe pattern-uri (SAU) "
-                "cu -e, nu cu \\|: 'grep -n -e clear_cache -e invalidate_cache -- *.py'. Conținutul unui fișier: 'show HEAD:memory/layers.py'. "
-                "repo = numele din repo_list sau doar ultimul segment dacă e unic (ex. 'petvoyageuk')."
+                "O comandă git DOAR DE CITIRE (log, show, diff, status, grep, blame, ls-files...) într-un repo de pe "
+                "lenovo sau laris. Fără commit/push, fără &&/;/|, fără ghilimele (altfel 'REFUZAT'). git grep NU are "
+                "--include: pathspec după '--' ('grep -n x -- *.py'); SAU cu -e: 'grep -n -e clear_cache -e "
+                "invalidate_cache -- *.py'. Un fișier: 'show HEAD:cale'."
             ),
             parameters={
                 "type": "object",
