@@ -99,6 +99,34 @@ def test_any_other_exit_stays_a_warning_with_its_code(monkeypatch, caplog, _fres
     assert [r.levelno for r in recs] == [logging.WARNING] and "rc=1" in recs[0].getMessage()
 
 
+
+def test_stderr_closed_but_process_alive_never_hangs_start(monkeypatch, caplog, _fresh_tunnel_state):
+    caplog.set_level(logging.DEBUG, logger="admin_panel.tunnel")
+    monkeypatch.setattr(tunnel_module, "_EXIT_WAIT_S", 0.05)
+    _enable(monkeypatch)
+    lines = iter([b"INF |  https://random-example-words.trycloudflare.com  |\n", b""])
+
+    async def readline():
+        return next(lines)
+    process = _spawn(monkeypatch, readline)
+    killed = []
+    waits = []
+
+    async def wait():
+        waits.append(1)
+        if not killed:                       # alive: only a kill ends it
+            await asyncio.sleep(3600)
+        return process.returncode
+
+    def kill():
+        killed.append(1)
+        process.returncode = -9
+    process.wait, process.kill = wait, kill
+    asyncio.run(asyncio.wait_for(tunnel_module.start(_App()), 5))      # returns: no hang
+    assert killed == [1]
+    msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("did not exit within" in m for m in msgs)
+
 # --- 3) coord_poller retry -----------------------------------------------------------------------------------------
 _OK = (0, '{"messages": [], "ack": null}', "")
 _DOWN = (3, "", "agent-coord: hub inaccesibil: hub read failed: timed out")

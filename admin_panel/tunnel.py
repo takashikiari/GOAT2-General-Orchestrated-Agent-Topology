@@ -29,6 +29,7 @@ log = get_logger(__name__)
 __all__ = ["extract_tunnel_url", "start"]
 
 _TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+_EXIT_WAIT_S = 5.0  # after stderr EOF, how long to wait for cloudflared to exit before the finally kills it
 
 
 def extract_tunnel_url(line: str) -> str | None:
@@ -80,7 +81,12 @@ async def start(application: "Application") -> None:
                 tunnel_state.set_state("down", detail=f"cloudflared reported no tunnel URL within {TUNNEL_TIMEOUT_SECONDS}s")
                 return
             if not raw:
-                rc = await process.wait()
+                try:  # bounded: stderr can close while the process lives on; the finally below kills it then
+                    rc = await asyncio.wait_for(process.wait(), timeout=_EXIT_WAIT_S)
+                except asyncio.TimeoutError:
+                    rc = process.returncode
+                    log.warning("cloudflared closed stderr but did not exit within %.0f s (rc=%s); killing it",
+                                _EXIT_WAIT_S, rc)
                 # systemd stops the whole unit with SIGTERM, cloudflared included, and it exits before the bot's
                 # own shutdown runs: every live "cloudflared exited" (15-16.11) was a restart. A SIGTERM exit is
                 # INFO; any other exit stays a WARNING, with its code, so a real crash is visible.
