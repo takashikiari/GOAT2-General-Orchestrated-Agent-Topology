@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+from brain.graph_alias import canon, generic, group
+
 __all__ = ["SCHEMA", "WEIGHT_FLOOR", "KEPT_TYPES", "UNDIRECTED", "norm_thing", "ingest", "counts", "cursor",
            "faded", "touch", "pairs_slice", "fade_slice", "migrate"]
 
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS graph_edges (src TEXT NOT NULL, dst TEXT NOT NULL, ki
     weight REAL NOT NULL, created_at REAL NOT NULL, last_used REAL, uses INTEGER NOT NULL DEFAULT 0, w_at REAL,
     PRIMARY KEY (src, dst, kind));
 CREATE INDEX IF NOT EXISTS graph_edges_dst ON graph_edges (dst, kind);
+CREATE INDEX IF NOT EXISTS graph_nodes_alias ON graph_nodes (alias_of);
 CREATE TABLE IF NOT EXISTS graph_cursor (name TEXT PRIMARY KEY, last_ts REAL NOT NULL);
 """
 
@@ -161,9 +164,9 @@ def pairs_slice(db, limit: int = 200, hub_fraction: float = 0.15) -> dict:
     total = db.execute("SELECT count(*) FROM graph_nodes WHERE kind = 'episode'").fetchone()[0] or 1
     pairs = 0
     for eid, ts in eps:
-        things = [r[0] for r in db.execute("SELECT dst FROM graph_edges WHERE src = ? AND kind = 'despre'", (eid,))]
-        keep = [t for t in things if db.execute("SELECT count(*) FROM graph_edges WHERE dst = ? AND kind = 'despre'",
-                                                 (t,)).fetchone()[0] <= hub_fraction * total]
+        things = sorted({canon(db, r[0]) for r in db.execute("SELECT dst FROM graph_edges WHERE src = ? AND "
+                                                            "kind = 'despre'", (eid,))})
+        keep = [t for t in things if not generic(t) and _episodes(db, t) <= hub_fraction * total]
         for i in range(len(keep)):
             for j in range(i + 1, len(keep)):
                 touch(db, keep[i], keep[j], "împreună", 0.1, float(ts), initial=0.1)
@@ -171,6 +174,14 @@ def pairs_slice(db, limit: int = 200, hub_fraction: float = 0.15) -> dict:
     db.commit()
     cursor(db, "pairs", value=float(eps[-1][1]))
     return {"episodes": len(eps), "pairs": pairs}
+
+
+def _episodes(db, thing: str) -> int:
+    """How many episodes talk about ``thing`` under any of its spellings."""
+    members = group(db, thing)
+    q = ",".join("?" * len(members))
+    return db.execute(f"SELECT count(DISTINCT src) FROM graph_edges WHERE dst IN ({q}) AND kind = 'despre'",
+                      members).fetchone()[0]
 
 
 def fade_slice(db, now: float, limit: int = 500, half_life_days: float = HALF_LIFE_DAYS) -> int:
