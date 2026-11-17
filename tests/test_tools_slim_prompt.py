@@ -17,7 +17,7 @@ from tests._orch_fakes import _Completions, _FakeAnalytics, _FakeLayers, _FakePl
 
 _CFG = tomllib.load(open(Path(__file__).resolve().parents[1] / "config" / "tools.toml", "rb"))
 _EXPECTED = {"write_file", "start_workflow", "workflow_send", "workflow_status", "stop_workflow", "set_identity",
-             "browse_page", "forget_fact", "fetch_content", "repo_list", "read_l1"}
+             "browse_page", "fetch_content", "repo_list"}
 
 
 def _tool(name):
@@ -30,6 +30,7 @@ def _tool(name):
 def test_the_config_hides_exactly_the_unused_tools():
     assert set(_CFG["prompt"]["hidden"]) == _EXPECTED == HIDDEN_TOOLS
     assert "cancel_scheduled" not in HIDDEN_TOOLS and "search_memory" not in HIDDEN_TOOLS
+    assert "read_l1" not in HIDDEN_TOOLS and "forget_fact" not in HIDDEN_TOOLS     # needed to make room in L1
 
 
 def test_the_round_cap_is_real_again():

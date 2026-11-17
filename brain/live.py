@@ -2,7 +2,10 @@
 
 Before the prompt (``recall``): what is in mind right now — the memories retrieval brought and the episodes of the
 current conversation — lights up the graph; the most activated memories that are not already in mind join the L3
-results, first, each with why it came up ("legat de: …"). Association brings them, not text similarity.
+results, each with why it came up ("amintit prin legătură: …"). Association brings them, not text similarity. They
+come AFTER the search's 3 best results (a score just under the 3rd), never in place of them: live 2026-11-17 17:28,
+placed first they took every L3 slot and pushed out results of relevance 1.0, while the reply used almost none of
+them. They compete for the space left.
 
 After the reply (``after_turn``, in the background, never on the reply path): the new turn is linked to the memories
 that were in its prompt — strongly to the ones the reply used ('gândite_împreună' +0.2, +0.05 if only present), the
@@ -44,6 +47,16 @@ def _not_lived(doc: str | None) -> bool:
     return text.startswith(_NOT_LIVED)
 
 
+def _after_top(l3_results: list[dict], top: int = 3) -> float:
+    """The score the recalled memories get: just under the search's ``top``-th best result, so they never push out
+    the best ones (when the search found fewer, just under its weakest; 0.5 when it found nothing)."""
+    scores = sorted((float(r.get("blended_score") or 0.0) for r in l3_results
+                     if "wave2" not in (r.get("mechanisms") or [])), reverse=True)
+    if not scores:
+        return 0.5
+    return max(0.0, scores[min(top, len(scores)) - 1] * 0.99)
+
+
 def _mid(r: dict) -> str:
     return str((r.get("metadata") or {}).get("message_id") or r.get("id") or "")
 
@@ -81,6 +94,7 @@ async def recall_into(episodic, l3_results: list[dict], messages: list[dict]) ->
         by_id = {i: (d, m) for i, d, m in zip(got.get("ids") or [], got.get("documents") or [],
                                                got.get("metadatas") or [])}
         extra, trace = [], {}
+        after = _after_top(l3_results)
         for c in cands:
             if c["id"] not in by_id or len(extra) >= k:
                 continue
@@ -88,7 +102,7 @@ async def recall_into(episodic, l3_results: list[dict], messages: list[dict]) ->
             if _not_lived(doc):  # other sessions' traffic, not GOAT's experience with Laris
                 continue
             why = f"(amintit prin legătură{': ' + c['via'] if c['via'] else ''}) "
-            extra.append({"id": c["id"], "content": why + (doc or ""), "blended_score": 1.0, "mechanisms": ["graph"],
+            extra.append({"id": c["id"], "content": why + (doc or ""), "blended_score": after, "mechanisms": ["graph"],
                           "metadata": dict(meta or {}, message_id=(meta or {}).get("message_id") or c["id"])})
             trace[c["id"]] = c["path"]
     except Exception as exc:  # noqa: BLE001
