@@ -30,6 +30,8 @@ __all__ = ["extract_tunnel_url", "start"]
 
 _TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 _EXIT_WAIT_S = 5.0  # after stderr EOF, how long to wait for cloudflared to exit before the finally kills it
+# a clean exit (rc 0 / -15) is a service stop only if the bot's own shutdown cancels this task within this window
+_SHUTDOWN_GRACE_S = 15.0
 
 
 def extract_tunnel_url(line: str) -> str | None:
@@ -87,17 +89,22 @@ async def start(application: "Application") -> None:
                     rc = process.returncode
                     log.warning("cloudflared closed stderr but did not exit within %.0f s (rc=%s); killing it",
                                 _EXIT_WAIT_S, rc)
-                # systemd stops the whole unit with SIGTERM, cloudflared included, and it exits before the bot's
-                # own shutdown runs: every live "cloudflared exited" (15-16.11) was a restart. A SIGTERM exit is
-                # INFO; any other exit stays a WARNING, with its code, so a real crash is visible.
                 if rc is None:  # no exit yet (the timeout above, already logged): not an exit line
                     tunnel_state.set_state("down", detail=f"tunnel stopped (no exit within {_EXIT_WAIT_S:.0f} s)")
                     return
-                if rc == -15:
-                    log.info("cloudflared stopped by SIGTERM rc=%s (service stop/restart)", rc)
-                else:
-                    log.warning("cloudflared exited rc=%s%s", rc, "" if url_found else " before reporting a tunnel URL")
                 tunnel_state.set_state("down", detail=f"cloudflared exited (rc={rc})")
+                if rc in (0, -15):
+                    # systemd stops the whole unit with SIGTERM, cloudflared included, and cloudflared exits (live:
+                    # rc=0 on 17.11) about a second BEFORE the bot's own shutdown cancels this task. So a clean exit
+                    # is a service stop only if that cancel comes: INFO then; if the bot keeps running, WARNING.
+                    try:
+                        await asyncio.sleep(_SHUTDOWN_GRACE_S)
+                    except asyncio.CancelledError:
+                        log.info("cloudflared stopped with the service (rc=%s)", rc)
+                        raise
+                    log.warning("cloudflared exited rc=%s while the bot kept running (tunnel down)", rc)
+                    return
+                log.warning("cloudflared exited rc=%s%s", rc, "" if url_found else " before reporting a tunnel URL")
                 return
             if url_found:
                 continue  # keep draining so the pipe never fills

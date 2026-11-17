@@ -2,7 +2,8 @@
 
 1) the Application error handler: a network blip is one WARNING line without traceback, a real error is an ERROR
    with context and traceback; nothing is sent to the chat;
-2) cloudflared: a SIGTERM exit (systemd stopping the unit) is INFO, any other exit stays a WARNING with its code;
+2) cloudflared: a clean exit (rc 0/-15) is INFO only if the bot's shutdown follows it, else a WARNING; any other
+   exit is a WARNING with its code;
 3) coord_poller: a failing `unread` is retried twice (1 s, 3 s) in the same interval, logged once at the end.
 """
 from __future__ import annotations
@@ -82,12 +83,32 @@ def _fresh_tunnel_state():
     tunnel_state.set_state("off")
 
 
-def test_a_sigterm_exit_is_info(monkeypatch, caplog, _fresh_tunnel_state):
+async def _start_then_shutdown(after_s=0.05):
+    """What a restart does: cloudflared exits first, the bot's post_shutdown cancels the task ~1 s later."""
+    task = asyncio.create_task(tunnel_module.start(_App()))
+    await asyncio.sleep(after_s)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("rc", [0, -15])
+def test_a_clean_exit_followed_by_the_bot_shutdown_is_info(monkeypatch, caplog, _fresh_tunnel_state, rc):
     caplog.set_level(logging.DEBUG, logger="admin_panel.tunnel")
-    _eof_after_url(monkeypatch, -15)
-    asyncio.run(tunnel_module.start(_App()))
+    _eof_after_url(monkeypatch, rc)
+    asyncio.run(_start_then_shutdown())
     recs = [r for r in caplog.records if "cloudflared" in r.getMessage()]
-    assert [r.levelno for r in recs] == [logging.INFO] and "rc=-15" in recs[0].getMessage()
+    assert [r.levelno for r in recs] == [logging.INFO] and f"rc={rc}" in recs[0].getMessage()
+    assert tunnel_state.get_state()["status"] == "down"
+
+
+def test_a_clean_exit_while_the_bot_keeps_running_is_a_warning(monkeypatch, caplog, _fresh_tunnel_state):
+    caplog.set_level(logging.DEBUG, logger="admin_panel.tunnel")
+    monkeypatch.setattr(tunnel_module, "_SHUTDOWN_GRACE_S", 0.05)
+    _eof_after_url(monkeypatch, 0)
+    asyncio.run(tunnel_module.start(_App()))                                  # nobody cancels it: no shutdown
+    recs = [r for r in caplog.records if "cloudflared" in r.getMessage()]
+    assert [r.levelno for r in recs] == [logging.WARNING]
+    assert "rc=0 while the bot kept running" in recs[0].getMessage()
     assert tunnel_state.get_state()["status"] == "down"
 
 
