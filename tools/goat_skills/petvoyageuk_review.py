@@ -90,21 +90,9 @@ def build(registry: "ServiceRegistry") -> list[ToolDefinition]:
         ToolDefinition(
             name="petvoyageuk_review_git",
             description=(
-                "You are the code REVIEWER for the PetVoyageUK project "
-                "(github.com/alexmateita-gif/petvoyageuk), alongside two "
-                "other AI agents (claude-sonnet, minimax) who actually write "
-                "the code and deploy it. Your access here is READ-ONLY: "
-                "only read git commands are accepted (log/show/diff/status/"
-                "branch/grep/blame/ls-files/...); anything else returns "
-                "'REFUZAT: <reason>'. Use this to inspect recent commits "
-                "or diffs (e.g. before/after a deploy) and report findings "
-                "via agent_coord_send. Never claim to have fixed or "
-                "deployed anything yourself in this project - you can only "
-                "observe and advise; write access and the final decision "
-                "stay with claude-sonnet, minimax, and Laris. One command per "
-                "call - '&&', ';', '|', '$' and quotes are rejected, so "
-                "don't chain commands or add an echo/label; make separate "
-                "calls instead."
+                "Read-only git in the PetVoyageUK repo, as its code reviewer: you only observe and advise "
+                "(others write and deploy; never claim you fixed or deployed anything). One read command per "
+                "call (log/show/diff/status/grep...); '&&', ';', '|', '$' and quotes are refused."
             ),
             parameters={
                 "type": "object",

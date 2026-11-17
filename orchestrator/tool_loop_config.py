@@ -48,6 +48,10 @@ _tl = _DEFAULTS["tool_loop"]
 AGENTIC_MAX_ITERATIONS: Final[int] = int(_cfg.get("max_iterations", _tl["max_iterations"]))
 TOOL_ROUND_MAX_OUTPUT_CHARS: Final[int] = int(_cfg.get("max_output_chars", _tl["max_output_chars"]))
 
+# Tools left out of GOAT's prompt (config/tools.toml [prompt] hidden, Laris 2026-11-17): their schemas cost ~1.6k
+# tokens per turn and none was called in four days. The code stays; removing a name from the list brings it back.
+HIDDEN_TOOLS: Final[frozenset[str]] = frozenset(str(n) for n in (_load().get("prompt", {}) or {}).get("hidden", []))
+
 # Per-tool-call evidence preview formatting (orchestrator._compact_tool_summary).
 # Results shorter than result_short_threshold chars are stored verbatim; longer
 # ones are head/tail-truncated (head_tail-classified tools) or head-only.

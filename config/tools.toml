@@ -27,6 +27,12 @@ max_lines = 500
 # reached 60-90k chars and tripped the tool-loop size cap after one call. The newest lines are kept.
 max_chars = 15000
 
+[prompt]
+# Tools left out of GOAT's prompt: none of them was called in 14-17.11 (251 turns) and together they cost ~1.6k
+# tokens on EVERY turn. The code stays; take a name out of the list to offer the tool again.
+hidden = ["write_file", "start_workflow", "workflow_send", "workflow_status", "stop_workflow", "set_identity",
+          "browse_page", "forget_fact", "fetch_content", "repo_list", "read_l1"]
+
 [plugins]
 scan_interval_seconds = 30
 
@@ -39,7 +45,10 @@ scan_interval_seconds = 30
 # cap (vs. the char cap below) was the thing actually walling off deep
 # multi-step investigations -- see [shell] above for the per-call timeout.
 [tool_loop]
-max_iterations = 200
+# 200 → 8 (Laris, 2026-11-17): the 200 of 2026-08-14 was a test never reverted, so only the char cap below stopped a
+# turn; live 14-17.11: median 3 tool calls per turn, p90 15, max 42 ("se învârte în cerc"). At 8 rounds the
+# synthesis is forced with what GOAT has.
+max_iterations = 8
 # Cumulative chars of tool output (across every call, every iteration) allowed
 # before the round is force-synthesized -- sized to content instead of round
 # count, since a model issuing several large read_file/shell_run calls can
