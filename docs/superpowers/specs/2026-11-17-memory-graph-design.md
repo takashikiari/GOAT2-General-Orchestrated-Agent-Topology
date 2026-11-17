@@ -221,12 +221,16 @@ potrivită în prompt.
 
 ## 13. Ce a rămas din spec, măsurat (T40, 2026-11-17 seara)
 
-- **§6 Unificare — făcut.** Scrierile aceluiași lucru („wave 2"/„wave2"/„wave-2") primesc `alias_of` spre cea cu cele
-  mai multe episoade (106 grupuri, 116 rânduri marcate, nimic șters); activarea citește tot grupul. Cuvintele care nu
-  numesc nimic („aici", „neața", „șefule", „super") nu mai conduc activare și nu mai fac perechi (rândurile rămân).
-  Pe o copie a grafului, 300 de episoade ca scântei: se schimbă reamintirea la 61/300; dispar 53 de amintiri aduse
-  prin cuvinte-gunoi; 120 vin prin lucruri unificate. Pe cele 40 cele mai recente: nicio schimbare (merg pe legături
-  episod↔episod). Timp p90 33 ms.
+- **§6 Unificare — făcut (PR #86), apoi REVERT (Laris, 2026-11-17 20:10).** Scrierile aceluiași lucru primeau
+  `alias_of` spre o scriere principală, iar cuvintele care nu numesc nimic nu mai conduceau activarea. Pe o rejucare
+  cu toate cele 3.484 de ture trăite (cod vechi 7042b05 față de cod nou, aceeași copie a grafului, același „acum"),
+  relevanța s-a măsurat cu cross-encoder-ul față de mesajul turei. Ca live: 342 de ture schimbate; schimburi
+  relevante 46 mai bune / 55 mai proaste / 1 egal (prin unificare 11 / 35). Cu împărțirea la legăturile unei singure
+  scrieri și lista redusă la saluturi/adverbe: 30 / 41 / 1 (prin unificare 12 / 22). Cu 40 de legături citite
+  separat pentru fiecare scriere: 44 / 57 / 1 (prin unificare 9 / 37). Ipoteza că limita de 40 (`_FANOUT`) era cauza
+  a fost infirmată; unificarea pierde în toate cele trei forme. Lecția: pe acest graf, a uni scrierile nu ajută
+  reamintirea; orice încercare viitoare trece întâi prin aceeași rejucare, ca poartă. Marcajele `alias_of` scrise
+  live (116) rămân în tabel (nimic nu se șterge), dar codul nu le mai citește.
 - **§4.1 Scântei din lucrurile pomenite — măsurat, NU construit.** 80 de mesaje reale ale lui Laris: 8 pomenesc un
   lucru utilizabil (nu generic, nu hub); ce aduc în plus față de căutare: 48 de amintiri, relevanță mediană 0,003,
   4 peste 0,5 — toate rezumate agent-coord, pe care reamintirea le exclude oricum. Beneficiu zero → fără cod.
