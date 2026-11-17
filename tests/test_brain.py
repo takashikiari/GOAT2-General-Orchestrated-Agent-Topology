@@ -1,4 +1,4 @@
-"""Memory brain v0 (brain/brain.py): blind write from L2, paths that strengthen and fade, the open-items nucleus."""
+"""Memory brain v0 (brain/brain.py): blind write from L2 and the open-items nucleus (path links removed 2026-11-17)."""
 from __future__ import annotations
 
 import asyncio
@@ -87,45 +87,24 @@ def test_blind_write_reads_only_and_ingests_each_message_once(tmp_path):
     assert [r[0] for r in _rows(tmp_path, "SELECT role FROM events ORDER BY ts")] == ["user", "assistant", "user", "assistant"]
 
 
-def test_paths_link_the_conversation(tmp_path):
-    brain = _brain(tmp_path)
+def test_no_path_links_any_more_and_an_old_store_keeps_its_table(tmp_path):
+    """2026-11-17 (Laris): the path links and their fading were removed (never reinforced, never read). A new store
+    has no paths table; an old one keeps its table and rows untouched (no data is deleted)."""
+    brain = _brain(tmp_path / "new")
     asyncio.run(brain.sleep_once(_Working({"42": CHAT}), ["42"]))
-    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "answered_by", "next_turn"]
-
-
-def test_paths_fade_by_time_not_by_cycle(tmp_path):
-    """Half-life 24 h on the time elapsed: two cycles 5 s apart leave the links practically intact, 24 h halve them,
-    and nothing is ever deleted (GOAT's decision 2026-11-15: decay per cycle was wrong)."""
-    now = [1_000_000.0]
-    brain = b.Brain({**b._DEFAULTS, "db_path": str(tmp_path / "brain.sqlite")}, clock=lambda: now[0])
-    working = _Working({"42": CHAT})
-    asyncio.run(brain.sleep_once(working, ["42"]))                      # links created at weight 1.0
-    for _ in range(2):
-        now[0] += 5
-        asyncio.run(brain.sleep_once(working, ["42"]))
-    weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
-    assert len(weights) == 3 and all(w > 0.9999 for w in weights)       # 10 s of 24 h: invisible
-    now[0] = 1_000_000.0 + 24 * 3600
-    asyncio.run(brain.sleep_once(working, ["42"]))
-    weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
-    assert len(weights) == 3 and all(abs(w - 0.5) < 1e-9 for w in weights)   # exactly half after 24 h
-    now[0] += 24 * 3600 * 10                                             # ten days of silence
-    asyncio.run(brain.sleep_once(working, ["42"]))
-    weights = [r[0] for r in _rows(tmp_path, "SELECT weight FROM paths")]
-    assert len(weights) == 3 and all(0 < w < 0.001 for w in weights)     # faint, never deleted
-
-
-def test_a_store_made_before_time_fading_gets_the_column(tmp_path):
+    brain.close()
+    con = sqlite3.connect(tmp_path / "new" / "brain.sqlite")
+    assert not con.execute("SELECT name FROM sqlite_master WHERE name = 'paths'").fetchall()
+    con.close()
     con = sqlite3.connect(tmp_path / "brain.sqlite")
-    con.execute("CREATE TABLE paths (src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, weight REAL NOT NULL, "
-                "last_reinforced REAL NOT NULL, PRIMARY KEY (src, dst, kind))")
-    con.execute("INSERT INTO paths VALUES ('a', 'b', 'next_turn', 1.0, 0.0)")
+    con.execute("CREATE TABLE paths (src TEXT, dst TEXT, kind TEXT, weight REAL, last_reinforced REAL, faded_at REAL)")
+    con.execute("INSERT INTO paths VALUES ('a', 'b', 'next_turn', 0.4, 0.0, 0.0)")
     con.commit()
     con.close()
     brain = _brain(tmp_path)
-    asyncio.run(brain.sleep_once(_Working({}), []))
-    cols = {r[1] for r in _rows(tmp_path, "PRAGMA table_info(paths)")}
-    assert "faded_at" in cols and _rows(tmp_path, "SELECT count(*) FROM paths") == [(1,)]
+    asyncio.run(brain.sleep_once(_Working({"42": CHAT}), ["42"]))
+    brain.close()
+    assert _rows(tmp_path, "SELECT src, dst, kind, weight FROM paths") == [("a", "b", "next_turn", 0.4)]
 
 
 def test_nucleus_keeps_open_questions_and_promises(tmp_path):
@@ -149,13 +128,6 @@ def test_lanes_stay_apart(tmp_path):
     assert asyncio.run(brain.nucleus("42", "channel")) == []      # a digest is not a short question
 
 
-def test_a_reply_saved_with_the_same_timestamp_is_still_linked_to_its_question(tmp_path):
-    same = [_m("user", "Ce faci?", 50.0), _m("assistant", "Bine, tu?", 50.0), _m("user", "Și eu", 60.0)]
-    brain = _brain(tmp_path)
-    asyncio.run(brain.sleep_once(_Working({"42": same}), ["42"]))
-    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "next_turn"]
-
-
 def test_a_reply_to_a_digest_stays_in_the_channel_lane(tmp_path):
     chat = [_m("user", "Mesaje noi pe canalul agent-coord, de la x: „verifică logurile”", 10.0),
             _m("assistant", "Am verificat logurile, totul e ok.", 10.0),
@@ -164,7 +136,6 @@ def test_a_reply_to_a_digest_stays_in_the_channel_lane(tmp_path):
     asyncio.run(brain.sleep_once(_Working({"42": chat}), ["42"]))
     assert _rows(tmp_path, "SELECT role, lane FROM events ORDER BY ts, role DESC") == [
         ("user", "channel"), ("assistant", "channel"), ("user", "human"), ("assistant", "human")]
-    assert sorted(r[0] for r in _rows(tmp_path, "SELECT kind FROM paths")) == ["answered_by", "answered_by"]
 
 
 def test_small_slices_resume_next_cycle(tmp_path):
@@ -204,7 +175,7 @@ def test_an_exhausted_budget_still_makes_progress(tmp_path):
     """Live 2026-11-15 11:38: in the busy bot process the first SQLite query alone took longer than the 20 ms
     slice, the loop broke before the first message and returned 0 events with no error, every time."""
     brain = _brain(tmp_path)
-    events, links, _ = brain._ingest("42", CHAT, 0.0)            # budget already gone before the first row
+    events, _ = brain._ingest("42", CHAT, 0.0)            # budget already gone before the first row
     assert events >= 1                                          # at least one message per call, never zero
 
 

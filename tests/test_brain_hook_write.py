@@ -63,7 +63,7 @@ def test_fix2_hook_events_are_reported_once_by_the_next_cycle(brain_on, caplog):
     assert (first["events"], first["hook_events"]) == (0, 2)                  # events keeps its meaning (cycle's own)
     assert (second["events"], second["hook_events"]) == (0, 0)                # counted once
     assert _cycles(brain_on) == [(0, 2), (0, 0)]
-    assert any("events=0 hook_events=2 links=" in r.getMessage() for r in caplog.records)
+    assert any("events=0 hook_events=2 open_items=" in r.getMessage() for r in caplog.records)
 
 
 def test_fix2_the_pending_count_survives_a_restart(brain_on):
