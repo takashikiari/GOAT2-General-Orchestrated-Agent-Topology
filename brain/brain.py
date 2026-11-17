@@ -33,7 +33,7 @@ _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_event
              "max_cycle_ms": 200, "nucleus_items": 10,
              "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "inject_promise_max_hours": 24,
              "scheduler": False,
-             "scheduler_max_attempts": 3}
+             "scheduler_max_attempts": 3, "graph": False, "graph_ingest_per_tick": 200}
 
 def load_config(path: Path | None = None) -> dict:
     """``config/brain.toml`` [brain] over the defaults; a missing file means the defaults (off)."""
