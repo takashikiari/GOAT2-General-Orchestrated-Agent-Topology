@@ -15,4 +15,4 @@ inject_promise_max_hours = 24  # a promise older than this is no longer shown in
 scheduler = true            # scheduled messages (brain/scheduler.py) go out on this same tick, through notify()
 scheduler_max_attempts = 3  # a message that fails this many sends is marked failed (kept in the table)
 graph = true                # memory graph phase F1 (brain/graph.py): built from L3 on this tick; nothing reads it yet
-graph_ingest_per_tick = 200 # L3 memories ingested per tick (the first ticks backfill the existing ones)
+graph_ingest_per_tick = 100 # L3 memories per tick (the first ~40 ticks backfill the 3.8k existing ones; keeps the brain lock short)
