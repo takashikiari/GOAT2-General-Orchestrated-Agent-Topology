@@ -176,8 +176,8 @@ class BenchmarkRunner:
         if not expected:
             return True
         try:
-            results, _, _ = await self._registry.memory_layers.search_episodic_with_cache(
-                chat_id, test_case["query"], limit=PREFETCH_MAX_RESULTS,
+            results = await self._registry.memory_layers.search_episodic(
+                test_case["query"], limit=PREFETCH_MAX_RESULTS,
             )
             return Evaluator.fact_in_results(results, expected)
         except Exception as exc:  # noqa: BLE001 — grounding failure must not abort

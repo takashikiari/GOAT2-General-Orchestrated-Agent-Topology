@@ -37,10 +37,8 @@ from registry.registry import ServiceRegistry
 
 
 async def _labeled_semantic(layers, chat_id: str, query: str, limit: int, chat_id_filter: str | None):
-    results, cache_hit, cache_key = await layers.search_episodic_with_cache(
-        chat_id, query, limit=limit, chat_id_filter=chat_id_filter,
-    )
-    return results, cache_hit, cache_key
+    results = await layers.search_episodic(query, limit=limit, chat_id_filter=chat_id_filter)
+    return results, False, None   # no search cache since 2026-11-17
 
 
 async def _labeled_temporal(layers, query: str, limit: int):

@@ -47,8 +47,8 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-# Redis key namespace — distinct from SessionCache's ``cache:`` and working
-# memory's ``goat2:working:`` so the activation never collides with either.
+# Redis key namespace — distinct from the working
+# memory's ``goat2:working:`` so the activation never collides with it.
 _ACTIVATION_PREFIX = "activation"
 # Closed set of populations that keep separate thread state on one chat_id. "human" keeps the
 # original un-suffixed key; anything outside this set is a programming error, never a silent fallback.

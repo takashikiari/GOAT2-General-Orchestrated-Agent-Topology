@@ -50,13 +50,9 @@ class _FakeLayers:
         self.last_query = None
         self.archive_calls = 0
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, topic_id=None, chat_id_filter=None):
-        self.search_calls += 1
-        self.last_query = query
-        return list(self._results), False, "search:deadbeef"
-
     async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None, chat_id_filter=None):
         self.search_calls += 1
+        self.last_query = query
         return list(self._results)
 
     async def find_by_keys(self, chat_id, keys, limit=15):
@@ -94,7 +90,7 @@ class _FakeLayers:
 
     # L2.5 activation layer — fakes return empty/None so every single-turn test
     # sees a COLD turn (no prior activation, no embedding) and the existing
-    # behaviour (search runs, cache_key reported) is preserved.
+    # behaviour (search runs) is preserved.
     async def get_activation(self, chat_id, lane="human"):
         self.activation_lanes = [*getattr(self, "activation_lanes", []), ("get", lane)]
         return None

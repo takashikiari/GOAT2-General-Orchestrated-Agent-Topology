@@ -42,9 +42,6 @@ letta_model = "letta/letta-free"
 # so L1 stays small, curated and always-in-context (off the top of every budget).
 l1_facts_max_tokens = 2000
 
-[session_cache]
-ttl_seconds = 300
-
 # L0 identity. Set your real persona here — the always-present root instruction.
 # Counted against the AITS budget, so keep it concise.
 [identity]

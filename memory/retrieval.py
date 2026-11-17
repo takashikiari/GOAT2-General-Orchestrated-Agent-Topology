@@ -131,14 +131,9 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
 
 
 async def _cold(layers, chat_id, query, topic_id, topic_return_id):
-    async def _cached(filt=None):
-        r, h, k = await layers.search_episodic_with_cache(
-            chat_id, query, limit=_LIMIT, chat_id_filter=filt,
-        )
-        return r, h, k
-
     labels = ["semantic_global", "semantic_chat_scoped"]
-    coros = [_cached(), _cached(filt=chat_id)]
+    coros = [layers.search_episodic(query, limit=_LIMIT), layers.search_episodic(query, limit=_LIMIT,
+                                                                              chat_id_filter=chat_id)]
     if topic_return_id:
         labels.append("semantic_topic_return")
         coros.append(_topic_search(layers, query, topic_return_id))
@@ -155,15 +150,11 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     entities_dict = all_res[-1] if not isinstance(all_res[-1], BaseException) else {}
     bm25 = [] if isinstance(all_res[-2], BaseException) else all_res[-2]
     groups: list[tuple[str, list[dict]]] = []
-    cache_hit, cache_key = False, None
     for label, part in zip(labels, all_res[:-2]):
         if isinstance(part, BaseException):
             log.warning("retrieve cold mechanism raised chat=%s: %s", chat_id, part)
             continue
-        r, h, k = part
-        groups.append((label, r))
-        if k is not None:
-            cache_hit, cache_key = h, k
+        groups.append((label, part))
     t1 = time.perf_counter()
     temporal = await temporal_candidates(layers, query)
     times["temporal"], t1 = _ms(t1), time.perf_counter()
@@ -184,7 +175,8 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
     ]
     if ids:
         asyncio.create_task(layers.bump_access(chat_id, ids))
-    return merged, cache_hit, cache_key, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
+    # no search cache any more (removed 2026-11-17: 0 hits in 188 turns): cache_hit False, cache_key None
+    return merged, False, None, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
 async def temporal_candidates(
@@ -219,5 +211,4 @@ async def temporal_candidates(
 
 
 async def _topic_search(layers, query: str, topic_return_id: str):
-    r = await layers.search_episodic(query, limit=_LIMIT, topic_id=topic_return_id)
-    return r, False, None
+    return await layers.search_episodic(query, limit=_LIMIT, topic_id=topic_return_id)
