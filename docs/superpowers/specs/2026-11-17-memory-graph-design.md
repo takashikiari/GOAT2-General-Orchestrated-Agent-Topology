@@ -49,7 +49,6 @@ citea nimic; au fost scoase azi.)
 | `despre` | episod → lucru | episodul pomenește lucrul (din entitățile lui) |
 | `gândite_împreună` | episod ↔ episod | au fost aduse în același răspuns **și** amândouă au fost folosite (Hebb: „ce se aprinde împreună se leagă") |
 | `urmează` | episod → episod | același fir de discuție, unul după altul (ce face azi wave2) |
-| `din_cauza` | episod → episod | o decizie și ce a provocat-o / ce a urmat (extras în somn) |
 | `rezumă` | consolidată → episod | amintirea mai generală și episoadele ei |
 
 ## 4. Reamintirea: activare în lanț (înlocuiește prefetch-ul ca etapă separată)
@@ -91,7 +90,7 @@ După fiecare răspuns (în fundal, ca scrierea de azi a creierului, niciodată 
 
 - **Ingestie**: episoadele noi din L3 → noduri + legături `despre` (entități curățate) și `urmează`.
 - **Consolidare** (o dată pe noapte sau după N episoade noi): grupurile dense de episoade legate → un model mic
-  scrie o amintire consolidată (3–5 propoziții) + legăturile `rezumă` și, unde reiese clar, `din_cauza`.
+  scrie o amintire consolidată (3–5 propoziții) + legăturile `rezumă`.
 - **Unificare**: lucruri care sunt același lucru („prefetch" / „Prefetch-ul" / „prefetch-ul") → un nod principal;
   celelalte rămân în tabel, marcate `alias_of` → nodul principal, cu legăturile lor (nu se șterge nimic, doar se
   redirecționează la citire).
@@ -125,7 +124,7 @@ dacă GOAT face spontan legături bune. Graful se pornește/oprește din `[brain
 | F1 | graful construit din cele 3.835 de amintiri (lucruri curățate, `despre`, `urmează`) + ingestia în somn | niciunul (doar construiește) |
 | F2 | reamintirea în lanț în **umbră**: calculează și loghează ce ar aduce, fără să schimbe promptul; testul de continuitate pe ea | niciunul |
 | F3 | învățarea Hebb (§5) + consolidarea în somn (§6) | niciunul (încă umbră) |
-| F4 | pornire, dacă poarta din §7 trece; wave2 devine legătura `urmează` din graf | da |
+| F4 | pornire, dacă poarta din §7 trece | da |
 
 **Actualizat (2026-11-17):** F2–F4 sunt înlocuite de graful viu (§12): legături formate în aceeași tură, întărite la
 fiecare atingere, estompate lent, reamintire prin activare pornită live (`graph_recall = true`), judecată după §7
@@ -219,3 +218,19 @@ După o conversație reală cu Laris, în `brain.sqlite`:
 Verificarea se face citind store-ul (o interogare, fără test sintetic) și e criteriul de „merge" pentru această
 secțiune. Ea nu înlocuiește poarta din §7: §12 face graful viu; §7 spune dacă reamintirea pe el aduce amintirea
 potrivită în prompt.
+
+## 13. Ce a rămas din spec, măsurat (T40, 2026-11-17 seara)
+
+- **§6 Unificare — făcut.** Scrierile aceluiași lucru („wave 2"/„wave2"/„wave-2") primesc `alias_of` spre cea cu cele
+  mai multe episoade (106 grupuri, 116 rânduri marcate, nimic șters); activarea citește tot grupul. Cuvintele care nu
+  numesc nimic („aici", „neața", „șefule", „super") nu mai conduc activare și nu mai fac perechi (rândurile rămân).
+  Pe o copie a grafului, 300 de episoade ca scântei: se schimbă reamintirea la 61/300; dispar 53 de amintiri aduse
+  prin cuvinte-gunoi; 120 vin prin lucruri unificate. Pe cele 40 cele mai recente: nicio schimbare (merg pe legături
+  episod↔episod). Timp p90 33 ms.
+- **§4.1 Scântei din lucrurile pomenite — măsurat, NU construit.** 80 de mesaje reale ale lui Laris: 8 pomenesc un
+  lucru utilizabil (nu generic, nu hub); ce aduc în plus față de căutare: 48 de amintiri, relevanță mediană 0,003,
+  4 peste 0,5 — toate rezumate agent-coord, pe care reamintirea le exclude oricum. Beneficiu zero → fără cod.
+- **§5 slăbire −0,05 pentru aduse-nefolosite — neconstruit:** era legată de §4.1 și nu are date care s-o susțină.
+- **§3 `din_cauza` și §8 wave2 ca `urmează` — scoase din spec (Laris, 2026-11-17 seara):** §3 depindea de
+  rezumatele din somn, la care s-a renunțat; §8 nu schimbă răspunsurile (wave2 merge bine separat). Wave2 rămâne
+  mecanism separat al căutării.

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from brain import graph
+from brain import graph, graph_alias
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
@@ -65,13 +65,14 @@ async def maintain_slice(brain, pairs_limit: int = 200, fade_limit: int = 500, h
     t0, now = time.perf_counter(), time.time()
 
     def _work() -> dict:
+        u = graph_alias.unify(brain._db)  # new spellings of known things join their group before they pair
         p = graph.pairs_slice(brain._db, limit=pairs_limit, hub_fraction=hub_fraction)
         f = graph.fade_slice(brain._db, now, limit=fade_limit, half_life_days=half_life_days)
-        return {"pair_episodes": p["episodes"], "pairs": p["pairs"], "faded": f}
+        return {"pair_episodes": p["episodes"], "pairs": p["pairs"], "faded": f, "unified": u}
     async with brain.lock:
         out = await asyncio.to_thread(_work)
     out["ms"] = round((time.perf_counter() - t0) * 1000, 1)
-    if out["pair_episodes"] or out["faded"]:
-        log.info("brain: graph maintain pair_episodes=%d pairs=%d faded=%d ms=%.1f", out["pair_episodes"],
-                 out["pairs"], out["faded"], out["ms"])
+    if out["pair_episodes"] or out["faded"] or out["unified"]:
+        log.info("brain: graph maintain pair_episodes=%d pairs=%d faded=%d unified=%d ms=%.1f", out["pair_episodes"],
+                 out["pairs"], out["faded"], out["unified"], out["ms"])
     return out
