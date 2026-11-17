@@ -24,7 +24,7 @@ import time
 from memory.activation import rescore_recency
 from memory.budget import enforce_result_limit
 from memory import config as _cfg
-from memory.config import PREFETCH_MAX_RESULTS
+from memory.config import PREFETCH_MAX_RESULTS, RERANKER_TOP_K
 from memory.content_filter import drop_tiny, drop_tiny_groups
 from memory.result_merger import merge_results
 from memory.temporal_route import parse_interval
@@ -126,7 +126,10 @@ async def _drift(layers, chat_id, query, topic_id, activation=None):
         "retrieve drift chat=%s merged=%d temporal=%d prediction=%d",
         chat_id, len(merged), len(temporal), len(prediction),
     )
-    log.info("retrieve timing drift chat=%s n_rerank=%d ms=%s", chat_id, n_rerank, times)
+    # n_pool = candidates after merge + entity boost (the boost re-orders all of them); n_scored = what the
+    # cross-encoder actually scores (the first [reranker] top_k): the old "n_rerank=40" read as 40 scored
+    log.info("retrieve timing drift chat=%s n_pool=%d n_scored=%d ms=%s", chat_id, n_rerank,
+             min(n_rerank, RERANKER_TOP_K), times)
     return merged, False, None, {"warm_served": False, "thematic": len(merged), "specific_key": 0}
 
 
@@ -168,7 +171,10 @@ async def _cold(layers, chat_id, query, topic_id, topic_return_id):
         "retrieve cold chat=%s merged=%d bm25=%d temporal=%d",
         chat_id, len(merged), len(bm25), len(temporal),
     )
-    log.info("retrieve timing cold chat=%s n_rerank=%d ms=%s", chat_id, n_rerank, times)
+    # n_pool = candidates after merge + entity boost (the boost re-orders all of them); n_scored = what the
+    # cross-encoder actually scores (the first [reranker] top_k): the old "n_rerank=40" read as 40 scored
+    log.info("retrieve timing cold chat=%s n_pool=%d n_scored=%d ms=%s", chat_id, n_rerank,
+             min(n_rerank, RERANKER_TOP_K), times)
     ids = [
         r.get("metadata", {}).get("message_id")
         for r in merged if r.get("metadata", {}).get("message_id")

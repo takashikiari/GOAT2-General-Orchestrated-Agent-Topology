@@ -257,8 +257,9 @@ max_years_in_past = 1
 # (logit 0); on 45 replayed real turns the best score had median 0.138 and 14/45 turns were >= 0.5. Separate from
 # [context_assembler] blended_min_score, which filters retrieval results. It always stays offered when there are no
 # results, none was used, or the reranker did not run.
-# enabled = false: measure only (the decision is logged as would_hide, the tool is never hidden) until the
-# threshold is confirmed on the live distribution.
+# enabled = true since 2026-11-17 (Laris): measured on 229 live turns (14-17.11) the decision to hide search_memory
+# was right in 83-97% of the turns where it would hide it (usage_probe / no search_memory call); data:
+# ~/.local/state/goat2/brain-measure/gate-eval-2026-11-17.tsv. false = measure only (would_hide logged, never hidden).
 [tool_gate]
-enabled = false
+enabled = true
 search_memory_min_top_score = 0.5
