@@ -1,6 +1,6 @@
 # Memoria ca un creier: graful de amintiri al lui GOAT — design
 
-**Data:** 2026-11-17 · **Status:** propunere, așteaptă aprobarea lui Laris (fără cod înainte) · **Bază:** main `118156d`
+**Data:** 2026-11-17 · **Status:** aprobat de Laris cu condiția „nu se șterge nimic" (§1); așteaptă cele 3 decizii din §11 · **Bază:** main `118156d`
 
 ## 1. Ce vrem (în cuvintele lui Laris)
 
@@ -11,6 +11,12 @@ relevanță**, nu pe căutare de text într-un dulap cu dosare. Prefetch-ul nu e
 **primul pas al gândirii**, parte din orchestrator.
 
 Nu vrem: mai multe reguli și limite care să forțeze modelul să „gândească" altfel.
+
+**Condiție absolută (Laris, 2026-11-17): nu se șterge nimic, niciodată.** Nicio amintire, niciun nod, nicio legătură
+nu primește DELETE. O legătură nefolosită se estompează până la o greutate minimă de **0,001** și rămâne fizic în
+`brain.sqlite` pentru totdeauna. Singurul fel în care ceva „dispare" din context e să fie depășit de lucruri mai
+relevante; un stimul viitor care aprinde un nod din apropiere trebuie să o poată readuce în față. Ca un creier:
+nimic nu dispare, totul doar se estompează până când un stimul îl readuce. (Detalii: §4, §5, §6.)
 
 ## 2. Ce avem azi și ce lipsește
 
@@ -58,6 +64,12 @@ La fiecare mesaj, în `retrieve()`:
    în loc de asociere).
 3. **Filtru de relevanță pe momentul de acum**: un nod ajuns prin legături intră în prompt doar dacă e și relevant
    pentru mesaj (scorul cross-encoder pe care îl avem deja ≥ un prag mic). Legătura propune, relevanța decide.
+   **Legăturile estompate rămân în joc**: orice legătură, chiar la podeaua de 0,001, face din vecinul ei un
+   **candidat** când un nod din apropiere se aprinde. Greutatea doar ordonează candidații; nu îi exclude. Dacă o
+   amintire estompată e cea mai relevantă pentru ce se vorbește acum, ea intră în prompt — exact „stimulul care o
+   readuce în prim-plan". (Fără asta, o legătură de 0,001 ar transmite practic zero activare și ar fi ștearsă de
+   facto, deși există fizic.) Numărul de candidați verificați e plafonat după greutate și recență, ca să rămână
+   rapid — dar plafonul taie doar din ce se **verifică acum**, nu șterge nimic.
 4. **În prompt**: în bugetul L3 existent, sub titlul „Ce îmi amintesc legat de asta", fiecare amintire cu motivul
    scurt („legat de: brain v0", „gândit împreună cu discuția din 15.11"). GOAT vede **de ce** își amintește.
 
@@ -70,15 +82,22 @@ După fiecare răspuns (în fundal, ca scrierea de azi a creierului, niciodată 
 - amintirile **folosite** în răspuns (semnalul `usage_probe`, care există) → legătura `gândite_împreună` între ele se
   întărește (+0,2, plafonat la 1), la fel `despre` dintre ele și lucrurile din mesaj;
 - amintirile aduse dar **nefolosite** → legătura care le-a adus slăbește puțin (−0,05);
-- în timp, fără folosire, legăturile se sting încet (înjumătățire la ~14 zile), **niciodată șterse brusc**.
+- în timp, fără folosire, legăturile se estompează încet (înjumătățire la ~14 zile) până la **podeaua de 0,001**,
+  sub care nu coboară niciodată; nu sunt șterse și nu sunt scoase din parcurgere;
+- o legătură estompată readusă în față de un stimul și **folosită** se întărește din nou după aceleași reguli
+  (+0,2): amintirea „revine" și rămâne aproape cât timp e folosită.
 
 ## 6. Somnul: consolidarea (pe ticul existent al creierului, în felii mici)
 
 - **Ingestie**: episoadele noi din L3 → noduri + legături `despre` (entități curățate) și `urmează`.
 - **Consolidare** (o dată pe noapte sau după N episoade noi): grupurile dense de episoade legate → un model mic
   scrie o amintire consolidată (3–5 propoziții) + legăturile `rezumă` și, unde reiese clar, `din_cauza`.
-- **Unificare**: lucruri care sunt același lucru („prefetch" / „Prefetch-ul" / „prefetch-ul") → un singur nod.
-- **Curățenie**: legăturile sub un prag minim, nefolosite de mult, sunt marcate stinse (păstrate, dar necitite).
+- **Unificare**: lucruri care sunt același lucru („prefetch" / „Prefetch-ul" / „prefetch-ul") → un nod principal;
+  celelalte rămân în tabel, marcate `alias_of` → nodul principal, cu legăturile lor (nu se șterge nimic, doar se
+  redirecționează la citire).
+- **Fără curățenie prin ștergere**: nu există DELETE nici pe noduri, nici pe legături, nici pe amintiri consolidate.
+  Somnul doar estompează (până la podeaua 0,001) și întărește. Un test automat verifică la fiecare rulare că
+  numărul de noduri și de legături nu scade niciodată.
 
 ## 7. Cum știm că merge (testul de continuitate) — poarta înainte de pornire
 
@@ -114,7 +133,7 @@ Din istoria reală a lui Laris (L2 + L3, pe **memoria de atunci**, fără nimic 
 
 ## 10. Ce nu facem
 
-Nu înlocuim L1/L2/L3; nu ștergem amintiri; nu punem reguli noi asupra modelului; nu pornim nimic fără poarta din §7;
+Nu înlocuim L1/L2/L3; nu ștergem nimic — nici amintiri, nici noduri, nici legături (condiția absolută din §1); nu punem reguli noi asupra modelului; nu pornim nimic fără poarta din §7;
 nu adăugăm infrastructură nouă (fără bază de date de grafuri — SQLite-ul creierului ajunge).
 
 ## 11. De decis de Laris
