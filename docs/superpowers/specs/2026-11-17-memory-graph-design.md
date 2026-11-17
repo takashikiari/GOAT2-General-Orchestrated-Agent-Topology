@@ -111,6 +111,12 @@ Din istoria reală a lui Laris (L2 + L3, pe **memoria de atunci**, fără nimic 
 - **Poarta** (fixată înainte de date): graful trebuie să aducă ținta în prompt în **cel puțin +15 puncte procentuale**
   mai multe cazuri decât azi, **fără** să crească amintirile irelevante. Dacă nu, nu-l pornim.
 
+**Înlocuit (Laris, 2026-11-17):** o amintire, o trăire nu e ceva standard — e dinamică, spontaneitate; nu există un
+„răspuns corect", ci un răspuns bun. Un etalon cu ținte alese dinainte măsoară o linie (întrebare → țintă), adică
+exact ce nu e un creier. Rezultatele lui (azi 8/36; F2 și legăturile din tură 7–9/36) rămân doar ca istoric.
+Graful se judecă de acum după: (1) **§12.6** — e viu, citit direct din store; (2) **cum simte Laris conversațiile** —
+dacă GOAT face spontan legături bune. Graful se pornește/oprește din `[brain] graph_recall`, fără să șteargă nimic.
+
 ## 8. Fazele (fiecare cu PR separat, testat, cu OK-ul lui Laris)
 
 | Fază | Ce | Efect asupra răspunsurilor |
@@ -120,6 +126,10 @@ Din istoria reală a lui Laris (L2 + L3, pe **memoria de atunci**, fără nimic 
 | F2 | reamintirea în lanț în **umbră**: calculează și loghează ce ar aduce, fără să schimbe promptul; testul de continuitate pe ea | niciunul |
 | F3 | învățarea Hebb (§5) + consolidarea în somn (§6) | niciunul (încă umbră) |
 | F4 | pornire, dacă poarta din §7 trece; wave2 devine legătura `urmează` din graf | da |
+
+**Actualizat (2026-11-17):** F2–F4 sunt înlocuite de graful viu (§12): legături formate în aceeași tură, întărite la
+fiecare atingere, estompate lent, reamintire prin activare pornită live (`graph_recall = true`), judecată după §7
+(varianta înlocuită). Consolidarea prin rezumate (§6) nu e implementată: legăturile se nasc în tură, nu după ore.
 
 ## 9. Riscuri, spuse dinainte
 
@@ -142,3 +152,70 @@ nu adăugăm infrastructură nouă (fără bază de date de grafuri — SQLite-u
 2. Poarta: **+15 puncte procentuale** hit@prompt față de reamintirea de azi, fără mai mult zgomot.
 3. **F0 și F1 împreună** ca prim pas (setul de continuitate + baseline, și graful construit în paralel, fără efect
    asupra răspunsurilor).
+
+## 12. Graful viu: legăturile se nasc, se întăresc și se estompează (Laris, 2026-11-17)
+
+Cerința lui Laris: memoria să devină ceva **viu, ca ADN-ul** — o explozie de legături neuronale, nu o fotografie.
+
+### 12.1 Starea de acum (F1, verificat în cod)
+
+- `brain/graph.py` `_edge`: o legătură se creează o singură dată (`INSERT OR IGNORE`); greutatea rămâne **1,0 pe
+  veci** — nu se întărește, nu slăbește.
+- Coloanele `uses` și `last_used` există în schemă, dar **nu le scrie nimeni**.
+- `WEIGHT_FLOOR = 0,001` e declarat, dar **nu există cod care să estompeze** o legătură spre el: regula „nimic nu se
+  șterge, totul se estompează" (§1) e azi doar text.
+- **Nu există nicio legătură lucru↔lucru**: doar `despre` (episod→lucru) și `urmează` (episod→episod). Graful e o
+  poză a co-apariției, nu o rețea.
+
+### 12.2 Legături lucru↔lucru (`împreună`)
+
+Două lucruri întâlnite **în același episod** se leagă direct între ele (legătură nedirecționată, cheia = perechea
+ordonată alfabetic). La prima întâlnire: greutate 0,1. La fiecare re-întâlnire într-un episod nou: întărire (§12.3).
+Ce se repetă des devine o legătură puternică („LeShuttle"↔„Eurotunnel", „prefetch"↔„rerank"); o pereche văzută o
+singură dată rămâne slabă. Hub-urile („laris", „lenovo", „goat") nu formează perechi cu tot (altfel fiecare episod
+ar crea zeci de legături inutile): un lucru prezent în peste 15% din episoade nu intră în perechi, dar își păstrează
+legăturile `despre` (§4.2 se ocupă de ele la citire).
+
+### 12.3 Întărire la fiecare atingere, nu doar la creare
+
+Orice atingere a unei legături — o re-întâlnire (§12.2), o formare în aceeași tură (§5, `gândite_împreună`) sau o
+parcurgere la reamintire care ajunge în răspuns (§12.5) — o face:
+
+- `weight = min(1,0, weight_estompat + Δ)` (Δ: 0,1 la re-întâlnire, 0,2 la folosire în răspuns, 0,05 la simplă
+  parcurgere fără folosire);
+- `uses = uses + 1`, `last_used = acum`.
+
+`weight_estompat` e greutatea adusă la zi după §12.4, ca o legătură veche și estompată să pornească de unde a ajuns,
+nu de la 1,0.
+
+### 12.4 Estompare lentă spre podea, niciodată ștergere
+
+Fără atingere, greutatea scade cu timpul de la `last_used` (sau `created_at`, dacă n-a fost atinsă niciodată):
+`weight_acum = max(0,001, weight × 0,5 ^ (zile_trecute / 14))`. Calculul se face:
+
+- **la citire**, din `weight` și `last_used` (nu e nevoie să rescrii toată tabela ca să fie corect);
+- **în somn**, în felii mici, ca valoarea scrisă să urmeze timpul (o actualizare `UPDATE`, niciodată `DELETE`).
+
+Podeaua 0,001 e absolută: o legătură nu dispare, iar la citire rămâne **candidată** (§4.3), deci un stimul viitor o
+poate readuce și o poate întări din nou (§12.3). Testul automat din §6 („numărul de noduri și legături nu scade
+niciodată") rămâne obligatoriu.
+
+### 12.5 Citirea atinge legăturile
+
+Reamintirea care trece prin graf (§4) **scrie**: legăturile parcurse până la o amintire care a intrat în prompt primesc
+`uses++`, `last_used = acum`, Δ = 0,05; dacă amintirea a fost și **folosită** în răspuns (semnalul `usage_probe`),
+Δ = 0,2. Scrierea se face în fundal, după răspuns, ca scrierea de azi a creierului — niciodată pe calea răspunsului.
+Fără asta nu există „folosit", iar graful nu poate învăța.
+
+### 12.6 Ce înseamnă „viu", verificabil fără măsurători sintetice
+
+După o conversație reală cu Laris, în `brain.sqlite`:
+
+1. legăturile parcurse în acea conversație au `last_used` din timpul conversației și `weight` mai mare decât înainte;
+2. legăturile neatinse au `last_used` neschimbat, iar greutatea lor citită (§12.4) e mai mică decât ieri;
+3. există legături lucru↔lucru noi, din episoadele conversației;
+4. numărul total de noduri și legături a crescut sau a rămas egal — niciodată nu a scăzut.
+
+Verificarea se face citind store-ul (o interogare, fără test sintetic) și e criteriul de „merge" pentru această
+secțiune. Ea nu înlocuiește poarta din §7: §12 face graful viu; §7 spune dacă reamintirea pe el aduce amintirea
+potrivită în prompt.

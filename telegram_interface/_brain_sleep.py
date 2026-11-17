@@ -60,8 +60,13 @@ def _graph_tick(registry):
     from brain import graph_ingest
 
     async def tick() -> None:
+        cfg = _brain.CONFIG
         await graph_ingest.ingest_slice(_brain.get_instance(), registry.episodic_memory,
-                                        limit=int(_brain.CONFIG.get("graph_ingest_per_tick", 200)))
+                                        limit=int(cfg.get("graph_ingest_per_tick", 100)))
+        await graph_ingest.maintain_slice(_brain.get_instance(), pairs_limit=int(cfg.get("graph_pairs_per_tick", 200)),
+                                          fade_limit=int(cfg.get("graph_fade_per_tick", 500)),
+                                          hub_fraction=float(cfg.get("graph_hub_fraction", 0.15)),
+                                          half_life_days=float(cfg.get("graph_half_life_days", 14.0)))
     return tick
 
 

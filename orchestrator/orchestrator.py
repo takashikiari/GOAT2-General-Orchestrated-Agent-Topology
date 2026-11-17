@@ -33,6 +33,7 @@ from memory.retrieval import retrieve, temporal_candidates
 from memory.temporal_route import parse_interval
 from memory.l3_attribution import InjectedBlocks
 from brain import brain as _brain
+from brain import live as _brain_live
 from brain.inject import format_block as format_nucleus_block
 from orchestrator.dsml import DSML_BLOCK, DSML_INVOKE, DSML_PARAM, strip_dsml
 from orchestrator.dsml_recovery import answer_without_tools
@@ -502,6 +503,10 @@ class Orchestrator:
             collector.set_prefetch(True, served, False, len(l3_results), 0)
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
             l3_provenance: dict = {}
+            # the living memory graph (brain/live.py, design §12): what is in mind lights up associated memories,
+            # which join the L3 results first; off unless [brain] graph_recall, any error = as without it
+            l3_results, graph_trace = await _brain_live.recall_into(getattr(layers, "_episodic", None), l3_results,
+                                                                    messages)
             context_blocks, l3_used = await layers.assemble_context(
                 chat_id, budget=budget, l3_results=l3_results,
                 facts=facts, messages=messages,
@@ -702,6 +707,11 @@ class Orchestrator:
                 brain_task = asyncio.create_task(_brain_record(chat_id, turn_messages, lane))
                 self._pending_bg.add(brain_task)
                 brain_task.add_done_callback(self._pending_bg.discard)
+                # the turn's links, formed in the same turn from what was in mind (brain/live.py)
+                graph_task = asyncio.create_task(
+                    _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
+                self._pending_bg.add(graph_task)
+                graph_task.add_done_callback(self._pending_bg.discard)
             archive_task = asyncio.create_task(
                 _archive_turn(
                     layers, chat_id, intent, reply,
