@@ -11,11 +11,12 @@ temporally at all, regardless of parser quality.
 
 Known gaps (checked live, not fixed here — see task audit 2026-07-12):
 "luni" ("Monday") is genuinely ambiguous for dateparser (collides with month
-tokens) and "alaltaieri"/"alaltăieri" ("day before yesterday") isn't in
-dateparser's RO relative-date lexicon even with diacritics restored — both
-return no match with languages=["ro", "en"]. Fixing either would mean adding
-a hand-rolled relative-expression lexicon, which is disproportionate to a
-single-word gap; documented here instead of scope-creeping into this bugfix.
+tokens) and returns no match with languages=["ro", "en"].
+
+Fixed 2026-11-17 (F0 continuity test on real recall questions): "aseară"/"aseara" and "alaltăieri"/"alaltaieri" are
+not in dateparser's RO lexicon, so a small explicit lexicon handles them (``_lexicon_interval``); an explicit day next
+to a time-only fragment ("pe 5 iulie la ora 12") now keeps the day instead of today's date; "la aceeași oră" is the
+current hour on the named day.
 
 Fixed 2026-07-26: "mai" ("more"/"still"/"also" — an extremely common Romanian
 adverb, as in "mai știi", "ce mai faci", "nu mai am") collides with the month
@@ -123,6 +124,25 @@ CHANNEL_DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"
 _CHANNEL_STAMP = re.compile(r"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\]")
 
 
+# Relative day words dateparser's Romanian lexicon does not know (checked live 2026-11-17: "aseară"/"aseara" and
+# "alaltăieri"/"alaltaieri" return no match). In the F0 continuity test, "ce am vorbit aseară" was a typical recall
+# question that got no time window at all.
+_SAME_HOUR_RE = re.compile(r"\b(aceeași|aceeasi|aceeaşi)\s+or[ăa]\b", re.IGNORECASE)
+_ASEARA_RE = re.compile(r"\b(aseară|aseara)\b", re.IGNORECASE)
+_ALALTAIERI_RE = re.compile(r"\b(alaltăieri|alaltaieri)\b", re.IGNORECASE)
+
+
+def _lexicon_interval(query: str, now: datetime) -> tuple[float, float] | None:
+    """Windows for the relative day words above: "aseară" = yesterday 17:00-24:00, "alaltăieri" = the whole day
+    before yesterday. None when neither is in the query."""
+    day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if _ASEARA_RE.search(query):
+        return (day0 - timedelta(hours=7)).timestamp(), day0.timestamp()
+    if _ALALTAIERI_RE.search(query):
+        return (day0 - timedelta(days=2)).timestamp(), (day0 - timedelta(days=1)).timestamp()
+    return None
+
+
 def parse_interval(query: str, now: datetime | None = None) -> tuple[float, float] | None:
     """Find a date/time expression in ``query``; return an (after_ts, before_ts) window.
 
@@ -135,6 +155,9 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
         return None
     query = _CHANNEL_STAMP.sub(" ", query or "")
     now = now or datetime.now()
+    lexicon = _lexicon_interval(query, now)
+    if lexicon is not None:
+        return lexicon
     settings = {"RELATIVE_BASE": now, "PREFER_DATES_FROM": "past"}
     normalized_query = _normalize_spoken_hours(query)
     try:
@@ -160,6 +183,14 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
         if any(marker in text.lower() for marker in _TIME_MARKERS):
             matched_text, center = text, dt
             break
+    # A time-only fragment ("ora 12") is dated today by dateparser. When another fragment names an explicit day
+    # ("pe 5 iulie la ora 12"), that day wins and the hour comes from the time fragment. Live 2026-11-17: the query
+    # "Ce am vorbit pe 5 iulie la in jur de ora 12?" got a window on the day it was asked, not on 5 July.
+    if any(marker in matched_text.lower() for marker in _TIME_MARKERS):
+        for text, dt in matches:
+            if text != matched_text and not any(m in text.lower() for m in _TIME_MARKERS) and dt.date() != now.date():
+                center = center.replace(year=dt.year, month=dt.month, day=dt.day)
+                break
 
     if not _is_plausible_year(center.year, now):
         # Defense-in-depth: _normalize_spoken_hours fixes the specific
@@ -189,6 +220,9 @@ def parse_interval(query: str, now: datetime | None = None) -> tuple[float, floa
             return None
 
     has_time = any(marker in matched_text.lower() for marker in _TIME_MARKERS)
+    # "la aceeași oră" = the hour it is now, on the named day (dateparser puts it at midnight)
+    if _SAME_HOUR_RE.search(query) and center.hour == 0 and center.minute == 0:
+        center, has_time = center.replace(hour=now.hour, minute=now.minute), True
     if has_time:
         delta = timedelta(hours=1)
     else:
