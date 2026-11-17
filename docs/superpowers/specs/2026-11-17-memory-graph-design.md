@@ -219,3 +219,18 @@ După o conversație reală cu Laris, în `brain.sqlite`:
 Verificarea se face citind store-ul (o interogare, fără test sintetic) și e criteriul de „merge" pentru această
 secțiune. Ea nu înlocuiește poarta din §7: §12 face graful viu; §7 spune dacă reamintirea pe el aduce amintirea
 potrivită în prompt.
+
+## 13. Ce a rămas din spec, măsurat (T40, 2026-11-17 seara)
+
+- **§6 Unificare — făcut.** Scrierile aceluiași lucru („wave 2"/„wave2"/„wave-2") primesc `alias_of` spre cea cu cele
+  mai multe episoade (106 grupuri, 116 rânduri marcate, nimic șters); activarea citește tot grupul. Cuvintele care nu
+  numesc nimic („aici", „neața", „șefule", „super") nu mai conduc activare și nu mai fac perechi (rândurile rămân).
+  Pe o copie a grafului, 300 de episoade ca scântei: se schimbă reamintirea la 61/300; dispar 53 de amintiri aduse
+  prin cuvinte-gunoi; 120 vin prin lucruri unificate. Pe cele 40 cele mai recente: nicio schimbare (merg pe legături
+  episod↔episod). Timp p90 33 ms.
+- **§4.1 Scântei din lucrurile pomenite — măsurat, NU construit.** 80 de mesaje reale ale lui Laris: 8 pomenesc un
+  lucru utilizabil (nu generic, nu hub); ce aduc în plus față de căutare: 48 de amintiri, relevanță mediană 0,003,
+  4 peste 0,5 — toate rezumate agent-coord, pe care reamintirea le exclude oricum. Beneficiu zero → fără cod.
+- **§5 slăbire −0,05 pentru aduse-nefolosite — neconstruit:** era legată de §4.1 și nu are date care s-o susțină.
+- **§3 `din_cauza` și §8 wave2 ca `urmează` — propuse spre scoatere** (decizia lui Laris): §3 depindea de rezumatele
+  din somn, la care s-a renunțat; §8 nu schimbă răspunsurile (wave2 merge bine separat).
