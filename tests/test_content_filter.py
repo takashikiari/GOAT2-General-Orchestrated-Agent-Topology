@@ -24,9 +24,9 @@ class _NoRerankLayers:
     def __init__(self):
         self.merge_inputs = None
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, chat_id_filter=None):
+    async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None, chat_id_filter=None):
         return ([_ent("t", "🤦"), _ent("g", "despre serverul Letta")] if chat_id_filter is None
-                else [_ent("s", "Ce?")]), False, "k"
+                else [_ent("s", "Ce?")])
 
     async def bm25_search(self, query, limit=15):
         return [_ent("t", "🤦")]

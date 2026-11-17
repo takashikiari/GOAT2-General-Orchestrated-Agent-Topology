@@ -1,4 +1,4 @@
-"""tests.test_chat_id_scoped_search — chat_id_filter parameter on search/search_episodic_with_cache."""
+"""tests.test_chat_id_scoped_search — chat_id_filter parameter on search/search_episodic."""
 from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock, AsyncMock
@@ -19,14 +19,6 @@ def test_search_episodic_passes_chat_id_filter():
     asyncio.run(layers.search_episodic("query", chat_id_filter="chat42"))
     call_kwargs = ep.search.call_args[1]
     assert call_kwargs.get("chat_id_filter") == "chat42"
-
-
-def test_search_cache_key_differs_with_chat_id_filter():
-    """Different chat_id_filter values produce different cache keys."""
-    from memory.layers import MemoryLayers
-    key_global = MemoryLayers._search_cache_key("query", topic_id=None, chat_id_filter=None)
-    key_scoped = MemoryLayers._search_cache_key("query", topic_id=None, chat_id_filter="chat42")
-    assert key_global != key_scoped
 
 
 def test_episodic_search_chat_id_filter_adds_clause():

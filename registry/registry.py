@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 from config import settings
 from memory.analytics import MemoryAnalytics
 from memory.bm25_index import BM25Index
-from memory.config import RERANKER_ENABLED, SESSION_CACHE_TTL
+from memory.config import RERANKER_ENABLED
 from memory.episodic import EpisodicMemory
 from memory.gliner_extractor import GLiNERExtractor
 from memory.layers import MemoryLayers
@@ -105,7 +105,6 @@ class ServiceRegistry:
         if self._memory_layers is None:
             self._memory_layers = MemoryLayers(
                 self.working_memory, self.episodic_memory, self.permanent_memory,
-                cache_ttl=SESSION_CACHE_TTL,
                 extractor=self.gliner_extractor,
                 bm25=self.bm25_index,
                 reranker=self.reranker,

@@ -38,16 +38,11 @@ class _FakeLayers:
 
     async def search_episodic(self, query, limit=5, after=None, before=None,
                                topic_id=None, chat_id_filter=None):
-        # What the OLD implementation called directly. On its own it only
-        # ever surfaces the wrong memory.
+        # Semantic search alone only ever surfaces the wrong memory (global); the chat-scoped search finds nothing.
         self.bare_search_calls += 1
-        return [_hit("wrong", "irrelevant chatter about the weather", ts=100.0)]
-
-    async def search_episodic_with_cache(self, chat_id, query, limit=5,
-                                          topic_id=None, chat_id_filter=None):
         if chat_id_filter is None:
-            return [_hit("wrong", "irrelevant chatter about the weather", ts=100.0)], False, "key:global"
-        return [], False, "key:scoped"
+            return [_hit("wrong", "irrelevant chatter about the weather", ts=100.0)]
+        return []
 
     async def bm25_search(self, query, limit=15):
         # Only BM25 (term overlap) surfaces the actually relevant memory.
@@ -61,7 +56,7 @@ class _FakeLayers:
 
     async def rerank(self, query, results):
         # Cross-encoder: correctly ranks the relevant memory first even
-        # though raw semantic distance (search_episodic_with_cache) ranked
+        # though raw semantic distance (search_episodic) ranked
         # the irrelevant one first.
         return sorted(results, key=lambda r: r["metadata"]["message_id"] != "right")
 
@@ -87,9 +82,9 @@ def test_search_memory_surfaces_the_bm25_only_result_reranked_first():
 
 def test_search_memory_no_results_message_unchanged():
     class _EmptyLayers(_FakeLayers):
-        async def search_episodic_with_cache(self, chat_id, query, limit=5,
-                                              topic_id=None, chat_id_filter=None):
-            return [], False, "key"
+        async def search_episodic(self, query, limit=5, after=None, before=None,
+                                   topic_id=None, chat_id_filter=None):
+            return []
 
         async def bm25_search(self, query, limit=15):
             return []
@@ -120,11 +115,11 @@ def test_search_memory_result_count_capped_at_tool_limit():
     from tools import memory_tools
 
     class _ManyLayers(_FakeLayers):
-        async def search_episodic_with_cache(self, chat_id, query, limit=5,
-                                              topic_id=None, chat_id_filter=None):
+        async def search_episodic(self, query, limit=5, after=None, before=None,
+                                   topic_id=None, chat_id_filter=None):
             if chat_id_filter is None:
-                return [_hit(f"g{i}", f"global {i}", ts=float(i)) for i in range(10)], False, "key:global"
-            return [], False, "key:scoped"
+                return [_hit(f"g{i}", f"global {i}", ts=float(i)) for i in range(10)]
+            return []
 
         async def bm25_search(self, query, limit=15):
             return []

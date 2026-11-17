@@ -13,9 +13,6 @@ def _hit(message_id: str) -> dict:
 class _FakeLayers:
     """cold state finds the target via bm25 only; warm/drift reuse cold's activation."""
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, chat_id_filter=None):
-        return [], False, "key"
-
     async def search_episodic(self, query, limit=5, topic_id=None, **kw):
         return []
 

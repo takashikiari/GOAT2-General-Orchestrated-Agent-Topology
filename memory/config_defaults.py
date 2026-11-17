@@ -34,9 +34,6 @@ _DEFAULTS: dict = {
         "letta_model": "letta/letta-free",
         "l1_facts_max_tokens": 500,
     },
-    "session_cache": {
-        "ttl_seconds": 300,
-    },
     "identity": {
         "base_prompt": "You are a helpful assistant.",
     },

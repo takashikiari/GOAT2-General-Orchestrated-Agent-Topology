@@ -133,8 +133,6 @@ l3_gap_significance = 3.0
 topic_return_threshold = 0.75    # cosine sim to resume an archived topic on cold break
 topic_archive_max = 10           # past topic centroids kept per chat
 
-[session_cache]
-ttl_seconds = 300
 ```
 
 ---

@@ -20,10 +20,10 @@ def _hit(message_id: str) -> dict:
 class _FakeLayers:
     """cold path: global search returns 'a', chat-scoped returns 'b', bm25 returns 'a'."""
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, chat_id_filter=None):
+    async def search_episodic(self, query, limit=5, after=None, before=None, topic_id=None, chat_id_filter=None):
         if chat_id_filter is None:
-            return [_hit("a")], False, "key:global"
-        return [_hit("b")], False, "key:scoped"
+            return [_hit("a")]
+        return [_hit("b")]
 
     async def bm25_search(self, query, limit=15):
         return [_hit("a")]

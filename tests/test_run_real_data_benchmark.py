@@ -27,9 +27,6 @@ def _hit(message_id: str) -> dict:
 class _FakeLayers:
     """Mirrors tests/test_prefetch_bench.py's fake: cold finds the target via bm25."""
 
-    async def search_episodic_with_cache(self, chat_id, query, limit=5, chat_id_filter=None):
-        return [], False, "key"
-
     async def search_episodic(self, query, limit=5, topic_id=None, **kw):
         return []
 

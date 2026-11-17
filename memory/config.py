@@ -81,10 +81,6 @@ L1_FACTS_MAX_TOKENS: Final[int] = int(
     _permanent.get("l1_facts_max_tokens", _DEFAULTS["permanent"]["l1_facts_max_tokens"])
 )
 
-_session_cache = _cfg.get("session_cache", _DEFAULTS["session_cache"])
-SESSION_CACHE_TTL: Final[int] = int(
-    _session_cache.get("ttl_seconds", _DEFAULTS["session_cache"]["ttl_seconds"])
-)
 
 _identity = _cfg.get("identity", _DEFAULTS["identity"])
 IDENTITY_BASE_PROMPT: str = str(
@@ -215,7 +211,6 @@ __all__ = [
     "PERMANENT_AGENT_NAME",
     "PERMANENT_LETTA_MODEL",
     "L1_FACTS_MAX_TOKENS",
-    "SESSION_CACHE_TTL",
     "IDENTITY_BASE_PROMPT",
     "MAX_RESULTS_PER_SEARCH",
     "MAX_CONTEXT_TOKENS",
