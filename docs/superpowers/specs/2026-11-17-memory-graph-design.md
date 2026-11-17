@@ -1,6 +1,6 @@
 # Memoria ca un creier: graful de amintiri al lui GOAT — design
 
-**Data:** 2026-11-17 · **Status:** aprobat de Laris cu condiția „nu se șterge nimic" (§1); așteaptă cele 3 decizii din §11 · **Bază:** main `118156d`
+**Data:** 2026-11-17 · **Status:** aprobat de Laris cu condiția „nu se șterge nimic" (§1); decizii §11 luate (deepseek, +15, F0+F1 împreună) · **Bază:** main `118156d`
 
 ## 1. Ce vrem (în cuvintele lui Laris)
 
@@ -136,8 +136,9 @@ Din istoria reală a lui Laris (L2 + L3, pe **memoria de atunci**, fără nimic 
 Nu înlocuim L1/L2/L3; nu ștergem nimic — nici amintiri, nici noduri, nici legături (condiția absolută din §1); nu punem reguli noi asupra modelului; nu pornim nimic fără poarta din §7;
 nu adăugăm infrastructură nouă (fără bază de date de grafuri — SQLite-ul creierului ajunge).
 
-## 11. De decis de Laris
+## 11. Decizii (Laris, 2026-11-17)
 
-1. Modelul pentru consolidare în somn: același model ca GOAT (deepseek) sau unul mai ieftin?
-2. Pragul porții (+15 puncte) — ok, sau altă cifră?
-3. Ordinea: F0 → F4 ca mai sus, sau F0+F1 împreună ca prim pas?
+1. Consolidarea în somn o face **deepseek** (același model ca GOAT).
+2. Poarta: **+15 puncte procentuale** hit@prompt față de reamintirea de azi, fără mai mult zgomot.
+3. **F0 și F1 împreună** ca prim pas (setul de continuitate + baseline, și graful construit în paralel, fără efect
+   asupra răspunsurilor).

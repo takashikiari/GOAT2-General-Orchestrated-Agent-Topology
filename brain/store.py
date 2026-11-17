@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from admin_panel.coord_feed import split_tools  # imported once here: inside the loop it ate the first cycle's budget
+from brain import graph
 from brain.rules import _PROMISE, _QUOTED, _SENTENCES, _WHEN, is_open_question, lane_of
 from utils.logging.setup import get_logger
 
@@ -71,6 +72,7 @@ class Brain:
         Path(self.cfg["db_path"]).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.cfg["db_path"], check_same_thread=False, timeout=5.0)  # busy -> error
         self._db.executescript(_SCHEMA)
+        self._db.executescript(graph.SCHEMA)  # the memory graph's tables (brain/graph.py), in the same store
         if "hook_events" not in {r[1] for r in self._db.execute("PRAGMA table_info(cycles)")}:  # same: an older store
             self._db.execute("ALTER TABLE cycles ADD COLUMN hook_events INTEGER NOT NULL DEFAULT 0")
             self._db.commit()

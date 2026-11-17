@@ -52,6 +52,34 @@ def _scheduler_tick(layers=None):
     return tick
 
 
+def _graph_tick(registry):
+    """The memory graph fed from L3 on the brain's tick (brain/graph_ingest.py), or None when [brain] graph is off.
+    Phase F1: it only builds the graph; nothing reads it yet."""
+    if not _brain.CONFIG.get("graph"):
+        return None
+    from brain import graph_ingest
+
+    async def tick() -> None:
+        await graph_ingest.ingest_slice(_brain.get_instance(), registry.episodic_memory,
+                                        limit=int(_brain.CONFIG.get("graph_ingest_per_tick", 200)))
+    return tick
+
+
+def _join(*ticks):
+    """One on_tick from several: each runs in turn, one failing never stops the others (logged)."""
+    live = [t for t in ticks if t is not None]
+    if not live:
+        return None
+
+    async def tick() -> None:
+        for t in live:
+            try:
+                await t()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("brain: tick part %s failed: %s: %s", getattr(t, "__qualname__", t), type(exc).__name__, exc)
+    return tick
+
+
 def post_init_hook(registry: "ServiceRegistry", chat_id: str):
     tasks: list[asyncio.Task] = []
 
@@ -67,7 +95,7 @@ def post_init_hook(registry: "ServiceRegistry", chat_id: str):
             if tick is not None:  # a message left half-sent by the previous process goes out again
                 recovered = await _scheduler.recover(_brain.get_instance())
                 log.info("brain: scheduler on, recovered=%d", recovered)
-            task = _brain.start(registry.working_memory, [chat_id], on_tick=tick)
+            task = _brain.start(registry.working_memory, [chat_id], on_tick=_join(tick, _graph_tick(registry)))
         except Exception as exc:  # noqa: BLE001 - the brain must never block the bot
             log.warning("brain: sleep failed to start: %s: %s", type(exc).__name__, exc)
             return
