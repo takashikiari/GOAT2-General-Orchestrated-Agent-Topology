@@ -65,12 +65,10 @@ def test_b_enabled_writes_the_turn_to_the_store(turn, brain_on):
     reply, layers = turn(lane="human")
     con = sqlite3.connect(brain_on)
     rows = con.execute("SELECT role, lane, text, l3_id FROM events ORDER BY ts, role DESC").fetchall()
-    links = con.execute("SELECT kind FROM paths").fetchall()
     con.close()
     assert [r[0] for r in rows] == ["user", "assistant"]
     assert rows[0][1] == "human" and rows[0][2] == "Cum stăm cu cache-ul?" and rows[1][2] == reply
     assert rows[0][3] == layers.saved[0]["l3_id"]           # the same turn as the L2 messages
-    assert links == [("answered_by",)]
 
 
 def test_b_enabled_uses_the_turns_real_lane(turn, brain_on):

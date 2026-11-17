@@ -1,11 +1,13 @@
-"""brain.brain — memory brain v0: blind write, paths that strengthen and fade, an "open items" nucleus (Laris + GOAT,
-2026-11-15). A new skeleton BESIDE the existing L1/L2/L3 memory: it reads the conversation from L2 (Redis) and never
-writes to Redis, Chroma or Letta. Its own store is one SQLite file on persistent disk. Off by default ([brain] enabled).
+"""brain.brain — memory brain v0: blind write and an "open items" nucleus (Laris + GOAT, 2026-11-15). A skeleton
+BESIDE the existing L1/L2/L3 memory: it reads the conversation from L2 (Redis) and never writes to Redis, Chroma or
+Letta. Its own store is one SQLite file on persistent disk. Off by default ([brain] enabled).
 
-- Blind write: every new L2 message becomes an ``events`` row, unfiltered, no judgement, no embedding.
+- Blind write: every new L2 message becomes an ``events`` row, unfiltered, no judgement, no embedding. It is the
+  record of what was said and when (an offline test can rebuild L2 as it was at any moment from it).
 - Sleep: a background asyncio task, every ``interval_seconds``, in small slices (``max_events_per_cycle`` rows or
-  ``max_cycle_ms``): ingest, link the path (user → answered_by → assistant → next_turn → user), reinforce the links
-  walked, and fade the rest by the TIME elapsed (half-life ``half_life_hours``), not per cycle. Never a delete.
+  ``max_cycle_ms``): ingest what the request hook has not, refresh the nucleus, then the tick hook (scheduled
+  messages). Path links with fading, a prefetch boost and the "used docs" signal were removed on 2026-11-17 (Laris):
+  measured, they were never read or did not help.
 - Nucleus (shadow): per chat and lane, the questions still unanswered and what GOAT said it would do ("revin",
   "o să verific"...), found by cheap rules. Computed and stored; with [brain] inject it is read back as a
   short block in GOAT's system prompt (``nucleus`` + brain/inject.py, 2026-11-15).
@@ -24,15 +26,14 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start", "is_enabled",
-           "record_turn", "get_instance", "nucleus", "record_usage"]
+           "record_turn", "get_instance", "nucleus"]
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
-             "max_cycle_ms": 200, "reinforce": 1.0, "half_life_hours": 24.0, "nucleus_items": 10,
+             "max_cycle_ms": 200, "nucleus_items": 10,
              "record_slow_ms": 2000, "inject": False, "inject_max_chars": 600, "inject_promise_max_hours": 24,
              "scheduler": False,
-             "scheduler_max_attempts": 3, "usage": False, "prefetch_boost": False,
-             "prefetch_boost_weight": 0.05, "prefetch_boost_cap": 3}
+             "scheduler_max_attempts": 3}
 
 def load_config(path: Path | None = None) -> dict:
     """``config/brain.toml`` [brain] over the defaults; a missing file means the defaults (off)."""
@@ -92,15 +93,6 @@ async def nucleus(chat_id: str, lane: str = "human") -> list[dict]:
     if not is_enabled():
         return []
     return await get_instance().nucleus(chat_id, lane)
-
-
-async def record_usage(doc_ids: list[str]) -> int:
-    """The L3 docs injected into this turn's prompt, one use each (brain/usage.py), or 0 when [brain] enabled or
-    usage is off. Phase 0 of the prefetch feedback: collected only, nothing reads it yet."""
-    if not (is_enabled() and CONFIG.get("usage")):
-        return 0
-    from brain import usage
-    return await usage.record(get_instance(), doc_ids)
 
 
 _sleep: tuple[asyncio.Task, asyncio.Event] | None = None

@@ -7,8 +7,6 @@ db_path = ""
 interval_seconds = 60       # one sleep cycle per minute
 max_events_per_cycle = 200  # small slices: a cycle never processes more than this ...
 max_cycle_ms = 200          # ... or runs longer than this; the rest waits for the next cycle
-reinforce = 1.0             # added to a link each time it is walked
-half_life_hours = 24        # links fade by the TIME elapsed: half their weight per 24 h (never deleted)
 nucleus_items = 10          # open items kept per chat and lane
 record_slow_ms = 2000       # the request hook writes the whole turn, never cancelled; slower than this is logged
 inject = true               # the nucleus goes into GOAT's system prompt as one short block (false = prompt as before)
@@ -16,7 +14,3 @@ inject_max_chars = 600      # the whole block, header included, at most this man
 inject_promise_max_hours = 24  # a promise older than this is no longer shown in the block (kept in the store; T33)
 scheduler = true            # scheduled messages (brain/scheduler.py) go out on this same tick, through notify()
 scheduler_max_attempts = 3  # a message that fails this many sends is marked failed (kept in the table)
-usage = true                # record which L3 docs were injected into the prompt (brain/usage.py)
-prefetch_boost = false      # phase 1: docs used before rank higher after rerank (brain/boost.py); OFF until measured
-prefetch_boost_weight = 0.05  # bonus at most this (hard bound 0.05 in code), on a CrossEncoder score of 0..1
-prefetch_boost_cap = 3      # the full bonus from this many (faded) uses up
