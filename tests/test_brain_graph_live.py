@@ -165,3 +165,18 @@ def test_other_sessions_traffic_is_never_recalled_into_a_turn():
     assert live._not_lived("[2026-11-14T17:38:23+02:00] user: Mesaje noi pe canalul agent-coord, de la x")
     assert live._not_lived("user: [Workflow 'audit' completed successfully]")
     assert not live._not_lived("[2026-11-14T22:10:30+02:00] user: Ești genial. Mulțumesc pt discuția asta")
+
+
+def test_recalled_memories_never_push_out_the_search_best_three(on):
+    import time
+    db, t0 = on.get_instance()._db, time.time() - 60
+    g.touch(db, "s1", "assoc", "gândite_împreună", 1.0, t0)
+    epi = _Epi({"assoc": "o amintire asociată, legată de s1"})
+    l3 = [{"content": f"r{i}", "blended_score": s, "metadata": {"message_id": f"s{i}"}}
+          for i, s in enumerate([0.9, 0.8, 0.7, 0.1], start=1)]
+    results, _ = asyncio.run(live.recall_into(epi, l3, []))
+    ranked = sorted(results, key=lambda r: r["blended_score"], reverse=True)      # what the assembler does
+    assert [r["metadata"]["message_id"] for r in ranked[:3]] == ["s1", "s2", "s3"]
+    assert ranked[3]["metadata"]["message_id"] == "assoc" and ranked[3]["blended_score"] == pytest.approx(0.693)
+    assert live._after_top([]) == 0.5
+    assert live._after_top([{"blended_score": 0.4}]) == pytest.approx(0.396)       # fewer than 3: under the weakest

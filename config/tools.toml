@@ -30,8 +30,10 @@ max_chars = 15000
 [prompt]
 # Tools left out of GOAT's prompt: none of them was called in 14-17.11 (251 turns) and together they cost ~1.6k
 # tokens on EVERY turn. The code stays; take a name out of the list to offer the tool again.
+# read_l1 / forget_fact are back (2026-11-17 17:31, live): with the core memory full (2000-token cap) Laris asked GOAT
+# to make room, and without them GOAT could only search the disk with shell — "unused for 4 days" != "not needed".
 hidden = ["write_file", "start_workflow", "workflow_send", "workflow_status", "stop_workflow", "set_identity",
-          "browse_page", "forget_fact", "fetch_content", "repo_list", "read_l1"]
+          "browse_page", "fetch_content", "repo_list"]
 
 [plugins]
 scan_interval_seconds = 30
