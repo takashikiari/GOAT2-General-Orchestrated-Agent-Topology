@@ -88,7 +88,12 @@ temporal_l3_guarantee_tokens = 4000
 l3_gap_significance = 3.0
 
 [aits]
-budget_base = 2000
+# 2000 → 8000 (Laris, 2026-11-17): with 2000 the whole memory budget was ~4.9k tokens, ~2k of it L0/L1, so GOAT saw
+# on average 8 of the last 20 conversation messages (~1k tokens) and "forgot" what it had been told an hour earlier.
+# Offline test on 78 real questions (L2 as it was at each moment, L3 without later documents): the facts that had
+# to be remembered reached the prompt in 3/14 turns at the old budget, 11/14 at 8k, 14/14 at 12k. With 8000 the
+# budget is ~10-11k (still capped by budget_hard_cap). Data: ~/.local/state/goat2/brain-measure/budget-test-2026-11-17.json
+budget_base = 8000
 budget_confidence_multiplier = 4000
 budget_complexity_max_bonus = 2000
 budget_hard_cap = 12000
