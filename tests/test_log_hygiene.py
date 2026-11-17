@@ -126,6 +126,7 @@ def test_stderr_closed_but_process_alive_never_hangs_start(monkeypatch, caplog, 
     assert killed == [1]
     msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("did not exit within" in m for m in msgs)
+    assert not any("exited rc=None" in m for m in msgs)                       # no fake 'exited' line after it
 
 # --- 3) coord_poller retry -----------------------------------------------------------------------------------------
 _OK = (0, '{"messages": [], "ack": null}', "")

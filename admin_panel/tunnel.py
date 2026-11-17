@@ -90,6 +90,9 @@ async def start(application: "Application") -> None:
                 # systemd stops the whole unit with SIGTERM, cloudflared included, and it exits before the bot's
                 # own shutdown runs: every live "cloudflared exited" (15-16.11) was a restart. A SIGTERM exit is
                 # INFO; any other exit stays a WARNING, with its code, so a real crash is visible.
+                if rc is None:  # no exit yet (the timeout above, already logged): not an exit line
+                    tunnel_state.set_state("down", detail=f"tunnel stopped (no exit within {_EXIT_WAIT_S:.0f} s)")
+                    return
                 if rc == -15:
                     log.info("cloudflared stopped by SIGTERM rc=%s (service stop/restart)", rc)
                 else:
