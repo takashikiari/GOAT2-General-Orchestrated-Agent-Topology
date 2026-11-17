@@ -309,9 +309,34 @@ class TestKnownUnparseableGaps:
         in this language configuration and returns no match."""
         assert parse_interval("luni", now=_NOW) is None
 
-    def test_alaltaieri_day_before_yesterday_unparseable(self):
-        """'alaltaieri'/'alaltăieri' ("day before yesterday") is not in
-        dateparser's RO relative-date lexicon (checked with diacritics
-        restored too) and returns no match."""
-        assert parse_interval("alaltaieri", now=_NOW) is None
-        assert parse_interval("alaltăieri", now=_NOW) is None
+
+
+class TestRelativeDayLexiconAndExplicitDays:
+    """2026-11-17 (F0 continuity test): recall questions dateparser got wrong or missed."""
+
+    @staticmethod
+    def _hm(window):
+        from datetime import datetime as _dt
+        return tuple(_dt.fromtimestamp(x).strftime("%d.%m %H:%M") for x in window)
+
+    def test_aseara_is_yesterday_evening_with_or_without_diacritics(self):
+        now = datetime(2026, 7, 7, 18, 53)
+        for q in ("ce am vorbit aseară?", "ce am vorbit aseara", "1 si 2 ce am vorbit aseara?"):
+            assert self._hm(parse_interval(q, now=now)) == ("06.07 17:00", "07.07 00:00"), q
+
+    def test_alaltaieri_is_the_day_before_yesterday(self):
+        now = datetime(2026, 7, 7, 18, 53)
+        for q in ("alaltaieri", "alaltăieri"):
+            assert self._hm(parse_interval(q, now=now)) == ("05.07 00:00", "06.07 00:00"), q
+
+    def test_an_explicit_day_wins_over_a_time_only_fragment(self):
+        now = datetime(2026, 7, 7, 18, 53)
+        assert self._hm(parse_interval("Ce am vorbit pe 5 iulie la in jur de ora 12?", now=now)) == \
+            ("05.07 11:00", "05.07 13:00")
+        assert self._hm(parse_interval("Dar azi pe la 12:00 ce am discutat?", now=now)) == \
+            ("07.07 11:00", "07.07 13:00")                       # today stays today
+
+    def test_la_aceeasi_ora_is_the_current_hour_on_the_named_day(self):
+        now = datetime(2026, 7, 7, 18, 53)
+        assert self._hm(parse_interval("Pe 5 iulie la aceeași oră ce am vorbit?", now=now)) == \
+            ("05.07 17:53", "05.07 19:53")
