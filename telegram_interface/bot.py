@@ -509,6 +509,8 @@ def build_app(registry: ServiceRegistry, *, post_init=None, post_shutdown=None) 
     app.add_handler(CommandHandler("rollback", handle_rollback))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    from telegram_interface._errors import on_error
+    app.add_error_handler(on_error)  # network blips as one line, real handler errors with context
     log.info("Telegram bot application built (model=%s)", settings.MODEL_NAME)
     return app
 

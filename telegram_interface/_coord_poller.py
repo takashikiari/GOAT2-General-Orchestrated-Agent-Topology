@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from telegram_interface.coord_poller_config import (
@@ -48,11 +49,21 @@ def _cli(*args: str) -> tuple[int, str, str]:
     return r.returncode, r.stdout, r.stderr
 
 
+_UNREAD_BACKOFF = (1.0, 3.0)  # a hub hiccup (CLI exit code 3, "hub inaccesibil") gets 2 retries in the same interval
+
+
 def _fetch(me: str) -> tuple[list[dict], str | None] | None:
-    """Unread messages for `me` and the id to ack once they are handled; None on any failure."""
-    code, out, err = _cli("unread", f"--identity={me}", "--json")
-    if code:
-        log.warning("coord_poller: unread failed (%s): %s", code, err.strip()[:200])
+    """Unread messages for `me` and the id to ack once they are handled; None on any failure. A failing CLI call is
+    retried up to len(_UNREAD_BACKOFF) times, and the failure is logged once, at the end (runs in a thread)."""
+    attempts = len(_UNREAD_BACKOFF) + 1
+    for attempt in range(1, attempts + 1):
+        code, out, err = _cli("unread", f"--identity={me}", "--json")
+        if not code:
+            break
+        if attempt < attempts:
+            time.sleep(_UNREAD_BACKOFF[attempt - 1])
+    else:
+        log.warning("coord_poller: unread failed after %d attempts (exit %s): %s", attempts, code, err.strip()[:200])
         return None
     data = _acli.parse_json(out, dict)
     if data is None:
