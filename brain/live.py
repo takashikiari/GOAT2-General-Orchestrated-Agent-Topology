@@ -38,7 +38,10 @@ _NOT_LIVED = ("Mesaje noi pe canalul agent-coord", "[Workflow '")
 
 
 def _not_lived(doc: str | None) -> bool:
-    """An agent-coord digest or a workflow report: the traffic of other sessions, never recalled into a turn."""
+    """An agent-coord digest or a workflow report: the traffic of other sessions, never recalled into a turn.
+    Never when [mind] is on: agent-coord messages (lane ``channel``) are lived memory like any conversation."""
+    if _brain.mind_on():
+        return False
     text = (doc or "").lstrip()
     if text.startswith("[") and "] " in text[:40] and text[1:5].isdigit():  # "[2026-11-14T17:38:23+02:00] "
         text = text.split("] ", 1)[1].lstrip()

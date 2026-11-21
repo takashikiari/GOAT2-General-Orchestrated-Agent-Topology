@@ -52,6 +52,8 @@ from orchestrator.tool_loop_config import (
 from orchestrator import turn_events
 from orchestrator.tools import ToolDefinition
 from orchestrator import tool_gate
+from orchestrator import mind_hook
+from brain import mind_live as _mind_live
 from memory.budget import estimate_tokens
 from plugins.plugin_manager import PluginManager
 from utils.logging.setup import get_logger
@@ -319,7 +321,7 @@ class Orchestrator:
     def _all_tools(self) -> list[ToolDefinition]:
         """Core tools plus the live plugin tools (re-read each turn), minus the ones hidden from the prompt
         ([prompt] hidden in config/tools.toml): a hidden tool is neither offered nor callable."""
-        return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in HIDDEN_TOOLS]
+        return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in HIDDEN_TOOLS | mind_hook.hidden_tools()]
 
     def _has_tool(self, name: str) -> bool:
         """True when a tool named ``name`` (core or plugin) is configured."""
@@ -503,39 +505,52 @@ class Orchestrator:
             collector.set_prefetch(True, served, False, len(l3_results), 0)
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
             l3_provenance: dict = {}
-            # the living memory graph (brain/live.py, design §12): what is in mind lights up associated memories,
-            # which join the L3 results first; off unless [brain] graph_recall, any error = as without it
-            l3_results, graph_trace = await _brain_live.recall_into(getattr(layers, "_episodic", None), l3_results,
-                                                                    messages)
-            context_blocks, l3_used = await layers.assemble_context(
-                chat_id, budget=budget, l3_results=l3_results,
-                facts=facts, messages=messages,
-                identity_prompt=identity_prompt,
-                temporal_center=temporal_center,
-                provenance=l3_provenance,
-            )
+            mind = mind_hook.on()  # [mind] enabled: the memory is ONE [În minte] block (orchestrator/mind_hook.py)
+            mind_shown: list[str] = []
+            mind_texts: dict[str, str] = {}
+            if mind:
+                graph_trace = {}
+                context_blocks, l3_used, mind_shown, mind_texts = await mind_hook.assemble(
+                    self._llm, layers, chat_id, lane, query, budget=budget, l3_results=l3_results, facts=facts,
+                    messages=messages, identity_prompt=identity_prompt, temporal_center=temporal_center,
+                    provenance=l3_provenance)
+            else:
+                # the living memory graph (brain/live.py, design §12): what is in mind lights up associated memories,
+                # which join the L3 results first; off unless [brain] graph_recall, any error = as without it
+                l3_results, graph_trace = await _brain_live.recall_into(getattr(layers, "_episodic", None),
+                                                                        l3_results, messages)
+                context_blocks, l3_used = await layers.assemble_context(
+                    chat_id, budget=budget, l3_results=l3_results,
+                    facts=facts, messages=messages,
+                    identity_prompt=identity_prompt,
+                    temporal_center=temporal_center,
+                    provenance=l3_provenance,
+                )
             collector.end_stage("assemble")
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
             # How good the prefetch is, and whether search_memory is offered at all (orchestrator.tool_gate)
             l3_block = next((b for b in context_blocks if b.startswith("[Context recuperat din istoric]")), "")
-            quality = tool_gate.measure(l3_results, l3_used, estimate_tokens(l3_block), getattr(layers, "reranks", False))
-            gate = tool_gate.decide(quality, tool_gate.CONFIG)
-            tool_gate.log_line(chat_id, quality, gate, tool_gate.CONFIG)
+            gate = mind_hook.NO_GATE  # mind on: search_memory is hidden by _all_tools, the gate decides nothing
+            if not mind:
+                quality = tool_gate.measure(l3_results, l3_used, estimate_tokens(l3_block),
+                                            getattr(layers, "reranks", False))
+                gate = tool_gate.decide(quality, tool_gate.CONFIG)
+                tool_gate.log_line(chat_id, quality, gate, tool_gate.CONFIG)
             if on_context_assembled is not None:
                 on_context_assembled(InjectedBlocks(context_blocks, l3_provenance))
             # 4. Build the prompt (inject stage — small, just assembly).
             collector.start_stage("inject")
             system_content = "\n\n".join(context_blocks)
-            nucleus_block = await _brain_nucleus_block(chat_id, lane)  # "" unless [brain] enabled + inject
+            nucleus_block = "" if mind else await _brain_nucleus_block(chat_id, lane)  # "" unless brain inject
             if nucleus_block:
                 system_content += f"\n\n{nucleus_block}"
-            guidance_texts: list[str] = []
-            if self._has_search_memory() and not gate["hidden"]:
+            guidance_texts: list[str] = [mind_hook.MIND_GUIDANCE] if mind else []
+            if self._has_search_memory() and not gate["hidden"] and not mind:
                 guidance_texts.append(_SEARCH_MEMORY_GUIDANCE)
-            if self._has_store_memory():
+            if self._has_store_memory() and not mind:
                 guidance_texts.append(_STORE_MEMORY_GUIDANCE)
-            if self._has_tool("promote_memory"):
+            if self._has_tool("promote_memory") and not mind:
                 guidance_texts.append(_PROMOTE_MEMORY_GUIDANCE)
             if self._has_tool("get_memory_metrics") or self._has_tool("get_recent_logs"):
                 guidance_texts.append(_INTROSPECTION_GUIDANCE)
@@ -709,7 +724,8 @@ class Orchestrator:
                 brain_task.add_done_callback(self._pending_bg.discard)
                 # the turn's links, formed in the same turn from what was in mind (brain/live.py)
                 graph_task = asyncio.create_task(
-                    _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
+                    _mind_live.after_turn(self._llm, chat_id, lane, l3_doc_id, intent, reply, mind_shown, mind_texts)
+                    if mind else _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
                 self._pending_bg.add(graph_task)
                 graph_task.add_done_callback(self._pending_bg.discard)
             archive_task = asyncio.create_task(
