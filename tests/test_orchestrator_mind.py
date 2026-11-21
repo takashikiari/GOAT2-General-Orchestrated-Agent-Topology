@@ -23,6 +23,7 @@ _L3 = [{"id": "m1", "content": "Laris a ales Kent", "blended_score": 0.9, "metad
        {"id": "m2", "content": "zbor anulat", "blended_score": 0.2, "metadata": {"message_id": "m2"}}]
 _FACTS = {"nume": "Laris"}
 _BLOCK = "[În minte]\nCe știu:\n- nume: Laris\n\nCe s-a întâmplat:\n- (2026-11-20) Laris a ales Kent — seamănă"
+_FACTS_BLOCK = "[Fapte]\n- nume: Laris"
 _TOOLS = ("search_memory", "read_l1", "store_memory", "promote_memory", "forget_fact")
 _CHANNEL_DOC = "[2026-11-14T17:38:23+02:00] user: Mesaje noi pe canalul agent-coord, de la x"
 
@@ -48,7 +49,7 @@ class _Layers(_FakeLayers):
     async def assemble_context(self, chat_id, budget=None, l3_results=None, facts=None, messages=None,
                                identity_prompt=None, temporal_center=None, provenance=None):
         self.assembled.append({"budget": budget, "l3_results": list(l3_results or []), "facts": facts})
-        return list(self._blocks), 0
+        return list(self._blocks) + ([_FACTS_BLOCK] if facts else []), 0
 
 
 def _tool(name):
@@ -139,7 +140,8 @@ def test_off_prompt_and_tools_unchanged(monkeypatch, tmp_path, turn, mind_calls,
 def test_on_prompt_has_one_memory_block_and_no_search_tools(monkeypatch, tmp_path, turn, mind_calls):
     _set(monkeypatch, tmp_path, True, True)
     system, names, layers, rec, _ = turn()
-    assert sum(p.startswith("[În minte]") for p in system.split("\n\n")) == 1 and _BLOCK in system and mind_hook.MIND_GUIDANCE in system
+    assert sum(p.startswith("[În minte]") for p in system.split("\n\n")) == 1
+    assert _BLOCK in system and mind_hook.MIND_GUIDANCE in system and _FACTS_BLOCK not in system
     for g in (_SEARCH_MEMORY_GUIDANCE, _STORE_MEMORY_GUIDANCE, _PROMOTE_MEMORY_GUIDANCE):
         assert g not in system
     assert NUCLEUS_HEADER not in system                        # open items live in [În minte] now
@@ -171,3 +173,22 @@ def test_channel_lane_is_lived_when_on(monkeypatch, tmp_path, turn, mind_calls):
     assert not _live._not_lived(_CHANNEL_DOC)                   # on: agent-coord is lived memory
     turn(lane="channel")
     assert mind_calls["expose"][0]["lane"] == "channel" and mind_calls["after"][0]["lane"] == "channel"
+
+
+def test_on_failed_expose_falls_back_to_todays_prompt(monkeypatch, tmp_path, turn, mind_calls):
+    """expose failed ("", [], {}): the turn keeps the L1 facts and L3 memories the old way, without MIND_GUIDANCE
+    (which would make GOAT deny remembering anything); the search tools come back with their guidance."""
+    _set(monkeypatch, tmp_path, True, True)
+
+    async def failed(*a, **kw):
+        mind_calls["expose"].append(a)
+        return "", [], {}
+    monkeypatch.setattr(mind_live, "expose", failed)
+    system, names, layers, _, reply = turn()
+    assert reply == "ok"
+    assert layers.assembled[-1]["l3_results"] == _L3 and layers.assembled[-1]["facts"] == _FACTS
+    assert _FACTS_BLOCK in system and "[În minte]" not in system and mind_hook.MIND_GUIDANCE not in system
+    for g in (_SEARCH_MEMORY_GUIDANCE, _STORE_MEMORY_GUIDANCE, _PROMOTE_MEMORY_GUIDANCE):
+        assert g in system
+    assert NUCLEUS_HEADER in system and names == list(_TOOLS)   # the turn is today's
+    assert mind_calls["after"][0]["shown"] == []                  # the turn is still learned by the mind

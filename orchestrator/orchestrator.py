@@ -318,10 +318,12 @@ class Orchestrator:
         """True when the ``store_memory`` tool is configured for this orchestrator."""
         return any(t.name == "store_memory" for t in self._tools)
 
-    def _all_tools(self) -> list[ToolDefinition]:
+    def _all_tools(self, mind_hidden: set[str] | None = None) -> list[ToolDefinition]:
         """Core tools plus the live plugin tools (re-read each turn), minus the ones hidden from the prompt
-        ([prompt] hidden in config/tools.toml): a hidden tool is neither offered nor callable."""
-        return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in HIDDEN_TOOLS | mind_hook.hidden_tools()]
+        ([prompt] hidden in config/tools.toml) and, with [mind] on, the memory-search tools (``mind_hidden``,
+        default ``mind_hook.hidden_tools()``): a hidden tool is neither offered nor callable."""
+        hidden = HIDDEN_TOOLS | (mind_hook.hidden_tools() if mind_hidden is None else mind_hidden)
+        return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in hidden]
 
     def _has_tool(self, name: str) -> bool:
         """True when a tool named ``name`` (core or plugin) is configured."""
@@ -505,12 +507,13 @@ class Orchestrator:
             collector.set_prefetch(True, served, False, len(l3_results), 0)
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
             l3_provenance: dict = {}
-            mind = mind_hook.on()  # [mind] enabled: the memory is ONE [În minte] block (orchestrator/mind_hook.py)
+            mind_switch = mind_hook.on()  # [mind] enabled: the memory is ONE [În minte] block (mind_hook.py)
+            mind = False  # the [În minte] block is in this turn's prompt (False when expose failed: today's prompt)
             mind_shown: list[str] = []
             mind_texts: dict[str, str] = {}
-            if mind:
+            if mind_switch:
                 graph_trace = {}
-                context_blocks, l3_used, mind_shown, mind_texts = await mind_hook.assemble(
+                context_blocks, l3_used, mind_shown, mind_texts, mind = await mind_hook.assemble(
                     self._llm, layers, chat_id, lane, query, budget=budget, l3_results=l3_results, facts=facts,
                     messages=messages, identity_prompt=identity_prompt, temporal_center=temporal_center,
                     provenance=l3_provenance)
@@ -530,9 +533,9 @@ class Orchestrator:
             collector.set_context_from_blocks(context_blocks, results_found=len(l3_results), results_used=l3_used)
             collector.set_prefetch_blocks_used(l3_used)
             # How good the prefetch is, and whether search_memory is offered at all (orchestrator.tool_gate)
-            l3_block = next((b for b in context_blocks if b.startswith("[Context recuperat din istoric]")), "")
             gate = mind_hook.NO_GATE  # mind on: search_memory is hidden by _all_tools, the gate decides nothing
             if not mind:
+                l3_block = next((b for b in context_blocks if b.startswith("[Context recuperat din istoric]")), "")
                 quality = tool_gate.measure(l3_results, l3_used, estimate_tokens(l3_block),
                                             getattr(layers, "reranks", False))
                 gate = tool_gate.decide(quality, tool_gate.CONFIG)
@@ -562,7 +565,7 @@ class Orchestrator:
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": intent},
             ]
-            all_tools = self._all_tools()
+            all_tools = self._all_tools(None if mind else set())  # expose failed: the search tools come back
             if gate["hidden"]:  # a good prefetch: the fallback is not offered this turn
                 all_tools = [t for t in all_tools if t.name != tool_gate.GATED_TOOL]
             kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
@@ -725,7 +728,8 @@ class Orchestrator:
                 # the turn's links, formed in the same turn from what was in mind (brain/live.py)
                 graph_task = asyncio.create_task(
                     _mind_live.after_turn(self._llm, chat_id, lane, l3_doc_id, intent, reply, mind_shown, mind_texts)
-                    if mind else _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
+                    if mind_switch
+                    else _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
                 self._pending_bg.add(graph_task)
                 graph_task.add_done_callback(self._pending_bg.discard)
             archive_task = asyncio.create_task(

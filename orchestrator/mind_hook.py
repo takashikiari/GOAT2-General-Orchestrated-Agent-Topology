@@ -3,7 +3,8 @@
 With ``[mind] enabled`` (config/brain.toml) the prompt's memory is ONE ``[În minte]`` block built by
 ``brain.mind_live.expose``; the L1 facts and the L3 memories go there, not into the context blocks a second time.
 GOAT gets no memory-search tools: a gap in what is in mind is a defect for us to fix, not one to work around.
-Off (the default), nothing here changes the turn.
+Off (the default), nothing here changes the turn. When ``expose`` fails (no block), ``assemble`` builds today's
+context blocks (real facts, original L3 results) and says the mind was not used: that turn is today's.
 """
 from __future__ import annotations
 
@@ -38,19 +39,23 @@ def hidden_tools() -> set[str]:
 
 async def assemble(llm, layers, chat_id: str, lane: str, message: str, *, budget: int, l3_results: list[dict],
                    facts: dict, messages: list[dict], identity_prompt: str, temporal_center, provenance: dict,
-                   ) -> tuple[list[str], int, list[str], dict[str, str]]:
+                   ) -> tuple[list[str], int, list[str], dict[str, str], bool]:
     """The context blocks without L1 facts and L3 results, then the ``[În minte]`` block in the budget left.
 
     ``l3_results`` are retrieve()'s, before any gap filter (R15). Returns (blocks, l3_used = memories shown,
-    ids shown, {id: text shown}); a failed expose leaves the blocks as they are and shows nothing."""
-    blocks, _ = await layers.assemble_context(
-        chat_id, budget=budget, l3_results=[], facts={}, messages=messages,
-        identity_prompt=identity_prompt, temporal_center=temporal_center, provenance=provenance,
-    )
+    ids shown, {id: text shown}, True). When expose gives no block (it failed), the blocks are today's: the real
+    facts and the original ``l3_results`` go through ``assemble_context`` as with the mind off, and the last value
+    is False, so the caller builds the rest of the prompt as today (no MIND_GUIDANCE that would deny memories)."""
+    def ctx(results: list[dict], known: dict):
+        return layers.assemble_context(chat_id, budget=budget, l3_results=results, facts=known, messages=messages,
+                                       identity_prompt=identity_prompt, temporal_center=temporal_center,
+                                       provenance=provenance)
+    blocks, _ = await ctx([], {})
     blocks = list(blocks)
     left = max(0, int(budget) - sum(estimate_tokens(b) for b in blocks))
     block, shown, texts = await mind_live.expose(llm, getattr(layers, "_episodic", None), chat_id, lane, message,
                                                  l3_results, facts, left)
-    if block:
-        blocks.append(block)
-    return blocks, len(shown), list(shown), dict(texts)
+    if not block:
+        blocks, l3_used = await ctx(l3_results, facts)
+        return list(blocks), l3_used, [], {}, False
+    return [*blocks, block], len(shown), list(shown), dict(texts), True
