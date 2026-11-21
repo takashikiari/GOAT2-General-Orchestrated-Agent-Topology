@@ -12,6 +12,7 @@ import pytest
 
 from brain import brain as b
 from brain import encode as enc
+from brain import graph as g
 from brain import mind
 from brain import mind_live as ml
 from memory.budget import estimate_tokens
@@ -100,9 +101,10 @@ def test_association_reaches_the_prompt_without_text_similarity(on):
 
 
 def test_convergence_puts_search_and_graph_hits_first(on):
-    _encode(on, "s1", T17 - DAY, gist="Am ales Render pentru deploy.", about=["Render"])
-    _encode(on, "g1", T17 - 2 * DAY, gist="Render a picat azi-noapte.", about=["Render"])
-    epi = FakeEpisodic({"g1": ("Render a picat", T17 - 2 * DAY)})
+    now = time.time()
+    _encode(on, "s1", now - DAY, gist="Am ales Render pentru deploy.", about=["Render"])
+    _encode(on, "g1", now - 30 * DAY, gist="Render a picat acum o lună.", about=["Render"])  # a faded link
+    epi = FakeEpisodic({"g1": ("Render a picat", now - 30 * DAY)})
     hits = [_hit("s2", 0.6, "seamănă doar textual"), _hit("s1", 0.5, "am ales Render")]
     block, shown, _ = _expose(FakeClient({"about": ["Render"], "asks_past": False}), epi, "Render?", hits)
     assert shown[0] == "s1"                                      # lit by the search AND the graph: first
@@ -133,8 +135,9 @@ def test_missing_cue_is_said_and_short_messages_say_nothing(on):
     assert "Ce nu știu:\n- nu ai nimic despre Bucegi" in block
     assert "nu ai nimic despre Render" not in block              # in the graph and a lit memory is about it
     short = FakeClient({"about": ["Bucegi"], "asks_past": False})
-    block, _, _ = _expose(short, epi, "ok", [])
+    block, shown, _ = _expose(short, epi, "ok", [])
     assert "Ce nu știu" not in block
+    assert "r1" in shown                                         # carried from the turn before
     broken = FakeClient("nu e json")
     block, _, _ = _expose(broken, epi, "ce am zis despre Bucegi?", [])
     assert "Ce nu știu" not in block
@@ -163,9 +166,45 @@ def test_understanding_failure_falls_back_to_search_and_carry(on):
     assert "Ce nu știu" not in block and client.calls                # it was asked, it failed, the turn went on
 
 
-def test_any_error_returns_empty(on, monkeypatch):
+def test_any_error_returns_empty(on):
     class Broken:
         def _get_collection(self):
             raise RuntimeError("chroma down")
     mind.light(on._db, "42", "human", "c1", "amintire", 0.9, "căutare", "x", time.time())
     assert _expose(FakeClient({"about": [], "asks_past": False}), Broken(), "x", []) == ("", [], {})
+
+
+def test_association_reaches_the_prompt_through_a_hub_thing(on):
+    now = time.time()
+    for i in range(300):                                         # an old, busy thing: degree 301
+        _encode(on, f"n{i}", now - 90 * DAY, gist=f"vechi {i}", about=["Render"])
+    _encode(on, "t0", now - 3600, gist="Render a picat azi-noapte.", about=["Render"])
+    g.fade_slice(on._db, now, limit=1000)                         # the sleep fades the stored weights
+    hits = [_hit(f"s{i}", 0.3 + i * 0.03, f"căutare {i}") for i in range(12)]
+    block, shown, _ = _expose(FakeClient({"about": ["Render"], "asks_past": False}), FakeEpisodic({}), "Render?",
+                              hits)
+    assert "t0" in shown and "Render a picat azi-noapte." in block
+
+
+def test_many_open_items_leave_room_for_memories(on):
+    for i in range(10):
+        _encode(on, f"p{i}", T17 + i, gist=f"Promit {i}.", opens={"kind": "promisiune", "text": f"Deschis numărul {i}"})
+    hits = [_hit(f"m{i}", 0.9 - i * 0.05, f"amintirea {i} despre Kent") for i in range(8)]
+    client = FakeClient({"about": [], "asks_past": False})
+    block, shown, _ = _expose(client, FakeEpisodic({}), "x", hits, {"nume": "Laris"}, budget=150)
+    assert estimate_tokens(block) <= 150 and "- nume: Laris" in block
+    assert shown and "Deschis numărul 9" in block and "Deschis numărul 0" not in block   # most recent first
+    opened = block.split("Ce e deschis:\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert len(opened) <= b.MIND["expose_items"] // 3
+
+
+def test_rejected_labels_are_not_cues_and_trimmed_memories_count_as_missing(on):
+    _encode(on, "r1", T17, gist="Render merge bine de o săptămână întreagă, " * 4, about=["Render"])
+    epi = FakeEpisodic({"r1": ("Render merge " * 200, T17)})
+    asks = FakeClient({"about": ["UK", "Render"], "asks_past": True})
+    block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [])
+    assert "r1" in shown and "nimic despre UK" not in block and "Ce nu știu" not in block
+    tight = estimate_tokens("[În minte]\n\nCe știu:\n- nume: Laris\n\nCe nu știu:\n- nu ai nimic despre Render")
+    block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [], {"nume": "Laris"}, budget=tight,
+                              chat="43")
+    assert "r1" not in shown and "nu ai nimic despre Render" in block
