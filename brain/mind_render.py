@@ -15,6 +15,7 @@ from memory.budget import estimate_tokens
 __all__ = ["day", "clean", "memories", "render"]
 
 _RAW_N, _RAW_MAX, _GIST_MAX = 3, 600, 160
+_SAME_N = 120  # two memories whose cleaned text starts with the same this many characters are the same content
 _STAMP = re.compile(r"^\s*\[[^\]]{0,40}\]\s*")  # "[2026-11-14T17:38:23+02:00] " or "[2026-11-14 17:38] "
 _ROLE = re.compile(r"^\s*(user|assistant)\s*:\s*", re.I)
 
@@ -35,19 +36,24 @@ def clean(text: str) -> str:
 async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[dict]:
     """The memories to show, strongest first: text and date from the search hit or the episodic store, gist from
     episode_meta (else the cleaned text's start); a raw excerpt only when it says more than the gist line: an
-    excerpt that starts with the gist line shows only what follows it (R32)."""
+    excerpt that starts with the gist line shows only what follows it (R32). The same content under several ids
+    (cleaned, lowercased, first _SAME_N characters) is shown once, the most active (P2)."""
     found = {mid: (r.get("content") or "", (r.get("metadata") or {}).get("timestamp")) for mid, r in hits.items()}
     need = [it["item"] for it in mems if it["item"] not in found]
     if need:
         got = await asyncio.to_thread(episodic._get_collection().get, ids=need, include=["documents", "metadatas"])
         for i, d, m in zip(got.get("ids") or [], got.get("documents") or [], got.get("metadatas") or []):
             found[i] = (d or "", (m or {}).get("timestamp"))
-    out = []
+    out, seen = [], set()
     for it in mems:
         text, ts = found.get(it["item"], ("", None))
         gist, node_ts = meta.get(it["item"], ("", None))
         if not (text or gist):
             continue  # a memory the store no longer has: nothing to show
+        same = " ".join(clean(text or gist).lower().split())[:_SAME_N]
+        if same in seen:
+            continue  # P2: the same content under another id (a repeated digest): the more active one is shown
+        seen.add(same)
         line = (gist or clean(text)[:_GIST_MAX]).replace("\n", " ").strip()
         raw = text[:_RAW_MAX] if gist or len(text) > _GIST_MAX else ""
         if raw and line and clean(raw).startswith(line):
