@@ -89,3 +89,44 @@ def test_failed_understanding_leaves_turn_for_backfill(on):
     _run(FakeClient(exc=RuntimeError("down")))
     assert on._db.execute("SELECT 1 FROM episode_meta WHERE id = 't1'").fetchone() is None
     assert _act(on, "a") == pytest.approx(0.7)  # the learning still happened
+
+
+def _encode_meta(brain, eid, gist, **kw):
+    from brain import encode as enc
+    u = {"type": "eveniment", "importance": 0.5, "gist": gist, "about": [], "links": [], "opens": None, "closes": []}
+    u.update(kw)
+    enc.encode(brain._db, "42", "human", eid, time.time(), u, time.time())
+
+
+def test_open_item_text_reaches_the_model_and_can_be_closed_live(on):
+    _encode_meta(on, "p1", "Promit raportul.", opens={"kind": "promisiune", "text": "Trimit raportul Kent"})
+    mind.light(on._db, "42", "human", "open:p1", "deschis", 1.0, "deschis", "promisiune", time.time())
+    on._db.commit()
+    payload = {"type": "eveniment", "importance": 0.5, "gist": "Raport trimis", "about": [], "links": [],
+               "opens": None, "closes": ["open:p1"]}
+    client = FakeClient(payload)
+    _run(client)
+    assert "Trimit raportul Kent" in client.calls[0]["messages"][-1]["content"]
+    row = on._db.execute("SELECT closed_ts, closed_by FROM open_items WHERE id = 'open:p1'").fetchone()
+    assert row[0] is not None and row[1] == "t1"
+
+
+def test_carried_memory_not_shown_reaches_the_model_with_its_gist(on):
+    _encode_meta(on, "c1", "Gist despre cameleoni")
+    mind.light(on._db, "42", "human", "c1", "amintire", 0.5, "căutare", "x", time.time())
+    on._db.commit()
+    client = FakeClient({"type": "eveniment"})
+    _run(client)
+    assert "Gist despre cameleoni" in client.calls[0]["messages"][-1]["content"]
+
+
+def test_expose_message_understanding_sees_carried_gist_and_open_text(on):
+    _encode_meta(on, "c1", "Gist despre cameleoni", opens={"kind": "promisiune", "text": "Trimit raportul Kent"})
+    now = time.time()
+    mind.light(on._db, "42", "human", "c1", "amintire", 1.0, "căutare", "x", now)
+    mind.light(on._db, "42", "human", "open:c1", "deschis", 1.0, "deschis", "promisiune", now)
+    on._db.commit()
+    client = FakeClient({"about": [], "asks_past": False})
+    asyncio.run(ml.expose(client, None, "42", "human", "salut", [], {}, 4000))
+    prompt = client.calls[0]["messages"][-1]["content"]
+    assert "Gist despre cameleoni" in prompt and "Trimit raportul Kent" in prompt

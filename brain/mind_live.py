@@ -16,8 +16,8 @@ from brain import encode as _encode
 from brain import graph, mind, recall
 from brain.live import used as _used
 from brain.understand import understand_message, understand_turn
-from memory.usage_probe import _terms
 from memory.budget import estimate_tokens
+from memory.usage_probe import _terms
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
@@ -40,6 +40,23 @@ def _day(ts) -> str:
         return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
     except (TypeError, ValueError, OverflowError, OSError):
         return "dată necunoscută"
+
+
+def _with_text(db, chat_id: str, lane: str, items: list[dict], texts: dict[str, str] | None) -> list[dict]:
+    """``items`` with the line the model should read: ``texts`` when present, else an open item's text (this chat and
+    lane), else a memory's gist; empty when nothing is known."""
+    out = []
+    for it in items:
+        text = (texts or {}).get(it["item"]) or ""
+        if not text and it["kind"] == "deschis":
+            row = db.execute("SELECT text FROM open_items WHERE id = ? AND chat_id = ? AND lane = ?",
+                             (it["item"], chat_id, lane)).fetchone()
+            text = (row[0] if row else "") or ""
+        elif not text and it["kind"] == "amintire":
+            row = db.execute("SELECT gist FROM episode_meta WHERE id = ?", (it["item"],)).fetchone()
+            text = (row[0] if row else "") or ""
+        out.append(dict(it, text=text))
+    return out
 
 
 def _things(db, about: list[str]) -> dict[str, str | None]:
@@ -180,7 +197,8 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
                 mind.light(brain._db, chat_id, lane, mid, "amintire", max(0.0, float(r.get("blended_score") or 0.0)),
                            "căutare", "seamănă cu ce spui", now)
             in_mind = mind.top(brain._db, chat_id, lane, int(cfg["expose_items"]), float(cfg["floor"]) + _EPS)
-            return [dict(it, text=str((hits.get(it["item"]) or {}).get("content") or "")) for it in in_mind]
+            found = {m: str(r.get("content") or "") for m, r in hits.items()}
+            return _with_text(brain._db, chat_id, lane, in_mind, found)
 
         async with brain.lock:
             in_mind = await asyncio.to_thread(_before)
@@ -219,7 +237,7 @@ async def after_turn(client, chat_id: str, lane: str, turn_id: str, user: str, r
                 graph.touch(brain._db, turn_id, m, "gândite_împreună", 0.2 if u else 0.05, now)
             brain._db.commit()
             top = mind.top(brain._db, chat_id, lane, int(cfg["expose_items"]), float(cfg["floor"]) + _EPS)
-            return [dict(it, text=(texts or {}).get(it["item"]) or "") for it in top]
+            return _with_text(brain._db, chat_id, lane, top, texts)
 
         async with brain.lock:
             in_mind = await asyncio.to_thread(_learn)
