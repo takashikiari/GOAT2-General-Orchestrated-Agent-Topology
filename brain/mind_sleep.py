@@ -29,7 +29,10 @@ _PREFIX = re.compile(r"^\[[^\]]{0,40}\]\s*")
 
 def _split(doc: str) -> tuple[str, str]:
     """(user, reply) of an L3 doc: split at the first "assistant:"; a leading "[timestamp] " and "user:" dropped."""
-    head, sep, tail = (doc or "").partition("assistant:")
+    doc = doc or ""
+    head, sep, tail = doc.partition("\nassistant:")
+    if not sep and doc.startswith("assistant:"):
+        head, sep, tail = doc.partition("assistant:")
     user = _PREFIX.sub("", head.strip(), count=1)
     if user.startswith("user:"):
         user = user[5:].strip()
@@ -84,10 +87,15 @@ async def encode_slice(brain, episodic, client, limit: int | None = None) -> int
         if u is None:
             _failed[eid] = time.time()
             continue
-        if now - ts > _RECENT:  # R3: old history never re-opens promises
+        if time.time() - ts > _RECENT:  # R3: old history never re-opens promises
             u = {**u, "opens": None, "closes": []}
-        async with brain.lock:
-            await asyncio.to_thread(encode.encode, brain._db, str(chat_id), _lane(user), eid, ts, u, time.time())
+        try:
+            async with brain.lock:
+                await asyncio.to_thread(encode.encode, brain._db, str(chat_id), _lane(user), eid, ts, u, time.time())
+        except Exception as exc:  # noqa: BLE001 - one bad episode must not block the oldest-first slice
+            log.warning("brain: backfill encode failed %s: %s: %s", eid, type(exc).__name__, exc)
+            _failed[eid] = time.time()
+            continue
         done += 1
     if done:
         log.info("brain: backfill encoded=%d of %d", done, len(rows))

@@ -95,3 +95,58 @@ def test_backfill_skips_encoded_and_retries_failed_later(tmp_path):
     finally:
         ms._failed.clear()
         brain.close()
+
+
+def test_encode_failure_skips_that_episode_and_continues(tmp_path, monkeypatch):
+    brain = _brain(tmp_path)
+    ms._failed.clear()
+    try:
+        docs = _docs()
+        _seed(brain, docs)
+        real = ms.encode.encode
+
+        def flaky(db, chat_id, lane, eid, *a):
+            if eid == "e1":
+                raise RuntimeError("db boom")
+            return real(db, chat_id, lane, eid, *a)
+        monkeypatch.setattr(ms.encode, "encode", flaky)
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(), 3)) == 2
+        assert {r[0] for r in brain._db.execute("SELECT id FROM episode_meta")} == {"e2", "e3"}
+        assert "e1" in ms._failed
+    finally:
+        ms._failed.clear()
+        brain.close()
+
+
+def _recent_seed(brain, docs):
+    ts0 = time.time() - 600
+    g.ingest(brain._db, [{"id": i, "ts": ts0 + n, "chat_id": "42", "topic_id": "t1", "sequence_number": n,
+                          "entities": "", "entity_types": ""} for n, i in enumerate(docs)], 1.0)
+
+
+def test_recent_episode_keeps_opens_and_digest_is_lane_channel(tmp_path):
+    brain = _brain(tmp_path)
+    ms._failed.clear()
+    try:
+        docs = {"e1": "[2026-11-21T10:00:00+02:00] user: salut\nassistant: ok",
+                "e2": "[2026-11-21T10:01:00+02:00] user: Mesaje noi pe canalul agent-coord x\nassistant: ok"}
+        _recent_seed(brain, docs)
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(), 5)) == 2
+        rows = dict(brain._db.execute("SELECT id, lane FROM open_items").fetchall())
+        assert rows == {"open:e1": "human", "open:e2": "channel"}
+    finally:
+        ms._failed.clear()
+        brain.close()
+
+
+def test_split_ignores_assistant_word_inside_user_message():
+    assert ms._split("[2026-01-01T10:00:00+02:00] user: vezi assistant: x\nassistant: ok") == ("vezi assistant: x", "ok")
+    assert ms._split("assistant: doar") == ("", "doar")
+
+
+def test_mind_tick_is_none_when_mind_off(monkeypatch):
+    from telegram_interface import _brain_sleep as bs
+    monkeypatch.setattr(bs._brain, "mind_on", lambda: False)
+    assert bs._mind_tick(SimpleNamespace()) is None
+    monkeypatch.setattr(bs._brain, "mind_on", lambda: True)
+    assert bs._mind_tick(SimpleNamespace()) is not None
