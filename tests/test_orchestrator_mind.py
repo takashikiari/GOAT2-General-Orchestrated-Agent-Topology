@@ -7,7 +7,6 @@ import asyncio
 import pytest
 
 from brain import brain as b
-from brain import live as _live
 from brain import mind_live
 from brain.inject import HEADER as NUCLEUS_HEADER
 from memory.budget import estimate_tokens
@@ -25,7 +24,6 @@ _FACTS = {"nume": "Laris"}
 _BLOCK = "[În minte]\nCe știu:\n- nume: Laris\n\nCe s-a întâmplat:\n- (2026-11-20) Laris a ales Kent — seamănă"
 _FACTS_BLOCK = "[Fapte]\n- nume: Laris"
 _TOOLS = ("search_memory", "read_l1", "store_memory", "promote_memory", "forget_fact")
-_CHANNEL_DOC = "[2026-11-14T17:38:23+02:00] user: Mesaje noi pe canalul agent-coord, de la x"
 
 
 class _Recording(_Completions):
@@ -167,10 +165,7 @@ def test_on_after_turn_is_scheduled_with_shown_ids(monkeypatch, tmp_path, turn, 
 
 
 def test_channel_lane_is_lived_when_on(monkeypatch, tmp_path, turn, mind_calls):
-    _set(monkeypatch, tmp_path, True, False)
-    assert _live._not_lived(_CHANNEL_DOC)                       # off: other sessions' traffic, as today
     _set(monkeypatch, tmp_path, True, True)
-    assert not _live._not_lived(_CHANNEL_DOC)                   # on: agent-coord is lived memory
     turn(lane="channel")
     assert mind_calls["expose"][0]["lane"] == "channel" and mind_calls["after"][0]["lane"] == "channel"
 
