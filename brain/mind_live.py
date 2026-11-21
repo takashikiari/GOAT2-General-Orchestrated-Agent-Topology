@@ -12,14 +12,17 @@ import time
 from datetime import datetime
 
 from brain import brain as _brain
+from brain import encode as _encode
 from brain import graph, mind, recall
-from brain.understand import understand_message
+from brain.live import used as _used
+from brain.understand import understand_message, understand_turn
+from memory.usage_probe import _terms
 from memory.budget import estimate_tokens
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["expose"]
+__all__ = ["expose", "after_turn"]
 
 _EPS = 1e-9  # "above floor": an item faded to the floor is no longer in mind
 _RAW_N, _RAW_MAX, _GIST_MAX = 3, 600, 160
@@ -198,3 +201,33 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
     except Exception as exc:  # noqa: BLE001
         log.warning("brain: mind expose failed: %s: %s", type(exc).__name__, exc)
         return "", [], {}
+
+
+async def after_turn(client, chat_id: str, lane: str, turn_id: str, user: str, reply: str, shown: list[str],
+                     texts: dict[str, str]) -> None:
+    """After the reply (background, never raises): what the reply used stays lit, the rest fades; the turn is linked
+    to what was shown (0.2 used / 0.05 present); the turn is understood against what is in mind and encoded. When
+    the understanding fails the turn stays unencoded (no episode_meta row) for the backfill."""
+    try:
+        brain, cfg, now = _brain.get_instance(), _brain.MIND, time.time()
+        rterms = _terms(reply or "")
+        was_used = {m: _used((texts or {}).get(m, ""), rterms) for m in shown or []}
+
+        def _learn() -> list[dict]:
+            mind.mark(brain._db, chat_id, lane, was_used, now, float(cfg["floor"]))
+            for m, u in was_used.items():
+                graph.touch(brain._db, turn_id, m, "gândite_împreună", 0.2 if u else 0.05, now)
+            brain._db.commit()
+            top = mind.top(brain._db, chat_id, lane, int(cfg["expose_items"]), float(cfg["floor"]) + _EPS)
+            return [dict(it, text=(texts or {}).get(it["item"]) or "") for it in top]
+
+        async with brain.lock:
+            in_mind = await asyncio.to_thread(_learn)
+        understood = await understand_turn(client, user, reply, in_mind)  # outside the lock: an LLM call
+        if understood is None:
+            return
+        async with brain.lock:
+            done = await asyncio.to_thread(_encode.encode, brain._db, chat_id, lane, turn_id, now, understood, now)
+        log.info("brain: mind after_turn used=%d shown=%d encoded=%s", sum(was_used.values()), len(was_used), done)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("brain: mind after_turn failed: %s: %s", type(exc).__name__, exc)
