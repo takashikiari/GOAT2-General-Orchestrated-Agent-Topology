@@ -1,0 +1,147 @@
+# „În minte": o singură memorie de lucru pentru GOAT — design
+
+Data: 2026-11-21. Autor: sesiunea ee1c5e, la cererea lui Laris. Stare: **propunere, de citit și aprobat de Laris**.
+Înlocuiește, ca direcție, abordarea pe bucăți din `2026-11-17-memory-graph-design.md` (acel document rămâne istoric).
+
+## 1. De ce (cuvintele lui Laris, 2026-11-21)
+
+> „Dacă avem toate mecanismele astea, iar ele sunt pe lângă scopul principal și doar căutarea are ultimul cuvânt,
+> înseamnă că mecanismele sunt pur și simplu redundante, iar orice măsurătoare e irelevantă. […] Trebuie să
+> contribuie, acum doar atârnă pe lângă. Starea trebuie să fie comună și să alimenteze răspunsul."
+
+> „GOAT nu trebuie să se bazeze pe unelte pentru căutarea în memorie. Amintirile trebuie să vină din sistem fără
+> ca GOAT să facă un tool call […] altfel sistemul e doar o cârjă în care GOAT nu are încredere."
+
+**Diagnosticul.** Căutarea pe text e centrul sistemului și arbitrul final. Graful, brain-ul și somnul sunt anexe.
+Totul e judecat după asemănarea de text cu mesajul, iar o asociere, prin natura ei, nu seamănă la text.
+Pe 56 de mesaje reale (18-21.11), filtrul de relevanță a tăiat căutarea după rezultatul 1 sau 2 în 47 de cazuri.
+Amintirile din graf au trecut doar în 9. Măsurătorile noastre au judecat asocierea tot cu rigla textului, deci
+au ieșit mereu „neutru" sau „negativ". Patru stări separate de „ce e relevant acum" nu se întâlnesc niciodată:
+cache-ul de activare din Redis, graful, nucleul brain și rezultatele căutării.
+
+## 2. Ce există azi (verificat pe cod, main 1198903)
+
+| Piesă | Unde | Ce face | Ce lipsește |
+|---|---|---|---|
+| Căutare L3 | `memory/retrieval.py`, `memory/layers.py` | semantic + BM25 + boost + rerank | e arbitrul final |
+| Filtrul de relevanță | `memory/context_assembler.py` (`blended_gap_filter`) | taie la cel mai mare salt de scor | taie tot ce nu e text-asemănător |
+| Cache warm | `memory/activation.py` (`merged`, Redis) | refolosește căutarea precedentă | e altă „memorie de acum" |
+| Prefetch post-tură | `orchestrator/prefetch.py` | pre-calculează L3 pentru tura următoare | pipeline separat |
+| Graful | `brain/graph.py`, `brain/recall.py`, `brain/live.py` | asociere, legături în tură | intră după căutare, e tăiat (84%) |
+| Nucleul brain | `brain/store.py`, `brain/inject.py` | promisiuni și întrebări deschise | bloc separat în prompt |
+| Somnul | `telegram_interface/_brain_sleep.py` | ingestie în graf, perechi, estompare | nu pregătește nimic pentru tură |
+| Arhivarea turei | `orchestrator.py` `_archive_turn` → L3 | tura devine amintire | nu știe ce era în minte atunci |
+| L2 → L3 | `memory/auto_promote.py`, `memory/enrichment.py` | mută mesajele vechi, extrage entități | pipeline separat |
+| L1 (fapte permanente) | `memory/permanent/` (Letta), `memory/promote.py` | fapte mereu în prompt, plafon de tokeni | se scrie doar dacă GOAT cheamă o unealtă |
+| Unelte de memorie | `tools/memory_tools.py` (`search_memory`), `memory_manager.py` (`read_l1`, `forget_fact`), `memory_promote.py`, `memory_writer.py` | GOAT caută și scrie singur | cârja |
+
+## 3. Ideea: o singură stare, „În minte"
+
+Pentru fiecare chat și lane există un singur set de **elemente în minte**, fiecare cu un **nivel de activare**
+între 0 și 1. Promptul se construiește **doar din această stare**, iar toate mecanismele lucrează pentru ea.
+
+**Ce poate fi un element:**
+- o **amintire** (un episod L3, id = `message_id`);
+- un **fapt** din L1;
+- un **lucru deschis**: o promisiune a lui GOAT sau o întrebare a lui Laris fără răspuns (azi, nucleul).
+
+Conversația recentă (L2) rămâne fereastra de lucru și e mereu în prompt. Ea e **stimulul** din care pornește totul.
+Identitatea (L0) rămâne fixă.
+
+**Unde stă:** în `brain.sqlite`, tabelul `in_minte` (chat, lane, element, tip, activare, surse, ultima folosire,
+de ce a apărut). Ca la graf, **nimic nu se șterge**: un element nefolosit se stinge până la podea și rămâne în
+tabel. Promptul citește doar ce e peste prag.
+
+## 4. Reamintire: fiecare tură
+
+1. **Vine mesajul.** Activarea de la tura trecută scade cu un factor fix: ce era în minte rămâne, dar mai slab.
+   Asta e continuitatea și înlocuiește cache-ul warm din Redis.
+2. **Fiecare sursă aprinde ce știe și adaugă activare:**
+   - **căutarea**: amintirile asemănătoare, cu scorul cross-encoder ca activare;
+   - **graful**: activarea se răspândește din tot ce e deja în minte, plus ce a aprins căutarea acum, pe
+     legături (`recall.spread` existent);
+   - **lucrurile deschise**: intră cu activare mare și rămân aprinse până se închid;
+   - **faptele L1**: se aprind când sunt pomenite sau legate de ce e în minte.
+3. **Convergența decide.** Un element adus de mai multe surse se adună (până la 1). O singură sursă slabă nu
+   ajunge sus: o amintire adusă doar de graf, pe o legătură slabă, nu trece peste cele bune din căutare.
+   Cele mai bune rezultate ale căutării intră ca azi, cu activarea lor.
+4. **Promptul:** un singur bloc, „În minte", cu elementele peste prag, ordonate după activare, în bugetul AITS
+   existent. Fiecare are un motiv scurt („seamănă cu ce spui", „legat de: X", „promis ieri", „fapt").
+   **Nu mai există un filtru al căutării cu ultimul cuvânt.**
+
+## 5. Întipărire: după răspuns
+
+- Tura se arhivează în L3 ca azi, dar **legată de tot ce era în minte** (`gândite_împreună`): puternic de ce a
+  folosit răspunsul, slab de ce a fost doar prezent.
+- Ce a folosit răspunsul **rămâne aprins mai tare** și își întărește drumurile din graf. Ce n-a folosit se stinge
+  mai repede.
+- O promisiune nouă a lui GOAT sau o întrebare rămasă fără răspuns devine **lucru deschis** în aceeași stare.
+  Se închide când apare răspunsul sau fapta.
+- Entitățile turei intră în graf ca azi (ingestia din somn), legate de episod.
+
+## 6. Consolidare: somnul
+
+- **Stingerea lentă** a stării „În minte", pe ticul existent.
+- **Pregătirea turei următoare:** din ce e în minte, somnul aprinde dinainte vecinii din graf (`urmează`,
+  `gândite_împreună`). Asta înlocuiește prefetch-ul post-tură ca pipeline separat.
+- **Urcarea în L1:** o amintire care revine și e folosită în ture diferite, în zile diferite, devine candidat
+  de fapt permanent. Un model mic o formulează ca fapt („fratele lui Laris: Ionuț"), iar faptul intră în L1 prin
+  scrierea existentă (`promote_fact`). Rulează în felii mici, de câteva ori pe zi.
+- **L1 se curăță după folosire, nu după plafon:** un fapt nefolosit multă vreme iese din blocul Letta, dar rămâne
+  păstrat în `brain.sqlite` și revine dacă se aprinde din nou. Nimic nu se pierde.
+- Perechile și estomparea grafului rămân cum sunt.
+
+## 7. Fără cârje
+
+- **`search_memory` iese din uneltele lui GOAT.** Tot ce ar fi găsit căutând trebuie să fie deja în minte.
+- **`read_l1` iese:** faptele sunt deja în prompt. `forget_fact`, `promote_memory` și `store_memory` rămân doar
+  pentru cererile explicite ale lui Laris („uită asta", „ține minte asta"). Descrierile lor spun asta.
+- **Prompt-ul îi spune lui GOAT** că blocul „În minte" e memoria lui. Dacă ceva nu e acolo, spune că nu-și
+  amintește, fără să caute prin shell sau prin fișiere. Lipsa e o problemă a sistemului, de reparat de noi.
+- `tool_gate` devine inutil (`search_memory` nu mai există) și se scoate.
+
+## 8. Ce dispare (ca nimic să nu mai atârne)
+
+- `activation.merged` ca sursă warm → continuitatea din „În minte";
+- `run_prefetch_and_save` ca pipeline separat → pregătirea din somn;
+- `blended_gap_filter` ca arbitru pentru L3 → pragul de activare (scorul căutării rămâne o intrare);
+- `_after_top` și plasarea „sub locul 3" a amintirilor din graf;
+- blocul separat al nucleului (`brain/inject.py`) → lucrurile deschise sunt elemente în aceeași stare;
+- `search_memory`, `read_l1`, `tool_gate`.
+
+Totul stă sub un singur comutator, `[in_minte] enabled`. Cu el oprit, sistemul e exact ca azi, deci revenirea
+durează un minut. Codul vechi se scoate abia după ce Laris decide că varianta nouă rămâne.
+
+## 9. Cum judecăm
+
+- **Judecă Laris, în conversație.** Semnele: GOAT ține minte ce s-a vorbit acum câteva ture și ce s-a promis;
+  aduce ce e legat de ce spune Laris, chiar în alte cuvinte; răspunde din memorie fără să caute.
+- **Un singur semn de eșec, automat:** GOAT încearcă totuși să caute amintiri printr-o unealtă. Nu e o
+  măsurătoare nouă, e simptomul cârjei.
+- **Fără pipeline-uri de măsurare noi** și fără scoruri de text pentru asociere. Înainte de live: o rulare pe o
+  copie care arată că promptul se construiește corect și că latența nu crește simțit.
+
+## 10. Riscuri, spuse dinainte
+
+- **Zgomot în prompt:** asocieri fără legătură. Protecția e convergența (§4.3) și pragul; Laris va simți.
+- **Căutarea pierde ce găsea bine:** cele mai bune rezultate intră cu activarea lor, ca azi.
+- **Latență:** totul e local (SQLite, graful e deja sub 50 ms). Ținta: fără creștere simțită.
+- **Urcarea în L1 scrie fapte greșite:** un fapt nou apare marcat ca nou, iar Laris îl poate respinge
+  („uită asta"). Pornește doar după ce reamintirea s-a dovedit în conversație.
+- **GOAT spune „nu-mi amintesc" mai des la început:** e intenționat. Fiecare caz arată o lipsă reală de reparat.
+
+## 11. Fazele (fiecare cu OK-ul lui Laris)
+
+1. **Acest spec**, citit și aprobat.
+2. **PR 1 — bucla completă:** starea „În minte", reamintirea din toate sursele (§4), întipărirea (§5), stingerea
+   și pregătirea din somn (§6, fără L1), fără cârje (§7). Sub comutator. Live, Laris vorbește câteva zile și decide.
+3. **PR 2 — consolidarea în L1** (§6, urcarea și curățarea L1). Abia după ce PR 1 e păstrat.
+4. **PR 3 — curățenia:** scoaterea codului înlocuit (§8), după decizia lui Laris.
+
+## 12. Decizii deschise pentru Laris
+
+- Urcarea în L1 folosește un model mic (deepseek, ca restul) pentru a formula faptul. Costul e câteva apeluri pe
+  zi. E în regulă?
+- Lane-ul `channel` (mesajele de pe agent-coord) are propria stare „În minte" sau nu intră deloc în memoria de
+  conversație?
+- Cât de des poate GOAT spune „nu-mi amintesc" la început, până când considerăm că sistemul nu merge?
