@@ -103,11 +103,13 @@ def test_association_reaches_the_prompt_without_text_similarity(on):
 def test_convergence_puts_search_and_graph_hits_first(on):
     now = time.time()
     _encode(on, "s1", now - DAY, gist="Am ales Render pentru deploy.", about=["Render"])
-    _encode(on, "g1", now - 30 * DAY, gist="Render a picat acum o lună.", about=["Render"])  # a faded link
-    epi = FakeEpisodic({"g1": ("Render a picat", now - 30 * DAY)})
+    _encode(on, "g1", now - DAY, gist="Render a picat azi-noapte.", about=["Render"])  # as fresh as s1
+    epi = FakeEpisodic({"g1": ("Render a picat", now - DAY)})
     hits = [_hit("s2", 0.6, "seamănă doar textual"), _hit("s1", 0.5, "am ales Render")]
     block, shown, _ = _expose(FakeClient({"about": ["Render"], "asks_past": False}), epi, "Render?", hits)
     assert shown[0] == "s1"                                      # lit by the search AND the graph: first
+    acts = {r["item"]: r["activation"] for r in mind.top(on._db, "42", "human", 10, 0.0)}
+    assert acts["s1"] > acts["g1"]                               # the graph alone ranks below search + graph
     assert set(shown) >= {"s1", "s2", "g1"}
     row = mind.top(on._db, "42", "human", 1, 0.0)[0]
     assert row["item"] == "s1" and set(row["sources"]) == {"căutare", "asociere"}

@@ -24,6 +24,8 @@ __all__ = ["expose"]
 _EPS = 1e-9  # "above floor": an item faded to the floor is no longer in mind
 _RAW_N, _RAW_MAX, _GIST_MAX = 3, 600, 160
 _POOL = 200  # amintire items read as spread seeds
+_ASSOC_CEILING = 0.8  # share of a walk's strongest seed its strongest episode gets (R16): the graph alone stays
+#                       below what search and graph light together, so convergence ranks first
 
 
 def _mid(r: dict) -> str:
@@ -52,16 +54,18 @@ def _things(db, about: list[str]) -> dict[str, str | None]:
 def _associate(db, chat_id: str, lane: str, things: dict, cfg: dict, half: float, now: float) -> None:
     """Spread from the cue things, then from the memories in mind (R2); light every memory reached. Two walks, so a
     search hit that a cue also reaches is lit from both sides (a seed is never part of its own walk's result). Each
-    walk is rescaled (R14): its strongest episode gets the walk's strongest seed, the rest proportionally, since a
+    walk is rescaled (R14, R16): its strongest episode gets _ASSOC_CEILING x the walk's strongest seed, the rest
+    proportionally, since a
     thing divides its share by its degree (hundreds on the real graph)."""
     floor, n = float(cfg["floor"]), int(cfg["expose_items"])
-    lit = {r["item"]: r["activation"] for r in mind.top(db, chat_id, lane, _POOL, floor + _EPS)
-           if r["kind"] == "amintire"}
-    for seeds in ({t: 1.0 for t in things.values() if t}, lit):
+    for walk in ("cues", "mind"):  # the memories in mind are read AFTER the cue walk: what it lit seeds, not gains
+        seeds = {t: 1.0 for t in things.values() if t} if walk == "cues" else \
+            {r["item"]: r["activation"] for r in mind.top(db, chat_id, lane, _POOL, floor + _EPS)
+             if r["kind"] == "amintire"}
         got = recall.spread(db, seeds, now, n, 3, half) if seeds else []
         act_max = max((c["activation"] for c in got), default=0.0)
         for c in got if act_max > 0 else []:
-            amount = max(seeds.values()) * c["activation"] / act_max
+            amount = _ASSOC_CEILING * max(seeds.values()) * c["activation"] / act_max
             if amount > floor:
                 why = f"legat de: {c['via']}" if c["via"] else "legat de ce e în minte"
                 mind.light(db, chat_id, lane, c["id"], "amintire", amount, "asociere", why, now)
