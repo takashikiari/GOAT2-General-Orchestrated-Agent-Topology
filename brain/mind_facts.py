@@ -4,13 +4,17 @@ Two kinds, like procedural and semantic memory: a ``regulă`` (how GOAT must beh
 permissions, workflow rules) is shown on every turn; a ``cunoștință`` (knowledge about the user, people, machines,
 projects) only when the message is about it, and it stays in mind for the follow-up turns as the item
 ``fact:<key>`` (kind ``fapt``), fading with the rest. The kinds are decided by ONE LLM call in the sleep tick, never
-on the reply path, and kept in ``fact_kind``; a fact not classified yet counts as a rule (always shown: nothing is
+on the reply path, and kept in ``fact_kind`` with a hash of the value they were decided on: a changed value is
+classified again, so a misclassified rule is recoverable (Q2); a key the model keeps leaving out is asked at most
+_MAX_ATTEMPTS times per value in this process. A fact not classified yet counts as a rule (always shown: nothing is
 lost). A row whose key left L1 stays, unused. Nothing is ever deleted.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
+import weakref
 from typing import Any
 
 from brain import mind
@@ -20,17 +24,23 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["KINDS", "PREFIX", "kinds", "split", "parse", "save", "classify", "light", "in_mind", "mentioned", "matching"]
+__all__ = ["KINDS", "PREFIX", "value_hash", "kinds", "split", "parse", "save", "classify", "light", "in_mind",
+           "mentioned", "matching"]
 
 KINDS = ("regulă", "cunoștință")
 PREFIX = "fact:"
 KEEP = 0.3  # a fact lit at 1.0 stays shown while carry keeps it above this: the next two turns (0.6, 0.36)
 _VALUE_MAX = 200
+_MAX_ATTEMPTS = 3  # per key and value, in this process (like R34): a key the model keeps omitting is not asked forever
+_ATTEMPTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()  # brain -> {(key, value hash): times asked}
 
 CLASSIFY_PROMPT = """Ești partea din memoria lui GOAT care își sortează faptele permanente. Primești faptele, \
 câte unul pe linie, în forma `cheie: valoare`. Pentru fiecare spune ce fel de fapt este:
-- "regulă": cum trebuie să se poarte GOAT (stil, adresare, emoji, permisiuni, reguli de lucru);
-- "cunoștință": ceva știut despre utilizator, despre oameni, mașini, locuri sau proiecte.
+- "regulă": tot ce schimbă cum îi răspunde GOAT utilizatorului sau cum i se adresează, și tot ce trebuie știut la \
+fiecare replică: numele utilizatorului, limba, rolul și echipa lui, permisiunile, stilul, emoji, reguli de lucru;
+- "cunoștință": doar ce trebuie știut când vine vorba de un anumit subiect: alți oameni, mașini, locuri, proiecte, \
+întâmplări.
+Dacă nu ești sigur, alege „regulă”.
 
 Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, în care fiecare cheie de fapt are valoarea \
 "regulă" sau "cunoștință".
@@ -38,6 +48,10 @@ Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, în care fiecare 
 Fapte:
 {facts}
 """
+
+
+def value_hash(value: Any) -> str:
+    return hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:16]
 
 
 def kinds(db) -> dict[str, str]:
@@ -58,26 +72,40 @@ def parse(obj: Any, keys: list[str]) -> dict[str, str]:
     return {k: obj[k] for k in keys if obj.get(k) in KINDS}
 
 
-def save(db, got: dict[str, str], now: float) -> None:
+def save(db, got: dict[str, str], now: float, values: dict | None = None) -> None:
+    """Keep each kind with the hash of the value it was decided on (``values``: the facts; none -> NULL, asked
+    again); a key classified before is updated in place, never removed."""
     for key, kind in got.items():
-        db.execute("INSERT OR IGNORE INTO fact_kind (key, kind, classified_at) VALUES (?, ?, ?)", (key, kind, now))
+        vh = value_hash(values[key]) if values and key in values else None
+        db.execute("INSERT INTO fact_kind (key, kind, classified_at, value_hash) VALUES (?, ?, ?, ?) ON CONFLICT(key) "
+                   "DO UPDATE SET kind = excluded.kind, classified_at = excluded.classified_at, "
+                   "value_hash = excluded.value_hash", (key, kind, now, vh))
     db.commit()
 
 
+def _hashes(db) -> dict[str, str | None]:
+    return {k: h for k, h in db.execute("SELECT key, value_hash FROM fact_kind").fetchall()}
+
+
 async def classify(brain, client, facts: dict) -> int:
-    """Classify the L1 facts that have no kind yet, all in one LLM call (outside ``brain.lock``); returns how many
-    were classified. Never raises: a failure leaves them unclassified (shown as rules) for the next tick."""
+    """Classify the L1 facts with no kind yet or whose value changed since, all in one LLM call (outside
+    ``brain.lock``); returns how many were classified. Never raises: a failure leaves them as they were (an
+    unclassified one shown as a rule) for the next tick, at most _MAX_ATTEMPTS asks per key and value."""
     try:
         async with brain.lock:
-            known = await asyncio.to_thread(kinds, brain._db)
-        keys = [k for k in facts or {} if k not in known]
+            known = await asyncio.to_thread(_hashes, brain._db)
+        tries = _ATTEMPTS.setdefault(brain, {})
+        keys = [k for k, v in (facts or {}).items() if known.get(k) != value_hash(v)
+                and tries.get((k, value_hash(v)), 0) < _MAX_ATTEMPTS]
         if not keys:
             return 0
+        for k in keys:
+            tries[(k, value_hash(facts[k]))] = tries.get((k, value_hash(facts[k])), 0) + 1
         body = "\n".join(f"{k}: {str(facts[k])[:_VALUE_MAX]}".replace("\n", " ") for k in keys)
         got = parse(await _ask(client, _fill(CLASSIFY_PROMPT, facts=body), max_tokens=8000), keys)
         if got:
             async with brain.lock:
-                await asyncio.to_thread(save, brain._db, got, time.time())
+                await asyncio.to_thread(save, brain._db, got, time.time(), facts)
         log.info("brain: facts classified=%d of %d", len(got), len(keys))
         return len(got)
     except Exception as exc:  # noqa: BLE001 - the sleep must never stop on this

@@ -73,6 +73,7 @@ class Brain:
         self._db = sqlite3.connect(self.cfg["db_path"], check_same_thread=False, timeout=5.0)  # busy -> error
         self._db.executescript(_SCHEMA)
         self._db.executescript(mind.SCHEMA)  # working memory tables (brain/mind.py)
+        mind.migrate(self._db)  # same: the value_hash column of fact_kind
         self._db.executescript(graph.SCHEMA)  # the memory graph's tables (brain/graph.py), in the same store
         graph.migrate(self._db)  # §12: the w_at column on a store made before it
         if "hook_events" not in {r[1] for r in self._db.execute("PRAGMA table_info(cycles)")}:  # same: an older store

@@ -16,7 +16,8 @@ FACTS = {"emoji_style": "Laris vrea emoji în fiecare mesaj.",
 
 
 def _classified(brain):
-    mf.save(brain._db, {"emoji_style": "regulă", "brother_name": "cunoștință", "machine_lenovo": "cunoștință"}, 1.0)
+    mf.save(brain._db, {"emoji_style": "regulă", "brother_name": "cunoștință", "machine_lenovo": "cunoștință"}, 1.0,
+            FACTS)
 
 
 def _section(block, title):

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-__all__ = ["SCHEMA", "carry", "light", "top", "mark"]
+__all__ = ["SCHEMA", "migrate", "carry", "light", "top", "mark"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS mind (chat_id TEXT NOT NULL, lane TEXT NOT NULL, item TEXT NOT NULL, kind TEXT NOT NULL,
@@ -20,8 +20,17 @@ CREATE TABLE IF NOT EXISTS episode_meta (id TEXT PRIMARY KEY, type TEXT, importa
     encoded_at REAL);
 CREATE TABLE IF NOT EXISTS open_items (id TEXT PRIMARY KEY, chat_id TEXT, lane TEXT, kind TEXT, text TEXT, ts REAL,
     closed_ts REAL, closed_by TEXT);
-CREATE TABLE IF NOT EXISTS fact_kind (key TEXT PRIMARY KEY, kind TEXT NOT NULL, classified_at REAL);
+CREATE TABLE IF NOT EXISTS fact_kind (key TEXT PRIMARY KEY, kind TEXT NOT NULL, classified_at REAL,
+    value_hash TEXT);
 """
+
+
+def migrate(db) -> None:
+    """Bring a store made before a column to today's SCHEMA (columns are only added, never dropped): ``fact_kind``
+    gets ``value_hash`` (polish wave 2, Q2); its old rows keep NULL there, so each is classified once more."""
+    if "value_hash" not in {r[1] for r in db.execute("PRAGMA table_info(fact_kind)")}:
+        db.execute("ALTER TABLE fact_kind ADD COLUMN value_hash TEXT")
+        db.commit()
 
 
 def carry(db, chat_id: str, lane: str, factor: float, floor: float) -> int:
