@@ -76,7 +76,10 @@ def test_no_delete_in_brain_code():
         assert not re.search(r"\b(DELETE|DROP|TRUNCATE)\b", _strip(p.read_text()), re.I), p.name
 
 
-def test_mind_off_by_default():
-    assert b.MIND["enabled"] is False and b.MIND["carry"] == 0.6 and b.MIND["floor"] == 0.001
-    assert b.MIND["expose_items"] == 12 and b.MIND["encode_per_tick"] == 20
+def test_mind_off_by_default(monkeypatch):
+    """The code default is off (config/brain.toml switches it on); with brain off, mind is off whatever [mind] says."""
+    d = b._MIND_DEFAULTS
+    assert d["enabled"] is False and d["carry"] == 0.6 and d["floor"] == 0.001
+    assert d["expose_items"] == 12 and d["encode_per_tick"] == 20
+    monkeypatch.setitem(b.MIND, "enabled", False)
     assert b.mind_on() is False
