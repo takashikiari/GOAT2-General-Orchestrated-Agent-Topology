@@ -38,3 +38,13 @@ def test_only_an_answer_that_leaves_a_key_out_counts_as_an_attempt(on):  # noqa:
     for _ in range(5):
         asyncio.run(mf.classify(on, omits, {"x": "y"}))
     assert len(omits.calls) == 3
+
+
+def test_the_users_own_name_lights_no_knowledge_fact(on):  # noqa: F811
+    mf.save(on._db, {"user_name": "regulă", "brother_name": "cunoștință", "machine_lenovo": "cunoștință"}, 1.0, FACTS)
+    block, _, _ = _expose(FakeClient({"about": [], "names": ["Laris"], "asks_past": False, "facts": []}),
+                          FakeEpisodic({}), "Laris aici", [], FACTS)
+    assert "Ce știu" not in block                                      # "Laris" is in every fact about him
+    block, _, _ = _expose(FakeClient({"about": [], "names": ["LARIS", "Ionuț"], "asks_past": False, "facts": []}),
+                          FakeEpisodic({}), "Ionuț și cu mine", [], FACTS, chat="43")
+    assert set(_section(block, "Ce știu").splitlines()) == {"- brother_name: Fratele lui Laris se numește Ionuț."}

@@ -17,6 +17,7 @@ from brain.live import used as _used
 from brain.mind_render import day as _day
 from brain.mind_render import memories as _memories
 from brain.mind_render import render as _render
+from brain.mind_text import fold as _fold
 from brain.mind_text import same_open as _same_open
 from brain.understand import understand_message, understand_turn
 from memory.usage_probe import _terms
@@ -154,7 +155,10 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
         def _after():
             _associate(brain._db, chat_id, lane, _things(brain._db, (cues or {}).get("about") or []), cfg, half, now)
             # Q3: a knowledge fact a cue name points to is lit (shown) too, listed by the understanding or not
-            named = mind_facts.matching(knowledge, (cues or {}).get("names") or [])
+            # ...but never by the user's own name (L1 user_name): every fact about him has it
+            me = " ".join(_fold(str((facts or {}).get("user_name") or "")).split())
+            named = mind_facts.matching(knowledge, [n for n in (cues or {}).get("names") or []
+                                                    if " ".join(_fold(n).split()) != me])
             mind_facts.light(brain._db, chat_id, lane, list(dict.fromkeys([*((cues or {}).get("facts") or []),
                                                                             *named])), now)
             got = _gather(brain._db, chat_id, lane, cfg, now, exclude)
