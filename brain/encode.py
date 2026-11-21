@@ -68,6 +68,9 @@ def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
                "ON CONFLICT(id) DO UPDATE SET type = excluded.type, importance = excluded.importance, "
                "gist = excluded.gist, encoded_at = excluded.encoded_at",
                (episode_id, u.get("type"), float(u.get("importance") or 0.0), u.get("gist") or "", now))
+    for item_id in u.get("closes") or []:  # closed first: a turn that closes X and opens a similar X' keeps X' open
+        out["closed"] += db.execute("UPDATE open_items SET closed_ts = ?, closed_by = ? WHERE id = ? "
+                                    "AND chat_id = ? AND closed_ts IS NULL", (now, episode_id, str(item_id), chat_id)).rowcount
     opens = u.get("opens")
     if opens and opens.get("text") and not any(
             same_open(opens["text"], row[0] or "") for row in db.execute(
@@ -75,8 +78,5 @@ def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
         out["opened"] = db.execute("INSERT OR IGNORE INTO open_items (id, chat_id, lane, kind, text, ts) "
                                    "VALUES (?, ?, ?, ?, ?, ?)",
                                    (f"open:{episode_id}", chat_id, lane, opens.get("kind"), opens["text"], ts)).rowcount
-    for item_id in u.get("closes") or []:
-        out["closed"] += db.execute("UPDATE open_items SET closed_ts = ?, closed_by = ? WHERE id = ? "
-                                    "AND chat_id = ? AND closed_ts IS NULL", (now, episode_id, str(item_id), chat_id)).rowcount
     db.commit()
     return out

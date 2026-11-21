@@ -97,12 +97,31 @@ def test_a_near_duplicate_open_item_is_not_opened_twice(on):  # noqa: F811
     assert opened("p2", "compar  rezultatul REPLAY — branch vs. main") == 0              # same normalized text
     assert opened("p3", "Compar rezultatul replay branch vs main") == 0
     assert opened("p4", "Îți spun: compar rezultatul replay branch vs main și revin.") == 0  # contains it
-    assert opened("p5", "replay branch") == 0                                             # contained in it
+    assert opened("p5", "rezultatul replay branch vs main") == 0                          # contained in it
+    assert opened("p5b", "replay branch") == 1                       # under 3 words: only equality counts
     assert opened("p6", "Verific plata Kent.") == 1
     assert opened("p7", "Compar rezultatul replay branch vs main", lane="channel") == 1  # another lane
     on._db.execute("UPDATE open_items SET closed_ts = 1.0 WHERE id = 'open:p6'")
     assert opened("p8", "Verific plata Kent!") == 1                                       # the old one is closed
-    assert on._db.execute("SELECT COUNT(*) FROM open_items").fetchone()[0] == 4
+    assert on._db.execute("SELECT COUNT(*) FROM open_items").fetchone()[0] == 5
+
+
+def test_a_short_open_item_does_not_swallow_a_different_one(on):  # noqa: F811
+    """Follow-up 1: containment counts only for >= 3 words covering >= 60% of the longer text's words."""
+    import time
+
+    from brain import encode as enc
+
+    def opened(eid, text, closes=()):
+        u = {"type": "promisiune", "gist": "g", "opens": {"kind": "promisiune", "text": text}, "closes": list(closes)}
+        return enc.encode(on._db, "42", "human", eid, time.time(), u, time.time())["opened"]
+    assert opened("a1", "Verific.") == 1 and opened("a2", "Verific plata Kent.") == 1
+    assert opened("b1", "Revin.") == 1 and opened("b2", "Revin cu prețul pentru Dover mâine.") == 1
+    assert opened("c1", "Trimit oferta către client") == 1
+    assert opened("c2", "Trimit oferta către client pentru transportul pisicii la Paris mâine") == 1  # 4 of 11
+    assert opened("c3", "Revin cu prețul pentru Dover") == 0                                          # 5 of 6
+    assert opened("d1", "Verific plata Kent din nou.", closes=["open:a2"]) == 1   # closes X, opens X': open
+    assert on._db.execute("SELECT closed_by FROM open_items WHERE id = 'open:a2'").fetchone()[0] == "d1"
 
 
 def test_each_open_text_is_shown_once(on):  # noqa: F811

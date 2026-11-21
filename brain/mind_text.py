@@ -5,7 +5,7 @@ longer than most of its messages: ``digest_body`` keeps only the messages, so a 
 different digests are never taken for the same content. ``strip_markup``: a stored turn without its tool-call
 markup (DSML, ``[Tool calls]`` evidence), which is not something that happened. ``fold`` / ``has_word``: a name matches a text as a whole
 word, case and diacritics aside ("Ionut" is "Ionuț"; "Ana" is not in "analiză"). ``same_open``: two open items say
-the same when their normalized texts are equal or one holds the other (as whole words). Pure text functions; nothing is read or written.
+the same when their normalized texts are equal or one holds most of the other (as whole words). Pure text functions; nothing is read or written.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from orchestrator.dsml import remove_dsml
 
 __all__ = ["digest_body", "strip_markup", "fold", "has_word", "norm", "same_open"]
 
+_HOLD_WORDS, _HOLD_SHARE = 3, 0.6  # an open text holds another only with this many words and this share of its words
 _MSG = re.compile(r"\[[^\]\n]{1,120} -> [^\]\n]{1,120}\]")  # a digest message: "[from -> to] „text”"
 # the footer runs to the end of the user turn: what follows it (the stored reply) stays
 _FOOTER = re.compile(r"\s*" + re.escape(CHANNEL_DIGEST_FOOTER) + r".*?(?=\n\s*assistant\s*:|\Z)", re.S | re.I)
@@ -61,6 +62,13 @@ def norm(text: str) -> str:
 
 
 def same_open(a: str, b: str) -> bool:
-    """True when two open items' texts say the same: equal once normalized, or one holds the other as whole words."""
-    a, b = norm(a), norm(b)
-    return bool(a and b) and (a == b or f" {a} " in f" {b} " or f" {b} " in f" {a} ")
+    """True when two open items' texts say the same: equal once normalized, or the shorter, of at least
+    _HOLD_WORDS words and _HOLD_SHARE of the longer one's words, is in it as whole words ("Verific." does not
+    swallow "Verific plata Kent.")."""
+    a, b = sorted((norm(a), norm(b)), key=len)
+    if not (a and b):
+        return False
+    if a == b:
+        return True
+    short, long_ = len(a.split()), len(b.split())
+    return short >= _HOLD_WORDS and short >= _HOLD_SHARE * long_ and f" {a} " in f" {b} "
