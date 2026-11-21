@@ -70,6 +70,19 @@ def _graph_tick(registry):
     return tick
 
 
+def _mind_tick(registry):
+    """The existing L3 history encoded through the same understanding as new turns (brain/mind_sleep.py), a slice
+    per tick, or None unless [mind] is on."""
+    if not _brain.mind_on():
+        return None
+    from brain import mind_sleep
+
+    async def tick() -> None:
+        await mind_sleep.encode_slice(_brain.get_instance(), registry.episodic_memory, registry.llm_client,
+                                      int(_brain.MIND["encode_per_tick"]))
+    return tick
+
+
 def _join(*ticks):
     """One on_tick from several: each runs in turn, one failing never stops the others (logged)."""
     live = [t for t in ticks if t is not None]
@@ -100,7 +113,7 @@ def post_init_hook(registry: "ServiceRegistry", chat_id: str):
             if tick is not None:  # a message left half-sent by the previous process goes out again
                 recovered = await _scheduler.recover(_brain.get_instance())
                 log.info("brain: scheduler on, recovered=%d", recovered)
-            task = _brain.start(registry.working_memory, [chat_id], on_tick=_join(tick, _graph_tick(registry)))
+            task = _brain.start(registry.working_memory, [chat_id], on_tick=_join(tick, _graph_tick(registry), _mind_tick(registry)))
         except Exception as exc:  # noqa: BLE001 - the brain must never block the bot
             log.warning("brain: sleep failed to start: %s: %s", type(exc).__name__, exc)
             return
