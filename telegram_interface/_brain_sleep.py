@@ -72,14 +72,26 @@ def _graph_tick(registry):
 
 def _mind_tick(registry):
     """The existing L3 history encoded through the same understanding as new turns (brain/mind_sleep.py), a slice
-    per tick, or None unless [mind] is on."""
+    per tick, or None unless [mind] is on. The slice (minutes of LLM calls) runs as its own background task (R33):
+    the tick only starts it when none is running and returns at once, so the scheduler, brain and graph parts of
+    the sleep are never delayed by it."""
     if not _brain.mind_on():
         return None
     from brain import mind_sleep
+    running: list[asyncio.Task] = []
+
+    def _done(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            exc = task.exception()
+            log.warning("brain: backfill slice failed: %s: %s", type(exc).__name__, exc)
 
     async def tick() -> None:
-        await mind_sleep.encode_slice(_brain.get_instance(), registry.episodic_memory, registry.llm_client,
-                                      int(_brain.MIND["encode_per_tick"]))
+        if running and not running[0].done():
+            return
+        running[:] = [asyncio.create_task(mind_sleep.encode_slice(
+            _brain.get_instance(), registry.episodic_memory, registry.llm_client, int(_brain.MIND["encode_per_tick"])))]
+        running[0].add_done_callback(_done)
+    tick.running = running  # the current backfill task, for shutdown and tests
     return tick
 
 
@@ -100,6 +112,7 @@ def _join(*ticks):
 
 def post_init_hook(registry: "ServiceRegistry", chat_id: str):
     tasks: list[asyncio.Task] = []
+    backfills: list = []  # the mind tick, whose ``running`` holds the backfill task in progress
 
     async def _post_init(application: "Application") -> None:
         if not _brain.is_enabled():
@@ -113,7 +126,9 @@ def post_init_hook(registry: "ServiceRegistry", chat_id: str):
             if tick is not None:  # a message left half-sent by the previous process goes out again
                 recovered = await _scheduler.recover(_brain.get_instance())
                 log.info("brain: scheduler on, recovered=%d", recovered)
-            task = _brain.start(registry.working_memory, [chat_id], on_tick=_join(tick, _graph_tick(registry), _mind_tick(registry)))
+            mind = _mind_tick(registry)
+            backfills[:] = [mind] if mind is not None else []
+            task = _brain.start(registry.working_memory, [chat_id], on_tick=_join(tick, _graph_tick(registry), mind))
         except Exception as exc:  # noqa: BLE001 - the brain must never block the bot
             log.warning("brain: sleep failed to start: %s: %s", type(exc).__name__, exc)
             return
@@ -126,5 +141,8 @@ def post_init_hook(registry: "ServiceRegistry", chat_id: str):
         if tasks:  # stop between cycles and wait for the one in progress: never cut a write
             await _brain.stop_sleep()
             log.info("brain: sleep stopped")
+        for t in [t for m in backfills for t in m.running if not t.done()]:
+            t.cancel()  # an encode already in its thread finishes its write; the slice stops between episodes
+            await asyncio.gather(t, return_exceptions=True)
 
     return _post_init, _post_shutdown

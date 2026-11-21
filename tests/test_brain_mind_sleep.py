@@ -6,10 +6,21 @@ import json
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from brain import brain as b
 from brain import graph as g
 from brain import mind_sleep as ms
 from brain.store import Brain
+
+
+@pytest.fixture(autouse=True)
+def _fresh_failures():
+    ms._failed.clear()
+    ms._fails.clear()
+    yield
+    ms._failed.clear()
+    ms._fails.clear()
 
 
 def _brain(tmp_path):
