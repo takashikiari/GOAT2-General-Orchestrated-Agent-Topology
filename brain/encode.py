@@ -31,7 +31,9 @@ def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
         out["things"] += 1
     for link in u.get("links") or []:
         to, kind = str((link or {}).get("to") or ""), (link or {}).get("kind")
-        if to and kind in _LINK_KINDS and to != episode_id:
+        if to and kind in _LINK_KINDS and to != episode_id and not to.startswith("open:"):
+            db.execute("INSERT OR IGNORE INTO graph_nodes (id, kind, label, chat_id, topic_id, seq, ts, created_at) "
+                       "VALUES (?, 'episode', ?, ?, NULL, NULL, NULL, ?)", (to, to, chat_id, now))
             graph.touch(db, episode_id, to, kind, 0.0, now, initial=0.5)  # a re-encode is not a new strengthening
             out["links"] += 1
     db.execute("INSERT INTO episode_meta (id, type, importance, gist, encoded_at) VALUES (?, ?, ?, ?, ?) "
@@ -45,6 +47,6 @@ def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
                                    (f"open:{episode_id}", chat_id, lane, opens.get("kind"), opens["text"], ts)).rowcount
     for item_id in u.get("closes") or []:
         out["closed"] += db.execute("UPDATE open_items SET closed_ts = ?, closed_by = ? WHERE id = ? "
-                                    "AND closed_ts IS NULL", (now, episode_id, str(item_id))).rowcount
+                                    "AND chat_id = ? AND closed_ts IS NULL", (now, episode_id, str(item_id), chat_id)).rowcount
     db.commit()
     return out

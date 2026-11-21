@@ -101,6 +101,42 @@ def test_counts_never_decrease(tmp_path):
         brain.close()
 
 
+def test_open_link_target_creates_no_edge(tmp_path):
+    brain = _brain(tmp_path)
+    try:
+        enc.encode(brain._db, "42", "main", "e1", 10.0, _u(links=[{"to": "open:e0", "kind": "continuă"}]), 10.0)
+        assert _n(brain._db, "graph_edges") == 1  # only despre
+        assert not brain._db.execute("SELECT 1 FROM graph_nodes WHERE id LIKE 'open:%'").fetchone()
+    finally:
+        brain.close()
+
+
+def test_link_to_future_episode_creates_node_and_ingest_fills_it(tmp_path):
+    brain = _brain(tmp_path)
+    try:
+        enc.encode(brain._db, "42", "main", "e1", 10.0, _u(about=[], links=[{"to": "m1", "kind": "cauză"}]), 10.0)
+        assert brain._db.execute("SELECT kind, chat_id, topic_id FROM graph_nodes WHERE id='m1'").fetchone() == (
+            "episode", "42", None)
+        docs = [{"id": "m0", "ts": 1.0, "chat_id": "42", "topic_id": "t1", "sequence_number": 1},
+                {"id": "m1", "ts": 2.0, "chat_id": "42", "topic_id": "t1", "sequence_number": 2}]
+        r = g.ingest(brain._db, docs, 20.0)
+        assert r["episodes"] == 1 and r["urmeaza"] == 1
+        assert brain._db.execute("SELECT topic_id, seq, ts FROM graph_nodes WHERE id='m1'").fetchone() == ("t1", 2, 2.0)
+    finally:
+        brain.close()
+
+
+def test_closes_from_another_chat_do_not_close(tmp_path):
+    brain = _brain(tmp_path)
+    try:
+        enc.encode(brain._db, "42", "main", "e1", 10.0, _u(opens={"kind": "întrebare", "text": "Cum?"}), 10.0)
+        r = enc.encode(brain._db, "99", "main", "e2", 20.0, _u(closes=["open:e1"]), 20.0)
+        assert r["closed"] == 0
+        assert brain._db.execute("SELECT closed_ts FROM open_items WHERE id='open:e1'").fetchone() == (None,)
+    finally:
+        brain.close()
+
+
 def test_no_delete_in_encode():
     src = (_ROOT / "brain/encode.py").read_text(encoding="utf-8")
     code = re.sub(r'""".*?"""', "", src, flags=re.S)
