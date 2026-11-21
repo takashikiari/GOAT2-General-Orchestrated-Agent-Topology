@@ -151,7 +151,10 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
 
         def _after():
             _associate(brain._db, chat_id, lane, _things(brain._db, (cues or {}).get("about") or []), cfg, half, now)
-            mind_facts.light(brain._db, chat_id, lane, (cues or {}).get("facts") or [], now)
+            # Q3: a knowledge fact a cue name points to is lit (shown) too, listed by the understanding or not
+            named = mind_facts.matching(knowledge, (cues or {}).get("names") or [])
+            mind_facts.light(brain._db, chat_id, lane, list(dict.fromkeys([*((cues or {}).get("facts") or []),
+                                                                            *named])), now)
             got = _gather(brain._db, chat_id, lane, cfg, now, exclude)
             brain._db.commit()
             missing = _missing(brain._db, cues.get("names") or [], facts) if cues and cues.get("asks_past") else []
