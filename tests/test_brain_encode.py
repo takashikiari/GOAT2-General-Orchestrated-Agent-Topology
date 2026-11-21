@@ -137,6 +137,38 @@ def test_closes_from_another_chat_do_not_close(tmp_path):
         brain.close()
 
 
+class _FailOnOpen:
+    """The real connection, except the open_items insert raises (after the episode_meta upsert)."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def execute(self, sql, *a):
+        if "INSERT OR IGNORE INTO open_items" in sql:
+            raise RuntimeError("boom")
+        return self._db.execute(sql, *a)
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+def test_failed_encode_rolls_back_and_later_encode_commits_normally(tmp_path):
+    import pytest
+    brain = _brain(tmp_path)
+    try:
+        u = _u(opens={"kind": "promisiune", "text": "fac X"})
+        with pytest.raises(RuntimeError):
+            enc.encode(_FailOnOpen(brain._db), "42", "main", "e1", 10.0, u, 10.0)
+        assert not brain._db.in_transaction
+        assert _n(brain._db, "episode_meta") == 0
+        enc.encode(brain._db, "42", "main", "e2", 20.0, u, 20.0)
+        assert [r[0] for r in brain._db.execute("SELECT id FROM episode_meta")] == ["e2"]
+        assert _n(brain._db, "open_items") == 1
+        assert _n(brain._db, "graph_nodes WHERE id = 'e1'") == 0
+    finally:
+        brain.close()
+
+
 def test_no_delete_in_encode():
     src = (_ROOT / "brain/encode.py").read_text(encoding="utf-8")
     code = re.sub(r'""".*?"""', "", src, flags=re.S)

@@ -15,7 +15,17 @@ _LINK_KINDS = {"continuă", "cauză", "urmare", "corectează", "contrazice"}
 
 def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now: float) -> dict:
     """Write turn understanding ``u`` (see brain/understand.py) for ``episode_id``. Returns what was written:
-    ``{"things", "links", "opened", "closed"}`` (things linked, typed links touched, 0/1, items newly closed)."""
+    ``{"things", "links", "opened", "closed"}`` (things linked, typed links touched, 0/1, items newly closed).
+    All or nothing: on any error the uncommitted writes are rolled back (the connection is shared, a later commit
+    must not persist half an episode) and the error is re-raised."""
+    try:
+        return _write(db, chat_id, lane, episode_id, ts, u, now)
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now: float) -> dict:
     out = {"things": 0, "links": 0, "opened": 0, "closed": 0}
     db.execute("INSERT OR IGNORE INTO graph_nodes (id, kind, label, chat_id, topic_id, seq, ts, created_at) "
                "VALUES (?, 'episode', ?, ?, NULL, NULL, ?, ?)", (episode_id, episode_id, chat_id, ts, now))
