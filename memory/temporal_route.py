@@ -120,6 +120,8 @@ def _is_plausible_year(year: int, now: datetime) -> bool:
 # it is a report of other sessions' messages, never a question about a moment in time, and its own
 # instructions ("1-3 propoziții", "1-2 cuvinte") parse as dates — so it never takes the temporal route.
 CHANNEL_DIGEST_PREFIX = "Mesaje noi pe canalul agent-coord"
+# ...and its footer starts with this; the memory block shows a digest without header and footer (brain/mind_text.py)
+CHANNEL_DIGEST_FOOTER = "Rezumă-i pe scurt lui Laris ce e nou"
 # Channel log stamps ("[2026-11-06 09:14:04] a -> b: …") are metadata, not what the user asks about.
 _CHANNEL_STAMP = re.compile(r"\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?\]")
 
