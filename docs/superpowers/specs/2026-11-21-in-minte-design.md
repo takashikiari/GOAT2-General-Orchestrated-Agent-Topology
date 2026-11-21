@@ -42,7 +42,7 @@ Pentru fiecare chat și lane există un singur set de **elemente în minte**, fi
 
 **Ce poate fi un element:**
 - o **amintire** (un episod L3, id = `message_id`);
-- un **fapt** din L1;
+- un **fapt** din L1 (cele despre viața lui Laris, mereu prezente; §3a);
 - un **lucru deschis**: o promisiune a lui GOAT sau o întrebare a lui Laris fără răspuns (azi, nucleul).
 
 Conversația recentă (L2) rămâne fereastra de lucru și e mereu în prompt. Ea e **stimulul** din care pornește totul.
@@ -53,9 +53,39 @@ discutat acolo e însă parte din ce a trăit GOAT, la fel ca o conversație cu 
 Altfel GOAT n-ar ști ce s-a discutat. Azi `brain/live.py` (`_not_lived`) exclude aceste mesaje din reamintire;
 excluderea dispare.
 
-**Unde stă:** în `brain.sqlite`, tabelul `in_minte` (chat, lane, element, tip, activare, surse, ultima folosire,
-de ce a apărut). Ca la graf, **nimic nu se șterge**: un element nefolosit se stinge până la podea și rămâne în
-tabel. Promptul citește doar ce e peste prag.
+**Unde stă:** într-un singur loc: stratul L2.5 refăcut (§3a). Fiecare element are: tip, activare, surse, ultima
+folosire și de ce a apărut. Ca la graf, **nimic nu se șterge**: un element nefolosit se stinge până la podea și
+rămâne. Promptul citește doar ce e peste prag.
+
+## 3a. Straturile memoriei: fiecare are un rol în aceeași minte
+
+„În minte" nu înlocuiește straturile, ci le leagă. Fiecare strat rămâne, cu rolul lui, și toate lucrează împreună:
+
+| Strat | Ce ține | Rolul în „În minte" |
+|---|---|---|
+| **L0 Identitate** (Letta `identity`) | cine e GOAT | fix, mereu în prompt; nu e memorie de evenimente |
+| **L1 Memorie permanentă** (Letta `facts`) | ce știe GOAT sigur despre Laris și viața lui, plus faptele de lucru de durată | **mereu în minte**, la activare maximă |
+| **L2 Memorie de lucru** (Redis, conversația) | ce se vorbește acum | mereu în prompt; e stimulul care aprinde restul |
+| **L2.5 Activare** (Redis, firul de discuție) | azi: subiectul curent și cache-ul căutării | **devine „În minte"**: starea minții pe fir de discuție |
+| **L3 Memorie episodică** (Chroma) | tot ce a trăit GOAT, fiecare tură, inclusiv agent-coord | arhiva din care se aduc amintirile |
+| **Graful** (`brain.sqlite`) | legăturile dintre amintirile L3 și lucrurile despre care vorbesc | indexul asocierilor peste L3 |
+
+**L1 are două feluri de fapte, tratate diferit:**
+- **Viața lui Laris:** oameni (fratele Ionuț, iubita), animale (cățelușa din copilărie), locuri, preferințe,
+  lucruri importante. Sunt mereu în minte și **nu se sting niciodată**, oricât de rar ar fi pomenite. GOAT trebuie
+  să le știe oricând, fără să le caute. Plafonul de tokeni nu are voie să le scoată.
+- **Fapte de lucru:** stări de proiect, configurații, decizii tehnice. Pot ieși din prompt când nu mai sunt
+  folosite, dar rămân păstrate și revin când se aprind.
+
+**L2 → L3:** când un mesaj iese din fereastra conversației (`auto_promote`), trece în L3. Asta e întipărire:
+amintirea se scrie legată de ce era în minte atunci (§5), nu ca o copie izolată.
+
+**L3 se accesează pe două căi, ale aceleiași arhive:** căutarea (după ce seamănă la text) și graful (după ce e
+legat). Niciuna nu are ultimul cuvânt; amândouă aprind elemente în „În minte".
+
+**Exemplu: „fratele meu".** „Fratele lui Laris: Ionuț" stă în L1, deci e mereu în minte. Tura din 17.11 în care
+Laris l-a spus stă în L3 și e legată în graf de „Ionuț". Când Laris pomenește familia, GOAT știe numele din L1, iar
+graful aduce și discuțiile legate de el, fără niciun tool call.
 
 ## 4. Reamintire: fiecare tură
 
@@ -92,8 +122,10 @@ tabel. Promptul citește doar ce e peste prag.
 - **Urcarea în L1:** o amintire care revine și e folosită în ture diferite, în zile diferite, devine candidat
   de fapt permanent. Un model o formulează ca fapt („fratele lui Laris: Ionuț"), iar faptul intră în L1 prin
   scrierea existentă (`promote_fact`).
-- **L1 se curăță după folosire, nu după plafon:** un fapt nefolosit multă vreme iese din blocul Letta, dar rămâne
-  păstrat în `brain.sqlite` și revine dacă se aprinde din nou. Nimic nu se pierde.
+- **L1 nu pierde nimic din viața lui Laris:** faptele despre oameni, animale, locuri și preferințe rămân mereu
+  (§3a). Doar faptele de lucru nefolosite multă vreme ies din prompt; rămân păstrate și revin când se aprind.
+- **Ce a trăit GOAT și nu e încă în L1** (de exemplu un nume pomenit o singură dată) rămâne în L3 și în graf și se
+  aduce când se aprinde. Consolidarea îl urcă în L1 dacă e despre viața lui Laris, chiar după o singură pomenire.
 - Perechile și estomparea grafului rămân cum sunt.
 
 ## 7. Fără cârje
