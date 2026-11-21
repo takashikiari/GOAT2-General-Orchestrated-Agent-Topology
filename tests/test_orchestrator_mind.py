@@ -91,14 +91,15 @@ def _set(monkeypatch, tmp_path, brain_on: bool, mind: bool):
 def mind_calls(monkeypatch):
     calls = {"expose": [], "after": []}
 
-    async def expose(client, episodic, chat_id, lane, message, l3_results, facts, budget_tokens):
+    async def expose(client, episodic, chat_id, lane, message, l3_results, facts, budget_tokens, *, exclude_ids=None):
         calls["expose"].append(dict(client=client, chat_id=chat_id, lane=lane, message=message,
-                                    l3_results=list(l3_results), facts=dict(facts), budget=budget_tokens))
+                                    l3_results=list(l3_results), facts=dict(facts), budget=budget_tokens,
+                                    exclude_ids=set(exclude_ids or ())))
         return _BLOCK, ["m1"], {"m1": "Laris a ales Kent"}
 
-    async def after_turn(client, chat_id, lane, turn_id, user, reply, shown, texts):
+    async def after_turn(client, chat_id, lane, turn_id, user, reply, shown, texts, ts=None):
         calls["after"].append(dict(client=client, chat_id=chat_id, lane=lane, turn_id=turn_id, user=user,
-                                   reply=reply, shown=list(shown), texts=dict(texts)))
+                                   reply=reply, shown=list(shown), texts=dict(texts), ts=ts))
 
     async def nucleus(chat_id, lane="human"):
         return [{"kind": "unanswered", "event": "e1", "ts": "1794740000.0", "text": "Când vine raportul?"}]
@@ -150,7 +151,8 @@ def test_on_prompt_has_one_memory_block_and_no_search_tools(monkeypatch, tmp_pat
     (call,) = mind_calls["expose"]
     assert call["l3_results"] == _L3 and call["facts"] == _FACTS and call["lane"] == "human"
     assert call["client"] is not None and call["message"] == "Ce am ales pentru Kent?"
-    assert call["budget"] == assembled["budget"] - estimate_tokens("[Identity]\nYou are GOAT.")
+    known = estimate_tokens("Ce știu:\n- nume: Laris")              # R26: L2 is sized with the facts counted
+    assert call["budget"] == assembled["budget"] + known - estimate_tokens("[Identity]\nYou are GOAT.")
     assert "old_recall" not in mind_calls and "old_after" not in mind_calls
 
 
@@ -161,7 +163,7 @@ def test_on_after_turn_is_scheduled_with_shown_ids(monkeypatch, tmp_path, turn, 
     turn_id = layers.saved[0]["l3_id"]
     assert after == dict(client=mind_calls["expose"][0]["client"], chat_id="42", lane="human", turn_id=turn_id,
                          user="Ce am ales pentru Kent?", reply=reply, shown=["m1"],
-                         texts={"m1": "Laris a ales Kent"})
+                         texts={"m1": "Laris a ales Kent"}, ts=layers.saved[0]["timestamp"])  # R36: when said
 
 
 def test_channel_lane_is_lived_when_on(monkeypatch, tmp_path, turn, mind_calls):
