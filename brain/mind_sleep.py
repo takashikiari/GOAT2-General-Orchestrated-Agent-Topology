@@ -1,11 +1,13 @@
 """brain.mind_sleep — the existing L3 history goes through the same understanding + encoding as new turns.
 
-Each sleep tick takes the oldest episodes without an ``episode_meta`` row (all lanes), understands each with the
-previous episodes of its topic as ``in_mind`` (no topic: the previous ones of its chat within 30 minutes, R25) and the
-labels of the things they are about (R28), and encodes it (rulings R3, R6, R22). Chroma and the LLM run outside
+Each sleep tick takes the newest episodes without an ``episode_meta`` row (all lanes: the recent memories matter
+most and are the ones seen soonest, P4), understands each with the previous episodes of its topic as ``in_mind``
+(no topic: the previous ones of its chat within 30 minutes, R25) and the labels of the things they are about (R28);
+a neighbour with no gist yet is read by its cleaned raw text, fetched in the slice's one Chroma call (P4). It
+encodes it (rulings R3, R6, R22). Chroma and the LLM run outside
 ``brain.lock``; the lock is held only for DB reads/writes. An episode whose understanding fails is skipped for an
 hour (in-process), and after 3 failures not retried again in this process (R34), so one bad episode never blocks the
-oldest-first slice. Nothing is ever deleted.
+slice. Nothing is ever deleted.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import time
 from brain import brain as _brain
 from brain import encode
 from brain.live import _NOT_LIVED
+from brain.mind_render import clean
 from brain.understand import understand_turn
 from utils.logging.setup import get_logger
 
@@ -29,6 +32,7 @@ _RECENT = 24 * 3600.0
 _CHAT_WINDOW = 30 * 60.0  # no topic: the episodes of the same chat this long before are what was in mind
 _failed: dict[str, float] = {}
 _fails: dict[str, int] = {}
+_NEIGHBOUR_MAX = 160  # characters of a neighbour's raw text when it has no gist yet
 _PREFIX = re.compile(r"^\[[^\]]{0,40}\]\s*")
 
 
@@ -71,11 +75,11 @@ def _fail(eid: str) -> None:
 def _pending(db, n: int) -> list[tuple]:
     return db.execute("SELECT n.id, n.chat_id, n.topic_id, n.ts FROM graph_nodes n WHERE n.kind = 'episode' "
                       "AND n.ts IS NOT NULL AND NOT EXISTS (SELECT 1 FROM episode_meta m WHERE m.id = n.id) "
-                      "ORDER BY n.ts LIMIT ?", (n,)).fetchall()
+                      "ORDER BY n.ts DESC LIMIT ?", (n,)).fetchall()
 
 
 async def encode_slice(brain, episodic, client, limit: int | None = None, user_name: str | None = None) -> int:
-    """Encode up to ``limit`` of the oldest unencoded episodes; returns how many were encoded. ``user_name`` (L1)
+    """Encode up to ``limit`` of the newest unencoded episodes; returns how many were encoded. ``user_name`` (L1)
     is how the gists name the user, whatever the old turns call him (P3)."""
     limit = int(limit if limit is not None else _brain.MIND["encode_per_tick"])
     now = time.time()
@@ -86,7 +90,12 @@ async def encode_slice(brain, episodic, client, limit: int | None = None, user_n
     rows = [r for r in rows if r[0] not in _failed][:limit]
     if not rows:
         return 0
-    got = await asyncio.to_thread(episodic._get_collection().get, ids=[r[0] for r in rows], include=["documents"])
+    async with brain.lock:  # each one's neighbours, read before the slice is encoded: they are older, so newest
+        #                     first they would be encoded after it anyway
+        minds = await asyncio.to_thread(lambda: {r[0]: _in_mind(brain._db, r[1], r[2], r[3]) for r in rows})
+    bare = [it["item"] for m, _ in minds.values() for it in m if not it["text"]]
+    got = await asyncio.to_thread(episodic._get_collection().get,
+                                  ids=list(dict.fromkeys([r[0] for r in rows] + bare)), include=["documents"])
     docs = dict(zip(got.get("ids") or [], got.get("documents") or []))
     done = 0
     for eid, chat_id, topic_id, ts in rows:
@@ -94,8 +103,9 @@ async def encode_slice(brain, episodic, client, limit: int | None = None, user_n
             _fail(eid)
             continue
         user, reply = _split(docs[eid])
-        async with brain.lock:
-            mind, labels = await asyncio.to_thread(_in_mind, brain._db, chat_id, topic_id, ts)
+        mind, labels = minds[eid]
+        mind = [it if it["text"] else {**it, "text": clean(docs.get(it["item"]) or "")[:_NEIGHBOUR_MAX]}
+                for it in mind]
         try:
             u = await understand_turn(client, user, reply, mind, labels, user_name=user_name)
         except Exception as exc:  # noqa: BLE001
@@ -109,7 +119,7 @@ async def encode_slice(brain, episodic, client, limit: int | None = None, user_n
         try:
             async with brain.lock:
                 await asyncio.to_thread(encode.encode, brain._db, str(chat_id), _lane(user), eid, ts, u, time.time())
-        except Exception as exc:  # noqa: BLE001 - one bad episode must not block the oldest-first slice
+        except Exception as exc:  # noqa: BLE001 - one bad episode must not block the slice
             log.warning("brain: backfill encode failed %s: %s: %s", eid, type(exc).__name__, exc)
             _fail(eid)
             continue

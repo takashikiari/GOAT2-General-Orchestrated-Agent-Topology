@@ -56,17 +56,26 @@ def test_without_topic_the_previous_turns_of_the_chat_are_in_mind(brain):
     docs = _seed(brain, 2, 300)
     client = _Linker()
     assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5)) == 2
-    assert "e1 — amintire — g" in client.prompts[1]                 # e1's gist, encoded just before
-    assert "- render" in client.prompts[1]                         # and the things it is about, to reuse
+    assert "e1 — amintire — salut 1 assistant: ok" in client.prompts[0]  # newest first: e1 by its raw text (P4)
     assert brain._db.execute("SELECT 1 FROM graph_edges WHERE src = 'e2' AND dst = 'e1' AND kind = 'continuă'"
                              ).fetchone()
+
+
+def test_an_encoded_neighbour_gives_its_gist_and_things(brain):
+    docs = _seed(brain, 2, 300)
+    ms.encode.encode(brain._db, "42", "human", "e1", time.time() - 10 * 86400,
+                     {"type": "fapt", "importance": 0.5, "gist": "g1", "about": ["Render"], "links": [],
+                      "opens": None, "closes": []}, time.time())
+    client = _Linker()
+    assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5)) == 1
+    assert "e1 — amintire — g1" in client.prompts[0] and "- render" in client.prompts[0]  # R28: labels to reuse
 
 
 def test_without_topic_only_the_last_half_hour_counts(brain):
     docs = _seed(brain, 2, 3600)
     client = _Linker()
     asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5))
-    assert "e1 — amintire" not in client.prompts[1]
+    assert len(client.prompts) == 2 and not any("e1 — amintire" in p for p in client.prompts)
 
 
 def test_an_episode_failing_three_times_is_not_retried_in_this_process(brain):

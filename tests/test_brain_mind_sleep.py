@@ -29,9 +29,10 @@ def _brain(tmp_path):
 
 class _Coll:
     def __init__(self, docs):
-        self.docs = docs
+        self.docs, self.calls = docs, []
 
     def get(self, ids, include=None):
+        self.calls.append(list(ids))
         ids = [i for i in ids if i in self.docs]
         return {"ids": ids, "documents": [self.docs[i] for i in ids]}
 
@@ -70,22 +71,26 @@ def _docs():
     return {f"e{n}": f"[2026-01-0{n}T10:00:00+02:00] user: salut {n}\nassistant: răspuns {n}" for n in range(1, 4)}
 
 
-def test_backfill_encodes_oldest_first_and_links_within_topic(tmp_path):
+def test_backfill_encodes_newest_first_and_neighbours_have_text(tmp_path):
+    """P4: the recent memories first; a neighbour in mind with no gist yet is read by its cleaned raw text, fetched
+    in the same Chroma call as the slice."""
     brain = _brain(tmp_path)
     ms._failed.clear()
     try:
         docs = _docs()
         docs["e3"] = "user: Mesaje noi pe canalul agent-coord x\nassistant: ok"
         _seed(brain, docs)
-        client = _Client()
-        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 2)) == 2
+        client, epi = _Client(), _Ep(docs)
+        assert asyncio.run(ms.encode_slice(brain, epi, client, 2)) == 2
         done = {r[0] for r in brain._db.execute("SELECT id FROM episode_meta")}
-        assert done == {"e1", "e2"}
-        assert "salut 1" in client.prompts[0] and "răspuns 1" in client.prompts[0]
-        assert "e1" in client.prompts[1]  # the previous episode of the topic was in mind
+        assert done == {"e2", "e3"}
+        assert "canalul agent-coord" in client.prompts[0]                  # the newest first
+        assert "salut 2" in client.prompts[1] and "răspuns 2" in client.prompts[1]
+        assert "e1 — amintire — salut 1 assistant: răspuns 1" in client.prompts[1]  # raw text, no timestamp/role
+        assert len(epi.c.calls) == 1 and set(epi.c.calls[0]) == {"e1", "e2", "e3"}  # one Chroma call
         assert brain._db.execute("SELECT count(*) FROM open_items").fetchone()[0] == 0  # R3: old history
         assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5)) == 1
-        assert brain._db.execute("SELECT 1 FROM episode_meta WHERE id='e3'").fetchone()
+        assert brain._db.execute("SELECT 1 FROM episode_meta WHERE id='e1'").fetchone()
     finally:
         brain.close()
 
@@ -108,13 +113,13 @@ def test_backfill_skips_encoded_and_retries_failed_later(tmp_path):
     try:
         docs = _docs()
         _seed(brain, docs)
-        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(fail=("salut 1",)), 1)) == 0  # e1 fails
-        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(fail=("salut 1",)), 1)) == 1  # e1 skipped
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(fail=("salut 3",)), 1)) == 0  # e3 fails
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(fail=("salut 3",)), 1)) == 1  # e3 skipped
         assert {r[0] for r in brain._db.execute("SELECT id FROM episode_meta")} == {"e2"}
-        ms._failed["e1"] = time.time() - 3601  # an hour later it is retried, oldest first
+        ms._failed["e3"] = time.time() - 3601  # an hour later it is retried, newest first
         assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(), 1)) == 1
-        assert {r[0] for r in brain._db.execute("SELECT id FROM episode_meta")} == {"e1", "e2"}
-        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(), 5)) == 1  # only e3 left; e1/e2 not redone
+        assert {r[0] for r in brain._db.execute("SELECT id FROM episode_meta")} == {"e2", "e3"}
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), _Client(), 5)) == 1  # only e1 left; e2/e3 not redone
     finally:
         ms._failed.clear()
         brain.close()
