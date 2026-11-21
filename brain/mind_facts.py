@@ -6,7 +6,7 @@ projects) only when the message is about it, and it stays in mind for the follow
 ``fact:<key>`` (kind ``fapt``), fading with the rest. The kinds are decided by ONE LLM call in the sleep tick, never
 on the reply path, and kept in ``fact_kind`` with a hash of the value they were decided on: a changed value is
 classified again, so a misclassified rule is recoverable (Q2); a key the model keeps leaving out is asked at most
-_MAX_ATTEMPTS times per value in this process. A fact not classified yet counts as a rule (always shown: nothing is
+_MAX_ATTEMPTS times per value in this process; until then a kind decided on an older value counts as a rule. A fact not classified yet counts as a rule (always shown: nothing is
 lost). A row whose key left L1 stays, unused. Nothing is ever deleted.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["KINDS", "PREFIX", "value_hash", "kinds", "split", "parse", "save", "classify", "light", "in_mind",
+__all__ = ["KINDS", "PREFIX", "value_hash", "kinds", "hashes", "split", "parse", "save", "classify", "light", "in_mind",
            "mentioned", "matching"]
 
 KINDS = ("regulă", "cunoștință")
@@ -59,9 +59,12 @@ def kinds(db) -> dict[str, str]:
     return {k: v for k, v in db.execute("SELECT key, kind FROM fact_kind").fetchall()}
 
 
-def split(facts: dict, known: dict[str, str]) -> tuple[dict, dict]:
-    """(rules, knowledge) of ``facts``, both in L1 order; a fact with no kind yet is a rule."""
-    rules = {k: v for k, v in (facts or {}).items() if known.get(k) != "cunoștință"}
+def split(facts: dict, known: dict[str, str], decided_on: dict | None = None) -> tuple[dict, dict]:
+    """(rules, knowledge) of ``facts``, both in L1 order; a fact with no kind yet is a rule, and so is one whose
+    kind was decided on another value (``decided_on``: {key: value hash}, ``hashes``; NULL = before the hash)
+    until it is classified again."""
+    rules = {k: v for k, v in (facts or {}).items() if known.get(k) != "cunoștință"
+             or (decided_on is not None and decided_on.get(k) != value_hash(v))}
     return rules, {k: v for k, v in (facts or {}).items() if k not in rules}
 
 
@@ -83,7 +86,8 @@ def save(db, got: dict[str, str], now: float, values: dict | None = None) -> Non
     db.commit()
 
 
-def _hashes(db) -> dict[str, str | None]:
+def hashes(db) -> dict[str, str | None]:
+    """{fact key: hash of the value its kind was decided on, or None for a row from before the hash}."""
     return {k: h for k, h in db.execute("SELECT key, value_hash FROM fact_kind").fetchall()}
 
 
@@ -93,16 +97,18 @@ async def classify(brain, client, facts: dict) -> int:
     unclassified one shown as a rule) for the next tick, at most _MAX_ATTEMPTS asks per key and value."""
     try:
         async with brain.lock:
-            known = await asyncio.to_thread(_hashes, brain._db)
+            known = await asyncio.to_thread(hashes, brain._db)
         tries = _ATTEMPTS.setdefault(brain, {})
         keys = [k for k, v in (facts or {}).items() if known.get(k) != value_hash(v)
                 and tries.get((k, value_hash(v)), 0) < _MAX_ATTEMPTS]
         if not keys:
             return 0
-        for k in keys:
-            tries[(k, value_hash(facts[k]))] = tries.get((k, value_hash(facts[k])), 0) + 1
         body = "\n".join(f"{k}: {str(facts[k])[:_VALUE_MAX]}".replace("\n", " ") for k in keys)
-        got = parse(await _ask(client, _fill(CLASSIFY_PROMPT, facts=body), max_tokens=8000), keys)
+        answer = await _ask(client, _fill(CLASSIFY_PROMPT, facts=body), max_tokens=8000)
+        got = parse(answer, keys)
+        for k in keys if isinstance(answer, dict) else []:  # only an answer that leaves a key out is an attempt;
+            if k not in got:                                 # a failed ask (error, timeout, no JSON) is not
+                tries[(k, value_hash(facts[k]))] = tries.get((k, value_hash(facts[k])), 0) + 1
         if got:
             async with brain.lock:
                 await asyncio.to_thread(save, brain._db, got, time.time(), facts)

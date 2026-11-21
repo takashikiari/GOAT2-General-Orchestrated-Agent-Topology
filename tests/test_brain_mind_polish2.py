@@ -26,7 +26,8 @@ def _section(block, title):
 
 def test_a_fact_a_cue_name_points_to_is_shown(on):  # noqa: F811
     """Q3: "not missing" means shown: the name lights the fact even when the understanding did not list it."""
-    mf.save(on._db, {"emoji_style": "regulă", "brother_name": "cunoștință", "machine_lenovo": "cunoștință"}, 1.0)
+    mf.save(on._db, {"emoji_style": "regulă", "brother_name": "cunoștință", "machine_lenovo": "cunoștință"}, 1.0,
+            FACTS)
     asks = FakeClient({"about": [], "names": ["Ionut"], "asks_past": True, "facts": []})
     block, _, _ = _expose(asks, FakeEpisodic({}), "ce mai face Ionut?", [], FACTS)
     assert "brother_name: Fratele lui Laris" in _section(block, "Ce știu")

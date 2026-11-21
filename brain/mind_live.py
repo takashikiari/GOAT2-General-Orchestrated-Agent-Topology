@@ -136,18 +136,19 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
         hits = {_mid(r): r for r in sorted(l3_results or [], key=lambda r: float(r.get("blended_score") or 0.0))
                 if _mid(r) and _mid(r) not in exclude}  # a memory found twice keeps its best score
 
-        def _before() -> tuple[list[dict], dict]:
+        def _before() -> tuple[list[dict], tuple[dict, dict]]:
             mind.carry(brain._db, chat_id, lane, float(cfg["carry"]), float(cfg["floor"]))
             for mid, r in hits.items():
                 mind.light(brain._db, chat_id, lane, mid, "amintire", max(0.0, float(r.get("blended_score") or 0.0)),
                            "căutare", "seamănă cu ce spui", now, commit=False)
             brain._db.commit()
             return (_in_mind(brain._db, chat_id, lane, float(cfg["floor"]),
-                             {m: str(r.get("content") or "") for m, r in hits.items()}), mind_facts.kinds(brain._db))
+                             {m: str(r.get("content") or "") for m, r in hits.items()}),
+                    (mind_facts.kinds(brain._db), mind_facts.hashes(brain._db)))
 
         async with brain.lock:
             in_mind, kinds = await asyncio.to_thread(_before)
-        rules, knowledge = mind_facts.split(facts or {}, kinds)  # P1: rules always, knowledge when it is needed
+        rules, knowledge = mind_facts.split(facts or {}, *kinds)  # P1: rules always, knowledge when it is needed
         cues = await understand_message(client, message, in_mind, knowledge)  # outside the lock: an LLM call
 
         def _after():
