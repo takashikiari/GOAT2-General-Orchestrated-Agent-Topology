@@ -17,6 +17,7 @@ from brain.live import used as _used
 from brain.mind_render import day as _day
 from brain.mind_render import memories as _memories
 from brain.mind_render import render as _render
+from brain.mind_text import same_open as _same_open
 from brain.understand import understand_message, understand_turn
 from memory.usage_probe import _terms
 from utils.logging.setup import get_logger
@@ -163,7 +164,11 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
         async with brain.lock:
             items, opens, meta, missing, known = await asyncio.to_thread(_after)
         shown_mems = await _memories(episodic, items, hits, meta)
-        open_lines = [f"- ({_day(ts)}) {text} — {why}" for _, text, ts, why in opens]
+        shown_opens: list[tuple[str, str]] = []  # Q5: each open text once, the most recent kept
+        for _, text, ts, why in opens:
+            if not any(_same_open(text or "", t) for t, _ in shown_opens):
+                shown_opens.append((text or "", f"- ({_day(ts)}) {text} — {why}"))
+        open_lines = [line for _, line in shown_opens]
         return _render(known, shown_mems, open_lines, missing, int(budget_tokens), rules)
     except Exception as exc:  # noqa: BLE001
         log.warning("brain: mind expose failed: %s: %s", type(exc).__name__, exc)

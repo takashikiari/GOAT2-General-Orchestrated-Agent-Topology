@@ -82,3 +82,37 @@ def test_a_key_the_model_keeps_omitting_is_asked_at_most_three_times(on):  # noq
         assert asyncio.run(mf.classify(on, client, {"x": "y"})) == 0
     assert len(client.calls) == 3
     assert asyncio.run(mf.classify(on, FakeClient({"x": "regulă"}), {"x": "altă valoare"})) == 1   # a new value
+
+
+def test_a_near_duplicate_open_item_is_not_opened_twice(on):  # noqa: F811
+    """Q5: the re-check showed the same promise open several times in every block."""
+    import time
+
+    from brain import encode as enc
+
+    def opened(eid, text, lane="human", kind="promisiune"):
+        u = {"type": "promisiune", "gist": "g", "opens": {"kind": kind, "text": text}}
+        return enc.encode(on._db, "42", lane, eid, time.time(), u, time.time())["opened"]
+    assert opened("p1", "Compar rezultatul replay: branch vs main.") == 1
+    assert opened("p2", "compar  rezultatul REPLAY — branch vs. main") == 0              # same normalized text
+    assert opened("p3", "Compar rezultatul replay branch vs main") == 0
+    assert opened("p4", "Îți spun: compar rezultatul replay branch vs main și revin.") == 0  # contains it
+    assert opened("p5", "replay branch") == 0                                             # contained in it
+    assert opened("p6", "Verific plata Kent.") == 1
+    assert opened("p7", "Compar rezultatul replay branch vs main", lane="channel") == 1  # another lane
+    on._db.execute("UPDATE open_items SET closed_ts = 1.0 WHERE id = 'open:p6'")
+    assert opened("p8", "Verific plata Kent!") == 1                                       # the old one is closed
+    assert on._db.execute("SELECT COUNT(*) FROM open_items").fetchone()[0] == 4
+
+
+def test_each_open_text_is_shown_once(on):  # noqa: F811
+    import time
+    now = time.time()
+    for i, text in enumerate(["Compar rezultatul replay branch vs main.", "compar rezultatul replay, branch vs main",
+                              "Verific plata Kent."]):
+        on._db.execute("INSERT INTO open_items (id, chat_id, lane, kind, text, ts) VALUES (?, '42', 'human', "
+                       "'promisiune', ?, ?)", (f"open:o{i}", text, now - i))
+    on._db.commit()
+    block, _, _ = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", [])
+    opens = _section(block, "Ce e deschis")
+    assert opens.count("ompar rezultatul replay") == 1 and "Verific plata Kent." in opens

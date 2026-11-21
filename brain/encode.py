@@ -1,7 +1,8 @@
 """Encoding (brain as a brain, task 3): the understanding of a finished turn is written into the memory graph.
 
 The episode node, a ``despre`` link to each thing it is about, the typed links to earlier episodes (directed
-episode -> ``to``), a meta row and the open item it opens or closes. Idempotent; nothing is ever deleted: an open
+episode -> ``to``), a meta row and the open item it opens or closes; an item is not opened when one saying the same
+(brain.mind_text.same_open) is already open in this chat and lane (Q5). Idempotent; nothing is ever deleted: an open
 item that gets closed keeps its row and only receives ``closed_ts`` / ``closed_by``.
 """
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 __all__ = ["encode", "thing_labels"]
 
 from brain import graph
+from brain.mind_text import same_open
 
 _LINK_KINDS = {"continuă", "cauză", "urmare", "corectează", "contrazice"}
 _MAX_LABEL_WORDS = 4  # a longer "about" label is a phrase, not a thing's name: never a node (R28)
@@ -67,7 +69,9 @@ def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
                "gist = excluded.gist, encoded_at = excluded.encoded_at",
                (episode_id, u.get("type"), float(u.get("importance") or 0.0), u.get("gist") or "", now))
     opens = u.get("opens")
-    if opens and opens.get("text"):
+    if opens and opens.get("text") and not any(
+            same_open(opens["text"], row[0] or "") for row in db.execute(
+                "SELECT text FROM open_items WHERE chat_id = ? AND lane = ? AND closed_ts IS NULL", (chat_id, lane))):
         out["opened"] = db.execute("INSERT OR IGNORE INTO open_items (id, chat_id, lane, kind, text, ts) "
                                    "VALUES (?, ?, ?, ?, ?, ?)",
                                    (f"open:{episode_id}", chat_id, lane, opens.get("kind"), opens["text"], ts)).rowcount
