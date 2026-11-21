@@ -180,3 +180,19 @@ def test_recalled_memories_never_push_out_the_search_best_three(on):
     assert ranked[3]["metadata"]["message_id"] == "assoc" and ranked[3]["blended_score"] == pytest.approx(0.693)
     assert live._after_top([]) == 0.5
     assert live._after_top([{"blended_score": 0.4}]) == pytest.approx(0.396)       # fewer than 3: under the weakest
+
+
+def test_a_hub_reads_its_currently_strongest_links_not_its_stored_ones(brain):
+    """R29: 300 links stored at 1.0 long ago (never faded in the table) and one fresh 0.5 link: the fresh one is
+    the strongest NOW, so it is among the _FANOUT links read and its episode is reached."""
+    now = 1795392000.0
+    db = brain._db
+    db.execute("INSERT INTO graph_nodes (id, kind, label, created_at) VALUES ('thing:hub', 'thing', 'hub', 1)")
+    for i in range(300):
+        db.execute("INSERT INTO graph_edges (src, dst, kind, weight, created_at, w_at) VALUES (?, 'thing:hub', "
+                   "'despre', 1.0, ?, ?)", (f"old{i}", now - 200 * DAY, now - 200 * DAY))
+    db.execute("INSERT INTO graph_edges (src, dst, kind, weight, created_at, w_at) VALUES ('fresh', 'thing:hub', "
+               "'despre', 0.5, ?, ?)", (now - 60, now - 60))
+    links = rc._links(db, "thing:hub", now, 14.0)
+    assert len(links) == rc._FANOUT and links[0][0] == "fresh"
+    assert [c["id"] for c in rc.spread(db, {"thing:hub": 1.0}, now, 1, 1, 14.0)] == ["fresh"]
