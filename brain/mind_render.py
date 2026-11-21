@@ -57,8 +57,8 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
             text = bare
             if max(len(clean(text)), len((gist or "").strip())) < _MEANINGFUL:
                 continue  # Q6: a tool-call turn, nothing that happened
-        if not (text or gist):
-            continue  # a memory the store no longer has: nothing to show
+        if not (clean(text) or (gist or "").strip()):
+            continue  # nothing to show: the store no longer has it, or a digest is empty without its header/footer
         same = " ".join(clean(text or gist).lower().split())
         if same in seen:
             continue  # P2: the same content under another id (a repeated digest): the more active one is shown

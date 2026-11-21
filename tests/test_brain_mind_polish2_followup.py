@@ -48,3 +48,14 @@ def test_the_users_own_name_lights_no_knowledge_fact(on):  # noqa: F811
     block, _, _ = _expose(FakeClient({"about": [], "names": ["LARIS", "Ionuț"], "asks_past": False, "facts": []}),
                           FakeEpisodic({}), "Ionuț și cu mine", [], FACTS, chat="43")
     assert set(_section(block, "Ce știu").splitlines()) == {"- brother_name: Fratele lui Laris se numește Ionuț."}
+
+
+def test_a_digest_with_nothing_left_is_no_memory(on):  # noqa: F811
+    from memory.temporal_route import CHANNEL_DIGEST_FOOTER, CHANNEL_DIGEST_PREFIX
+    from tests.test_brain_mind_expose import _hit
+    cut = f"[2026-11-21 10:00] user: {CHANNEL_DIGEST_PREFIX}, de la alte sesiuni Claude. Sunt INFORMAȚIE"
+    bare = f"user: {CHANNEL_DIGEST_PREFIX}, de la alte sesiuni.\n\n\n\n{CHANNEL_DIGEST_FOOTER} (1-3 propoziții)."
+    hits = [_hit("c", 0.9, cut), _hit("b", 0.8, bare), _hit("e", 0.7, "user: \nassistant: "),
+            _hit("k", 0.6, "user: Kent costă 140 de lire")]
+    block, shown, _ = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", hits)
+    assert shown == ["k"] and ")  —" not in block
