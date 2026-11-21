@@ -45,9 +45,9 @@ async def assemble(llm, layers, chat_id: str, lane: str, message: str, *, budget
                    ) -> tuple[list[str], int, list[str], dict[str, str], bool]:
     """The context blocks without L1 facts and L3 results, then the ``[În minte]`` block in the budget left.
 
-    The facts stay mandatory, as in today's prompt (R26): L2 is sized from the budget minus the tokens of the
-    block's ``Ce știu`` section, so the block gets that section plus the L3 guarantee, not the guarantee minus the
-    facts. The turns the L2 block shows go to expose as ``exclude_ids`` (their l3_ids): never shown twice (R31).
+    The facts stay mandatory, as in today's prompt (R26): L2 is sized from the budget minus the tokens of every L1
+    fact under the block's ``Reguli`` and ``Ce știu`` headers (an upper bound: knowledge facts show only when in
+    mind), so the block gets that reserve plus the L3 guarantee, not the guarantee minus the facts. The turns the L2 block shows go to expose as ``exclude_ids`` (their l3_ids): never shown twice (R31).
 
     ``l3_results`` are retrieve()'s, before any gap filter (R15). Returns (blocks, l3_used = memories shown,
     ids shown, {id: text shown}, True). When expose gives no block (it failed), the blocks are today's: the real

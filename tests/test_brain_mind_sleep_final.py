@@ -56,7 +56,7 @@ def test_without_topic_the_previous_turns_of_the_chat_are_in_mind(brain):
     docs = _seed(brain, 2, 300)
     client = _Linker()
     assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5)) == 2
-    assert "e1 — amintire — salut 1 assistant: ok" in client.prompts[0]  # newest first: e1 by its raw text (P4)
+    assert "e1 — amintire — salut 1 ok" in client.prompts[0]  # newest first: e1 by its raw text (P4)
     assert brain._db.execute("SELECT 1 FROM graph_edges WHERE src = 'e2' AND dst = 'e1' AND kind = 'continuă'"
                              ).fetchone()
 

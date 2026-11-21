@@ -18,7 +18,7 @@ __all__ = ["day", "clean", "memories", "render"]
 _RAW_N, _RAW_MAX, _GIST_MAX = 3, 600, 160
 _MEANINGFUL = 20  # a memory that was tool-call markup and has fewer characters left than this is not shown (Q6)
 _STAMP = re.compile(r"^\s*\[[^\]]{0,40}\]\s*")  # "[2026-11-14T17:38:23+02:00] " or "[2026-11-14 17:38] "
-_ROLE = re.compile(r"^\s*(user|assistant)\s*:\s*", re.I)
+_ROLE = re.compile(r"^[ \t]*(user|assistant)[ \t]*:[ \t]*", re.I | re.M)  # at any line start
 
 
 def day(ts) -> str:
@@ -29,9 +29,10 @@ def day(ts) -> str:
 
 
 def clean(text: str) -> str:
-    """``text`` without a leading "[timestamp] " and "user:"/"assistant:" role prefix (R32), on one line."""
+    """``text`` without a leading "[timestamp] " and without the "user:"/"assistant:" role prefix of every line
+    (R32), on one line."""
     text = _STAMP.sub("", text or "", count=1)
-    return _ROLE.sub("", text, count=1).replace("\n", " ").strip()
+    return _ROLE.sub("", text).replace("\n", " ").strip()
 
 
 async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[dict]:

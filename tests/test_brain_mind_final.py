@@ -61,7 +61,7 @@ def test_raw_lines_lose_timestamp_and_role_and_never_repeat_the_gist(on):  # noq
     mind.light(on._db, "42", "human", "g1", "amintire", 0.8, "căutare", "x", time.time())
     mind.light(on._db, "42", "human", "long", "amintire", 0.7, "căutare", "x", time.time())
     block, shown, _ = _expose(FakeClient({"about": [], "names": [], "asks_past": False}), epi, "Kent?", hits)
-    assert ") Kent costă 120 assistant: notat — " in block and "] user:" not in block.split("„")[0]
+    assert ") Kent costă 120 notat — " in block and "] user:" not in block.split("„")[0]
     assert "„Kent costă 140" not in block                          # the excerpt only repeated the gist
     assert ") drum lung spre Dover" in block and "„…" in block      # the rest of a long memory follows once
     assert set(shown) == {"raw", "g1", "long"}

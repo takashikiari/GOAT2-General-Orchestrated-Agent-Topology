@@ -131,3 +131,18 @@ def test_tool_call_markup_is_not_a_memory(on):  # noqa: F811
     block, shown, texts = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", hits)
     assert shown == ["c1", "s1"] and "DSML" not in block and "[Tool calls]" not in block
     assert "called read_file" not in block and "Configul memoriei e în config/brain.toml" in block
+
+
+def test_clean_strips_every_role_prefix_at_a_line_start():
+    from brain.mind_render import clean
+    assert clean("[2026-11-14 17:38] user: Kent?\nassistant: 140 de lire\n  USER : și Dover?") == \
+        "Kent? 140 de lire și Dover?"
+    assert clean("user: îi spun user: nu") == "îi spun user: nu"           # only at a line start
+
+
+def test_the_real_tool_call_turn_of_the_recheck_is_not_shown(on):  # noqa: F811
+    from tests.test_brain_mind_expose import _hit
+    junk = 'user: Ce mai ai de făcut?\nassistant: <｜DSML｜function_calls><｜DSML｜invoke name="todo_list">' \
+           '</｜DSML｜invoke></｜DSML｜function_calls>'
+    _, shown, _ = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", [_hit("j", 0.9, junk)])
+    assert shown == []

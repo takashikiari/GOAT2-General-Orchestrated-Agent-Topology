@@ -86,7 +86,7 @@ def test_backfill_encodes_newest_first_and_neighbours_have_text(tmp_path):
         assert done == {"e2", "e3"}
         assert "canalul agent-coord" in client.prompts[0]                  # the newest first
         assert "salut 2" in client.prompts[1] and "răspuns 2" in client.prompts[1]
-        assert "e1 — amintire — salut 1 assistant: răspuns 1" in client.prompts[1]  # raw text, no timestamp/role
+        assert "e1 — amintire — salut 1 răspuns 1" in client.prompts[1]  # raw text, no timestamp/role
         assert len(epi.c.calls) == 1 and set(epi.c.calls[0]) == {"e1", "e2", "e3"}  # one Chroma call
         assert brain._db.execute("SELECT count(*) FROM open_items").fetchone()[0] == 0  # R3: old history
         assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 5)) == 1
