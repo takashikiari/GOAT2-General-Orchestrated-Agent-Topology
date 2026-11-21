@@ -116,3 +116,18 @@ def test_each_open_text_is_shown_once(on):  # noqa: F811
     block, _, _ = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", [])
     opens = _section(block, "Ce e deschis")
     assert opens.count("ompar rezultatul replay") == 1 and "Verific plata Kent." in opens
+
+
+def test_tool_call_markup_is_not_a_memory(on):  # noqa: F811
+    """Q6: the re-check showed a raw DSML tool-call turn as a memory."""
+    from tests.test_brain_mind_expose import _hit
+    dsml = ('user: ok?\nassistant: <｜DSML｜function_calls>\n<｜DSML｜invoke name="read_file">'
+            '<｜DSML｜parameter name="path" string="true">todo.md</｜DSML｜parameter></｜DSML｜invoke>\n'
+            '</｜DSML｜function_calls>')
+    calls = ("user: unde e configul?\nassistant: [Tool calls]\ncalled read_file(path=config/brain.toml) → [mind] "
+             "enabled = true\n\nConfigul memoriei e în config/brain.toml, secțiunea [mind].")
+    unclosed = "assistant: <||DSML|| calls> <||DSML|| invoke name=\"shell\"> ls -la"
+    hits = [_hit("j1", 0.9, dsml), _hit("c1", 0.8, calls), _hit("j2", 0.7, unclosed), _hit("s1", 0.6, "user: da")]
+    block, shown, texts = _expose(FakeClient({"about": [], "asks_past": False}), FakeEpisodic({}), "x", hits)
+    assert shown == ["c1", "s1"] and "DSML" not in block and "[Tool calls]" not in block
+    assert "called read_file" not in block and "Configul memoriei e în config/brain.toml" in block

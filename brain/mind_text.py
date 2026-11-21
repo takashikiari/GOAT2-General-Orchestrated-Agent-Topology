@@ -1,8 +1,9 @@
-"""brain.mind_text — what a stored text says, for the working memory (polish wave 2, Q1, Q4, Q5).
+"""brain.mind_text — what a stored text says, for the working memory (polish wave 2, Q1, Q4, Q5, Q6).
 
 An agent-coord digest is stored with its fixed header and footer (telegram_interface/_coord_poller.py), which are
 longer than most of its messages: ``digest_body`` keeps only the messages, so a memory line shows them and two
-different digests are never taken for the same content. ``fold`` / ``has_word``: a name matches a text as a whole
+different digests are never taken for the same content. ``strip_markup``: a stored turn without its tool-call
+markup (DSML, ``[Tool calls]`` evidence), which is not something that happened. ``fold`` / ``has_word``: a name matches a text as a whole
 word, case and diacritics aside ("Ionut" is "Ionuț"; "Ana" is not in "analiză"). ``same_open``: two open items say
 the same when their normalized texts are equal or one holds the other (as whole words). Pure text functions; nothing is read or written.
 """
@@ -12,12 +13,21 @@ import re
 import unicodedata
 
 from memory.temporal_route import CHANNEL_DIGEST_FOOTER, CHANNEL_DIGEST_PREFIX
+from orchestrator.dsml import remove_dsml
 
-__all__ = ["digest_body", "fold", "has_word", "norm", "same_open"]
+__all__ = ["digest_body", "strip_markup", "fold", "has_word", "norm", "same_open"]
 
 _MSG = re.compile(r"\[[^\]\n]{1,120} -> [^\]\n]{1,120}\]")  # a digest message: "[from -> to] „text”"
 # the footer runs to the end of the user turn: what follows it (the stored reply) stays
 _FOOTER = re.compile(r"\s*" + re.escape(CHANNEL_DIGEST_FOOTER) + r".*?(?=\n\s*assistant\s*:|\Z)", re.S | re.I)
+
+# the evidence block before a stored reply: "[Tool calls]\ncalled t(args) → result\n…\n\n<reply>", one call a line
+_TOOL_CALLS = re.compile(r"\[Tool calls\][^\n]*\n.*?(?:\n[ \t]*\n|\Z)", re.S)
+
+
+def strip_markup(text: str) -> str:
+    """``text`` without tool-call markup: DSML blocks and tags (orchestrator/dsml.py) and ``[Tool calls]`` blocks."""
+    return remove_dsml(_TOOL_CALLS.sub("", text or ""))
 
 
 def digest_body(text: str) -> str:

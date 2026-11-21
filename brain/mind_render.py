@@ -10,12 +10,13 @@ import asyncio
 import re
 from datetime import datetime
 
-from brain.mind_text import digest_body
+from brain.mind_text import digest_body, strip_markup
 from memory.budget import estimate_tokens
 
 __all__ = ["day", "clean", "memories", "render"]
 
 _RAW_N, _RAW_MAX, _GIST_MAX = 3, 600, 160
+_MEANINGFUL = 20  # a memory that was tool-call markup and has fewer characters left than this is not shown (Q6)
 _STAMP = re.compile(r"^\s*\[[^\]]{0,40}\]\s*")  # "[2026-11-14T17:38:23+02:00] " or "[2026-11-14 17:38] "
 _ROLE = re.compile(r"^\s*(user|assistant)\s*:\s*", re.I)
 
@@ -37,7 +38,8 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
     """The memories to show, strongest first: text and date from the search hit or the episodic store, gist from
     episode_meta (else the cleaned text's start); a raw excerpt only when it says more than the gist line: an
     excerpt that starts with the gist line shows only what follows it (R32). A digest shows its messages, not its
-    fixed header and footer; the same content under several ids (the WHOLE cleaned text, lowercased, whitespace
+    fixed header and footer; tool-call markup is left out and a memory that was mostly markup (under _MEANINGFUL
+    characters left, gist included) is not shown (Q6); the same content under several ids (the WHOLE cleaned text, lowercased, whitespace
     collapsed: a true repeat, Q1) is shown once, the most active (P2)."""
     found = {mid: (r.get("content") or "", (r.get("metadata") or {}).get("timestamp")) for mid, r in hits.items()}
     need = [it["item"] for it in mems if it["item"] not in found]
@@ -48,8 +50,12 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
     out, seen = [], set()
     for it in mems:
         text, ts = found.get(it["item"], ("", None))
-        text = digest_body(text)
         gist, node_ts = meta.get(it["item"], ("", None))
+        text = digest_body(text)
+        if (bare := strip_markup(text)) != text:
+            text = bare
+            if max(len(clean(text)), len((gist or "").strip())) < _MEANINGFUL:
+                continue  # Q6: a tool-call turn, nothing that happened
         if not (text or gist):
             continue  # a memory the store no longer has: nothing to show
         same = " ".join(clean(text or gist).lower().split())

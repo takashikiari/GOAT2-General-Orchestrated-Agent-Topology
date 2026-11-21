@@ -15,7 +15,7 @@ import re
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
-__all__ = ["DSML_BLOCK", "DSML_INVOKE", "DSML_PARAM", "strip_dsml"]
+__all__ = ["DSML_BLOCK", "DSML_INVOKE", "DSML_PARAM", "remove_dsml", "strip_dsml"]
 
 _BARS = r"[｜|]{1,2}"
 _OPEN = rf"<\s*{_BARS}\s*DSML\s*{_BARS}\s*"
@@ -32,12 +32,18 @@ _ANY_TAG = re.compile(rf"(?:{_OPEN}|{_CLOSE})[^>]*>")
 _OPEN_BLOCK = re.compile(rf"{_OPEN}{_CALLS}\s*>.*\Z", re.DOTALL)
 
 
+def remove_dsml(text: str) -> str:
+    """Text with every trace of DSML markup removed, silently (also for stored memories, brain/mind_text.py)."""
+    if not text or "DSML" not in text:
+        return text
+    return _ANY_TAG.sub("", _OPEN_BLOCK.sub("", DSML_BLOCK.sub("", text))).strip()
+
+
 def strip_dsml(text: str, chat_id: str = "") -> str:
     """Text with every trace of DSML markup removed; logs once when something was stripped."""
     if not text or "DSML" not in text:
         return text
-    out = _OPEN_BLOCK.sub("", DSML_BLOCK.sub("", text))
-    out = _ANY_TAG.sub("", out).strip()
+    out = remove_dsml(text)
     if out != text.strip():
         log.warning("DSML markup stripped from final reply chat=%s (%d → %d chars)", chat_id, len(text), len(out))
     return out
