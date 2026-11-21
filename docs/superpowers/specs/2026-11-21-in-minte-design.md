@@ -48,6 +48,11 @@ Pentru fiecare chat și lane există un singur set de **elemente în minte**, fi
 Conversația recentă (L2) rămâne fereastra de lucru și e mereu în prompt. Ea e **stimulul** din care pornește totul.
 Identitatea (L0) rămâne fixă.
 
+**Mesajele de pe agent-coord** (Laris, 2026-11-21): agent-coord e doar un hub de comunicare, nu o memorie. Ce s-a
+discutat acolo e însă parte din ce a trăit GOAT, la fel ca o conversație cu Laris, și intră în aceeași memorie.
+Altfel GOAT n-ar ști ce s-a discutat. Azi `brain/live.py` (`_not_lived`) exclude aceste mesaje din reamintire;
+excluderea dispare.
+
 **Unde stă:** în `brain.sqlite`, tabelul `in_minte` (chat, lane, element, tip, activare, surse, ultima folosire,
 de ce a apărut). Ca la graf, **nimic nu se șterge**: un element nefolosit se stinge până la podea și rămâne în
 tabel. Promptul citește doar ce e peste prag.
@@ -85,8 +90,8 @@ tabel. Promptul citește doar ce e peste prag.
 - **Pregătirea turei următoare:** din ce e în minte, somnul aprinde dinainte vecinii din graf (`urmează`,
   `gândite_împreună`). Asta înlocuiește prefetch-ul post-tură ca pipeline separat.
 - **Urcarea în L1:** o amintire care revine și e folosită în ture diferite, în zile diferite, devine candidat
-  de fapt permanent. Un model mic o formulează ca fapt („fratele lui Laris: Ionuț"), iar faptul intră în L1 prin
-  scrierea existentă (`promote_fact`). Rulează în felii mici, de câteva ori pe zi.
+  de fapt permanent. Un model o formulează ca fapt („fratele lui Laris: Ionuț"), iar faptul intră în L1 prin
+  scrierea existentă (`promote_fact`).
 - **L1 se curăță după folosire, nu după plafon:** un fapt nefolosit multă vreme iese din blocul Letta, dar rămâne
   păstrat în `brain.sqlite` și revine dacă se aprinde din nou. Nimic nu se pierde.
 - Perechile și estomparea grafului rămân cum sunt.
@@ -114,21 +119,22 @@ durează un minut. Codul vechi se scoate abia după ce Laris decide că varianta
 
 ## 9. Cum judecăm
 
-- **Judecă Laris, în conversație.** Semnele: GOAT ține minte ce s-a vorbit acum câteva ture și ce s-a promis;
-  aduce ce e legat de ce spune Laris, chiar în alte cuvinte; răspunde din memorie fără să caute.
-- **Un singur semn de eșec, automat:** GOAT încearcă totuși să caute amintiri printr-o unealtă. Nu e o
-  măsurătoare nouă, e simptomul cârjei.
-- **Fără pipeline-uri de măsurare noi** și fără scoruri de text pentru asociere. Înainte de live: o rulare pe o
-  copie care arată că promptul se construiește corect și că latența nu crește simțit.
+Un singur criteriu: **GOAT își amintește ce trebuie, când trebuie.**
+- Aduce ce s-a vorbit, ce s-a promis și ce e legat de ce spune Laris, chiar în alte cuvinte, fără să caute.
+- Spune „nu știu" **exact atunci când lucrul chiar nu există** în ce a trăit. Nu contează de câte ori spune
+  „nu știu". Contează dacă îl spune la locul lui. Un „nu știu" despre ceva ce s-a întâmplat e o lipsă a
+  sistemului; un răspuns inventat despre ceva ce nu s-a întâmplat e la fel de grav.
+- Judecă Laris, în conversație. Fără pipeline-uri de măsurare noi și fără scoruri de text pentru asociere.
+  Viteza și costul nu sunt criterii.
 
 ## 10. Riscuri, spuse dinainte
 
 - **Zgomot în prompt:** asocieri fără legătură. Protecția e convergența (§4.3) și pragul; Laris va simți.
 - **Căutarea pierde ce găsea bine:** cele mai bune rezultate intră cu activarea lor, ca azi.
-- **Latență:** totul e local (SQLite, graful e deja sub 50 ms). Ținta: fără creștere simțită.
 - **Urcarea în L1 scrie fapte greșite:** un fapt nou apare marcat ca nou, iar Laris îl poate respinge
   („uită asta"). Pornește doar după ce reamintirea s-a dovedit în conversație.
-- **GOAT spune „nu-mi amintesc" mai des la început:** e intenționat. Fiecare caz arată o lipsă reală de reparat.
+- **„Nu știu" pus greșit:** GOAT spune „nu știu" despre ceva ce s-a întâmplat (sistemul n-a adus amintirea) sau
+  inventează ceva ce nu s-a întâmplat. Ambele sunt defecte ale memoriei, de reparat în sistem, nu în GOAT.
 
 ## 11. Fazele (fiecare cu OK-ul lui Laris)
 
@@ -138,10 +144,8 @@ durează un minut. Codul vechi se scoate abia după ce Laris decide că varianta
 3. **PR 2 — consolidarea în L1** (§6, urcarea și curățarea L1). Abia după ce PR 1 e păstrat.
 4. **PR 3 — curățenia:** scoaterea codului înlocuit (§8), după decizia lui Laris.
 
-## 12. Decizii deschise pentru Laris
+## 12. Decizii (Laris, 2026-11-21)
 
-- Urcarea în L1 folosește un model mic (deepseek, ca restul) pentru a formula faptul. Costul e câteva apeluri pe
-  zi. E în regulă?
-- Lane-ul `channel` (mesajele de pe agent-coord) are propria stare „În minte" sau nu intră deloc în memoria de
-  conversație?
-- Cât de des poate GOAT spune „nu-mi amintesc" la început, până când considerăm că sistemul nu merge?
+- Costul apelurilor de model (urcarea în L1 etc.) nu contează.
+- Mesajele de pe agent-coord intră în aceeași memorie, ca orice discuție trăită (§3).
+- Criteriul e „își amintește ce trebuie, spune «nu știu» doar când lucrul nu există" (§9), nu o numărătoare.
