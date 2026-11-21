@@ -176,8 +176,8 @@ def test_channel_lane_is_lived_when_on(monkeypatch, tmp_path, turn, mind_calls):
 
 
 def test_on_failed_expose_falls_back_to_todays_prompt(monkeypatch, tmp_path, turn, mind_calls):
-    """expose failed ("", [], {}): the turn keeps the L1 facts and L3 memories the old way, without MIND_GUIDANCE
-    (which would make GOAT deny remembering anything); the search tools come back with their guidance."""
+    """expose failed ("", [], {}): only the memory context returns (L1 facts, L3 memories the old way), without
+    MIND_GUIDANCE (it would make GOAT deny remembering anything); no crutch comes back (R21)."""
     _set(monkeypatch, tmp_path, True, True)
 
     async def failed(*a, **kw):
@@ -189,6 +189,7 @@ def test_on_failed_expose_falls_back_to_todays_prompt(monkeypatch, tmp_path, tur
     assert layers.assembled[-1]["l3_results"] == _L3 and layers.assembled[-1]["facts"] == _FACTS
     assert _FACTS_BLOCK in system and "[În minte]" not in system and mind_hook.MIND_GUIDANCE not in system
     for g in (_SEARCH_MEMORY_GUIDANCE, _STORE_MEMORY_GUIDANCE, _PROMOTE_MEMORY_GUIDANCE):
-        assert g in system
-    assert NUCLEUS_HEADER in system and names == list(_TOOLS)   # the turn is today's
+        assert g not in system
+    assert "search_memory" not in names and names == ["store_memory", "promote_memory", "forget_fact"]
+    assert NUCLEUS_HEADER in system                               # open items come back with the memory context
     assert mind_calls["after"][0]["shown"] == []                  # the turn is still learned by the mind

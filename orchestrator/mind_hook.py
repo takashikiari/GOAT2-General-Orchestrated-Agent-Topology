@@ -4,7 +4,8 @@ With ``[mind] enabled`` (config/brain.toml) the prompt's memory is ONE ``[În mi
 ``brain.mind_live.expose``; the L1 facts and the L3 memories go there, not into the context blocks a second time.
 GOAT gets no memory-search tools: a gap in what is in mind is a defect for us to fix, not one to work around.
 Off (the default), nothing here changes the turn. When ``expose`` fails (no block), ``assemble`` builds today's
-context blocks (real facts, original L3 results) and says the mind was not used: that turn is today's.
+context blocks (real facts, original L3 results) and says the block is missing (R21): only the memory context
+returns; the memory-search tools stay hidden and their guidance stays out (no crutch: a failed expose is a defect).
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ async def assemble(llm, layers, chat_id: str, lane: str, message: str, *, budget
     ``l3_results`` are retrieve()'s, before any gap filter (R15). Returns (blocks, l3_used = memories shown,
     ids shown, {id: text shown}, True). When expose gives no block (it failed), the blocks are today's: the real
     facts and the original ``l3_results`` go through ``assemble_context`` as with the mind off, and the last value
-    is False, so the caller builds the rest of the prompt as today (no MIND_GUIDANCE that would deny memories)."""
+    is False, so the caller leaves out MIND_GUIDANCE (it would deny memories); the rest stays as with the mind on."""
     def ctx(results: list[dict], known: dict):
         return layers.assemble_context(chat_id, budget=budget, l3_results=results, facts=known, messages=messages,
                                        identity_prompt=identity_prompt, temporal_center=temporal_center,

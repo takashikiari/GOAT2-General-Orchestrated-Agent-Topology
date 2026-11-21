@@ -318,11 +318,11 @@ class Orchestrator:
         """True when the ``store_memory`` tool is configured for this orchestrator."""
         return any(t.name == "store_memory" for t in self._tools)
 
-    def _all_tools(self, mind_hidden: set[str] | None = None) -> list[ToolDefinition]:
+    def _all_tools(self) -> list[ToolDefinition]:
         """Core tools plus the live plugin tools (re-read each turn), minus the ones hidden from the prompt
-        ([prompt] hidden in config/tools.toml) and, with [mind] on, the memory-search tools (``mind_hidden``,
-        default ``mind_hook.hidden_tools()``): a hidden tool is neither offered nor callable."""
-        hidden = HIDDEN_TOOLS | (mind_hook.hidden_tools() if mind_hidden is None else mind_hidden)
+        ([prompt] hidden in config/tools.toml) and, with [mind] on, the memory-search tools
+        (``mind_hook.hidden_tools()``): a hidden tool is neither offered nor callable."""
+        hidden = HIDDEN_TOOLS | mind_hook.hidden_tools()
         return [t for t in (*self._tools, *self._plugin_manager.tools) if t.name not in hidden]
 
     def _has_tool(self, name: str) -> bool:
@@ -508,7 +508,7 @@ class Orchestrator:
             collector.set_prefetch_mechanisms(warm_served, len(l3_results), int(l3_mech.get("specific_key", 0) or 0))
             l3_provenance: dict = {}
             mind_switch = mind_hook.on()  # [mind] enabled: the memory is ONE [În minte] block (mind_hook.py)
-            mind = False  # the [În minte] block is in this turn's prompt (False when expose failed: today's prompt)
+            mind = False  # the [În minte] block is in this turn's prompt (False when expose failed: R21 fallback)
             mind_shown: list[str] = []
             mind_texts: dict[str, str] = {}
             if mind_switch:
@@ -534,7 +534,7 @@ class Orchestrator:
             collector.set_prefetch_blocks_used(l3_used)
             # How good the prefetch is, and whether search_memory is offered at all (orchestrator.tool_gate)
             gate = mind_hook.NO_GATE  # mind on: search_memory is hidden by _all_tools, the gate decides nothing
-            if not mind:
+            if not mind_switch:
                 l3_block = next((b for b in context_blocks if b.startswith("[Context recuperat din istoric]")), "")
                 quality = tool_gate.measure(l3_results, l3_used, estimate_tokens(l3_block),
                                             getattr(layers, "reranks", False))
@@ -549,11 +549,11 @@ class Orchestrator:
             if nucleus_block:
                 system_content += f"\n\n{nucleus_block}"
             guidance_texts: list[str] = [mind_hook.MIND_GUIDANCE] if mind else []
-            if self._has_search_memory() and not gate["hidden"] and not mind:
+            if self._has_search_memory() and not gate["hidden"] and not mind_switch:
                 guidance_texts.append(_SEARCH_MEMORY_GUIDANCE)
-            if self._has_store_memory() and not mind:
+            if self._has_store_memory() and not mind_switch:
                 guidance_texts.append(_STORE_MEMORY_GUIDANCE)
-            if self._has_tool("promote_memory") and not mind:
+            if self._has_tool("promote_memory") and not mind_switch:
                 guidance_texts.append(_PROMOTE_MEMORY_GUIDANCE)
             if self._has_tool("get_memory_metrics") or self._has_tool("get_recent_logs"):
                 guidance_texts.append(_INTROSPECTION_GUIDANCE)
@@ -565,7 +565,7 @@ class Orchestrator:
                 {"role": "system", "content": system_content},
                 {"role": "user", "content": intent},
             ]
-            all_tools = self._all_tools(None if mind else set())  # expose failed: the search tools come back
+            all_tools = self._all_tools()
             if gate["hidden"]:  # a good prefetch: the fallback is not offered this turn
                 all_tools = [t for t in all_tools if t.name != tool_gate.GATED_TOOL]
             kw: dict = dict(model=settings.MODEL_NAME, messages=api_msgs,
