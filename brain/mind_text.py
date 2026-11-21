@@ -1,16 +1,18 @@
-"""brain.mind_text — what a stored text says, for the working memory (polish wave 2, Q1).
+"""brain.mind_text — what a stored text says, for the working memory (polish wave 2, Q1, Q4).
 
 An agent-coord digest is stored with its fixed header and footer (telegram_interface/_coord_poller.py), which are
 longer than most of its messages: ``digest_body`` keeps only the messages, so a memory line shows them and two
-different digests are never taken for the same content. Pure text functions; nothing is read or written.
+different digests are never taken for the same content. ``fold`` / ``has_word``: a name matches a text as a whole
+word, case and diacritics aside ("Ionut" is "Ionuț"; "Ana" is not in "analiză"). Pure text functions; nothing is read or written.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from memory.temporal_route import CHANNEL_DIGEST_FOOTER, CHANNEL_DIGEST_PREFIX
 
-__all__ = ["digest_body"]
+__all__ = ["digest_body", "fold", "has_word"]
 
 _MSG = re.compile(r"\[[^\]\n]{1,120} -> [^\]\n]{1,120}\]")  # a digest message: "[from -> to] „text”"
 # the footer runs to the end of the user turn: what follows it (the stored reply) stays
@@ -28,3 +30,14 @@ def digest_body(text: str) -> str:
     m, end = _MSG.search(text, i), text.find("\n\n", i)
     start = m.start() if m else (end + 2 if end >= 0 else len(text))
     return _FOOTER.sub("", text[:i] + text[start:])
+
+
+def fold(text: str) -> str:
+    """``text`` lowercased, without diacritics (NFKD, combining marks removed): "Ionuț" and "IONUŢ" -> "ionut"."""
+    return "".join(c for c in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(c)).lower()
+
+
+def has_word(text: str, name: str) -> bool:
+    """True when ``name`` occurs in ``text`` as whole words (no letter or digit right before or after), folded."""
+    name = " ".join(fold(name).split())
+    return bool(name) and re.search(rf"(?<![^\W_]){re.escape(name)}(?![^\W_])", fold(text)) is not None

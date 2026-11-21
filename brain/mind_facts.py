@@ -14,12 +14,13 @@ import time
 from typing import Any
 
 from brain import mind
+from brain.mind_text import has_word
 from brain.understand import _ask, _fill
 from utils.logging.setup import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["KINDS", "PREFIX", "kinds", "split", "parse", "save", "classify", "light", "in_mind", "mentioned"]
+__all__ = ["KINDS", "PREFIX", "kinds", "split", "parse", "save", "classify", "light", "in_mind", "mentioned", "matching"]
 
 KINDS = ("regulă", "cunoștință")
 PREFIX = "fact:"
@@ -97,6 +98,12 @@ def in_mind(db, chat_id: str, lane: str, knowledge: dict) -> dict:
 
 
 def mentioned(facts: dict, name: str) -> bool:
-    """True when ``name`` appears in the key or value of an L1 fact (F7: it is known, so not missing)."""
-    low = name.strip().lower()
-    return bool(low) and any(low in str(k).lower() or low in str(v).lower() for k, v in (facts or {}).items())
+    """True when ``name`` is a whole word of the key (its "_" read as spaces) or value of an L1 fact, case and
+    diacritics aside (F7, Q4: it is known, so not missing)."""
+    return bool(matching(facts, [name]))
+
+
+def matching(facts: dict, names: list[str]) -> list[str]:
+    """The keys of the facts (in L1 order) whose key or value names one of ``names`` (see ``mentioned``)."""
+    return [k for k, v in (facts or {}).items()
+            if any(has_word(f"{str(k).replace('_', ' ')} {v}", str(n)) for n in names or [])]
