@@ -6,11 +6,25 @@ item that gets closed keeps its row and only receives ``closed_ts`` / ``closed_b
 """
 from __future__ import annotations
 
-__all__ = ["encode"]
+__all__ = ["encode", "thing_labels"]
 
 from brain import graph
 
 _LINK_KINDS = {"continuă", "cauză", "urmare", "corectează", "contrazice"}
+_MAX_LABEL_WORDS = 4  # a longer "about" label is a phrase, not a thing's name: never a node (R28)
+_MAX_LABELS = 30
+
+
+def thing_labels(db, episode_ids: list[str], limit: int = _MAX_LABELS) -> list[str]:
+    """The labels of the things these episodes are ``despre`` (at most ``limit``): the names the understanding
+    should reuse exactly when it means the same thing (R28)."""
+    ids = [str(i) for i in episode_ids or []]
+    if not ids:
+        return []
+    rows = db.execute(f"SELECT DISTINCT n.label FROM graph_edges e JOIN graph_nodes n ON n.id = e.dst "
+                      f"WHERE e.kind = 'despre' AND e.src IN ({','.join('?' * len(ids))}) LIMIT ?",
+                      (*ids, int(limit))).fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
 def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now: float) -> dict:
@@ -31,6 +45,8 @@ def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
                "VALUES (?, 'episode', ?, ?, NULL, NULL, ?, ?)", (episode_id, episode_id, chat_id, ts, now))
     seen: set[str] = set()
     for label in u.get("about") or []:
+        if len(str(label).split()) > _MAX_LABEL_WORDS:
+            continue
         key = graph.norm_thing(str(label), "project")
         if key is None or key in seen:
             continue

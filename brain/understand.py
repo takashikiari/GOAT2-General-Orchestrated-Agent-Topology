@@ -3,6 +3,7 @@ incoming message (extract the cues that light memory). Every failure returns Non
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from config import settings
@@ -14,6 +15,8 @@ TURN_TYPES = ("fapt", "eveniment", "decizie", "promisiune", "preferință", "în
 LINK_KINDS = ("continuă", "cauză", "urmare", "corectează", "contrazice")
 OPEN_KINDS = ("promisiune", "întrebare")
 _GIST_MAX = 160
+_NAME_WORDS = 4  # a name is at most this many words; a longer string is a phrase
+_PLACEHOLDER = re.compile(r"\{(in_mind|things|user|reply|text)\}")
 
 TURN_PROMPT = """Ești partea din memoria lui GOAT care înțelege o conversație. Primești o rundă încheiată \
 (mesajul utilizatorului și răspunsul lui GOAT) și lista elementelor care erau „în minte" în acel moment, \
@@ -23,7 +26,9 @@ Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, cu câmpurile:
 - "type": tipul rundei, exact unul dintre: fapt, eveniment, decizie, promisiune, preferință, întrebare, corectură.
 - "importance": număr între 0 și 1 (cât de important e de ținut minte).
 - "gist": o singură propoziție în română care rezumă runda.
-- "about": lista de etichete scurte (nume, subiecte, lucruri) despre care e runda.
+- "about": lista lucrurilor despre care e runda, fiecare un nume canonic de 1-3 cuvinte: o persoană, un \
+proiect, o tehnologie, un loc sau un obiect (de ex. "Render", "PetVoyageUK", "Kent"), niciodată o frază sau un \
+substantiv abstract. Dacă te referi la ceva din lista „Lucruri cunoscute", folosește exact eticheta de acolo.
 - "links": lista de legături cu elemente din minte, fiecare {"to": id, "kind": tip}. Leagă DOAR de id-urile \
 din listă. "kind" e exact unul dintre: continuă, cauză, urmare, corectează, contrazice.
 - "opens": dacă runda deschide ceva rămas de făcut, {"kind": "promisiune" sau "întrebare", "text": "..."}, \
@@ -32,6 +37,9 @@ altfel null.
 
 În minte:
 {in_mind}
+
+Lucruri cunoscute (etichete existente):
+{things}
 
 Utilizator: {user}
 GOAT: {reply}
@@ -43,6 +51,9 @@ pe linie, în forma `id — tip — conținut`.
 
 Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, cu câmpurile:
 - "about": lista de etichete scurte (nume, subiecte, lucruri) la care se referă mesajul.
+- "names": lista lucrurilor concrete numite în mesaj: persoane, locuri, proiecte, produse, obiecte (de ex. \
+"Kent", "Render", "Bucegi"), fiecare de cel mult 4 cuvinte; niciodată substantive abstracte („omisiune", \
+„observație") sau fraze. Listă goală dacă nu e niciunul.
 - "asks_past": true dacă mesajul întreabă despre ceva din trecut (ce s-a spus, ce s-a decis, ce s-a întâmplat), \
 altfel false.
 
@@ -91,10 +102,15 @@ def _first_json(content: str) -> dict | None:
     return None
 
 
-async def _ask(client: Any, prompt: str) -> dict | None:
+def _fill(template: str, **values: str) -> str:
+    """``template`` with its placeholders replaced in ONE pass: a "{reply}" inside the user's text stays as typed."""
+    return _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+
+
+async def _ask(client: Any, prompt: str, max_tokens: int = 4000) -> dict | None:
     try:
         resp = await client.chat.completions.create(
-            model=settings.MODEL_NAME, messages=[{"role": "user", "content": prompt}], max_tokens=4000)
+            model=settings.MODEL_NAME, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens)
         choice = resp.choices[0]
         content = choice.message.content or ""
     except Exception as exc:  # noqa: BLE001 - any client failure means "no understanding"
@@ -110,6 +126,10 @@ def _labels(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+
+
+def _names(raw: Any) -> list[str]:
+    return [s for s in _labels(raw) if len(s.split()) <= _NAME_WORDS]
 
 
 def _importance(raw: Any) -> float:
@@ -139,16 +159,20 @@ def _clean_turn(obj: dict, in_mind: list[dict]) -> dict:
             "closes": [str(c) for c in raw_closes if str(c) in open_ids]}
 
 
-async def understand_turn(client: Any, user: str, reply: str, in_mind: list[dict]) -> dict | None:
-    """Classify a finished turn and link it to the items that were in mind; None on any failure."""
-    prompt = TURN_PROMPT.replace("{in_mind}", _mind_lines(in_mind)).replace("{user}", user).replace("{reply}", reply)
-    obj = await _ask(client, prompt)
+async def understand_turn(client: Any, user: str, reply: str, in_mind: list[dict],
+                          things: list[str] | None = None) -> dict | None:
+    """Classify a finished turn and link it to the items that were in mind; ``things`` are the existing thing
+    labels its ``about`` should reuse (R28). None on any failure. A reasoning model needs room: 8000 tokens (R34)."""
+    known = "\n".join(f"- {t}" for t in (things or [])[:30]) or "(niciunul)"
+    prompt = _fill(TURN_PROMPT, in_mind=_mind_lines(in_mind), things=known, user=user or "", reply=reply or "")
+    obj = await _ask(client, prompt, max_tokens=8000)
     return None if obj is None else _clean_turn(obj, in_mind)
 
 
 async def understand_message(client: Any, text: str, in_mind: list[dict]) -> dict | None:
     """Extract the memory cues of an incoming message; None on any failure."""
-    obj = await _ask(client, MESSAGE_PROMPT.replace("{in_mind}", _mind_lines(in_mind)).replace("{text}", text))
+    obj = await _ask(client, _fill(MESSAGE_PROMPT, in_mind=_mind_lines(in_mind), text=text or ""))
     if obj is None:
         return None
-    return {"about": _labels(obj.get("about")), "asks_past": obj.get("asks_past") is True}
+    return {"about": _labels(obj.get("about")), "names": _names(obj.get("names")),
+            "asks_past": obj.get("asks_past") is True}

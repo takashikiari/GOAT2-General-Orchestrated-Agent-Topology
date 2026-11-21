@@ -173,3 +173,16 @@ def test_no_delete_in_encode():
     src = (_ROOT / "brain/encode.py").read_text(encoding="utf-8")
     code = re.sub(r'""".*?"""', "", src, flags=re.S)
     assert not re.search(r"\bDELETE\b|\bDROP\b|\bTRUNCATE\b", code, re.I)
+
+
+def test_long_about_labels_never_become_things_and_labels_are_listed(tmp_path):
+    brain = _brain(tmp_path)
+    try:
+        r = enc.encode(brain._db, "42", "main", "e1", 10.0,
+                       _u(about=["Render", "Laris Kent", "faptul că serverul a picat azi"]), 10.0)
+        assert r["things"] == 2
+        assert not brain._db.execute("SELECT 1 FROM graph_nodes WHERE label LIKE 'faptul%'").fetchone()
+        assert sorted(enc.thing_labels(brain._db, ["e1", "nope"])) == ["laris kent", "render"]
+        assert enc.thing_labels(brain._db, []) == []
+    finally:
+        brain.close()

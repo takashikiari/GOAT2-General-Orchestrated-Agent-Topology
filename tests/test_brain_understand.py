@@ -54,7 +54,7 @@ def test_unknown_type_and_bad_opens_are_normalised():
 
 def test_json_inside_code_fence_is_parsed():
     c = 'Iată:\n```json\n{"about": ["Rust"], "asks_past": true}\n```'
-    assert _run(u.understand_message(FakeClient(c), "ce am zis?", [])) == {"about": ["Rust"], "asks_past": True}
+    assert _run(u.understand_message(FakeClient(c), "ce am zis?", [])) == {"about": ["Rust"], "names": [], "asks_past": True}
 
 
 def test_invalid_or_empty_reply_returns_none():
@@ -67,7 +67,7 @@ def test_invalid_or_empty_reply_returns_none():
 
 def test_message_cues():
     r = _run(u.understand_message(FakeClient('{"about": ["Rust", " "], "asks_past": "da"}'), "x", IN_MIND))
-    assert r == {"about": ["Rust"], "asks_past": False}
+    assert r == {"about": ["Rust"], "names": [], "asks_past": False}
 
 
 def test_request_uses_model_name_and_max_tokens_4000():
@@ -77,3 +77,23 @@ def test_request_uses_model_name_and_max_tokens_4000():
     assert kw["model"] == settings.MODEL_NAME and kw["max_tokens"] == 4000
     text = json.dumps(kw["messages"], ensure_ascii=False)
     assert "o1 — deschis — Trimit raportul" in text and "salut" in text
+
+
+def test_names_are_short_concrete_strings():
+    c = '{"about": ["Kent"], "names": ["Kent", "", 3, "Render", "o frază foarte lungă despre ceva"], "asks_past": 1}'
+    r = _run(u.understand_message(FakeClient(c), "x", []))
+    assert r == {"about": ["Kent"], "names": ["Kent", "Render"], "asks_past": False}
+    assert '"names"' in u.MESSAGE_PROMPT
+
+
+def test_turn_uses_8000_tokens_known_labels_and_single_pass_placeholders():
+    c = FakeClient('{"type": "fapt"}')
+    _run(u.understand_turn(c, "scriu {reply} și {in_mind}", "GOAT {user}", IN_MIND, ["render", "kent"]))
+    kw = c.calls[0]
+    assert kw["max_tokens"] == 8000
+    prompt = kw["messages"][-1]["content"]
+    assert "Utilizator: scriu {reply} și {in_mind}\nGOAT: GOAT {user}" in prompt   # user text is never substituted
+    assert "- render\n- kent" in prompt and "1-3 cuvinte" in prompt
+    m = FakeClient('{"about": []}')
+    _run(u.understand_message(m, "despre {in_mind}", IN_MIND))
+    assert "Mesaj: despre {in_mind}" in m.calls[0]["messages"][-1]["content"]
