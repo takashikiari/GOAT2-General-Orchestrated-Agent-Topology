@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS episode_meta (id TEXT PRIMARY KEY, type TEXT, importa
     encoded_at REAL);
 CREATE TABLE IF NOT EXISTS open_items (id TEXT PRIMARY KEY, chat_id TEXT, lane TEXT, kind TEXT, text TEXT, ts REAL,
     closed_ts REAL, closed_by TEXT);
+CREATE TABLE IF NOT EXISTS fact_kind (key TEXT PRIMARY KEY, kind TEXT NOT NULL, classified_at REAL);
 """
 
 

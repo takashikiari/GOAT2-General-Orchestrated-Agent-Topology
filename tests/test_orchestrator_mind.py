@@ -151,7 +151,7 @@ def test_on_prompt_has_one_memory_block_and_no_search_tools(monkeypatch, tmp_pat
     (call,) = mind_calls["expose"]
     assert call["l3_results"] == _L3 and call["facts"] == _FACTS and call["lane"] == "human"
     assert call["client"] is not None and call["message"] == "Ce am ales pentru Kent?"
-    known = estimate_tokens("Ce știu:\n- nume: Laris")              # R26: L2 is sized with the facts counted
+    known = estimate_tokens("Reguli:\n\n\nCe știu:\n- nume: Laris")  # R26: L2 is sized with the facts counted
     assert call["budget"] == assembled["budget"] + known - estimate_tokens("[Identity]\nYou are GOAT.")
     assert "old_recall" not in mind_calls and "old_after" not in mind_calls
 

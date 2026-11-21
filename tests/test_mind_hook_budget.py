@@ -69,7 +69,7 @@ def test_facts_do_not_eat_the_l3_guarantee(on):  # noqa: F811
     history = next(b for b in blocks if b.startswith("[Conversation History]"))
     assert estimate_tokens(history) > 3000                       # L2 is at its full cap
     block = blocks[-1]
-    assert "Ce știu:" in block and all(f"- {k}: {v}" in block for k, v in _FACTS.items())
+    assert "Reguli:" in block and all(f"- {k}: {v}" in block for k, v in _FACTS.items())
     assert "Ce s-a întâmplat:\n- (" in block and used >= 1 and "k1" in shown
     assert "Ce nu știu" not in block and "nu ai nimic" not in block
     ce_stiu = block.split("\n\nCe s-a întâmplat:", 1)[0].split("[În minte]\n\n", 1)[1]

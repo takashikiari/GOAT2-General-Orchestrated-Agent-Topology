@@ -57,7 +57,8 @@ async def assemble(llm, layers, chat_id: str, lane: str, message: str, *, budget
         return layers.assemble_context(chat_id, budget=size, l3_results=results, facts=known, messages=messages,
                                        identity_prompt=identity_prompt, temporal_center=temporal_center,
                                        provenance=provenance)
-    known = estimate_tokens("Ce știu:\n" + format_facts(facts)) if facts else 0
+    # every fact, under both headers (rules always, knowledge when in mind): an upper bound of what the block shows
+    known = estimate_tokens("Reguli:\n\n\nCe știu:\n" + format_facts(facts)) if facts else 0
     need = known + (TEMPORAL_L3_GUARANTEE_TOKENS if temporal_center is not None else L3_MIN_GUARANTEE_TOKENS)
     size = max(0, int(budget) - known)
     blocks, _ = await ctx([], {}, size)

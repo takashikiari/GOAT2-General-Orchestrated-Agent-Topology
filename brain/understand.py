@@ -16,7 +16,7 @@ LINK_KINDS = ("continuă", "cauză", "urmare", "corectează", "contrazice")
 OPEN_KINDS = ("promisiune", "întrebare")
 _GIST_MAX = 160
 _NAME_WORDS = 4  # a name is at most this many words; a longer string is a phrase
-_PLACEHOLDER = re.compile(r"\{(in_mind|things|user|reply|text)\}")
+_PLACEHOLDER = re.compile(r"\{(in_mind|things|user|reply|text|facts|name)\}")
 
 TURN_PROMPT = """Ești partea din memoria lui GOAT care înțelege o conversație. Primești o rundă încheiată \
 (mesajul utilizatorului și răspunsul lui GOAT) și lista elementelor care erau „în minte" în acel moment, \
@@ -56,9 +56,14 @@ Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, cu câmpurile:
 „observație") sau fraze. Listă goală dacă nu e niciunul.
 - "asks_past": true dacă mesajul întreabă despre ceva din trecut (ce s-a spus, ce s-a decis, ce s-a întâmplat), \
 altfel false.
+- "facts": lista cheilor din „Ce știi" de care e nevoie pentru mesaj (mesajul e despre acea persoană, acel \
+loc, acea mașină sau acel proiect), exact cum apar acolo. Listă goală dacă nu e nevoie de niciuna.
 
 În minte:
 {in_mind}
+
+Ce știi (cheie — conținut):
+{facts}
 
 Mesaj: {text}
 """
@@ -169,10 +174,15 @@ async def understand_turn(client: Any, user: str, reply: str, in_mind: list[dict
     return None if obj is None else _clean_turn(obj, in_mind)
 
 
-async def understand_message(client: Any, text: str, in_mind: list[dict]) -> dict | None:
-    """Extract the memory cues of an incoming message; None on any failure."""
-    obj = await _ask(client, _fill(MESSAGE_PROMPT, in_mind=_mind_lines(in_mind), text=text or ""))
+async def understand_message(client: Any, text: str, in_mind: list[dict],
+                             knowledge: dict | None = None) -> dict | None:
+    """Extract the memory cues of an incoming message; ``knowledge`` are the L1 knowledge facts it may need, of
+    which ``facts`` names the keys it is about (only keys shown). None on any failure."""
+    known = "\n".join(f"{k} — {str(v)[:120]}".replace("\n", " ") for k, v in (knowledge or {}).items())
+    obj = await _ask(client, _fill(MESSAGE_PROMPT, in_mind=_mind_lines(in_mind), facts=known or "(nimic)",
+                                   text=text or ""))
     if obj is None:
         return None
     return {"about": _labels(obj.get("about")), "names": _names(obj.get("names")),
-            "asks_past": obj.get("asks_past") is True}
+            "asks_past": obj.get("asks_past") is True,
+            "facts": [k for k in dict.fromkeys(_labels(obj.get("facts"))) if k in (knowledge or {})]}

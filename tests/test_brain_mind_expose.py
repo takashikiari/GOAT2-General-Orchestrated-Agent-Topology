@@ -96,7 +96,7 @@ def test_association_reaches_the_prompt_without_text_similarity(on):
     assert "e0" in shown and "e1" in shown                       # reached through the graph, not the search
     assert "Prețul pentru Kent a fost 120 de lire." in block
     assert "legat de: render" in block
-    assert "Ce știu:\n- nume: Laris" in block
+    assert "Reguli:\n- nume: Laris" in block           # an unclassified fact is a rule: always shown
     assert texts["e0"] and "s1" in texts
 
 
@@ -208,7 +208,7 @@ def test_rejected_labels_are_not_cues_and_trimmed_memories_are_never_missing(on)
     asks = FakeClient({"about": ["UK", "Render"], "names": ["UK", "Render"], "asks_past": True})
     block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [])
     assert "r1" in shown and "nimic despre UK" not in block and "Ce nu știu" not in block
-    tight = estimate_tokens("[În minte]\n\nCe știu:\n- nume: Laris\n\nCe nu știu:\n- nu ai nimic despre Render")
+    tight = estimate_tokens("[În minte]\n\nReguli:\n- nume: Laris\n\nCe nu știu:\n- nu ai nimic despre Render")
     block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [], {"nume": "Laris"}, budget=tight,
                               chat="43")
     assert "r1" not in shown and "nimic" not in block and "- nume: Laris" in block

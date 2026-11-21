@@ -12,7 +12,7 @@ import time
 
 from brain import brain as _brain
 from brain import encode as _encode
-from brain import graph, mind, recall
+from brain import graph, mind, mind_facts, recall
 from brain.live import used as _used
 from brain.mind_render import day as _day
 from brain.mind_render import memories as _memories
@@ -53,19 +53,20 @@ def _with_text(db, chat_id: str, lane: str, items: list[dict], texts: dict[str, 
     return out
 
 
-def _missing(db, names: list[str]) -> list[str]:
+def _missing(db, names: list[str], facts: dict | None = None) -> list[str]:
     """The named things the graph knows nothing about (R24, R27): no thing node, or no episode ``despre`` it at all.
-    A thing with memories is never missing, whether or not they are lit, shown or trimmed this turn."""
-    return [lb for lb, tid in _things(db, names).items()
-            if tid is None or not db.execute("SELECT 1 FROM graph_edges WHERE dst = ? AND kind = 'despre' LIMIT 1",
-                                             (tid,)).fetchone()]
+    A thing with memories is never missing, whether or not they are lit, shown or trimmed this turn; nor is a name
+    an L1 fact mentions (F7)."""
+    return [lb for lb, tid in _things(db, names).items() if not mind_facts.mentioned(facts or {}, lb)
+            and (tid is None or not db.execute("SELECT 1 FROM graph_edges WHERE dst = ? AND kind = 'despre' LIMIT 1",
+                                             (tid,)).fetchone())]
 
 
 def _in_mind(db, chat_id: str, lane: str, floor: float, texts: dict[str, str] | None) -> list[dict]:
     """What the understanding reads as in mind: up to _MIND_MEMS memories, then up to _MIND_OPENS open items (R30),
     strongest first, each with its text."""
     rows = mind.top(db, chat_id, lane, _POOL, floor + _EPS)
-    mems = [r for r in rows if r["kind"] != "deschis"][:_MIND_MEMS]
+    mems = [r for r in rows if r["kind"] == "amintire"][:_MIND_MEMS]  # facts in mind are not links to make
     return _with_text(db, chat_id, lane, mems + [r for r in rows if r["kind"] == "deschis"][:_MIND_OPENS], texts)
 
 
@@ -134,31 +135,33 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
         hits = {_mid(r): r for r in sorted(l3_results or [], key=lambda r: float(r.get("blended_score") or 0.0))
                 if _mid(r) and _mid(r) not in exclude}  # a memory found twice keeps its best score
 
-        def _before() -> list[dict]:
+        def _before() -> tuple[list[dict], dict]:
             mind.carry(brain._db, chat_id, lane, float(cfg["carry"]), float(cfg["floor"]))
             for mid, r in hits.items():
                 mind.light(brain._db, chat_id, lane, mid, "amintire", max(0.0, float(r.get("blended_score") or 0.0)),
                            "căutare", "seamănă cu ce spui", now, commit=False)
             brain._db.commit()
-            return _in_mind(brain._db, chat_id, lane, float(cfg["floor"]),
-                            {m: str(r.get("content") or "") for m, r in hits.items()})
+            return (_in_mind(brain._db, chat_id, lane, float(cfg["floor"]),
+                             {m: str(r.get("content") or "") for m, r in hits.items()}), mind_facts.kinds(brain._db))
 
         async with brain.lock:
-            in_mind = await asyncio.to_thread(_before)
-        cues = await understand_message(client, message, in_mind)  # outside the lock: an LLM call
+            in_mind, kinds = await asyncio.to_thread(_before)
+        rules, knowledge = mind_facts.split(facts or {}, kinds)  # P1: rules always, knowledge when it is needed
+        cues = await understand_message(client, message, in_mind, knowledge)  # outside the lock: an LLM call
 
         def _after():
             _associate(brain._db, chat_id, lane, _things(brain._db, (cues or {}).get("about") or []), cfg, half, now)
+            mind_facts.light(brain._db, chat_id, lane, (cues or {}).get("facts") or [], now)
             got = _gather(brain._db, chat_id, lane, cfg, now, exclude)
             brain._db.commit()
-            missing = _missing(brain._db, cues.get("names") or []) if cues and cues.get("asks_past") else []
-            return (*got, missing)
+            missing = _missing(brain._db, cues.get("names") or [], facts) if cues and cues.get("asks_past") else []
+            return (*got, missing, mind_facts.in_mind(brain._db, chat_id, lane, knowledge))
 
         async with brain.lock:
-            items, opens, meta, missing = await asyncio.to_thread(_after)
+            items, opens, meta, missing, known = await asyncio.to_thread(_after)
         shown_mems = await _memories(episodic, items, hits, meta)
         open_lines = [f"- ({_day(ts)}) {text} — {why}" for _, text, ts, why in opens]
-        return _render(facts or {}, shown_mems, open_lines, missing, int(budget_tokens))
+        return _render(known, shown_mems, open_lines, missing, int(budget_tokens), rules)
     except Exception as exc:  # noqa: BLE001
         log.warning("brain: mind expose failed: %s: %s", type(exc).__name__, exc)
         return "", [], {}

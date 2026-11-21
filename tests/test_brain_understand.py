@@ -54,7 +54,8 @@ def test_unknown_type_and_bad_opens_are_normalised():
 
 def test_json_inside_code_fence_is_parsed():
     c = 'Iată:\n```json\n{"about": ["Rust"], "asks_past": true}\n```'
-    assert _run(u.understand_message(FakeClient(c), "ce am zis?", [])) == {"about": ["Rust"], "names": [], "asks_past": True}
+    assert _run(u.understand_message(FakeClient(c), "ce am zis?", [])) == {"about": ["Rust"], "names": [],
+                                                                          "asks_past": True, "facts": []}
 
 
 def test_invalid_or_empty_reply_returns_none():
@@ -67,7 +68,7 @@ def test_invalid_or_empty_reply_returns_none():
 
 def test_message_cues():
     r = _run(u.understand_message(FakeClient('{"about": ["Rust", " "], "asks_past": "da"}'), "x", IN_MIND))
-    assert r == {"about": ["Rust"], "names": [], "asks_past": False}
+    assert r == {"about": ["Rust"], "names": [], "asks_past": False, "facts": []}
 
 
 def test_request_uses_model_name_and_max_tokens_4000():
@@ -82,7 +83,7 @@ def test_request_uses_model_name_and_max_tokens_4000():
 def test_names_are_short_concrete_strings():
     c = '{"about": ["Kent"], "names": ["Kent", "", 3, "Render", "o frază foarte lungă despre ceva"], "asks_past": 1}'
     r = _run(u.understand_message(FakeClient(c), "x", []))
-    assert r == {"about": ["Kent"], "names": ["Kent", "Render"], "asks_past": False}
+    assert r == {"about": ["Kent"], "names": ["Kent", "Render"], "asks_past": False, "facts": []}
     assert '"names"' in u.MESSAGE_PROMPT
 
 

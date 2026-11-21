@@ -1,8 +1,8 @@
 """brain.mind_render — the ``[În minte]`` block as GOAT reads it (spec 2026-11-21 §2 F1, F7).
 
-What the working memory holds, rendered in Romanian within a token budget: what is known (``Ce știu``, never
-trimmed), what happened (each memory with its date, its gist and why it is in mind, the strongest with a raw
-excerpt), what is open, what is missing. Pure formatting plus one read of the episodic store; nothing is written.
+What the working memory holds, rendered in Romanian within a token budget: the rules (``Reguli``) and what is
+known (``Ce știu``), never trimmed, what happened (each memory with its date, its gist and why it is in mind, the
+strongest with a raw excerpt), what is open, what is missing. Pure formatting plus one read of the episodic store; nothing is written.
 """
 from __future__ import annotations
 
@@ -59,16 +59,19 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
 
 
 def render(facts: dict, mems: list[dict], opens: list[str], missing: list[str],
-           budget: int) -> tuple[str, list[str], dict[str, str]]:
-    """The block within ``budget`` tokens. ``mems`` strongest first, ``opens`` most recent first, ``missing`` the
-    named things the graph knows nothing about (R27: decided by the graph, never by what was trimmed here).
+           budget: int, rules: dict | None = None) -> tuple[str, list[str], dict[str, str]]:
+    """The block within ``budget`` tokens. ``rules`` the L1 rules (``Reguli``, every turn), ``facts`` the knowledge
+    facts in mind (``Ce știu``), ``mems`` strongest first, ``opens`` most recent first, ``missing`` the named things
+    the graph knows nothing about (R27: decided by the graph, never by what was trimmed here).
     Trimmed in this order: memory lines without an excerpt (weakest first), raw excerpts, the remaining memory
-    lines, open lines (oldest first), missing lines; ``Ce știu`` never."""
+    lines, open lines (oldest first), missing lines; ``Reguli`` and ``Ce știu`` never."""
     keep, raw, opens = list(mems), {m["id"] for m in mems[:_RAW_N] if m["raw"]}, list(opens)
     miss_cap = len(missing or [])
 
     def build() -> str:
         parts = ["[În minte]"]
+        if rules:
+            parts.append("Reguli:\n" + "\n".join(f"- {k}: {v}" for k, v in rules.items()))
         if facts:
             parts.append("Ce știu:\n" + "\n".join(f"- {k}: {v}" for k, v in facts.items()))
         if keep:

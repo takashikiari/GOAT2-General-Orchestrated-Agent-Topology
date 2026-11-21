@@ -70,15 +70,34 @@ def _graph_tick(registry):
     return tick
 
 
+async def _facts(registry) -> dict:
+    """The L1 facts for the sleep's understanding; {} when there are none or they cannot be read."""
+    try:
+        layers = getattr(registry, "memory_layers", None)
+        return dict(await layers.get_identity_and_facts()) if layers is not None else {}
+    except Exception as exc:  # noqa: BLE001 - the backfill goes on without them
+        log.warning("brain: L1 facts unavailable to the sleep: %s: %s", type(exc).__name__, exc)
+        return {}
+
+
 def _mind_tick(registry):
     """The existing L3 history encoded through the same understanding as new turns (brain/mind_sleep.py), a slice
-    per tick, or None unless [mind] is on. The slice (minutes of LLM calls) runs as its own background task (R33):
+    per tick, or None unless [mind] is on; before it, the L1 facts without a kind are classified (P1). The slice
+    (minutes of LLM calls) runs as its own background task (R33):
     the tick only starts it when none is running and returns at once, so the scheduler, brain and graph parts of
     the sleep are never delayed by it."""
     if not _brain.mind_on():
         return None
-    from brain import mind_sleep
+    from brain import mind_facts, mind_sleep
     running: list[asyncio.Task] = []
+
+    async def _slice() -> int:
+        """The L1 facts not classified yet get their kind (one LLM call, P1), then a backfill slice."""
+        facts = await _facts(registry)
+        if facts:
+            await mind_facts.classify(_brain.get_instance(), registry.llm_client, facts)
+        return await mind_sleep.encode_slice(_brain.get_instance(), registry.episodic_memory, registry.llm_client,
+                                             int(_brain.MIND["encode_per_tick"]))
 
     def _done(task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
@@ -88,8 +107,7 @@ def _mind_tick(registry):
     async def tick() -> None:
         if running and not running[0].done():
             return
-        running[:] = [asyncio.create_task(mind_sleep.encode_slice(
-            _brain.get_instance(), registry.episodic_memory, registry.llm_client, int(_brain.MIND["encode_per_tick"])))]
+        running[:] = [asyncio.create_task(_slice())]
         running[0].add_done_callback(_done)
     tick.running = running  # the current backfill task, for shutdown and tests
     return tick
