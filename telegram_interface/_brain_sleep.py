@@ -92,12 +92,13 @@ def _mind_tick(registry):
     running: list[asyncio.Task] = []
 
     async def _slice() -> int:
-        """The L1 facts not classified yet get their kind (one LLM call, P1), then a backfill slice."""
+        """The L1 facts not classified yet get their kind (one LLM call, P1), then a backfill slice whose gists
+        name the user by L1 ``user_name`` (P3)."""
         facts = await _facts(registry)
         if facts:
             await mind_facts.classify(_brain.get_instance(), registry.llm_client, facts)
         return await mind_sleep.encode_slice(_brain.get_instance(), registry.episodic_memory, registry.llm_client,
-                                             int(_brain.MIND["encode_per_tick"]))
+                                             int(_brain.MIND["encode_per_tick"]), user_name=facts.get("user_name"))
 
     def _done(task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:

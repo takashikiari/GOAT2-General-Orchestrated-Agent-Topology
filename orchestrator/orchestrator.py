@@ -728,7 +728,7 @@ class Orchestrator:
                 # the turn's links, formed in the same turn from what was in mind (brain/live.py)
                 graph_task = asyncio.create_task(
                     _mind_live.after_turn(self._llm, chat_id, lane, l3_doc_id, intent, reply, mind_shown, mind_texts,
-                                          ts=said_at or now)
+                                          ts=said_at or now, user_name=(facts or {}).get("user_name"))
                     if mind_switch
                     else _brain_live.after_turn(l3_doc_id, l3_results, l3_provenance, reply, graph_trace))
                 self._pending_bg.add(graph_task)

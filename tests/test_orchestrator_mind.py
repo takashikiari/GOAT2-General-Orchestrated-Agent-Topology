@@ -20,7 +20,7 @@ from tests._orch_fakes import _Completions, _FakeAnalytics, _FakeLayers, _FakePl
 
 _L3 = [{"id": "m1", "content": "Laris a ales Kent", "blended_score": 0.9, "metadata": {"message_id": "m1"}},
        {"id": "m2", "content": "zbor anulat", "blended_score": 0.2, "metadata": {"message_id": "m2"}}]
-_FACTS = {"nume": "Laris"}
+_FACTS = {"nume": "Laris", "user_name": "Laris"}
 _BLOCK = "[În minte]\nCe știu:\n- nume: Laris\n\nCe s-a întâmplat:\n- (2026-11-20) Laris a ales Kent — seamănă"
 _FACTS_BLOCK = "[Fapte]\n- nume: Laris"
 _TOOLS = ("search_memory", "read_l1", "store_memory", "promote_memory", "forget_fact")
@@ -97,9 +97,9 @@ def mind_calls(monkeypatch):
                                     exclude_ids=set(exclude_ids or ())))
         return _BLOCK, ["m1"], {"m1": "Laris a ales Kent"}
 
-    async def after_turn(client, chat_id, lane, turn_id, user, reply, shown, texts, ts=None):
+    async def after_turn(client, chat_id, lane, turn_id, user, reply, shown, texts, ts=None, user_name=None):
         calls["after"].append(dict(client=client, chat_id=chat_id, lane=lane, turn_id=turn_id, user=user,
-                                   reply=reply, shown=list(shown), texts=dict(texts), ts=ts))
+                                   reply=reply, shown=list(shown), texts=dict(texts), ts=ts, user_name=user_name))
 
     async def nucleus(chat_id, lane="human"):
         return [{"kind": "unanswered", "event": "e1", "ts": "1794740000.0", "text": "Când vine raportul?"}]
@@ -151,7 +151,7 @@ def test_on_prompt_has_one_memory_block_and_no_search_tools(monkeypatch, tmp_pat
     (call,) = mind_calls["expose"]
     assert call["l3_results"] == _L3 and call["facts"] == _FACTS and call["lane"] == "human"
     assert call["client"] is not None and call["message"] == "Ce am ales pentru Kent?"
-    known = estimate_tokens("Reguli:\n\n\nCe știu:\n- nume: Laris")  # R26: L2 is sized with the facts counted
+    known = estimate_tokens("Reguli:\n\n\nCe știu:\n- nume: Laris\n- user_name: Laris")  # R26: L2 is sized with the facts counted
     assert call["budget"] == assembled["budget"] + known - estimate_tokens("[Identity]\nYou are GOAT.")
     assert "old_recall" not in mind_calls and "old_after" not in mind_calls
 
@@ -163,7 +163,8 @@ def test_on_after_turn_is_scheduled_with_shown_ids(monkeypatch, tmp_path, turn, 
     turn_id = layers.saved[0]["l3_id"]
     assert after == dict(client=mind_calls["expose"][0]["client"], chat_id="42", lane="human", turn_id=turn_id,
                          user="Ce am ales pentru Kent?", reply=reply, shown=["m1"],
-                         texts={"m1": "Laris a ales Kent"}, ts=layers.saved[0]["timestamp"])  # R36: when said
+                         texts={"m1": "Laris a ales Kent"}, ts=layers.saved[0]["timestamp"],  # R36: when said
+                         user_name="Laris")                                 # P3: the gists name him
 
 
 def test_channel_lane_is_lived_when_on(monkeypatch, tmp_path, turn, mind_calls):

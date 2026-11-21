@@ -22,6 +22,9 @@ TURN_PROMPT = """Ești partea din memoria lui GOAT care înțelege o conversați
 (mesajul utilizatorului și răspunsul lui GOAT) și lista elementelor care erau „în minte" în acel moment, \
 câte unul pe linie, în forma `id — tip — conținut`.
 
+Cel care îi scrie lui GOAT este {name}. Conversațiile mai vechi îl pot numi altfel (de ex. după un alias de \
+GitHub sau un nume vechi): e aceeași persoană. În gist numește-l mereu „{name}”.
+
 Răspunde cu UN SINGUR obiect JSON, fără text în afara lui, cu câmpurile:
 - "type": tipul rundei, exact unul dintre: fapt, eveniment, decizie, promisiune, preferință, întrebare, corectură.
 - "importance": număr între 0 și 1 (cât de important e de ținut minte).
@@ -165,11 +168,13 @@ def _clean_turn(obj: dict, in_mind: list[dict]) -> dict:
 
 
 async def understand_turn(client: Any, user: str, reply: str, in_mind: list[dict],
-                          things: list[str] | None = None) -> dict | None:
+                          things: list[str] | None = None, user_name: str | None = None) -> dict | None:
     """Classify a finished turn and link it to the items that were in mind; ``things`` are the existing thing
-    labels its ``about`` should reuse (R28). None on any failure. A reasoning model needs room: 8000 tokens (R34)."""
+    labels its ``about`` should reuse (R28); ``user_name`` (L1 ``user_name``) is how the gist names the user (P3).
+    None on any failure. A reasoning model needs room: 8000 tokens (R34)."""
     known = "\n".join(f"- {t}" for t in (things or [])[:30]) or "(niciunul)"
-    prompt = _fill(TURN_PROMPT, in_mind=_mind_lines(in_mind), things=known, user=user or "", reply=reply or "")
+    prompt = _fill(TURN_PROMPT, in_mind=_mind_lines(in_mind), things=known, user=user or "", reply=reply or "",
+                   name=(user_name or "").strip() or "utilizatorul")
     obj = await _ask(client, prompt, max_tokens=8000)
     return None if obj is None else _clean_turn(obj, in_mind)
 

@@ -74,8 +74,9 @@ def _pending(db, n: int) -> list[tuple]:
                       "ORDER BY n.ts LIMIT ?", (n,)).fetchall()
 
 
-async def encode_slice(brain, episodic, client, limit: int | None = None) -> int:
-    """Encode up to ``limit`` of the oldest unencoded episodes; returns how many were encoded."""
+async def encode_slice(brain, episodic, client, limit: int | None = None, user_name: str | None = None) -> int:
+    """Encode up to ``limit`` of the oldest unencoded episodes; returns how many were encoded. ``user_name`` (L1)
+    is how the gists name the user, whatever the old turns call him (P3)."""
     limit = int(limit if limit is not None else _brain.MIND["encode_per_tick"])
     now = time.time()
     for i in [i for i, t in _failed.items() if now - t >= _RETRY_AFTER and _fails.get(i, 0) < _MAX_FAILS]:
@@ -96,7 +97,7 @@ async def encode_slice(brain, episodic, client, limit: int | None = None) -> int
         async with brain.lock:
             mind, labels = await asyncio.to_thread(_in_mind, brain._db, chat_id, topic_id, ts)
         try:
-            u = await understand_turn(client, user, reply, mind, labels)
+            u = await understand_turn(client, user, reply, mind, labels, user_name=user_name)
         except Exception as exc:  # noqa: BLE001
             log.warning("brain: backfill understand failed %s: %s: %s", eid, type(exc).__name__, exc)
             u = None

@@ -84,14 +84,19 @@ def test_the_mind_tick_starts_one_backfill_and_returns_at_once(monkeypatch):
     from telegram_interface import _brain_sleep as bs
     monkeypatch.setattr(bs._brain, "mind_on", lambda: True)
     monkeypatch.setattr(bs._brain, "get_instance", lambda: None)
-    started, gates = [], []
+    started, gates, names = [], [], []
 
-    async def slow(brain, episodic, client, limit):
+    async def slow(brain, episodic, client, limit, user_name=None):
         started.append(limit)
+        names.append(user_name)
         await gates[-1].wait()
         return 0
     monkeypatch.setattr(ms, "encode_slice", slow)
-    tick = bs._mind_tick(SimpleNamespace(episodic_memory=None, llm_client=None))
+
+    class Layers:
+        async def get_identity_and_facts(self):
+            return {"user_name": "Laris"}
+    tick = bs._mind_tick(SimpleNamespace(episodic_memory=None, llm_client=None, memory_layers=Layers()))
 
     async def go():
         gates.append(asyncio.Event())
@@ -109,3 +114,4 @@ def test_the_mind_tick_starts_one_backfill_and_returns_at_once(monkeypatch):
         gates[-1].set()
         await tick.running[0]
     asyncio.run(go())
+    assert names == ["Laris", "Laris"]                              # P3: the backfill's gists name the user

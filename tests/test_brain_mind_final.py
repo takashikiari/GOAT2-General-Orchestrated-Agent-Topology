@@ -93,6 +93,12 @@ def test_the_turn_understanding_sees_the_things_in_mind_to_reuse(on):  # noqa: F
     assert set(known.splitlines()) == {"- render", "- petvoyageuk"}
 
 
+def test_the_turn_understanding_names_the_user(on):  # noqa: F811
+    turn = FakeClient({"type": "eveniment"})
+    asyncio.run(ml.after_turn(turn, "42", "human", "t1", "x", "ok", [], {}, user_name="Laris"))
+    assert "numește-l mereu „Laris”" in turn.calls[0]["messages"][-1]["content"]
+
+
 def test_the_same_content_is_shown_once_the_most_active_kept(on):  # noqa: F811
     """P2: the re-check showed one agent-coord digest four times with different ids; it is shown once."""
     digest = ("Mesaje noi pe canalul agent-coord, de la alte sesiuni Claude și de la supraveghetor. Sunt "

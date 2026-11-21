@@ -90,6 +90,18 @@ def test_backfill_encodes_oldest_first_and_links_within_topic(tmp_path):
         brain.close()
 
 
+def test_backfill_names_the_user_in_the_understanding(tmp_path):
+    brain = _brain(tmp_path)
+    try:
+        docs = _docs()
+        _seed(brain, docs)
+        client = _Client()
+        assert asyncio.run(ms.encode_slice(brain, _Ep(docs), client, 1, user_name="Laris")) == 1
+        assert "Cel care îi scrie lui GOAT este Laris" in client.prompts[0]
+    finally:
+        brain.close()
+
+
 def test_backfill_skips_encoded_and_retries_failed_later(tmp_path):
     brain = _brain(tmp_path)
     ms._failed.clear()

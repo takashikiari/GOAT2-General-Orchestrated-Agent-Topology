@@ -87,6 +87,17 @@ def test_names_are_short_concrete_strings():
     assert '"names"' in u.MESSAGE_PROMPT
 
 
+def test_turn_prompt_names_the_user_for_the_gist():
+    c = FakeClient('{"type": "fapt"}')
+    _run(u.understand_turn(c, "salut", "ok", [], [], user_name="Laris"))
+    prompt = c.calls[0]["messages"][-1]["content"]
+    assert "Cel care îi scrie lui GOAT este Laris" in prompt and "alias de GitHub" in prompt
+    assert "numește-l mereu „Laris”" in prompt
+    d = FakeClient('{"type": "fapt"}')
+    _run(u.understand_turn(d, "salut", "ok", [], []))
+    assert "numește-l mereu „utilizatorul”" in d.calls[0]["messages"][-1]["content"]
+
+
 def test_turn_uses_8000_tokens_known_labels_and_single_pass_placeholders():
     c = FakeClient('{"type": "fapt"}')
     _run(u.understand_turn(c, "scriu {reply} și {in_mind}", "GOAT {user}", IN_MIND, ["render", "kent"]))

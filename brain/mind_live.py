@@ -168,11 +168,11 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
 
 
 async def after_turn(client, chat_id: str, lane: str, turn_id: str, user: str, reply: str, shown: list[str],
-                     texts: dict[str, str], ts: float | None = None) -> None:
+                     texts: dict[str, str], ts: float | None = None, user_name: str | None = None) -> None:
     """After the reply (background, never raises): what the reply used stays lit, the rest fades; the turn is linked
     to what was shown (0.2 used / 0.05 present); the turn is understood against what is in mind and encoded at its
     own time ``ts`` (when it was said; default now, R36). When the understanding fails the turn stays unencoded (no
-    episode_meta row) for the backfill."""
+    episode_meta row) for the backfill. ``user_name`` (L1) is how the gist names the user (P3)."""
     try:
         brain, cfg, now = _brain.get_instance(), _brain.MIND, time.time()
         rterms = _terms(reply or "")
@@ -188,7 +188,8 @@ async def after_turn(client, chat_id: str, lane: str, turn_id: str, user: str, r
 
         async with brain.lock:
             in_mind, labels = await asyncio.to_thread(_learn)
-        understood = await understand_turn(client, user, reply, in_mind, labels)  # outside the lock: an LLM call
+        understood = await understand_turn(client, user, reply, in_mind, labels,  # outside the lock: an LLM call
+                                           user_name=user_name)
         if understood is None:
             return
         async with brain.lock:
