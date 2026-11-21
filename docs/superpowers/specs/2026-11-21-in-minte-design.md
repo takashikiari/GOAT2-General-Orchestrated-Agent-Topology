@@ -1,6 +1,6 @@
 # Memoria lui GOAT ca un creier — design
 
-Data: 2026-11-21. Autor: sesiunea ee1c5e, la cererea lui Laris. Stare: **propunere, de citit și aprobat de Laris**.
+Data: 2026-11-21. Autor: sesiunea ee1c5e, la cererea lui Laris. Stare: **aprobat de Laris, 2026-11-21**.
 Pornește de la cum funcționează memoria unui creier uman, nu de la piesele pe care le avem. Ce avem e material:
 rămâne, se schimbă sau se scoate după cum servește funcțiile de mai jos. Documentul din 2026-11-17 rămâne istoric.
 
@@ -147,4 +147,5 @@ Viteza și costul nu sunt criterii (Laris).
 - Criteriul e §5, nu o numărătoare.
 - Conexiunile cu tip (cauză, continuare, corectură) revin, de data asta făcute la întipărire (F2). Scoaterea lui
   `din_cauza` pe 17.11 era legată de rezumatele din somn, pe care designul acesta nu le mai folosește.
-  **De confirmat de Laris.**
+  **Confirmat de Laris (2026-11-21): „nu mai contează ce am spus în trecut, mergi mai departe".**
+- **Spec aprobat de Laris, 2026-11-21.**
