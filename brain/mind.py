@@ -32,8 +32,9 @@ def carry(db, chat_id: str, lane: str, factor: float, floor: float) -> int:
 
 
 def light(db, chat_id: str, lane: str, item: str, kind: str, amount: float, source: str, why: str,
-          now: float) -> float:
-    """Raise an item's activation by ``amount`` (cap 1), add ``source`` once, keep the latest ``why``."""
+          now: float, commit: bool = True) -> float:
+    """Raise an item's activation by ``amount`` (cap 1), add ``source`` once, keep the latest ``why``. With
+    ``commit=False`` the caller commits once after a batch of lights."""
     row = db.execute("SELECT activation, sources FROM mind WHERE chat_id = ? AND lane = ? AND item = ?",
                      (chat_id, lane, item)).fetchone()
     if row is None:
@@ -48,7 +49,8 @@ def light(db, chat_id: str, lane: str, item: str, kind: str, amount: float, sour
         db.execute("UPDATE mind SET kind = ?, activation = ?, sources = ?, why = ?, updated = ? "
                    "WHERE chat_id = ? AND lane = ? AND item = ?",
                    (kind, act, json.dumps(sources, ensure_ascii=False), why, now, chat_id, lane, item))
-    db.commit()
+    if commit:
+        db.commit()
     return act
 
 

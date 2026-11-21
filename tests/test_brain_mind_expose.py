@@ -132,11 +132,11 @@ def test_open_items_are_shown_until_closed(on):
 def test_missing_cue_is_said_and_short_messages_say_nothing(on):
     _encode(on, "r1", T17, gist="Render merge.", about=["Render"])
     epi = FakeEpisodic({"r1": ("Render merge", T17)})
-    asks = FakeClient({"about": ["Bucegi", "Render"], "asks_past": True})
+    asks = FakeClient({"about": ["Bucegi", "Render"], "names": ["Bucegi", "Render"], "asks_past": True})
     block, _, _ = _expose(asks, epi, "ce am zis despre Bucegi și Render?", [])
     assert "Ce nu știu:\n- nu ai nimic despre Bucegi" in block
     assert "nu ai nimic despre Render" not in block              # in the graph and a lit memory is about it
-    short = FakeClient({"about": ["Bucegi"], "asks_past": False})
+    short = FakeClient({"about": ["Bucegi"], "names": ["Bucegi"], "asks_past": False})
     block, shown, _ = _expose(short, epi, "ok", [])
     assert "Ce nu știu" not in block
     assert "r1" in shown                                         # carried from the turn before
@@ -200,13 +200,15 @@ def test_many_open_items_leave_room_for_memories(on):
     assert len(opened) <= b.MIND["expose_items"] // 3
 
 
-def test_rejected_labels_are_not_cues_and_trimmed_memories_count_as_missing(on):
+def test_rejected_labels_are_not_cues_and_trimmed_memories_are_never_missing(on):
+    """R27: a named thing is missing only when the graph knows nothing about it; a memory that exists but was
+    trimmed (or not lit) here never becomes "nimic" (overturns R14's missing-after-trim)."""
     _encode(on, "r1", T17, gist="Render merge bine de o săptămână întreagă, " * 4, about=["Render"])
     epi = FakeEpisodic({"r1": ("Render merge " * 200, T17)})
-    asks = FakeClient({"about": ["UK", "Render"], "asks_past": True})
+    asks = FakeClient({"about": ["UK", "Render"], "names": ["UK", "Render"], "asks_past": True})
     block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [])
     assert "r1" in shown and "nimic despre UK" not in block and "Ce nu știu" not in block
     tight = estimate_tokens("[În minte]\n\nCe știu:\n- nume: Laris\n\nCe nu știu:\n- nu ai nimic despre Render")
     block, shown, _ = _expose(asks, epi, "ce am zis despre UK și Render?", [], {"nume": "Laris"}, budget=tight,
                               chat="43")
-    assert "r1" not in shown and "nu ai nimic despre Render" in block
+    assert "r1" not in shown and "nimic" not in block and "- nume: Laris" in block
