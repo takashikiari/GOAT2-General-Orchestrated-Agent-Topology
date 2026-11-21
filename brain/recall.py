@@ -28,12 +28,16 @@ _KIND_CONDUCT = {"urmează": 0.3}  # the line of the conversation: already in th
 
 
 def _links(db, node: str, now: float, half_life_days: float) -> list[tuple[str, str, str, str, float]]:
-    """(neighbour, src, dst, kind, current weight) for every link of ``node``, strongest (as stored) first."""
+    """(neighbour, src, dst, kind, current weight) for the _FANOUT links of ``node`` strongest NOW (R29): every link
+    is read and faded to ``now`` here, since the stored weight of a link nobody touched is stale until the sleep
+    fades it; ties go to the more recently updated link."""
     rows = db.execute(
         "SELECT dst, src, dst, kind, weight, coalesce(w_at, last_used, created_at) FROM graph_edges WHERE src = ? "
         "UNION ALL SELECT src, src, dst, kind, weight, coalesce(w_at, last_used, created_at) FROM graph_edges "
-        "WHERE dst = ? ORDER BY 5 DESC LIMIT ?", (node, node, _FANOUT)).fetchall()
-    return [(o, s, d, k, faded(w, t, now, half_life_days)) for o, s, d, k, w, t in rows]
+        "WHERE dst = ?", (node, node)).fetchall()
+    links = [(o, s, d, k, faded(w, t, now, half_life_days), float(t or 0.0)) for o, s, d, k, w, t in rows]
+    links.sort(key=lambda x: (-x[4], -x[5]))
+    return [x[:5] for x in links[:_FANOUT]]
 
 
 def _degree(db, node: str) -> int:

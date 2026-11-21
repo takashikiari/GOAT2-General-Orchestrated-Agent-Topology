@@ -128,6 +128,9 @@ def ingest(db, docs: list[dict], now: float) -> dict:
         added["episodes"] += db.execute(
             "INSERT OR IGNORE INTO graph_nodes (id, kind, label, chat_id, topic_id, seq, ts, created_at) "
             "VALUES (?, 'episode', ?, ?, ?, ?, ?, ?)", (eid, eid, chat, topic, seq, ts, now)).rowcount
+        db.execute("UPDATE graph_nodes SET chat_id = COALESCE(chat_id, ?), topic_id = COALESCE(topic_id, ?), "
+                   "seq = COALESCE(seq, ?), ts = COALESCE(ts, ?) WHERE id = ? AND kind = 'episode'",
+                   (chat, topic, seq, ts, eid))  # a node a typed link created first gets filled in
         for thing in _things(d):
             tid = f"thing:{thing}"
             added["things"] += db.execute("INSERT OR IGNORE INTO graph_nodes (id, kind, label, created_at) "

@@ -26,7 +26,7 @@ from utils.logging.setup import get_logger
 log = get_logger(__name__)
 
 __all__ = ["CONFIG", "Brain", "load_config", "lane_of", "is_open_question", "is_promise", "start", "is_enabled",
-           "record_turn", "get_instance", "nucleus"]
+           "MIND", "mind_on", "record_turn", "get_instance", "nucleus"]
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEFAULTS = {"enabled": False, "db_path": "", "interval_seconds": 60, "max_events_per_cycle": 200,
@@ -56,6 +56,26 @@ def load_config(path: Path | None = None) -> dict:
 
 
 CONFIG = load_config()
+
+_MIND_DEFAULTS = {"enabled": False, "carry": 0.6, "floor": 0.001, "expose_items": 12, "encode_per_tick": 20}
+
+
+def _load_mind(path: Path | None = None) -> dict:
+    """``config/brain.toml`` [mind] (working memory, brain/mind.py) over its defaults (off)."""
+    cfg = dict(_MIND_DEFAULTS)
+    path = path or _ROOT / "config" / "brain.toml"
+    if path.exists():
+        with open(path, "rb") as f:
+            cfg.update(tomllib.load(f).get("mind", {}))
+    return cfg
+
+
+MIND = _load_mind()
+
+
+def mind_on() -> bool:
+    """Working memory ("În minte") is live only when the brain is on and [mind] enabled is true."""
+    return is_enabled() and bool(MIND.get("enabled"))
 
 
 _instance: Brain | None = None
