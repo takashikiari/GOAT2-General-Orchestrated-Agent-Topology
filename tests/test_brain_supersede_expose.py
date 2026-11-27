@@ -155,3 +155,31 @@ def test_nothing_is_deleted(on):
     assert all(after[t] >= before[t] for t in before)
     assert on._db.execute("SELECT count(*) FROM graph_edges WHERE kind IN ('corectează', 'contrazice')"
                           ).fetchone()[0] == 2                    # the correcting edges stay stored
+
+
+def test_ordinary_memories_never_say_they_replace_something(on):
+    long_text = "user: " + "un drum lung spre Dover cu multe opriri " * 8           # > 160 chars, no gist
+    _encode(on, "g", NOW - 2 * DAY, gist="Laris a ales feribotul.")
+    docs = {**DOCS, "long": (long_text, NOW - DAY),
+            "g": ("Laris a ales feribotul. Apoi a cerut și prețul pentru Dover.", NOW - 2 * DAY)}
+    _corrected(on)
+    hits = [_hit("long", 0.9, long_text, NOW - DAY), _hit("x", 0.8, "user: Kent costă 120", NOW - 3 * DAY),
+            _hit("g", 0.7, docs["g"][0], NOW - 2 * DAY)]
+    block, shown, _ = asyncio.run(ml.expose(FakeClient(QUIET), FakeEpisodic(docs), "42", "human", "x", hits, {},
+                                            4000))
+    assert {"long", "g", "e"} <= set(shown)
+    lines = {mid: next(ln for ln in block.splitlines() if ln.startswith("- (") and key in ln)
+             for mid, key in (("long", "un drum lung"), ("g", "Laris a ales feribotul"), ("e", NEW))}
+    assert "înlocuiește" not in lines["long"] and "înlocuiește" not in lines["g"]
+    assert f"(înlocuiește: {OLD}" in lines["e"] and block.count("înlocuiește") == 1
+
+
+def test_a_head_that_is_also_a_direct_hit_keeps_the_hit_why(on):
+    _corrected(on)
+    for e_score, x_score in ((0.5, 0.8), (0.8, 0.5)):           # hits are lit weakest first: both orders
+        on._db.execute("UPDATE mind SET activation = 0.0, why = '', sources = '[]'")
+        on._db.commit()
+        _expose("Kent?", [_hit("e", e_score, "user: nu, 140", NOW - DAY),
+                          _hit("x", x_score, "user: Kent costă 120", NOW - 3 * DAY)])
+        row = {r["item"]: r for r in mind.top(on._db, "42", "human", 10, 0.0)}["e"]
+        assert row["why"] == "seamănă cu ce spui" and set(row["sources"]) == {"căutare", "corectură"}

@@ -103,12 +103,14 @@ def _associate(db, chat_id: str, lane: str, things: dict, cfg: dict, half: float
                 _light_current(db, chat_id, lane, c["id"], amount, "asociere", why, now)
 
 
-def _light_current(db, chat_id: str, lane: str, mid: str, amount: float, source: str, why: str, now: float) -> None:
+def _light_current(db, chat_id: str, lane: str, mid: str, amount: float, source: str, why: str, now: float,
+                   direct: frozenset = frozenset()) -> None:
     """Light memory ``mid``, or, when a correction superseded it, the newest version of it instead (C2): an
-    outdated memory is never in mind as current, whether the search, the prefetch cache or the graph reached it."""
+    outdated memory is never in mind as current, whether the search, the prefetch cache or the graph reached it.
+    A newest version that is itself one of the ``direct`` hits keeps the hit's own ``why``."""
     cur = supersede.head(db, mid)
     if cur != mid:
-        source, why = "corectură", supersede.WHY
+        source, why = "corectură", (why if cur in direct else supersede.WHY)
     mind.light(db, chat_id, lane, cur, "amintire", amount, source, why, now, commit=False)
 
 
@@ -153,7 +155,7 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
             mind.carry(brain._db, chat_id, lane, float(cfg["carry"]), float(cfg["floor"]))
             for mid, r in hits.items():  # a hit a correction superseded lights its newest version (C2)
                 _light_current(brain._db, chat_id, lane, mid, max(0.0, float(r.get("blended_score") or 0.0)),
-                               "căutare", "seamănă cu ce spui", now)
+                               "căutare", "seamănă cu ce spui", now, frozenset(hits))
             brain._db.commit()
             return (_in_mind(brain._db, chat_id, lane, float(cfg["floor"]),
                              {m: str(r.get("content") or "") for m, r in hits.items()}),
