@@ -13,7 +13,7 @@ it, so no cycle is written; ``head`` still stops on a cycle written by other mea
 """
 from __future__ import annotations
 
-__all__ = ["CORRECTING", "WHY", "mark", "head", "superseded", "history", "replaced"]
+__all__ = ["CORRECTING", "WHY", "mark", "restore", "head", "superseded", "history", "replaced"]
 
 CORRECTING = frozenset({"corectează", "contrazice"})
 WHY = "corectat ulterior"  # why the newest version is in mind when an older one was reached
@@ -57,25 +57,36 @@ def _ts(db, eid: str) -> float | None:
     return row[0] if row else None
 
 
-def mark(db, chat_id: str, old: str, new: str, now: float, floor: float | None = None) -> bool:
+def mark(db, chat_id: str, old: str, new: str, now: float, floor: float | None = None) -> str | None:
     """``new`` supersedes the current version of ``old``; that version fades to ``floor`` in every lane of this chat.
-    No commit: it runs inside encode's transaction. False (nothing written) when it would make a cycle or make an
-    episode supersede a later one."""
+    No commit: it runs inside encode's transaction. Returns the id superseded; None (nothing written) when it would
+    make a cycle or make an episode supersede a later one."""
     if floor is None:
         from brain import brain as _brain  # late: brain.brain imports the store, which imports this package
         floor = float(_brain.MIND.get("floor", 0.001))
     target = head(db, str(old))
     if target == new or target in _chain(db, new):
-        return False
+        return None
     t_old, t_new = _ts(db, target), _ts(db, new)
     if t_old is not None and t_new is not None and t_old > t_new:
-        return False
+        return None
     db.execute("INSERT INTO episode_meta (id, superseded_by, superseded_at) VALUES (?, ?, ?) "
                "ON CONFLICT(id) DO UPDATE SET superseded_by = excluded.superseded_by, "
                "superseded_at = excluded.superseded_at", (target, new, now))
     db.execute("UPDATE mind SET activation = MIN(activation, ?), updated = ? WHERE chat_id = ? AND item = ?",
                (floor, now, chat_id, target))
-    return True
+    return target
+
+
+def restore(db, episode_id: str) -> bool:
+    """Undo a wrong supersede (e.g. a ``contrazice`` on a mere disagreement): ``episode_id`` is current again. Only
+    its ``superseded_by`` / ``superseded_at`` are cleared (UPDATE; the correcting edge and every row stay). Its
+    activation is not raised: the next cue brings it back. False when it was not superseded or is unknown. Manual
+    use only: no tool and no automatic path calls it."""
+    cur = db.execute("UPDATE episode_meta SET superseded_by = NULL, superseded_at = NULL "
+                     "WHERE id = ? AND superseded_by IS NOT NULL", (str(episode_id),))
+    db.commit()
+    return cur.rowcount > 0
 
 
 def history(db, eid: str) -> list[tuple[str, str, float | None]]:

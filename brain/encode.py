@@ -33,7 +33,8 @@ def thing_labels(db, episode_ids: list[str], limit: int = _MAX_LABELS) -> list[s
 def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now: float) -> dict:
     """Write turn understanding ``u`` (see brain/understand.py) for ``episode_id``. Returns what was written:
     ``{"things", "links", "opened", "closed", "superseded"}`` (things linked, typed links touched, 0/1, items newly
-    closed, episodes superseded).
+    closed, the ids of the episodes superseded: logged by the callers, so a wrong one can be spotted and
+    undone with brain.supersede.restore).
     All or nothing: on any error the uncommitted writes are rolled back (the connection is shared, a later commit
     must not persist half an episode) and the error is re-raised."""
     try:
@@ -44,7 +45,7 @@ def encode(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
 
 
 def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now: float) -> dict:
-    out = {"things": 0, "links": 0, "opened": 0, "closed": 0, "superseded": 0}
+    out = {"things": 0, "links": 0, "opened": 0, "closed": 0, "superseded": []}
     db.execute("INSERT OR IGNORE INTO graph_nodes (id, kind, label, chat_id, topic_id, seq, ts, created_at) "
                "VALUES (?, 'episode', ?, ?, NULL, NULL, ?, ?)", (episode_id, episode_id, chat_id, ts, now))
     seen: set[str] = set()
@@ -67,7 +68,8 @@ def _write(db, chat_id: str, lane: str, episode_id: str, ts: float, u: dict, now
             graph.touch(db, episode_id, to, kind, 0.0, now, initial=0.5)  # a re-encode is not a new strengthening
             out["links"] += 1
             if kind in supersede.CORRECTING:
-                out["superseded"] += supersede.mark(db, chat_id, to, episode_id, now)
+                if (old := supersede.mark(db, chat_id, to, episode_id, now)) is not None:
+                    out["superseded"].append(old)
     db.execute("INSERT INTO episode_meta (id, type, importance, gist, encoded_at) VALUES (?, ?, ?, ?, ?) "
                "ON CONFLICT(id) DO UPDATE SET type = excluded.type, importance = excluded.importance, "
                "gist = excluded.gist, encoded_at = excluded.encoded_at",

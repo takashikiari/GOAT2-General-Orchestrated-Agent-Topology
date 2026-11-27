@@ -112,3 +112,45 @@ def test_turn_prompt_asks_to_link_corrections_to_the_memory_and_state_the_correc
     p = " ".join(TURN_PROMPT.split())
     assert "corectează sau contrazice ceva din „În minte”" in p
     assert "id-ul acelei amintiri" in p and "versiunea corectată" in p
+
+
+def test_encode_returns_the_ids_it_superseded(db):
+    enc.encode(db, "42", "human", "x", 10.0, _u(gist="v1"), 10.0)
+    enc.encode(db, "42", "human", "e1", 20.0, _u(gist="v2", links=[{"to": "x", "kind": "corectează"}]), 20.0)
+    r = enc.encode(db, "42", "human", "e2", 30.0, _u(gist="v3", links=[{"to": "x", "kind": "contrazice"},
+                                                                     {"to": "e1", "kind": "continuă"}]), 30.0)
+    assert r["superseded"] == ["e1"]                          # x's current version is what got superseded
+    assert enc.encode(db, "42", "human", "n", 40.0, _u(gist="n"), 40.0)["superseded"] == []
+
+
+def test_after_turn_and_backfill_log_the_superseded_ids(db, monkeypatch, caplog):
+    import asyncio
+    import logging
+    import time
+    from types import SimpleNamespace
+
+    from brain import mind_live, mind_sleep
+
+    monkeypatch.setattr(b, "MIND", {**b._MIND_DEFAULTS, "enabled": True})
+    monkeypatch.setattr(b, "get_instance", lambda: SimpleNamespace(_db=db, lock=asyncio.Lock()))
+    enc.encode(db, "42", "human", "x", time.time() - 60, _u(gist="v1"), time.time() - 60)
+
+    async def understood(*a, **k):
+        return _u(gist="v2", links=[{"to": "x", "kind": "corectează"}])
+    monkeypatch.setattr(mind_live, "understand_turn", understood)
+    caplog.set_level(logging.INFO, logger="brain.mind_live")
+    asyncio.run(mind_live.after_turn(None, "42", "human", "t1", "nu", "ok", [], {}))
+    assert any("'superseded': ['x']" in r.getMessage() for r in caplog.records)
+    src = open(mind_sleep.__file__, encoding="utf-8").read()
+    assert "superseded" in src and 'log.info("brain: backfill %s superseded %s"' in src
+
+
+def test_restore_undoes_a_wrong_supersede_without_deleting(db):
+    enc.encode(db, "42", "human", "x", 10.0, _u(gist="v1"), 10.0)
+    enc.encode(db, "42", "human", "e", 20.0, _u(gist="părere", links=[{"to": "x", "kind": "contrazice"}]), 20.0)
+    edges = db.execute("SELECT count(*) FROM graph_edges").fetchone()[0]
+    assert supersede.head(db, "x") == "e"
+    assert supersede.restore(db, "x") is True
+    assert _meta(db, "x") == ("v1", None, None) and supersede.head(db, "x") == "x"
+    assert db.execute("SELECT count(*) FROM graph_edges").fetchone()[0] == edges   # the edge stays
+    assert supersede.restore(db, "x") is False and supersede.restore(db, "nope") is False
