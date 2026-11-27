@@ -105,3 +105,10 @@ def test_supersede_is_part_of_the_encode_transaction(db, monkeypatch):
                                                      opens={"kind": "promisiune", "text": "t"}), 20.0)
     db.commit()
     assert _meta(db, "x")[1] is None                          # rolled back with the rest of the episode
+
+
+def test_turn_prompt_asks_to_link_corrections_to_the_memory_and_state_the_corrected_version():
+    from brain.understand import TURN_PROMPT
+    p = " ".join(TURN_PROMPT.split())
+    assert "corectează sau contrazice ceva din „În minte”" in p
+    assert "id-ul acelei amintiri" in p and "versiunea corectată" in p
