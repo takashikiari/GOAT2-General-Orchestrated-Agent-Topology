@@ -51,7 +51,7 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
     out, seen = [], set()
     for it in mems:
         text, ts = found.get(it["item"], ("", None))
-        gist, node_ts = meta.get(it["item"], ("", None))
+        gist, node_ts, *tail = meta.get(it["item"], ("", None))  # tail: what it replaced (C3), if anything
         text = digest_body(text)
         if (bare := strip_markup(text)) != text:
             text = bare
@@ -69,7 +69,7 @@ async def memories(episodic, mems: list[dict], hits: dict, meta: dict) -> list[d
             rest = clean(raw)[len(line):].strip()
             raw = "…" + rest if rest else ""
         out.append({"id": it["item"], "date": day(ts if ts is not None else node_ts), "why": it["why"],
-                    "gist": line, "raw": raw})
+                    "gist": line, "raw": raw, "replaces": tail[0] if tail else ""})
     return out
 
 
@@ -92,7 +92,8 @@ def render(facts: dict, mems: list[dict], opens: list[str], missing: list[str],
         if keep:
             lines = []
             for m in keep:
-                lines.append(f"- ({m['date']}) {m['gist']} — {m['why']}")
+                rep = f" (înlocuiește: {m['replaces']})" if m.get("replaces") else ""  # F5: the old version
+                lines.append(f"- ({m['date']}) {m['gist']}{rep} — {m['why']}")
                 if m["id"] in raw:
                     lines.append(f"  „{m['raw']}”")
             parts.append("Ce s-a întâmplat:\n" + "\n".join(lines))

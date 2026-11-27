@@ -118,11 +118,14 @@ async def encode_slice(brain, episodic, client, limit: int | None = None, user_n
             u = {**u, "opens": None, "closes": []}
         try:
             async with brain.lock:
-                await asyncio.to_thread(encode.encode, brain._db, str(chat_id), _lane(user), eid, ts, u, time.time())
+                wrote = await asyncio.to_thread(encode.encode, brain._db, str(chat_id), _lane(user), eid, ts, u,
+                                                time.time())
         except Exception as exc:  # noqa: BLE001 - one bad episode must not block the slice
             log.warning("brain: backfill encode failed %s: %s: %s", eid, type(exc).__name__, exc)
             _fail(eid)
             continue
+        if wrote.get("superseded"):  # visible, so a wrong supersede can be spotted (brain.supersede.restore)
+            log.info("brain: backfill %s superseded %s", eid, wrote["superseded"])
         done += 1
     if done:
         log.info("brain: backfill encoded=%d of %d", done, len(rows))

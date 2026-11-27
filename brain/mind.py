@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS mind (chat_id TEXT NOT NULL, lane TEXT NOT NULL, item
     activation REAL NOT NULL, sources TEXT NOT NULL DEFAULT '[]', why TEXT NOT NULL DEFAULT '', updated REAL,
     last_used REAL, PRIMARY KEY (chat_id, lane, item));
 CREATE TABLE IF NOT EXISTS episode_meta (id TEXT PRIMARY KEY, type TEXT, importance REAL, gist TEXT,
-    encoded_at REAL);
+    encoded_at REAL, superseded_by TEXT, superseded_at REAL);
 CREATE TABLE IF NOT EXISTS open_items (id TEXT PRIMARY KEY, chat_id TEXT, lane TEXT, kind TEXT, text TEXT, ts REAL,
     closed_ts REAL, closed_by TEXT);
 CREATE TABLE IF NOT EXISTS fact_kind (key TEXT PRIMARY KEY, kind TEXT NOT NULL, classified_at REAL,
@@ -27,10 +27,16 @@ CREATE TABLE IF NOT EXISTS fact_kind (key TEXT PRIMARY KEY, kind TEXT NOT NULL, 
 
 def migrate(db) -> None:
     """Bring a store made before a column to today's SCHEMA (columns are only added, never dropped): ``fact_kind``
-    gets ``value_hash`` (polish wave 2, Q2); its old rows keep NULL there, so each is classified once more."""
-    if "value_hash" not in {r[1] for r in db.execute("PRAGMA table_info(fact_kind)")}:
-        db.execute("ALTER TABLE fact_kind ADD COLUMN value_hash TEXT")
-        db.commit()
+    gets ``value_hash`` (polish wave 2, Q2); its old rows keep NULL there, so each is classified once more.
+    ``episode_meta`` gets ``superseded_by`` / ``superseded_at`` (brain/supersede.py); old rows: not superseded."""
+    adds = [("fact_kind", "value_hash", "TEXT"), ("episode_meta", "superseded_by", "TEXT"),
+            ("episode_meta", "superseded_at", "REAL")]
+    for table, col, kind in adds:
+        if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+    # here, not in SCHEMA: on an old store the column exists only after the ALTER above
+    db.execute("CREATE INDEX IF NOT EXISTS episode_meta_superseded_by ON episode_meta (superseded_by)")
+    db.commit()
 
 
 def carry(db, chat_id: str, lane: str, factor: float, floor: float) -> int:

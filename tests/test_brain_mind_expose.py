@@ -18,7 +18,7 @@ from brain import mind_live as ml
 from memory.budget import estimate_tokens
 
 DAY = 86400.0
-T17 = 1795392000.0  # a fixed moment in Nov 2026
+T17 = time.time() - 3600  # an hour ago: open items are shown only within inject_promise_max_hours (24 h) of now
 
 
 class FakeClient:
@@ -85,14 +85,14 @@ def _amintiri(block):
 
 def test_association_reaches_the_prompt_without_text_similarity(on):
     _encode(on, "e0", T17 - 3 * DAY, gist="Prețul pentru Kent a fost 120 de lire.")
-    _encode(on, "e1", T17 - DAY, gist="Laris a corectat prețul Kent la 140.", about=["Render"],
-            links=[{"to": "e0", "kind": "corectează"}])
+    _encode(on, "e1", T17 - DAY, gist="Din cauza prețului Kent am mutat totul pe Render.", about=["Render"],
+            links=[{"to": "e0", "kind": "cauză"}])  # a correction would supersede e0 (C2)
     epi = FakeEpisodic({"e0": ("user: Kent costă 120", T17 - 3 * DAY), "e1": ("user: nu, 140", T17 - DAY)})
     client = FakeClient({"about": ["Render"], "asks_past": False})
     block, shown, texts = _expose(client, epi, "ce facem cu deploy-ul?", [_hit("s1", 0.4, "altceva complet")],
                                   {"nume": "Laris"})
     assert block.startswith("[În minte]")
-    assert re.search(r"^- \(2026-11-\d\d\) Prețul pentru Kent", block, re.M)
+    assert re.search(rf"^- \({ml._day(T17 - 3 * DAY)}\) Prețul pentru Kent", block, re.M)
     assert "e0" in shown and "e1" in shown                       # reached through the graph, not the search
     assert "Prețul pentru Kent a fost 120 de lire." in block
     assert "legat de: render" in block

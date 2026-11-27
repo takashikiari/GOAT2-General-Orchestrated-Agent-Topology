@@ -25,8 +25,10 @@ NO_GATE = {"hidden": False}
 MIND_GUIDANCE = (
     "Blocul [În minte] de mai sus este memoria ta: ce îți amintești acum despre Laris și despre ce s-a întâmplat. "
     "Dacă ceva nu e acolo, spune simplu că nu-ți amintești; nu inventa. Nu căuta niciodată în memorie cu unelte, "
-    "cu shell-ul sau prin fișiere. Folosește store_memory, promote_memory și forget_fact doar când Laris îți cere "
-    "explicit („ține minte”, „uită”)."
+    "cu shell-ul sau prin fișiere. Tu decizi singur ce merită păstrat, fără să ceri confirmare: o regulă nouă, o "
+    "preferință sau un fapt stabil despre Laris ori despre lucru îl salvezi cu promote_memory, iar un episod care "
+    "merită amintit, cu store_memory. Când Laris corectează un fapt din Reguli sau Ce știu, actualizează-l cu "
+    "promote_memory (aceeași cheie, valoare nouă) sau scoate-l cu forget_fact dacă nu mai e adevărat."
 )
 
 

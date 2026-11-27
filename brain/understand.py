@@ -38,6 +38,10 @@ din listă. "kind" e exact unul dintre: continuă, cauză, urmare, corectează, 
 altfel null.
 - "closes": lista de id-uri ale elementelor de tip deschis din listă pe care runda le încheie (poate fi goală).
 
+Când runda corectează sau contrazice ceva din „În minte” (o amintire, un preț, o decizie, un fapt), pune în \
+"links" o legătură cu "kind" "corectează" sau "contrazice" exact către id-ul acelei amintiri: așa știe memoria \
+că varianta veche nu mai e valabilă. În acest caz "gist" spune versiunea corectată, cea valabilă acum.
+
 În minte:
 {in_mind}
 

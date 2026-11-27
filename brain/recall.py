@@ -8,7 +8,9 @@ its neighbour (Laris: nothing disappears, it only fades until a stimulus brings 
 dominate. Three steps, so a memory reaches another through two associated things (episode → thing → thing it was
 met with → episode) — the association, not the line. The line of the conversation ('urmează') conducts only 30%: the
 recent turns are already in the prompt. A thing passes each link a share divided by its number of links (an episode
-by the square root), so hubs ("laris", "lenovo") do not drag everything along.
+by the square root), so hubs ("laris", "lenovo") do not drag everything along. A correction does not conduct into
+the memory it corrected (``corectează`` / ``contrazice`` from its source): the new version must not pull the old one
+up; the old one still leads to the new one, and the edge stays stored (brain/supersede.py).
 
 The result: the most activated episodes that are not already in mind, each with the path that reached it (to show
 GOAT why it remembers, and to touch those links after the turn).
@@ -18,6 +20,7 @@ from __future__ import annotations
 import math
 
 from brain.graph import faded
+from brain.supersede import CORRECTING
 
 __all__ = ["spread"]
 
@@ -35,7 +38,8 @@ def _links(db, node: str, now: float, half_life_days: float) -> list[tuple[str, 
         "SELECT dst, src, dst, kind, weight, coalesce(w_at, last_used, created_at) FROM graph_edges WHERE src = ? "
         "UNION ALL SELECT src, src, dst, kind, weight, coalesce(w_at, last_used, created_at) FROM graph_edges "
         "WHERE dst = ?", (node, node)).fetchall()
-    links = [(o, s, d, k, faded(w, t, now, half_life_days), float(t or 0.0)) for o, s, d, k, w, t in rows]
+    links = [(o, s, d, k, faded(w, t, now, half_life_days), float(t or 0.0)) for o, s, d, k, w, t in rows
+             if not (k in CORRECTING and s == node)]  # the new version never leads back to the one it replaced
     links.sort(key=lambda x: (-x[4], -x[5]))
     return [x[:5] for x in links[:_FANOUT]]
 
