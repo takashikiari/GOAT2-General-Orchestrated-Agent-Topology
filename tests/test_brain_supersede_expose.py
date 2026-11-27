@@ -90,7 +90,7 @@ def test_fresh_search_returning_the_old_memory_shows_the_correction(on):
     block, shown, texts = _expose("cât costă Kent?", [_hit("x", 0.8, "user: Kent costă 120", NOW - 3 * DAY)])
     assert "x" not in shown and "e" in shown
     assert OLD not in block.split("(înlocuiește:")[0] and NEW in block
-    assert "corectat ulterior" in block
+    assert "versiunea corectată, actuală" in block
     row = {r["item"]: r for r in mind.top(on._db, "42", "human", 10, 0.0)}
     assert "corectură" in row["e"]["sources"] and row["e"]["activation"] == pytest.approx(0.8)
 

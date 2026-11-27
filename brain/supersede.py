@@ -16,7 +16,7 @@ from __future__ import annotations
 __all__ = ["CORRECTING", "WHY", "mark", "restore", "head", "superseded", "history", "replaced"]
 
 CORRECTING = frozenset({"corectează", "contrazice"})
-WHY = "corectat ulterior"  # why the newest version is in mind when an older one was reached
+WHY = "versiunea corectată, actuală"  # why the newest version is in mind when an older one was reached
 _REPLACED_MAX = 80
 _MAX_CHAIN = 64  # a chain longer than this is not a chain of corrections: stop walking
 
