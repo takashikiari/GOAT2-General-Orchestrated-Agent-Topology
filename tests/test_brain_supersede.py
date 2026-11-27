@@ -38,6 +38,14 @@ def test_migrate_adds_supersede_columns_to_an_old_store(tmp_path):
     mind.migrate(old)  # idempotent
     assert {"superseded_by", "superseded_at"} <= {r[1] for r in old.execute("PRAGMA table_info(episode_meta)")}
     assert old.execute("SELECT gist, superseded_by FROM episode_meta").fetchone() == ("vechi", None)
+    assert old.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'episode_meta_superseded_by'"
+                       ).fetchone()
+
+
+def test_fresh_store_has_the_superseded_by_index(db):
+    plan = " ".join(r[3] for r in db.execute("EXPLAIN QUERY PLAN SELECT id FROM episode_meta WHERE superseded_by = ?",
+                                             ("e",)))
+    assert "episode_meta_superseded_by" in plan
 
 
 def test_correction_supersedes_the_old_episode_and_drops_it_from_mind(db):

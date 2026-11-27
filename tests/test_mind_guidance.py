@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from orchestrator import mind_hook
-from orchestrator.orchestrator import _PROMOTE_MEMORY_GUIDANCE, _STORE_MEMORY_GUIDANCE
 
 G = mind_hook.MIND_GUIDANCE
 
@@ -30,7 +29,11 @@ def test_decides_on_its_own_and_updates_corrected_facts():
 def test_short():
     assert len([s for s in re.split(r"(?<=[.;])\s+(?=[A-ZĂÂÎȘȚ])", G) if s.strip()]) <= 5
 
+# The off path (no MIND_GUIDANCE, the old store/promote/search guidance present) is covered end to end by
+# tests/test_orchestrator_mind.py::test_off_prompt_and_tools_unchanged.
 
-def test_off_path_guidance_is_not_the_mind_guidance():
-    assert G not in (_STORE_MEMORY_GUIDANCE, _PROMOTE_MEMORY_GUIDANCE)
-    assert "store_memory" in _STORE_MEMORY_GUIDANCE or "store" in _STORE_MEMORY_GUIDANCE.lower()
+
+def test_forget_fact_takes_the_key_as_shown_in_memory_not_via_read_l1():
+    from tools.memory_manager import build_memory_manager_tools
+    desc = next(t.description for t in build_memory_manager_tools(None) if t.name == "forget_fact")
+    assert "read_l1" not in desc and "[În minte]" in desc

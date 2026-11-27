@@ -77,7 +77,8 @@ def build_memory_manager_tools(memory_layers: "MemoryLayers") -> list[ToolDefini
                 "Delete a permanent fact from L1 by its key. Use this when the "
                 "user asks you to forget something, when a fact is outdated, or "
                 "to make room in L1 before promoting a new fact. The key must "
-                "exactly match the key shown by read_l1."
+                "exactly match the fact's key as shown in your memory context "
+                "([În minte] Reguli / Ce știu, or the facts block)."
             ),
             parameters={
                 "type": "object",

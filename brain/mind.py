@@ -34,6 +34,8 @@ def migrate(db) -> None:
     for table, col, kind in adds:
         if col not in {r[1] for r in db.execute(f"PRAGMA table_info({table})")}:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+    # here, not in SCHEMA: on an old store the column exists only after the ALTER above
+    db.execute("CREATE INDEX IF NOT EXISTS episode_meta_superseded_by ON episode_meta (superseded_by)")
     db.commit()
 
 
