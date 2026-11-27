@@ -85,8 +85,8 @@ def _amintiri(block):
 
 def test_association_reaches_the_prompt_without_text_similarity(on):
     _encode(on, "e0", T17 - 3 * DAY, gist="Prețul pentru Kent a fost 120 de lire.")
-    _encode(on, "e1", T17 - DAY, gist="Laris a corectat prețul Kent la 140.", about=["Render"],
-            links=[{"to": "e0", "kind": "corectează"}])
+    _encode(on, "e1", T17 - DAY, gist="Din cauza prețului Kent am mutat totul pe Render.", about=["Render"],
+            links=[{"to": "e0", "kind": "cauză"}])  # a correction would supersede e0 (C2)
     epi = FakeEpisodic({"e0": ("user: Kent costă 120", T17 - 3 * DAY), "e1": ("user: nu, 140", T17 - DAY)})
     client = FakeClient({"about": ["Render"], "asks_past": False})
     block, shown, texts = _expose(client, epi, "ce facem cu deploy-ul?", [_hit("s1", 0.4, "altceva complet")],

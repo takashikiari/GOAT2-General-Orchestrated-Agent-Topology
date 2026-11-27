@@ -13,9 +13,11 @@ it, so no cycle is written; ``head`` still stops on a cycle written by other mea
 """
 from __future__ import annotations
 
-__all__ = ["CORRECTING", "mark", "head", "superseded", "history"]
+__all__ = ["CORRECTING", "WHY", "mark", "head", "superseded", "history", "replaced"]
 
 CORRECTING = frozenset({"corectează", "contrazice"})
+WHY = "corectat ulterior"  # why the newest version is in mind when an older one was reached
+_REPLACED_MAX = 80
 _MAX_CHAIN = 64  # a chain longer than this is not a chain of corrections: stop walking
 
 
@@ -93,3 +95,16 @@ def history(db, eid: str) -> list[tuple[str, str, float | None]]:
         rows.append((i, (g[0] if g else None) or "", _ts(db, i)))
     rows.sort(key=lambda r: (r[0] == top, r[2] if r[2] is not None else float("-inf"), r[0]))  # the head last
     return rows
+
+
+def replaced(db, eid: str) -> tuple[str, float | None] | None:
+    """What ``eid`` replaced, for its line in ``[În minte]`` (reconsolidation, F5): (the previous version's gist,
+    at most _REPLACED_MAX characters, its time); None when ``eid`` replaced nothing or that version has no gist."""
+    versions = history(db, eid)
+    if len(versions) < 2 or versions[-1][0] != str(eid):
+        return None
+    _, gist, ts = versions[-2]
+    gist = " ".join((gist or "").split())
+    if not gist:
+        return None
+    return (gist if len(gist) <= _REPLACED_MAX else gist[:_REPLACED_MAX].rstrip() + "…"), ts

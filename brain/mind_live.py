@@ -12,7 +12,7 @@ import time
 
 from brain import brain as _brain
 from brain import encode as _encode
-from brain import graph, mind, mind_facts, recall
+from brain import graph, mind, mind_facts, recall, supersede
 from brain.live import used as _used
 from brain.mind_render import day as _day
 from brain.mind_render import memories as _memories
@@ -100,7 +100,16 @@ def _associate(db, chat_id: str, lane: str, things: dict, cfg: dict, half: float
             amount = _ASSOC_CEILING * max(seeds.values()) * c["activation"] / act_max
             if amount > floor:
                 why = f"legat de: {c['via']}" if c["via"] else "legat de ce e în minte"
-                mind.light(db, chat_id, lane, c["id"], "amintire", amount, "asociere", why, now, commit=False)
+                _light_current(db, chat_id, lane, c["id"], amount, "asociere", why, now)
+
+
+def _light_current(db, chat_id: str, lane: str, mid: str, amount: float, source: str, why: str, now: float) -> None:
+    """Light memory ``mid``, or, when a correction superseded it, the newest version of it instead (C2): an
+    outdated memory is never in mind as current, whether the search, the prefetch cache or the graph reached it."""
+    cur = supersede.head(db, mid)
+    if cur != mid:
+        source, why = "corectură", supersede.WHY
+    mind.light(db, chat_id, lane, cur, "amintire", amount, source, why, now, commit=False)
 
 
 def _gather(db, chat_id: str, lane: str, cfg: dict, now: float, exclude: set[str]) -> tuple[list[dict], list, dict]:
@@ -115,14 +124,17 @@ def _gather(db, chat_id: str, lane: str, cfg: dict, now: float, exclude: set[str
     for oid, kind, _, _ in rows:
         mind.light(db, chat_id, lane, oid, "deschis", 1.0, "deschis", kind or "deschis", now, commit=False)
     opens = [(oid, text, ts, kind or "deschis") for oid, kind, text, ts in rows]
-    items = [it for it in mind.top(db, chat_id, lane, _POOL, floor + _EPS)
-             if it["kind"] == "amintire" and it["item"] not in exclude]
-    items = items[:max(0, n - len(opens))]
+    pool = [it for it in mind.top(db, chat_id, lane, _POOL, floor + _EPS)
+            if it["kind"] == "amintire" and it["item"] not in exclude]
+    old = supersede.superseded(db, [it["item"] for it in pool])  # C2: never shown as current
+    items = [it for it in pool if it["item"] not in old][:max(0, n - len(opens))]
     meta = {}
     for it in items:
         gist = db.execute("SELECT gist FROM episode_meta WHERE id = ?", (it["item"],)).fetchone()
         node = db.execute("SELECT ts FROM graph_nodes WHERE id = ?", (it["item"],)).fetchone()
-        meta[it["item"]] = ((gist[0] if gist else None) or "", node[0] if node else None)
+        prev = supersede.replaced(db, it["item"])  # C3: the line says what this version replaced
+        meta[it["item"]] = ((gist[0] if gist else None) or "", node[0] if node else None,
+                            f"{prev[0]}, {_day(prev[1])}" if prev else "")
     return items, opens, meta
 
 
@@ -139,9 +151,9 @@ async def expose(client, episodic, chat_id: str, lane: str, message: str, l3_res
 
         def _before() -> tuple[list[dict], tuple[dict, dict]]:
             mind.carry(brain._db, chat_id, lane, float(cfg["carry"]), float(cfg["floor"]))
-            for mid, r in hits.items():
-                mind.light(brain._db, chat_id, lane, mid, "amintire", max(0.0, float(r.get("blended_score") or 0.0)),
-                           "căutare", "seamănă cu ce spui", now, commit=False)
+            for mid, r in hits.items():  # a hit a correction superseded lights its newest version (C2)
+                _light_current(brain._db, chat_id, lane, mid, max(0.0, float(r.get("blended_score") or 0.0)),
+                               "căutare", "seamănă cu ce spui", now)
             brain._db.commit()
             return (_in_mind(brain._db, chat_id, lane, float(cfg["floor"]),
                              {m: str(r.get("content") or "") for m, r in hits.items()}),
